@@ -215,27 +215,27 @@ A defining feature of CEP is **recursion**: the same cycle of metabolism, variat
 ### Layered Recursion
 
 1. **Kernel (Layer 0)**
-   *Cycle:* cells → enzymes → organs.
+   *Cycle:* cells -> enzymes -> organs.
    Each heartbeat consumes facts, transforms them, and emits new facts. This micro-loop establishes the fundamental rhythm.
 
 2. **Bonds & Coherence (Layer 1)**
-   *Cycle:* fact → impulses → contexts/facets.
+   *Cycle:* fact -> impulses -> contexts/facets.
    A new truth implies smaller truths, ensuring closure. Just as enzymes trigger new cells, relationships trigger new relationships.
 
 3. **Ecology of Flows (Layer 2)**
-   *Cycle:* impulses → organisms → species → niches.
+   *Cycle:* impulses -> organisms -> species -> niches.
    Flows awaken, branch, and compete; the most fitting tactics persist. This echoes the metabolic loop, now expressed at the level of processes instead of raw data.
 
 4. **Cognition (Layer 3)**
-   *Cycle:* perspectives → interpretations → conventions → summaries.
+   *Cycle:* perspectives -> interpretations -> conventions -> summaries.
    Patterns emerge from repeated structures, then stabilize into conventions. Closure now applies to meaning rather than facts.
 
 5. **Society (Layer 4)**
-   *Cycle:* conventions → councils → reforms → laws.
+   *Cycle:* conventions -> councils -> reforms -> laws.
    Governance recapitulates ecological selection: weak rules are pruned, strong ones are formalized. Stability is maintained through versioning and rollback.
 
 6. **Culture (Layer 5)**
-   *Cycle:* chronicles → stories → legends → myths.
+   *Cycle:* chronicles -> stories -> legends -> myths.
    Narratives compress history into portable memory. As with facts becoming patterns, here stories become myths, which then guide new cycles.
 
 ### Why This Matters
@@ -269,8 +269,8 @@ Short cycles fix today; long cycles improve tomorrow.
 **Why "good enough" beats "perfect."**
 Real systems face limits (storage, compute, attention, time). CEP is designed to **embrace** limits safely, not pretend they don't exist.
 
+* **Physiology:** track per-fact order; don't chase impossible global time.
 * **Metabolic:** tier storage (hot/warm/cold); recycle rarely-used facts.
-* **Physics:** track per-entity order; don't chase impossible global time.
 * **Ecology:** cap exploration; prune failing variants; sample metrics.
 * **Cognition:** approximate big views; promote patterns only after thresholds.
 * **Society:** keep version history tidy; let councils be local (federation).
@@ -434,9 +434,7 @@ The practice becomes a story ("We use Ctrl+S to save"), an icon, and eventually 
 
 ## 13. Glossary of CEP Terms
 
----
-
-While CEP introduces many specialized terms, it helps to think of them in **layers of abstraction** rather than memorizing them in isolation. For example: *contexts* and *facets* belong to the structural layer (how facts are related), while *perspectives* and *interpretations* belong to the cognitive layer (how facts are understood). A quick way to navigate terms is to always ask: *“Is this concept about raw facts, about flows of action, about awareness, or about governance and culture?”*
+While CEP introduces many specialized terms, it helps to think of them in **layers of abstraction** rather than memorizing them in isolation. For example: *contexts* and *facets* belong to the structural layer (how facts are related), while *perspectives* and *interpretations* belong to the cognitive layer (how facts are understood). A quick way to navigate terms is to always ask: *"Is this concept about raw facts, about flows of action, about awareness, or about governance and culture?"*
 
 ---
 
@@ -444,12 +442,12 @@ While CEP introduces many specialized terms, it helps to think of them in **laye
 
 * **Cell** - the atomic unit of data; an immutable record.
 * **Enzyme** - a minimal agent that consumes cells and emits new ones.
-* **Organ** - a group of enzymes working together on related tasks.
+* **Organ** - a group of different enzymes working together on related tasks.
 * **Heartbeat** - one deterministic execution pass where inputs are processed and outputs scheduled for the next pass.
 
 ---
 
-### **Physics of Facts (Layer 1)**
+### **Bonds & Coherence (Layer 1)**
 
 * **Being** - a persistent entity identified by a unique ID.
 * **Bond** - a relation between beings (pairwise).
