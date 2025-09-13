@@ -163,12 +163,11 @@ typedef void (*cepDel)(void*);
 #ifdef NDEBUG
   #define CEP_DEBUG()
   #define CEP_ASSERT(exp)       (exp)
-  #define CEP_NOT_ASSERT(exp)   (!(exp))
 #else
-  #define CEP_DEBUG(code)       do{code;}while(0)
-  #define CEP_ASSERT(exp)       (({bool e = (exp);  if (!e) {assert(exp);    assert(false);}   e;}))
-  #define CEP_NOT_ASSERT(exp)   (({bool e = (exp);  if (e)  {assert(!(exp)); assert(false);}  !e;}))
+  #define CEP_DEBUG(code)       do{ code; }while(0)
+  #define CEP_ASSERT(exp)       (({bool e = (bool)(exp);  if (!e) assert(#exp && e);  e;}))
 #endif
+#define   CEP_NOT_ASSERT(exp)   (!CEP_ASSERT(exp))
 
 
 #endif
