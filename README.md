@@ -5,6 +5,9 @@ Instead of treating them like rigid machines, CEP treats them like **living comm
 
 If you’ve ever seen how a garden balances order and change, or how a team learns from experience and stories, you already understand the spirit of CEP.
 
+> **Note:**
+> This project is under active development and not ready for consumption!
+
 ---
 
 ## ✨ What is CEP?
