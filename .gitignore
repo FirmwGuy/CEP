@@ -1,2 +1,9 @@
 # Temporary build directory
 /build/
+/build-clang/
+/build-make/
+
+# Meson local logs (if generated at repo root)
+/meson-logs/
+
+AGENTS.md

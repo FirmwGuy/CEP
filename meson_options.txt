@@ -1,0 +1,4 @@
+option('asan', type: 'boolean', value: false, description: 'Enable Address/UB sanitizers')
+option('tests', type: 'feature', value: 'enabled', description: 'Build unit tests')
+option('server', type: 'feature', value: 'disabled', description: 'Build standalone CEP server')
+option('both_libs', type: 'boolean', value: false, description: 'Build both static and shared libraries')
