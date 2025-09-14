@@ -1,0 +1,6 @@
+[binaries]
+c = 'clang'
+
+[built-in options]
+c_std = 'c11'
+

@@ -34,6 +34,27 @@ Developer Details
   - Enable with: `meson setup build -Dasan=true`.
   - Recommended with Clang on MSYS2 UCRT64; supported with GCC/Clang on Manjaro.
 
+Clang Build (Optional)
+
+If you want extra diagnostics and better sanitizers, you can build with Clang.
+
+- Install packages
+  - Windows (MSYS2 UCRT64 shell):
+    - `pacman -S --needed mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-clang-tools-extra mingw-w64-ucrt-x86_64-compiler-rt`
+    - Optional extras: `mingw-w64-ucrt-x86_64-clang-analyzer mingw-w64-ucrt-x86_64-include-what-you-use`
+  - Manjaro Linux:
+    - `sudo pacman -S --needed clang clang-tools-extra lld llvm compiler-rt compiler-rt-sanitizers`
+
+- Configure with Clang
+  - Using environment variable:
+    - `CC=clang meson setup build-clang -Dasan=true`
+  - Using Meson native file (in repo):
+    - `meson setup build-clang --native-file toolchains/clang.meson -Dasan=true`
+
+- Build and test
+  - `meson compile -C build-clang`
+  - `meson test -C build-clang`
+
 - Cleaning builds
   - Out-of-source: remove the entire `build/` folder: `rm -rf build/`.
 
