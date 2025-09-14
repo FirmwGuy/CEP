@@ -11,6 +11,11 @@ Repository Layout
 - `src/test/*` — MUnit tests, examples of API usage.
 - `docs/CEP.txt` — Conceptual blueprint: layers, execution model, goals.
 
+Related Docs
+- `docs/L0_Kernel/EXTERNAL-LIBRARIES-INTERFACE.md` — Accessing foreign library structures; handles vs snapshots; zero‑copy rules.
+- `docs/L0_Kernel/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect log, streams, preconditions, CAS, and replay modes.
+- `docs/L0_Kernel/NATIVE-TYPES.md` — L0 native types, canonical encoding, hashing/comparison.
+
 Build & Test (MSYS/bash)
 - Build all: `make`
 - Run tests with debug logs: `make run`
@@ -180,4 +185,3 @@ Next Steps You Can Pick Up
 - Add hash-based indexing across list/array/tree with a thin hash adapter.
 - Introduce range queries for dictionaries/catalogs (include tests mirroring by-name/by-key behavior).
 - Replace global `MAX_DEPTH` with an adaptive stack in deep traversal + tests for very deep structures.
-

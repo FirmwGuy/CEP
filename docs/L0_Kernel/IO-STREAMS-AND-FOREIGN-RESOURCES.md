@@ -1,6 +1,6 @@
 # CEP I/O Streams and Foreign Resources
 
-This note explains why CEP handles external I/O the way it does, and how we plan to implement it in Layer 0 (Kernel) so that systems remain deterministic, explainable, and replayable. The first part is language‑agnostic; the second part outlines the technical shape for implementors.
+This note explains why CEP handles external I/O the way it does, and how we plan to implement it in Layer 0 (Kernel) so that systems remain deterministic, explainable, and replayable. The first part is language‑agnostic; the second part outlines the technical shape for implementors. See also: `EXTERNAL-LIBRARIES-INTERFACE.md` for handling foreign structures and opaque handles.
 
 ## Why This Matters (Rationale)
 
