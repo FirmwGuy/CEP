@@ -62,7 +62,7 @@
  */
 
 #if (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__)
-  #error    unsoported target platform!
+  #error    Unsoported target platform!
 #else
   static inline void*   cep_malloc(size_t z)                   {void* p = malloc(z);       if CEP_RARELY(!p)  abort();  return p;}
   static inline void*   cep_calloc(size_t n, size_t z)         {void* p = calloc(n, z);    if CEP_RARELY(!p)  abort();  return p;}

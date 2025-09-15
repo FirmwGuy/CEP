@@ -270,10 +270,12 @@ static inline bool array_traverse(cepArray* array, cepTraverse func, void* conte
 
 
 static inline void array_sort(cepArray* array, cepCompare compare, void* context) {
-  #ifdef _GNU_SOURCE
+  #if defined(_WIN32)
+    qsort_s
+  #elif defined(_GNU_SOURCE)
     qsort_r
   #else
-    qsort_s
+    #error qsort_r not available on this platform!
   #endif
         (array->cell, array->store.chdCount, sizeof(cepCell), (cepFunc) compare, context);
 

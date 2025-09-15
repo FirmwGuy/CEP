@@ -17,12 +17,16 @@ Related Docs
 - `docs/L0_Kernel/NATIVE-TYPES.md` — L0 native types, canonical encoding, hashing/comparison.
 
 Build & Test (MSYS/bash)
-- Build all: `make`
-- Run tests with debug logs: `make run`
-- Clean: `make clean`
-- Direct binary: `./build/bin/test.exe --log-visible debug`
+- Meson/Ninja (recommended)
+  - Configure: `meson setup build`
+  - Build: `meson compile -C build`
+  - Run tests: `meson test -C build`
+- Fallback Makefile (no Meson/Ninja)
+  - Build: `make -C unix`
+  - Run tests with debug logs: `../build-make/bin/cep_tests --log-visible debug`
+  - Clean: `make -C unix clean`
 Notes
-- Toolchain: gcc + make under MSYS2/MINGW works out of the box.
+- Toolchain: gcc + Meson/Ninja on MSYS2 UCRT64 and Manjaro works out of the box; fallback Makefile uses `gcc + make`.
 - CFLAGS are tuned for this codebase: assertions are used heavily; do not strip them while developing.
 
 Kernel Concepts (L0)

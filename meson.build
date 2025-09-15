@@ -8,6 +8,7 @@ project('CEP', 'c',
 )
 
 cc = meson.get_compiler('c')
+fs = import('fs')
 
 # Includes
 inc = include_directories('src/l0_kernel', 'src/test')
@@ -25,7 +26,7 @@ if cc.has_argument('-fplan9-extensions')
 endif
 
 add_project_arguments(common_args + [
-  '-D_DNU_SOURCE',
+  '-D_GNU_SOURCE',
 ], language: 'c')
 
 # Optionally enable sanitizers (best with Clang on MinGW-UCRT)

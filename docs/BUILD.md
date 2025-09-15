@@ -27,7 +27,7 @@ What Gets Built
 Developer Details
 
 - Compiler flags
-  - Defaults include `-g -Wall` and `-fplan9-extensions` (when supported), plus `_DNU_SOURCE`.
+  - Defaults include `-g -Wall` and `-fplan9-extensions` (when supported), plus `_GNU_SOURCE`.
   - On Windows only, tests add `__STDC_NO_ATOMICS__` to work around a munit atomics quirk; Linux builds don’t use this define.
 
 - Sanitizers (optional)

@@ -610,8 +610,8 @@ static inline void  cep_cell_set_name(cepCell* cell, cepDT* name)     {assert(ce
 #define cep_cell_is_link(r)       ((r)->metacell.type == CEP_TYPE_LINK)
 
 #define cep_cell_is_shadowed(r)   ((r)->metacell.shadowing)
-#define cep_cell_is_private(r)    ((r)->metacell.priv)
-#define cep_cell_is_system(r)     ((r)->metacell.system)
+/* #define cep_cell_is_private(r)    ((r)->metacell.priv) */  /* Commented out: 'priv' bitfield is not defined in cepMetacell; avoid invalid access. */
+/* #define cep_cell_is_system(r)     ((r)->metacell.system) */ /* Commented out: 'system' bitfield is not defined in cepMetacell; avoid invalid access. */
 
 static inline bool cep_cell_has_data(const cepCell* cell)     {assert(cep_cell_is_normal(cell));  return cell->data;}
 static inline bool cep_cell_has_store(const cepCell* cell)    {assert(cep_cell_is_normal(cell));  return cell->store;}
@@ -786,7 +786,7 @@ static inline void* cep_cell_data_find_by_name(const cepCell* cell, cepDT* name)
 
 void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, bool swap);
 #define cep_cell_update_value(r, z, v)    cep_cell_update(r, (z), sizeof(*(v)), v, false)
-#define cep_cell_update_attribute(r, a)   do{ assert(cep_cell_has_data(r);  (r)->data.attribute.id = CEP_ID(a); }while(0)
+#define cep_cell_update_attribute(r, a)   do{ assert(cep_cell_has_data(r));  (r)->data.attribute.id = CEP_ID(a); }while(0)
 
 static inline void cep_cell_delete_data(cepCell* cell)        {if (cep_cell_has_data(cell))  {cep_data_del(cell->data);   cell->data  = NULL;}}
 static inline void cep_cell_delete_store(cepCell* cell)       {if (cep_cell_has_store(cell)) {cep_store_del(cell->store); cell->store = NULL;}}

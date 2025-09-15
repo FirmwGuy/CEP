@@ -13,7 +13,7 @@ TARGET := $(BIN_DIR)/cep_tests
 
 # Tools and flags
 CC ?= gcc
-CFLAGS ?= -g -Wall -D_DNU_SOURCE -fplan9-extensions \
+CFLAGS ?= -g -Wall -D_GNU_SOURCE -fplan9-extensions \
           -I$(SRCDIR)/l0_kernel -I$(SRCDIR)/test
 LDFLAGS :=
 
