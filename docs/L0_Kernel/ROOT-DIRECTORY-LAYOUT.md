@@ -85,6 +85,11 @@ Storage
 - `rt/beat/<N>/*/inbox|agenda|stage`: list by insertion.
 - `tokens|locks|budgets|metrics`: dictionaries (and sublists as needed).
 
+Note
+- Agenda resolution uses an in-memory enzyme function registry keyed by
+  query paths. No function pointers are ever stored inside cells for
+  security and portability.
+
 Example
 1) Beat 1 begins; create `rt/beat/1/*`.
 2) An impulse arrives: “make thumbnail for img123.”
@@ -101,6 +106,8 @@ Example
 Purpose
 - Durable, auditable declarations of enzyme capabilities.
 - Versioned metadata and I/O contracts (domains touched, preconditions, budgets).
+ - Security: this directory stores only metadata. It never persists function
+   addresses or code pointers.
 
 Structure
 ```
@@ -114,6 +121,16 @@ enzymes/
 
 Storage
 - Dictionary by name; small cells with VALUE/DATA.
+
+Function registry (runtime, non‑persistent)
+- Residency: process memory only; built via `cep_enzyme_register(query, fn)`.
+- Key: a “query” `cepPath` describing what the enzyme should react to.
+- Value: ordered list of `cep_enzyme_fn` function pointers.
+- Matching: eligible when the query matches either the inbox item’s
+  `signal_path` or its `target_path`.
+- Ordering: deterministic — sort by match specificity, then by registration
+  order. Details in `docs/L0_Kernel/HEARTBEAT-AND-ENZYMES.md`.
+- Persistence: none. Only enzyme metadata under `enzymes/` is durable.
 
 Example
 1) Register `resize_image`:
