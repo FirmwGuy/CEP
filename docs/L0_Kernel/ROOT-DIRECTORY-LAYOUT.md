@@ -38,6 +38,7 @@ Determinism rules
 - Queues are lists by insertion order. No nondeterministic iteration.
 - External reads/writes are journaled with hashes and preconditions.
 - Outputs created in N become visible in N+1.
+- See also: `docs/L0_Kernel/APPEND-ONLY-AND-IDEMPOTENCY.md` for cell-level append-only history and idempotent updates.
 
 We’ll use a running example: “resize_image” enzyme that makes a thumbnail for `/env/fs/projects/p1/img123.jpg` and writes the result to `/data/assets/img123/thumbnail`.
 
