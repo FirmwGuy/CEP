@@ -96,10 +96,12 @@ void cep_cell_system_shutdown(void) {
 #define VALUE_CAP_MIN       (sizeof((cepData){}.value))
 #define DATA_HEAD_SIZE      (sizeof(cepData) - VALUE_CAP_MIN)
 
-cepData* cep_data_new(  cepDT* dt, cepID encoding, cepID attribute,
-                        unsigned datatype, bool writable,
+cepData* cep_data_new(  cepDT* dt,
+                        unsigned datatype, unsigned bintype, bool vector, bool writable,
                         void** dataloc, void* value, ...  ) {
-    assert(cep_dt_valid(dt) && (datatype < CEP_DATATYPE_COUNT));
+    assert(cep_dt_valid(dt) && (datatype < CEP_DATATYPE_COUNT) && (bintype && bintype < CEP_BINTYPE_COUNT));
+    // Internal CEP binary types must always be vectors.
+    assert((bintype != CEP_BINTYPE_DT && bintype != CEP_BINTYPE_PATH) || vector);
 
     cepData* data;
     void*    address;
@@ -191,10 +193,9 @@ cepData* cep_data_new(  cepDT* dt, cepID encoding, cepID attribute,
     data->domain    = dt->domain;
     data->tag       = dt->tag;
     data->datatype  = datatype;
+    data->bintype   = bintype;
+    data->vector    = vector;
     data->writable  = writable;
-
-    data->encoding      = encoding;
-    data->attribute._id = attribute;
 
     CEP_PTR_SEC_SET(dataloc, address);
 

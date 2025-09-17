@@ -31,7 +31,7 @@
 
 /*
     CEP - Layer 0 - Cell implementation
-    ------------------------------------------
+    -----------------------------------
 
     This is designed to represent and manage hierarchical data structures in a 
     distributed execution environment, similar in flexibility to representing 
@@ -353,40 +353,6 @@ size_t cep_word_to_text(cepID coded, char s[12]);
     Cell Data
 */
 
-#define CEP_ATTRIBUTE_STRUCT(name, ...)                                        \
-    typedef union {                                                            \
-        struct {                                                               \
-          cepID                                                                \
-            _type:      2,      /* 0: Virtual,      1: Physical,    2: Conceptual,  3: Hybrid/Other. */\
-            _active:    1,      /* 0: Static,       1: Active/Alive/Operational. */\
-            _interact:  1,      /* 0: Passive,      1: Interactive.     */     \
-            _mutable:   1,      /* 0: Immutable,    1: Can change.      */     \
-            _relational:1,      /* 0: Isolated,     1: Relational.      */     \
-            _complex:   1,      /* 0: Simple,       1: Complex.         */     \
-            _infinite:  1,      /* 0: Finite,       1: Infinite.        */     \
-            _temporal:  1,      /* 0: Timeless,     1: Time-bound.      */     \
-            _mobile:    1,      /* 0: Stationary,   1: Mobile.          */     \
-            _natural:   1,      /* 0: Artificial.   1: Natural.         */     \
-            _incidental:1,      /* 0: Purposeful,   1: Incidental.      */     \
-            _autonomous:1,      /* 0: Dependent,    1: Autonomous.      */     \
-            _needenergy:1,      /* 0: No need,      1: Needs energy.    */     \
-            ##__VA_ARGS__                                                      \
-            ;                                                                  \
-        };                                                                     \
-        cepID         _id;                                                     \
-    } name;                                                                    \
-    static_assert(sizeof(name) == sizeof(cepID), "Too many attribute flags!")
-
-enum _cepThingType {
-    CEP_THING_TYPE_VIRTUAL,
-    CEP_THING_TYPE_PHYSICAL,
-    CEP_THING_TYPE_CONCEPTUAL,
-    CEP_THING_TYPE_OTHER = 3
-};
-
-CEP_ATTRIBUTE_STRUCT(cepAttribute, _domain_flags: 50);
-
-
 struct _cepData {
     union {
       cepDT             _dt;
@@ -394,7 +360,8 @@ struct _cepData {
       struct {
         struct {
           cepID         datatype:   2,  // Type of data (see _cepDataType).
-                        _unused:    4,
+                        bintype:    3,  // Content binary type (see _cepBinType).
+                        vector:     1,  // True (1) if content is a vector.
 
                         domain:     CEP_NAME_BITS;
         };
@@ -407,8 +374,6 @@ struct _cepData {
         };
       };
     };
-
-    cepAttribute        attribute;      // Data attributes (it depends on domain).
 
     cepID               encoding;       // Binary encoding id.
     size_t              size;           // Data size in bytes.
@@ -442,14 +407,33 @@ enum _cepDataType {
     CEP_DATATYPE_COUNT
 };
 
+enum _cepBinType {
+    CEP_BINTYPE_NONE,
+    
+    CEP_BINTYPE_BOOLEAN,
+    CEP_BINTYPE_UNSIGNED,
+    CEP_BINTYPE_INTEGER,
+    CEP_BINTYPE_FLOAT,
+    
+    CEP_BINTYPE_UTF8,           // As a vector of octets.
+    
+    // Internal types:
+    CEP_BINTYPE_DT,             // As a vector of UINT64.
+    CEP_BINTYPE_PATH,           // As a vector of UINT64.
+    //
+    CEP_BINTYPE_COUNT
+};
 
-cepData* cep_data_new(  cepDT* dt, cepID encoding, cepID attribute,
-                        unsigned datatype, bool writable,
+
+cepData* cep_data_new(  cepDT* dt,
+                        unsigned datatype, unsigned bintype, bool vector, bool writable,
                         void** dataloc, void* value, ...  );
 void     cep_data_del(cepData* data);
 void*    cep_data(const cepData* data);
-#define  cep_data_valid(d)                                      ((d) && (d)->capacity && cep_dt_valid(&(d)->_dt))
-#define  cep_data_new_value(dt, e, a, value, z)                 ({size_t _z = z;  cep_data_new(dt, e, CEP_ID(a), CEP_DATATYPE_VALUE, true, NULL, value, _z, _z);})
+#define  cep_data_valid(d)                                      ((d) && (d)->bintype && (d)->capacity && cep_dt_valid(&(d)->_dt))
+#define  cep_data_new_value(dt, bintype, value, z)              ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, bintype, false, true, NULL, value, _z, _z);})
+#define  cep_data_new_vector(dt, bintype, value, z)             ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, bintype, true, true, NULL, value, _z, _z);})
+#define  cep_data_new_utf8(dt, value, z)                        ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, CEP_BINTYPE_UTF8, true, true, NULL, value, _z, _z);})
 
 
 /*
@@ -485,7 +469,7 @@ struct _cepStore {
       };
     };
 
-    cepAttribute    attribute;  // Structure attributes (it depends on domain). This is used *only* if cell has no data (ie, as a pure directory).
+    cepDT           dirtype;    // Type of directory (it depends on domain). This is used *only* if cell has no data (ie, as a pure directory).
 
     cepCell*        owner;      // Cell owning this child storage.
     union {
@@ -786,7 +770,7 @@ static inline void* cep_cell_data_find_by_name(const cepCell* cell, cepDT* name)
 
 void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, bool swap);
 #define cep_cell_update_value(r, z, v)    cep_cell_update(r, (z), sizeof(*(v)), v, false)
-#define cep_cell_update_attribute(r, a)   do{ assert(cep_cell_has_data(r));  (r)->data.attribute.id = CEP_ID(a); }while(0)
+//#define cep_cell_update_attribute(r, a)   do{ assert(cep_cell_has_data(r));  (r)->data.attribute.id = CEP_ID(a); }while(0)
 
 static inline void cep_cell_delete_data(cepCell* cell)        {if (cep_cell_has_data(cell))  {cep_data_del(cell->data);   cell->data  = NULL;}}
 static inline void cep_cell_delete_store(cepCell* cell)       {if (cep_cell_has_store(cell)) {cep_store_del(cell->store); cell->store = NULL;}}
