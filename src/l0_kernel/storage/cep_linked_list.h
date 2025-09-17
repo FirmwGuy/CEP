@@ -26,8 +26,8 @@
 typedef struct _cepListNode     cepListNode;
 
 struct _cepListNode {
-    cepListNode*  next;         // Previous node.
-    cepListNode*  prev;         // Next node.
+    cepListNode*  next;         // Next node.
+    cepListNode*  prev;         // Previous node.
     //
     cepCell       cell;         // Child cell.
 };
@@ -352,4 +352,3 @@ static inline void list_del_all_children(cepList* list) {
         list->head = list->tail = NULL;
     }
 }
-
