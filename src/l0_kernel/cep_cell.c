@@ -101,7 +101,7 @@ cepData* cep_data_new(  cepDT* dt,
                         void** dataloc, void* value, ...  ) {
     assert(cep_dt_valid(dt) && (datatype < CEP_DATATYPE_COUNT) && (bintype && bintype < CEP_BINTYPE_COUNT));
     // Internal CEP binary types must always be vectors.
-    assert((bintype != CEP_BINTYPE_DT && bintype != CEP_BINTYPE_PATH) || vector);
+    assert((bintype != CEP_BINTYPE_UTF8 && bintype != CEP_BINTYPE_DT && bintype != CEP_BINTYPE_PATH) || vector);
 
     cepData* data;
     void*    address;

@@ -24,16 +24,19 @@ This lets CEP run deterministically from day one, while still welcoming richer, 
 
 Goal: provide a minimal, canonical descriptor that L0 can use to validate, compare, hash, and store values without consulting other cells. Everything else (schemas, units, domains) remains in L1+ as cells.
 
-### 2.1 Type Families (L0)
+### 2.1 Binary Types (L0)
 
-L0 defines the following native families:
-- BOOL
-- INT (signed) and UINT (unsigned)
-- FLOAT_BIN (IEEE‑754 binary32 and binary64)
-- VECTOR (rank‑1 arrays of a base element type)
-- TEXT_UTF8 (validated UTF‑8, no normalization)
+L0 defines a minimal set of binary types, encoded directly in `cepData`:
+- BOOLEAN
+- UNSIGNED (8/16/32/64‑bit)
+- INTEGER (8/16/32/64‑bit)
+- FLOAT (binary32/binary64)
+- UTF8 (as octets)
+- Internal: DT, PATH (as vectors of 64‑bit units)
 
-Out of scope at L0: matrices, decimal floating point, arbitrary precision; represent them via VECTOR or at higher layers. HASH values use `VECTOR<UINT8>` with agreed length; specific algorithms belong to upper layers.
+These correspond to the `_cepBinType` enum in the code. Shape (scalar vs vector) is orthogonal and is expressed by the `vector` flag inside `cepData`.
+
+Out of scope at L0: matrices, decimal floating point, arbitrary precision; represent them via vectors or at higher layers. HASH values use `vector<UINT8>` with agreed length; specific algorithms belong to upper layers.
 
 ### 2.2 Widths and Sizes
 
@@ -53,21 +56,25 @@ Note: If you need 128‑bit integers or hashes at L0, represent them as `VECTOR<
 
 ### 2.4 Shape
 
-- L0 supports two shapes:
-  - SCALAR: a single value (BOOL, INT/UINT, FLOAT_BIN, TEXT_UTF8).
-  - VECTOR: rank‑1 array of a base element type (including `UINT8` for raw bytes).
+- L0 supports two shapes, encoded by `cepData.vector`:
+  - Scalar: a single value (BOOLEAN, INTEGER/UNSIGNED, FLOAT, UTF8 in rare cases).
+  - Vector: rank‑1 array of a base element type (including `UINT8` for raw bytes, UTF‑8 bytes, or 64‑bit units for DT/PATH).
 - Length of a vector is derived from payload size divided by element size; no embedded dimension field is required at L0.
+- Safety: Internal types `DT` and `PATH` are always vectors. `cep_data_new()` asserts that `vector == true` when `bintype` is `DT` or `PATH`.
 
-### 2.5 Type Descriptor (“cepType” at L0)
+### 2.5 Data Header
 
-The descriptor lives in `cepMetacell` bits (exact layout to match implementation), carrying only what L0 must know:
-- family: BOOL | INT | UINT | FLOAT_BIN | VECTOR | TEXT_UTF8
-- width: for INT/UINT/FLOAT_BIN base types (8/16/32/64; 32/64 for float)
-- shape: SCALAR or VECTOR
-- elem: for VECTOR, the base element family+width (e.g., UINT/8, FLOAT_BIN/32)
-- flags: LE canonicalization for numerics; UTF‑8 validated for text
+All information the kernel needs to validate, store, and compare values lives inside `cepData`:
+- `datatype`: VALUE | DATA | HANDLE | STREAM
+- `bintype`: one of `_cepBinType` (BOOLEAN, UNSIGNED, INTEGER, FLOAT, UTF8, DT, PATH)
+- `vector`: boolean flag indicating scalar vs vector shape
+- `writable` and `lock`: mutability controls
+- `encoding`: optional binary encoding id (reserved for future use)
+- `size` / `capacity`: payload sizes in bytes
+- `hash`: cached content hash (implementation detail)
+- `_dt` (`domain`, `tag`): L0 naming (for the data cell itself)
 
-No external references are required to interpret this descriptor. Higher‑layer semantics are optional and separate.
+This compact header is sufficient for L0 operations; richer semantics (units, schemas, constraints) are modeled as normal cells at higher layers.
 
 ### 2.6 Comparison and Hashing
 
@@ -75,7 +82,7 @@ Total order and hashing are required for deterministic storage/indexing:
 1) Compare by family, then shape, then widths (and element widths for vectors).
 2) Compare by canonical bytes:
    - Numerics: compare element bytes in LE.
-   - Text: bytewise.
+   - Text/UTF8: bytewise (no normalization at L0).
    - Bool: 0x00 < 0x01.
    - Vectors: lexicographic compare of element‑canonical bytes.
 3) Hash is computed over the tuple (descriptor fields) + canonical bytes.
@@ -84,14 +91,14 @@ NaN handling: for `FLOAT_BIN`, preserve bit‑patterns; comparisons are lexicogr
 
 ### 2.7 Data Representations Interop
 
-This spec complements existing `cepData` forms (VALUE, DATA, HANDLE, STREAM):
+`cepData` supports four forms (VALUE, DATA, HANDLE, STREAM):
 - VALUE/DATA: store canonical bytes per sections above; validate size on write.
-- HANDLE/STREAM: carry the same type descriptor; staged windows for streams must match vector element sizing (commonly `VECTOR<UINT8>`). Journaling and preconditions follow the I/O Streams note.
+- HANDLE/STREAM: carry the same `bintype`/`vector` info; staged windows for streams must match vector element sizing (commonly `vector<UINT8>`). Journaling and preconditions follow the I/O Streams note.
 
 ### 2.8 Vectors vs “Blobs”
 
 We standardize on VECTOR terminology at L0:
-- `VECTOR<UINT8>` is the precise, minimally opaque form often called a “blob.”
+- `vector<UINT8>` is the precise, minimally opaque form often called a “blob.”
 - Using VECTOR keeps typed arrays and raw bytes under one concept and avoids hiding structure that may matter (e.g., `VECTOR<FLOAT_BIN/32>`).
 
 ### 2.9 Upper Layers (L1+) Interop
@@ -130,4 +137,3 @@ A: Streams naturally use `VECTOR<UINT8>` windows with offsets and lengths. The s
 
 Q: Won’t this duplicate information at higher layers?
 A: Intentionally yes, but with different roles. L0’s descriptor ensures safe storage and replay. L1+ adds human/domain meaning. They align, not conflict: L1 types can restate or refine L0 expectations.
-
