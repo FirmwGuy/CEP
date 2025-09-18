@@ -145,7 +145,7 @@ static void test_cell_tech_list(unsigned storage) {
     // Append, lookups and delete
     test_cell_zero_item_ops(list);
     uint32_t  value = 1;
-    cepCell* item = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
+    cepCell* item = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), &value, sizeof(uint32_t), sizeof(uint32_t));
     test_cell_value(item, value);
     test_cell_one_item_ops(list, item);
     cep_cell_delete(item);
@@ -153,7 +153,7 @@ static void test_cell_tech_list(unsigned storage) {
     // Push and lookups
     test_cell_zero_item_ops(list);
     value = 1;
-    item = cep_cell_prepend_value(list, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
+    item = cep_cell_prepend_value(list, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), &value, sizeof(uint32_t), sizeof(uint32_t));
     test_cell_value(item, value);
     test_cell_one_item_ops(list, item);
 
@@ -185,7 +185,7 @@ static void test_cell_tech_list(unsigned storage) {
         if (munit_rand_uint32() & 1) {
             index = cep_cell_children(list);
 
-            item = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+n), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+n), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
+            item = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+n), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+n), &value, sizeof(uint32_t), sizeof(uint32_t));
             test_cell_value(item, value);
 
             found = cep_cell_first(list);
@@ -197,7 +197,7 @@ static void test_cell_tech_list(unsigned storage) {
         } else {
             index = 0;
 
-            item = cep_cell_prepend_value(list, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+n), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+n), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
+            item = cep_cell_prepend_value(list, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+n), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+n), &value, sizeof(uint32_t), sizeof(uint32_t));
             test_cell_value(item, value);
 
             found = cep_cell_first(list);
@@ -224,7 +224,7 @@ static void test_cell_tech_list(unsigned storage) {
     /* Nested cell */
 
     cepCell* child = cep_cell_append_list(list, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP), CEP_DTAW("CEP", "list"), storage, 20);
-    item = cep_cell_prepend_value(child, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+30), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+30), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
+    item = cep_cell_prepend_value(child, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+30), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_Z_COUNT+30), &value, sizeof(uint32_t), sizeof(uint32_t));
     test_cell_value(item, value);
     assert_true(cep_cell_deep_traverse(list, print_values, NULL, NULL, NULL));
 
@@ -240,7 +240,7 @@ static void test_cell_tech_dictionary(unsigned storage) {
     // Isert, lookups and delete
     test_cell_zero_item_ops(dict);
     uint32_t value = 1;
-    cepCell* item = cep_cell_add_value(dict, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), 0, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
+    cepCell* item = cep_cell_add_value(dict, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), 0, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), &value, sizeof(uint32_t), sizeof(uint32_t));
     test_cell_value(item, value);
     test_cell_one_item_ops(dict, item);
     cep_cell_delete(item);
@@ -277,7 +277,7 @@ static void test_cell_tech_dictionary(unsigned storage) {
         if (value < vmin)   vmin = value;
         if (value > vmax)   vmax = value;
 
-        item = cep_cell_add_value(dict, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
+        item = cep_cell_add_value(dict, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), &value, sizeof(uint32_t), sizeof(uint32_t));
         test_cell_value(item, value);
 
         found = cep_cell_find_by_name(dict, cep_cell_get_name(item));
@@ -305,7 +305,7 @@ static void test_cell_tech_dictionary(unsigned storage) {
     /* Nested cell */
 
     cepCell* child = cep_cell_add_dictionary(dict, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP+2000), 0, CEP_DTAW("CEP", "dictionary"), storage, 20);
-    item = cep_cell_add_value(child, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), 0, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
+    item = cep_cell_add_value(child, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), 0, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), &value, sizeof(uint32_t), sizeof(uint32_t));
     test_cell_value(item, value);
     assert_true(cep_cell_deep_traverse(dict, print_values, NULL, NULL, NULL));
 
@@ -317,7 +317,7 @@ static cepCell* tech_catalog_create_structure(cepID name, int32_t value) {
     static cepCell cell;
     CEP_0(&cell);
     cep_cell_initialize_dictionary(&cell, CEP_DTS(CEP_ACRO("CEP"), name), CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_ARRAY, 2);
-    cepCell* item = cep_cell_add_value(&cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), 0, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), CEP_BINTYPE_INTEGER, false, &value, sizeof(int32_t), sizeof(int32_t));
+    cepCell* item = cep_cell_add_value(&cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), 0, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), &value, sizeof(int32_t), sizeof(int32_t));
     test_cell_value(item, value);
     return &cell;
 }
@@ -453,8 +453,8 @@ static void test_cell_tech_sequencing_list(void) {
             }
         }
 
-        cep_cell_add_value(bookL, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
-        cep_cell_add_value(bookA, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
+        cep_cell_add_value(bookL, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), &value, sizeof(uint32_t), sizeof(uint32_t));
+        cep_cell_add_value(bookA, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), &value, sizeof(uint32_t), sizeof(uint32_t));
 
         cepCell* cellL = cep_cell_first(bookL);
         cepCell* cellA = cep_cell_first(bookA);
@@ -511,9 +511,9 @@ static void test_cell_tech_sequencing_dictionary(void) {
             }
         }
 
-        cep_cell_add_value(dictL, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
-        cep_cell_add_value(dictA, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
-        cep_cell_add_value(dictT, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), CEP_BINTYPE_UNSIGNED, false, &value, sizeof(uint32_t), sizeof(uint32_t));
+        cep_cell_add_value(dictL, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), &value, sizeof(uint32_t), sizeof(uint32_t));
+        cep_cell_add_value(dictA, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), &value, sizeof(uint32_t), sizeof(uint32_t));
+        cep_cell_add_value(dictT, CEP_DTS(CEP_ACRO("CEP"), name), 0, CEP_DTS(CEP_ACRO("CEP"), name), &value, sizeof(uint32_t), sizeof(uint32_t));
 
         cepCell* cellL = cep_cell_first(dictL);
         cepCell* cellA = cep_cell_first(dictA);

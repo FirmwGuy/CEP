@@ -353,6 +353,8 @@ size_t cep_word_to_text(cepID coded, char s[12]);
     Cell Data
 */
 
+typedef uint64_t  cepHeartbeat;
+
 struct _cepData {
     union {
       cepDT             _dt;
@@ -375,13 +377,12 @@ struct _cepData {
       };
     };
 
-    cepID               encoding;       // Binary encoding id.
+    cepHeartbeat        heartbeat;      // CEP heartbeat in which data was created. 
     size_t              size;           // Data size in bytes.
     size_t              capacity;       // Buffer capacity in bytes.
-
-    cepData*            next;           // Pointer to next data representation (if available).
-
+    cepData*            past;           // Pointer to past data content history.
     uint64_t            hash;           // Hash value of content.
+
     union {
         struct {
             void*       data;           // Points to container of data value.
@@ -407,33 +408,13 @@ enum _cepDataType {
     CEP_DATATYPE_COUNT
 };
 
-enum _cepBinType {
-    CEP_BINTYPE_NONE,
-    
-    CEP_BINTYPE_BOOLEAN,
-    CEP_BINTYPE_UNSIGNED,
-    CEP_BINTYPE_INTEGER,
-    CEP_BINTYPE_FLOAT,
-    
-    CEP_BINTYPE_UTF8,           // As a vector of octets.
-    
-    // Internal types:
-    CEP_BINTYPE_DT,             // As a vector of UINT64.
-    CEP_BINTYPE_PATH,           // As a vector of UINT64.
-    //
-    CEP_BINTYPE_COUNT
-};
 
-
-cepData* cep_data_new(  cepDT* dt,
-                        unsigned datatype, unsigned bintype, bool vector, bool writable,
+cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
                         void** dataloc, void* value, ...  );
 void     cep_data_del(cepData* data);
 void*    cep_data(const cepData* data);
-#define  cep_data_valid(d)                                      ((d) && (d)->bintype && (d)->capacity && cep_dt_valid(&(d)->_dt))
-#define  cep_data_new_value(dt, bintype, value, z)              ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, bintype, false, true, NULL, value, _z, _z);})
-#define  cep_data_new_vector(dt, bintype, value, z)             ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, bintype, true, true, NULL, value, _z, _z);})
-#define  cep_data_new_utf8(dt, value, z)                        ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, CEP_BINTYPE_UTF8, true, true, NULL, value, _z, _z);})
+#define  cep_data_valid(d)                             ((d) && (d)->capacity && cep_dt_valid(&(d)->_dt))
+#define  cep_data_new_value(dt, value, z)              ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, _z, _z);})
 
 
 /*
@@ -575,8 +556,8 @@ void cep_cell_initialize_clone(cepCell* newClone, cepDT* name, cepCell* cell);
 void cep_cell_finalize(cepCell* cell);
 
 #define cep_cell_initialize_empty(r, name)                                                            cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, NULL)
-#define cep_cell_initialize_value(r, name, dt, bintype, vector, value, size, capacity)                cep_cell_initialize(r, CEP_TYPE_NORMAL, name, cep_data_new(dt, CEP_DATATYPE_VALUE, bintype, vector, true, NULL, value, size, capacity), NULL)
-#define cep_cell_initialize_data(r, name, dt, bintype, vector, value, size, capacity, destructor)     cep_cell_initialize(r, CEP_TYPE_NORMAL, name, cep_data_new(dt, CEP_DATATYPE_DATA, bintype, vector, true, NULL, value, size, capacity, destructor), NULL)
+#define cep_cell_initialize_value(r, name, dt, value, size, capacity)                cep_cell_initialize(r, CEP_TYPE_NORMAL, name, cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)
+#define cep_cell_initialize_data(r, name, dt, value, size, capacity, destructor)     cep_cell_initialize(r, CEP_TYPE_NORMAL, name, cep_data_new(dt, CEP_DATATYPE_DATA, true, NULL, value, size, capacity, destructor), NULL)
 
 #define cep_cell_initialize_list(r, name, dt, storage, ...)                  cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
 #define cep_cell_initialize_dictionary(r, name, dt, storage, ...)            cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
@@ -683,9 +664,9 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child);
 #define cep_cell_add_child(cell, type, name, context, data, store)             \
     ({cepCell child__={0}; cep_cell_initialize(&child__, type, name, data, store); cep_cell_add(cell, context, &child__);})
 
-#define cep_cell_add_empty(cell, name, context)                                                            cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, NULL)
-#define cep_cell_add_value(cell, name, context, dt, bintype, vector, value, size, capacity)                cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), cep_data_new(dt, CEP_DATATYPE_VALUE, bintype, vector, true, NULL, value, size, capacity), NULL)
-#define cep_cell_add_data(cell, name, context, dt, bintype, vector, value, size, capacity, destructor)     cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), cep_data_new(dt, CEP_DATATYPE_DATA,  bintype, vector, true, NULL, value, size, capacity, destructor), NULL)
+#define cep_cell_add_empty(cell, name, context)                                                         cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, NULL)
+#define cep_cell_add_value(cell, name, context, dt, value, size, capacity)                              cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)
+#define cep_cell_add_data(cell, name, context, dt, value, size, capacity, destructor)                   cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), cep_data_new(dt, CEP_DATATYPE_DATA,  true, NULL, value, size, capacity, destructor), NULL)
 
 #define cep_cell_add_list(cell, name, context, dt, storage, ...)                                        cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, cep_store_new(dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
 #define cep_cell_add_dictionary(cell, name, context, dt, storage, ...)                                  cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, cep_store_new(dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
@@ -695,8 +676,8 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child);
 
 #define cep_dict_add(cell, child)                                                                       cep_cell_add(cell, 0, child)
 #define cep_dict_add_empty(cell, name)                                                                  cep_cell_add_empty(cell, name, 0)
-#define cep_dict_add_value(cell, name, dt, bintype, vector, value, size, capacity)                      cep_cell_add_value(cell, name, 0, dt, bintype, vector, value, size, capacity)
-#define cep_dict_add_data(cell, name, dt, bintype, vector, value, size, capacity, destructor)           cep_cell_add_data(cell, name, 0, dt, bintype, vector, value, size, capacity, destructor)
+#define cep_dict_add_value(cell, name, dt, value, size, capacity)                                       cep_cell_add_value(cell, name, 0, dt, value, size, capacity)
+#define cep_dict_add_data(cell, name, dt, value, size, capacity, destructor)                            cep_cell_add_data(cell, name, 0, dt, value, size, capacity, destructor)
 #define cep_dict_add_list(cell, name, dt, storage, ...)                                                 cep_cell_add_list(cell, name, 0, dt, storage, ##__VA_ARGS__)
 #define cep_dict_add_dictionary(cell, name, dt, storage, ...)                                           cep_cell_add_dictionary(cell, name, 0, dt, storage, ##__VA_ARGS__)
 #define cep_dict_add_catalog(cell, name, dt, storage, ...)                                              cep_cell_add_catalog(cell, name, 0, dt, storage, ##__VA_ARGS__)
@@ -706,8 +687,8 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child);
     ({cepCell child__={0}; cep_cell_initialize(&child__, type, name, data, store); cep_cell_append(cell, prepend, &child__);})
 
 #define cep_cell_append_empty(cell, name)                                                               cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, NULL, NULL)
-#define cep_cell_append_value(cell, name, dt, bintype, vector, value, size, capacity)                   cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, cep_data_new(dt, CEP_DATATYPE_VALUE, bintype, vector, true, NULL, value, size, capacity), NULL)
-#define cep_cell_append_data(cell, name, dt, bintype, vector, value, size, capacity, destructor)        cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, cep_data_new(dt, CEP_DATATYPE_DATA,  bintype, vector, true, NULL, value, size, capacity, destructor), NULL)
+#define cep_cell_append_value(cell, name, dt, value, size, capacity)                                    cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)
+#define cep_cell_append_data(cell, name, dt, value, size, capacity, destructor)                         cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, cep_data_new(dt, CEP_DATATYPE_DATA,  true, NULL, value, size, capacity, destructor), NULL)
 
 #define cep_cell_append_list(cell, name, dt, storage, ...)                                              cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
 #define cep_cell_append_dictionary(cell, name, dt, storage, ...)                                        cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
@@ -716,8 +697,8 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child);
 #define cep_cell_append_link(cell, name, source)                                                        cep_cell_append_child(cell, CEP_TYPE_LINK, name, false, CEP_P(source), NULL)
 
 #define cep_cell_prepend_empty(cell, name)                                                              cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, NULL, NULL)
-#define cep_cell_prepend_value(cell, name, dt, bintype, vector, value, size, capacity)                 cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, cep_data_new(dt, CEP_DATATYPE_VALUE, bintype, vector, true, NULL, value, size, capacity), NULL)
-#define cep_cell_prepend_data(cell, name, dt, bintype, vector, value, size, capacity, destructor)      cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, cep_data_new(dt, CEP_DATATYPE_DATA,  bintype, vector, true, NULL, value, size, capacity, destructor), NULL)
+#define cep_cell_prepend_value(cell, name, dt, value, size, capacity)                                   cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)
+#define cep_cell_prepend_data(cell, name, dt, value, size, capacity, destructor)                        cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, cep_data_new(dt, CEP_DATATYPE_DATA,  true, NULL, value, size, capacity, destructor), NULL)
 
 #define cep_cell_prepend_list(cell, name, dt, storage, ...)                                             cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
 #define cep_cell_prepend_dictionary(cell, name, dt, storage, ...)                                       cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
