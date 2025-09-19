@@ -46,18 +46,18 @@ static inline int cell_compare_by_name(const cepCell* restrict key, const cepCel
 
 
 
-static cepHeartbeat  HEARTBEAT;
+cepHeartbeat  CEP_HEARTBEAT;
 
 
 cepHeartbeat cep_cell_timestamp_next(void) {
-    cepHeartbeat next = ++HEARTBEAT;
+    cepHeartbeat next = ++CEP_HEARTBEAT;
     if (!next)
-        next = ++HEARTBEAT;   // Avoid 0 as a valid timestamp.
+        next = ++CEP_HEARTBEAT;   // Avoid 0 as a valid timestamp.
     return next;
 }
 
 void cep_cell_timestamp_reset(void) {
-    HEARTBEAT = 0;
+    CEP_HEARTBEAT = 0;
 }
 
 
@@ -210,8 +210,8 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
     data->tag       = type->tag;
     data->datatype  = datatype;
     data->writable  = writable;
-    data->created   = HEARTBEAT;
-    data->modified  = HEARTBEAT;
+    data->created   = CEP_HEARTBEAT;
+    data->modified  = CEP_HEARTBEAT;
 
     CEP_PTR_SEC_SET(dataloc, address);
 
@@ -309,7 +309,7 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
     }
 
     if (result)
-        data->modified = HEARTBEAT;
+        data->modified = CEP_HEARTBEAT;
 
     return result;
 }
@@ -408,8 +408,8 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
     store->indexing = indexing;
     store->writable = true;
     store->autoid   = 1;
-    store->created  = HEARTBEAT;
-    store->modified = HEARTBEAT;
+    store->created  = CEP_HEARTBEAT;
+    store->modified = CEP_HEARTBEAT;
 
     return store;
 }
@@ -420,7 +420,7 @@ void cep_store_del(cepStore* store) {
 
     // ToDo: cleanup shadows.
 
-    store->deleted = HEARTBEAT;
+    store->deleted = CEP_HEARTBEAT;
 
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
@@ -452,7 +452,7 @@ void cep_store_del(cepStore* store) {
 }
 
 
-void cep_store_delete_children(cepStore* store) {
+void cep_store_delete_children_hard(cepStore* store) {
     assert(cep_store_valid(store));
 
     bool had_children = store->chdCount;
@@ -484,7 +484,7 @@ void cep_store_delete_children(cepStore* store) {
     store->autoid   = 1;
 
     if (had_children)
-        store->modified = HEARTBEAT;
+        store->modified = CEP_HEARTBEAT;
 }
 
 
@@ -591,7 +591,7 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 
     cell->parent = store;
     store->chdCount++;
-    store->modified = HEARTBEAT;
+    store->modified = CEP_HEARTBEAT;
 
     return cell;
 }
@@ -639,7 +639,7 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
 
     cell->parent = store;
     store->chdCount++;
-    store->modified = HEARTBEAT;
+    store->modified = CEP_HEARTBEAT;
 
     return cell;
 }
@@ -1185,7 +1185,7 @@ static inline void store_to_dictionary(cepStore* store) {
         return;
 
     store->storage = CEP_INDEX_BY_NAME;
-    store->modified = HEARTBEAT;
+    store->modified = CEP_HEARTBEAT;
 
     if (store->chdCount <= 1)
         return;
@@ -1226,7 +1226,7 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
         return;
 
     store->storage = CEP_INDEX_BY_FUNCTION;   // FixMe: by hash?
-    store->modified = HEARTBEAT;
+    store->modified = CEP_HEARTBEAT;
 
     if (store->chdCount <= 1)
         return;
@@ -1291,7 +1291,7 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
     }
 
     store->chdCount--;
-    store->modified = HEARTBEAT;
+    store->modified = CEP_HEARTBEAT;
 
     return true;
 }
@@ -1330,7 +1330,7 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
     }
 
     store->chdCount--;
-    store->modified = HEARTBEAT;
+    store->modified = CEP_HEARTBEAT;
 
     return true;
 }
@@ -1372,7 +1372,7 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
     }
 
     store->chdCount--;
-    store->modified = HEARTBEAT;
+    store->modified = CEP_HEARTBEAT;
 }
 
 
@@ -1920,7 +1920,7 @@ bool cep_cell_child_pop(cepCell* cell, cepCell* target) {
 /*
     Deletes a cell and all its children re-organizing (sibling) storage
 */
-void cep_cell_remove(cepCell* cell, cepCell* target) {
+void cep_cell_remove_hard(cepCell* cell, cepCell* target) {
     assert(cell && !cep_cell_is_root(cell));
     cepStore* store = cell->parent;
     store_remove_child(store, cell, target);

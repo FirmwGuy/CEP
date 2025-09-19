@@ -357,6 +357,9 @@ typedef uint64_t  cepHeartbeat;         // CEP heartbeat id number.
 
 typedef struct _cepDataNode  cepDataNode;
 
+cepHeartbeat cep_cell_timestamp_next(void);
+void         cep_cell_timestamp_reset(void);
+
 struct _cepDataNode {
     cepHeartbeat        modified;       // CEP heartbeat in which data was modified (including creation/deletion). 
     cepDataNode*        past;           // Pointer to past data content history.
@@ -509,7 +512,7 @@ enum _cepCellIndexing {
 
 cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...);
 void      cep_store_del(cepStore* store);
-void      cep_store_delete_children(cepStore* store);
+void      cep_store_delete_children_hard(cepStore* store);
 #define   cep_store_valid(s)      ((s) && cep_dt_valid(&(s)->_dt))
 
 static inline bool cep_store_is_insertable(cepStore* store)   {assert(cep_store_valid(store));  return (store->indexing == CEP_INDEX_BY_INSERTION);}
@@ -601,6 +604,18 @@ static inline void  cep_cell_set_name(cepCell* cell, cepDT* name)     {assert(ce
 static inline bool cep_cell_has_data(const cepCell* cell)     {assert(cep_cell_is_normal(cell));  return cell->data;}
 static inline bool cep_cell_has_store(const cepCell* cell)    {assert(cep_cell_is_normal(cell));  return cell->store;}
 
+static inline bool cep_cell_is_deleted(const cepCell* cell) {
+    assert(cell && !cep_cell_is_void(cell));
+
+    if (!cep_cell_is_normal(cell))
+        return false;
+
+    bool dataDeleted  = !cell->data  || cell->data->deleted;
+    bool storeDeleted = !cell->store || cell->store->deleted;
+
+    return dataDeleted && storeDeleted;
+}
+
 static inline void cep_cell_set_data(cepCell* cell, cepData* data)      {assert(!cep_cell_has_data(cell) && cep_data_valid(data));   cell->data = data;}
 static inline void cep_cell_set_store(cepCell* cell, cepStore* store)   {assert(!cep_cell_has_store(cell) && cep_store_valid(store));  store->owner = cell; cell->store = store;}
 
@@ -641,6 +656,7 @@ static inline void cep_cell_replace(cepCell* oldr, cepCell* newr) {
 
 // Root dictionary
 static inline cepCell* cep_root(void)  {extern cepCell CEP_ROOT; assert(!cep_cell_is_void(&CEP_ROOT));  return &CEP_ROOT;}
+static inline cepHeartbeat cep_cell_timestamp(void)  {extern cepHeartbeat CEP_HEARTBEAT; return CEP_HEARTBEAT;}
 
 
 // Links
@@ -755,7 +771,106 @@ bool cep_cell_deep_traverse (cepCell* cell, cepTraverse func, cepTraverse listEn
 // Removing cells
 bool cep_cell_child_take(cepCell* cell, cepCell* target);
 bool cep_cell_child_pop(cepCell* cell, cepCell* target);
-void cep_cell_remove(cepCell* cell, cepCell* target);
+void cep_cell_remove_hard(cepCell* cell, cepCell* target);
+
+static inline void cep_cell_delete_data(cepCell* cell) {
+    if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->data)
+        return;
+
+    if (!cell->data->deleted)
+        cell->data->deleted = cep_cell_timestamp();
+
+    cell->data->writable = false;
+}
+
+static inline void cep_cell_delete_data_hard(cepCell* cell) {
+    if (!cep_cell_has_data(cell))
+        return;
+
+    cep_cell_delete_data(cell);
+    cep_data_del(cell->data);
+    cell->data = NULL;
+}
+
+static inline void cep_cell_delete_store(cepCell* cell) {
+    if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->store)
+        return;
+
+    if (!cell->store->deleted)
+        cell->store->deleted = cep_cell_timestamp();
+
+    cell->store->writable = false;
+}
+
+static inline void cep_cell_delete_store_hard(cepCell* cell) {
+    if (!cep_cell_has_store(cell))
+        return;
+
+    cep_cell_delete_store(cell);
+    cep_store_del(cell->store);
+    cell->store = NULL;
+}
+
+static inline void cep_cell_delete(cepCell* cell);
+
+static inline void cep_cell_delete_children(cepCell* cell) {
+    if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->store)
+        return;
+
+    for (cepCell* child = cep_cell_first(cell); child; child = cep_cell_next(cell, child)) {
+        if (!cep_cell_is_deleted(child))
+            cep_cell_delete(child);
+    }
+}
+
+static inline void cep_cell_delete_children_hard(cepCell* cell) {
+    assert(cep_cell_has_store(cell));
+    cep_cell_delete_children(cell);
+    cep_store_delete_children_hard(cell->store);
+}
+
+static inline void cep_cell_delete(cepCell* cell) {
+    if (!cell || cep_cell_is_void(cell) || cep_cell_is_root(cell))
+        return;
+
+    if (!cep_cell_is_normal(cell))
+        return;
+
+    if (cep_cell_has_data(cell))
+        cep_cell_delete_data(cell);
+
+    if (cep_cell_has_store(cell)) {
+        cep_cell_delete_children(cell);
+        cep_cell_delete_store(cell);
+    }
+}
+
+static inline void cep_cell_delete_hard(cepCell* cell) {
+    if (!cell || cep_cell_is_void(cell) || cep_cell_is_root(cell))
+        return;
+
+    cep_cell_delete(cell);
+    cep_cell_remove_hard(cell, NULL);
+}
+
+static inline void cep_cell_dispose(cepCell* cell) {
+    if (!cell || cep_cell_is_void(cell) || cep_cell_is_root(cell))
+        return;
+
+    cep_cell_delete(cell);
+}
+
+static inline void cep_cell_dispose_hard(cepCell* cell) {
+    if (!cell || cep_cell_is_void(cell) || cep_cell_is_root(cell))
+        return;
+
+    cep_cell_dispose(cell);
+
+    if (cep_cell_parent(cell))
+        cep_cell_remove_hard(cell, NULL);
+    else
+        cep_cell_finalize(cell);
+}
 
 
 // Accessing data
@@ -774,12 +889,6 @@ static inline void* cep_cell_data_find_by_name(const cepCell* cell, cepDT* name)
 void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, bool swap);
 #define cep_cell_update_value(r, z, v)    cep_cell_update(r, (z), sizeof(*(v)), v, false)
 //#define cep_cell_update_attribute(r, a)   do{ assert(cep_cell_has_data(r));  (r)->data.attribute.id = CEP_ID(a); }while(0)
-
-static inline void cep_cell_delete_data(cepCell* cell)        {if (cep_cell_has_data(cell))  {cep_data_del(cell->data);   cell->data  = NULL;}}
-static inline void cep_cell_delete_store(cepCell* cell)       {if (cep_cell_has_store(cell)) {cep_store_del(cell->store); cell->store = NULL;}}
-static inline void cep_cell_delete_children(cepCell* cell)    {assert(cep_cell_has_store(cell));  cep_store_delete_children(cell->store);}
-static inline void cep_cell_dispose(cepCell* cell)            {if (cell && !cep_cell_is_void(cell) && !cep_cell_is_root(cell))  {if (cep_cell_parent(cell)) cep_cell_remove(cell, NULL); else cep_cell_finalize(cell);}}
-#define cep_cell_delete(r)    cep_cell_remove(r, NULL)
 
 
 // Converts an unsorted cell into a sorted one

@@ -120,7 +120,7 @@ static int agent_adder(cepCell* client, void** returned, cepCell* self, unsigned
         return CEP_STATUS_SUCCESS;
       }
       case CEP_ACTION_INSTANCE_UNPLUG: {
-        cep_cell_remove(num, NULL);
+        cep_cell_remove_hard(num, NULL);
         num = NULL;
         return CEP_STATUS_SUCCESS;
       }

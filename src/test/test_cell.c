@@ -33,10 +33,6 @@
 #include <inttypes.h>   // PRIX64
 
 
-extern cepHeartbeat cep_cell_timestamp_next(void);
-extern void         cep_cell_timestamp_reset(void);
-
-
 
 
 enum {
@@ -215,7 +211,7 @@ static void test_cell_tech_list(unsigned storage) {
     cepCell* item = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), &value, sizeof(uint32_t), sizeof(uint32_t));
     test_cell_value(item, value);
     test_cell_one_item_ops(list, item);
-    cep_cell_delete(item);
+    cep_cell_delete_hard(item);
 
     // Push and lookups
     test_cell_zero_item_ops(list);
@@ -236,12 +232,12 @@ static void test_cell_tech_list(unsigned storage) {
         if (cep_cell_children(list) > 2) {
             switch (munit_rand_int_range(0, 2)) {
               case 1:
-                cep_cell_delete(cep_cell_first(list));
+                cep_cell_delete_hard(cep_cell_first(list));
                 found = cep_cell_first(list);
                 first = *(uint32_t*)cep_cell_data(found);
                 break;
               case 2:
-                cep_cell_delete(cep_cell_last(list));
+                cep_cell_delete_hard(cep_cell_last(list));
                 found = cep_cell_last(list);
                 last  = *(uint32_t*)cep_cell_data(found);
                 break;
@@ -295,7 +291,7 @@ static void test_cell_tech_list(unsigned storage) {
     test_cell_value(item, value);
     assert_true(cep_cell_deep_traverse(list, print_values, NULL, NULL, NULL));
 
-    cep_cell_delete(list);
+    cep_cell_delete_hard(list);
 }
 
 
@@ -310,7 +306,7 @@ static void test_cell_tech_dictionary(unsigned storage) {
     cepCell* item = cep_cell_add_value(dict, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), 0, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), &value, sizeof(uint32_t), sizeof(uint32_t));
     test_cell_value(item, value);
     test_cell_one_item_ops(dict, item);
-    cep_cell_delete(item);
+    cep_cell_delete_hard(item);
 
     // Multi-item ops
     cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepID)));
@@ -324,12 +320,12 @@ static void test_cell_tech_dictionary(unsigned storage) {
         if (cep_cell_children(dict) > 2) {
             switch (munit_rand_int_range(0, 2)) {
               case 1:
-                cep_cell_delete(cep_cell_first(dict));
+                cep_cell_delete_hard(cep_cell_first(dict));
                 found = cep_cell_first(dict);
                 vmin = *(uint32_t*)cep_cell_data(found);
                 break;
               case 2:
-                cep_cell_delete(cep_cell_last(dict));
+                cep_cell_delete_hard(cep_cell_last(dict));
                 found = cep_cell_last(dict);
                 vmax = *(uint32_t*)cep_cell_data(found);
                 break;
@@ -376,7 +372,7 @@ static void test_cell_tech_dictionary(unsigned storage) {
     test_cell_value(item, value);
     assert_true(cep_cell_deep_traverse(dict, print_values, NULL, NULL, NULL));
 
-    cep_cell_delete(dict);
+    cep_cell_delete_hard(dict);
 }
 
 
@@ -412,7 +408,7 @@ static void test_cell_tech_catalog(unsigned storage) {
     cepCell* cell = cep_cell_add(cat, 0, tech_catalog_create_structure(CEP_NAME_TEMP, value));
     cepCell* item = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
     test_cell_nested_one_item_ops(cat, CEP_NAME_TEMP, item);
-    cep_cell_delete(cell);
+    cep_cell_delete_hard(cell);
 
     // Multi-item ops
     cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepID)));
@@ -426,13 +422,13 @@ static void test_cell_tech_catalog(unsigned storage) {
         if (cep_cell_children(cat) > 2) {
             switch (munit_rand_int_range(0, 2)) {
               case 1:
-                cep_cell_delete(cep_cell_first(cat));
+                cep_cell_delete_hard(cep_cell_first(cat));
                 cell = cep_cell_first(cat);
                 found = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
                 vmin = *(int32_t*)cep_cell_data(found);
                 break;
               case 2:
-                cep_cell_delete(cep_cell_last(cat));
+                cep_cell_delete_hard(cep_cell_last(cat));
                 cell = cep_cell_last(cat);
                 found = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
                 vmax = *(int32_t*)cep_cell_data(found);
@@ -483,7 +479,7 @@ static void test_cell_tech_catalog(unsigned storage) {
     /* Nested cell */
     assert_true(cep_cell_deep_traverse(cat, print_values, NULL, NULL, NULL));
 
-    cep_cell_delete(cat);
+    cep_cell_delete_hard(cat);
 }
 
 
@@ -502,20 +498,20 @@ static void test_cell_tech_sequencing_list(void) {
         cepID name = CEP_NAME_ENUMERATION + value;
 
         if ((foundL = cep_cell_find_by_name(bookL, CEP_DTS(CEP_ACRO("CEP"), name))))
-            cep_cell_delete(foundL);
+            cep_cell_delete_hard(foundL);
         if ((foundA = cep_cell_find_by_name(bookA, CEP_DTS(CEP_ACRO("CEP"), name))))
-            cep_cell_delete(foundA);
+            cep_cell_delete_hard(foundA);
         assert((!foundL && !foundA) || (foundL && foundA));
 
         if (cep_cell_children(bookL)) {
             switch (munit_rand_int_range(0, 4)) {
               case 1:
-                cep_cell_delete(cep_cell_first(bookL));
-                cep_cell_delete(cep_cell_first(bookA));
+                cep_cell_delete_hard(cep_cell_first(bookL));
+                cep_cell_delete_hard(cep_cell_first(bookA));
                 break;
               case 2:
-                cep_cell_delete(cep_cell_last(bookL));
-                cep_cell_delete(cep_cell_last(bookA));
+                cep_cell_delete_hard(cep_cell_last(bookL));
+                cep_cell_delete_hard(cep_cell_last(bookA));
                 break;
             }
         }
@@ -537,8 +533,8 @@ static void test_cell_tech_sequencing_list(void) {
         } while (cellL);
     }
 
-    cep_cell_delete(bookA);
-    cep_cell_delete(bookL);
+    cep_cell_delete_hard(bookA);
+    cep_cell_delete_hard(bookL);
 }
 
 
@@ -556,24 +552,24 @@ static void test_cell_tech_sequencing_dictionary(void) {
         cepID name = CEP_NAME_ENUMERATION + value;
 
         if ((foundL = cep_cell_find_by_name(dictL, CEP_DTS(CEP_ACRO("CEP"), name)))) 
-            cep_cell_delete(foundL);
+            cep_cell_delete_hard(foundL);
         if ((foundA = cep_cell_find_by_name(dictA, CEP_DTS(CEP_ACRO("CEP"), name)))) 
-            cep_cell_delete(foundA);
+            cep_cell_delete_hard(foundA);
         if ((foundT = cep_cell_find_by_name(dictT, CEP_DTS(CEP_ACRO("CEP"), name)))) 
-            cep_cell_delete(foundT);
+            cep_cell_delete_hard(foundT);
         assert((!foundL && !foundA && !foundT) || (foundL && foundA && foundT));
 
         if (cep_cell_children(dictL)) {
             switch (munit_rand_int_range(0, 4)) {
               case 1:
-                cep_cell_delete(cep_cell_first(dictL));
-                cep_cell_delete(cep_cell_first(dictA));
-                cep_cell_delete(cep_cell_first(dictT));
+                cep_cell_delete_hard(cep_cell_first(dictL));
+                cep_cell_delete_hard(cep_cell_first(dictA));
+                cep_cell_delete_hard(cep_cell_first(dictT));
                 break;
               case 2:
-                cep_cell_delete(cep_cell_last(dictL));
-                cep_cell_delete(cep_cell_last(dictA));
-                cep_cell_delete(cep_cell_last(dictT));
+                cep_cell_delete_hard(cep_cell_last(dictL));
+                cep_cell_delete_hard(cep_cell_last(dictA));
+                cep_cell_delete_hard(cep_cell_last(dictT));
                 break;
             }
         }
@@ -599,9 +595,9 @@ static void test_cell_tech_sequencing_dictionary(void) {
         } while (cellL);
     }
 
-    cep_cell_delete(dictT);
-    cep_cell_delete(dictA);
-    cep_cell_delete(dictL);
+    cep_cell_delete_hard(dictT);
+    cep_cell_delete_hard(dictA);
+    cep_cell_delete_hard(dictL);
 }
 
 
@@ -621,22 +617,22 @@ static void test_cell_tech_sequencing_catalog(void) {
         cepID name = CEP_NAME_ENUMERATION + value;
         cep_cell_update_value(item, sizeof(int32_t), &value);
 
-        if ((foundL = cep_cell_find_by_key(catL, &key, tech_catalog_compare, NULL)))    cep_cell_delete(foundL);
-        if ((foundA = cep_cell_find_by_key(catA, &key, tech_catalog_compare, NULL)))    cep_cell_delete(foundA);
-        if ((foundT = cep_cell_find_by_key(catT, &key, tech_catalog_compare, NULL)))    cep_cell_delete(foundT);
+        if ((foundL = cep_cell_find_by_key(catL, &key, tech_catalog_compare, NULL)))    cep_cell_delete_hard(foundL);
+        if ((foundA = cep_cell_find_by_key(catA, &key, tech_catalog_compare, NULL)))    cep_cell_delete_hard(foundA);
+        if ((foundT = cep_cell_find_by_key(catT, &key, tech_catalog_compare, NULL)))    cep_cell_delete_hard(foundT);
         assert((!foundL && !foundA && !foundT) || (foundL && foundA && foundT));
 
         if (cep_cell_children(catL)) {
             switch (munit_rand_int_range(0, 4)) {
               case 1:
-                cep_cell_delete(cep_cell_first(catL));
-                cep_cell_delete(cep_cell_first(catA));
-                cep_cell_delete(cep_cell_first(catT));
+                cep_cell_delete_hard(cep_cell_first(catL));
+                cep_cell_delete_hard(cep_cell_first(catA));
+                cep_cell_delete_hard(cep_cell_first(catT));
                 break;
               case 2:
-                cep_cell_delete(cep_cell_last(catL));
-                cep_cell_delete(cep_cell_last(catA));
-                cep_cell_delete(cep_cell_last(catT));
+                cep_cell_delete_hard(cep_cell_last(catL));
+                cep_cell_delete_hard(cep_cell_last(catA));
+                cep_cell_delete_hard(cep_cell_last(catT));
                 break;
             }
         }
@@ -667,9 +663,9 @@ static void test_cell_tech_sequencing_catalog(void) {
 
     cep_cell_finalize(&key);
 
-    cep_cell_delete(catT);
-    cep_cell_delete(catA);
-    cep_cell_delete(catL);
+    cep_cell_delete_hard(catT);
+    cep_cell_delete_hard(catA);
+    cep_cell_delete_hard(catL);
 }
 
 
@@ -724,7 +720,7 @@ static void test_cell_traverse_past_filters(void) {
     assert_true(cep_cell_traverse_past(list, 6, cep_collect_traverse_entry, &log, NULL));
     assert_uint(log.count, ==, 0);
 
-    cep_cell_delete(list);
+    cep_cell_delete_hard(list);
 }
 
 
@@ -803,7 +799,7 @@ static void test_cell_deep_traverse_past_filters(void) {
     assert_uint(log.nodes.count, ==, 0);
     assert_uint(log.endings.count, ==, 0);
 
-    cep_cell_delete(tree);
+    cep_cell_delete_hard(tree);
 }
 
 
