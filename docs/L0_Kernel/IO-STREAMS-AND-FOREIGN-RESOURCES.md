@@ -54,7 +54,7 @@ Layer 0 already defines `cepData` with four representations:
 - VALUE: small inline bytes.
 - DATA: heap‑backed bytes (owned or view with a no‑op destructor).
 - HANDLE: opaque reference to an external resource managed by a library cell.
-- STREAM: a window onto a larger external stream managed by a library cell.
+- STREAM: a byte window onto a larger external stream managed by a library cell; payloads are opaque bytes tagged by cepDT.
 
 Current code supports VALUE/DATA fully. HANDLE/STREAM are scaffolded and intentionally not exposed via `cep_cell_data()` yet (reads/updates are marked TODO). The design below completes HANDLE/STREAM without breaking determinism.
 

@@ -44,7 +44,7 @@ Idempotency
 - Concept: applying the same logical update one or many times results in the same state as applying it once. This avoids duplicate states when messages are retried or operations race.
 - Data‑only cells:
   - Equivalence: two updates are equivalent if their effective payload bytes (plus relevant metadata like `encoding` and `attribute`) are identical. If equivalent to the current head, skip creating a new `cepData` node (no‑op).
-  - Representation bridging: for `VALUE` vs `DATA`, compare canonical bytes; for `HANDLE`/`STREAM`, compare a stable identity (library id, resource id/path, offset/length, version/ETag). If they denote the same materialized content, treat as idempotent.
+- Representation bridging: for `VALUE` vs `DATA`, compare bytewise payload; for `HANDLE`/`STREAM`, compare a stable identity (library id, resource id/path, offset/length, version/ETag). If they denote the same materialized content, treat as idempotent. Any per-tag canonicalization (endianness/encoding) is defined by enzymes/L1+, not by L0.
   - Optional hashing: `cepData.hash` can store a content hash to accelerate equality checks; on collision, verify bytes for correctness.
 - Cells with children:
   - Inserts/appends: if the new child matches the current live child with the same identity (e.g., same name in dictionaries, same position/autoid in insertion lists, or same compare‑key in sorted stores) and equal content, treat as a no‑op.
@@ -76,7 +76,7 @@ Q&A
   - Idempotency complements append‑only by ensuring repeated application of the same logical update does not create multiple distinct “new” states. When a new value equals the current head (or a child addition equals the current live child), CEP performs a no‑op instead of appending.
 
 - How does CEP decide if two updates are the same?
-  - By comparing canonical payload bytes and relevant metadata. For handles/streams, a stable resource identity (e.g., library id + resource id + range + version) is used. A stored hash can speed this up but does not replace equality checks.
+- By comparing payload bytes and relevant metadata. For handles/streams, a stable resource identity (e.g., library id + resource id + range + version) is used. A stored hash can speed this up but does not replace equality checks.
 
 - Do idempotent checks slow down writes?
   - Current‑only checks are fast (hash + short‑circuit). Full history is not scanned; idempotency compares against the head state for the targeted identity.

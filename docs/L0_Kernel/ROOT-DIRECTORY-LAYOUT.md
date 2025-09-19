@@ -204,11 +204,11 @@ cas/
 ```
 
 Storage
-- Dictionary by path; payloads as `VECTOR<UINT8>`; small metadata cells for pins.
+- Dictionary by path; payloads as opaque bytes; small metadata cells for pins.
 
 Example
 1) Store thumbnail bytes:
-   - `/cas/sha256/ab/cdef... = VECTOR<UINT8>{...}`
+   - `/cas/sha256/ab/cdef...` = stored payload (opaque bytes)
 2) Reference from journal intent/outcome by `hash=H1` and pin if needed:
    - `/cas/pins/thumbnail/img123 = H1`
 

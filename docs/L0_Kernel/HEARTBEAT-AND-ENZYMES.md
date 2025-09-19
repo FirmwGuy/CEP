@@ -125,8 +125,7 @@ Q&A
   A retry policy may re-enqueue the pair for N+1 with counters/backoff. Enzymes must be idempotent so retries don’t corrupt state.
 
 - Do enzymes need access to raw data? 
-  Prefer handles/streams and content-addressed blobs with journaling, so work is replayable and auditable.
+  Prefer handles/streams and content-addressed bytes with journaling, so work is replayable and auditable.
 
 - How do I choose query paths? 
   Register by the most stable and meaningful discriminator you have: often the signal namespace (intent) and, secondarily, target domains.
-

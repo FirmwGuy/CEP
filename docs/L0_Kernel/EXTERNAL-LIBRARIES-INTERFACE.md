@@ -10,7 +10,7 @@ Imagine a workshop full of specialized machines owned by different teams. You do
 
 CEP treats foreign library internals the same way:
 - Opaque handle: a safe claim ticket that lets CEP refer to “that thing over there” without peeking inside it.
-- Snapshot: a precise copy (bytes and a type) that CEP can store, compare, hash, and replay on its own.
+- Snapshot: a precise copy (opaque bytes with a cepDT tag) that CEP can store, compare, hash, and replay on its own.
 
 Why this approach?
 - Determinism: you can replay exactly because snapshots are precise and handles carry stable identity and version.
@@ -34,7 +34,7 @@ In short: use a handle when you mean “that external thing,” use a snapshot w
 ### Representations at L0
 
 - `cepData.VALUE` / `cepData.DATA` (snapshots)
-  - Canonical bytes stored inside CEP. Deterministic hashing, comparison, and replay.
+  - Opaque bytes stored inside CEP. Deterministic bytewise hashing, comparison, and replay.
   - Use when decisions depend on content or when foreign memory cannot be safely borrowed.
 
 - `cepData.HANDLE` (opaque handle)
@@ -42,7 +42,7 @@ In short: use a handle when you mean “that external thing,” use a snapshot w
   - Use when you need to refer to the thing itself, pass it around, schedule operations, or branch by identity.
 
 - `cepData.STREAM` (windowed I/O)
-  - An offset/length window onto a foreign stream or buffer (often `VECTOR<UINT8>`). Operations are recorded with preconditions and idempotency keys (see I/O Streams doc).
+  - An offset/length byte window onto a foreign stream or buffer. Operations are recorded with preconditions and idempotency keys (see I/O Streams doc).
 
 ### Adapter (Glue) Layer
 
@@ -52,7 +52,7 @@ Each integrated library provides an adapter with a small, explicit vtable. Typic
   - Create/destroy handles; pin/unpin external memory; reference counting if available.
   - Guarantee that borrowed views remain valid at least for the current heartbeat.
 
-- Typed accessors (no raw field peeking)
+- Tagged accessors (by cepDT; no raw field peeking)
   - Read‑only getters that return CEP snapshots (VALUE/DATA) or stream windows.
   - Enumerators that yield items as snapshots or handles with their own accessors.
   - Optional debug serializers that expose a safe, stable description for logs.
@@ -106,7 +106,7 @@ If any condition is violated or uncertain, take a snapshot into `cepData.DATA` a
 - Define identity and version; document how they are computed.
 - Prove or enforce read‑only guarantees for any zero‑copy views.
 - Provide a snapshot path for any data that influences decisions.
-- Validate types and sizes; align with L0 canonicalization (endianness, UTF‑8).
+- Validate types and sizes; align with each tag’s canonicalization (endianness/encoding chosen by enzymes). L0 remains bytewise only.
 - Enforce preconditions on mutations; record outcomes and divergences.
 - Manage lifetimes: refcount/pin, and clean up exactly once.
 - Be explicit about threading; serialize if needed.
@@ -161,4 +161,3 @@ A: Provide a debug serializer in the adapter to produce a stable, human‑readab
 
 Q: What if the library is not thread‑safe?
 A: Serialize access inside the adapter and document it. CEP’s heartbeat scheduling helps isolate effect timing, but it does not fix underlying thread safety.
-

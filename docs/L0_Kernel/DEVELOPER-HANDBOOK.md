@@ -45,6 +45,7 @@ Kernel Concepts (L0)
   - DATA: heap buffer (`data`, `destructor`).
   - HANDLE: opaque resource (external library), references another cell.
   - STREAM: window onto external stream.
+  - Ordering and semantics: L0 treats payloads as opaque bytes and orders data by (cepDT, size, bytes). Enzymes/L1+ define any per-tag canonicalization or schemas.
 - cepStore: Child container with configurable storage and indexing strategy.
   - Storage: linked list, array, packed queue, red-black tree, octree.
   - Indexing: insertion order, by name, by user compare, by hash+compare.
