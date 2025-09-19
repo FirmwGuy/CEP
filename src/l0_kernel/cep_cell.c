@@ -928,6 +928,115 @@ static inline bool store_traverse(cepStore* store, cepTraverse func, void* conte
 }
 
 
+
+
+typedef struct {
+    cepTraverse     func;
+    void*           context;
+    cepHeartbeat    heartbeat;
+    cepEntry        pending;
+    cepEntry*       userEntry;
+    cepCell*        prev;
+    size_t          position;
+    bool            hasPending;
+    bool            aborted;
+} cepTraversePastCtx;
+
+
+static inline bool cep_data_chain_has_heartbeat(const cepData* data, cepHeartbeat heartbeat) {
+    if (!data)
+        return false;
+
+    const cepDataNode* node = (const cepDataNode*) &data->modified;
+    while (node) {
+        if (node->modified == heartbeat)
+            return true;
+        if (node->modified < heartbeat)
+            break;
+        node = node->past;
+    }
+
+    return false;
+}
+
+
+static inline bool cep_store_chain_has_heartbeat(const cepStore* store, cepHeartbeat heartbeat) {
+    if (!store)
+        return false;
+
+    const cepStoreNode* node = (const cepStoreNode*) &store->modified;
+    while (node) {
+        if (node->modified == heartbeat)
+            return true;
+        if (node->modified < heartbeat)
+            break;
+        node = node->past;
+    }
+
+    return false;
+}
+
+
+static inline bool cep_entry_has_heartbeat(const cepEntry* entry, cepHeartbeat heartbeat) {
+    assert(entry);
+
+    const cepCell* cell = entry->cell;
+    if (!cell || !heartbeat)
+        return false;
+
+    if (cell->metacell.type == CEP_TYPE_NORMAL) {
+        if (cep_data_chain_has_heartbeat(cell->data, heartbeat))
+            return true;
+        if (cep_store_chain_has_heartbeat(cell->store, heartbeat))
+            return true;
+    }
+
+    return cep_store_chain_has_heartbeat(cell->parent, heartbeat);
+}
+
+
+static inline bool cep_traverse_past_flush(cepTraversePastCtx* ctx, cepCell* nextCell) {
+    ctx->pending.next = nextCell;
+    *ctx->userEntry   = ctx->pending;
+    ctx->hasPending   = false;
+
+    if (!ctx->func(ctx->userEntry, ctx->context)) {
+        ctx->aborted = true;
+        return false;
+    }
+
+    ctx->prev = ctx->pending.cell;
+    ctx->position++;
+    return true;
+}
+
+
+static inline bool cep_traverse_past_proxy(cepEntry* entry, void* ctxPtr) {
+    cepTraversePastCtx* ctx = ctxPtr;
+
+    if (!entry->cell)
+        return true;
+
+    if (!cep_entry_has_heartbeat(entry, ctx->heartbeat))
+        return true;
+
+    if (ctx->hasPending) {
+        if (!cep_traverse_past_flush(ctx, entry->cell))
+            return false;
+    }
+
+    ctx->pending          = *entry;
+    ctx->pending.prev     = ctx->prev;
+    ctx->pending.position = ctx->position;
+    ctx->pending.next     = NULL;
+    ctx->hasPending       = true;
+
+    return true;
+}
+
+
+
+
 /*
     Converts an unsorted store into a dictionary
 */
@@ -1444,6 +1553,37 @@ cepCell* cep_cell_find_next_by_path(const cepCell* start, cepPath* path, uintptr
 bool cep_cell_traverse(cepCell* cell, cepTraverse func, void* context, cepEntry* entry) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
     return store_traverse(store, func, context, entry);
+}
+
+
+bool cep_cell_traverse_past(cepCell* cell, cepHeartbeat heartbeat, cepTraverse func, void* context, cepEntry* entry) {
+    assert(!cep_cell_is_void(cell) && func && heartbeat);
+
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, true);
+
+    cepEntry* userEntry = entry;
+    if (!userEntry)
+        userEntry = cep_alloca(sizeof(cepEntry));
+    CEP_0(userEntry);
+
+    cepEntry iterEntry;
+
+    cepTraversePastCtx ctx = {
+        .func = func,
+        .context = context,
+        .heartbeat = heartbeat,
+        .userEntry = userEntry,
+    };
+
+    bool ok = store_traverse(store, cep_traverse_past_proxy, &ctx, &iterEntry);
+
+    if (ok && ctx.hasPending)
+        ok = cep_traverse_past_flush(&ctx, NULL);
+
+    if (!ok)
+        return false;
+
+    return !ctx.aborted;
 }
 
 

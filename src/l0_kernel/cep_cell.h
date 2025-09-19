@@ -746,8 +746,9 @@ cepCell* cep_cell_next(const cepCell* cell, cepCell* child);
 cepCell* cep_cell_find_next_by_name(const cepCell* cell, cepDT* name, uintptr_t* childIdx);
 cepCell* cep_cell_find_next_by_path(const cepCell* start, cepPath* path, uintptr_t* prev);
 
-bool cep_cell_traverse     (cepCell* cell, cepTraverse func, void* context, cepEntry* entry);
-bool cep_cell_deep_traverse(cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
+bool cep_cell_traverse      (cepCell* cell, cepTraverse func, void* context, cepEntry* entry);
+bool cep_cell_traverse_past (cepCell* cell, cepHeartbeat heartbeat, cepTraverse func, void* context, cepEntry* entry);
+bool cep_cell_deep_traverse (cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 
 
 // Removing cells
