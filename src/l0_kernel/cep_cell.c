@@ -1035,6 +1035,138 @@ static inline bool cep_traverse_past_proxy(cepEntry* entry, void* ctxPtr) {
 }
 
 
+typedef struct {
+    cepEntry    pending;
+    cepEntry    lastEmitted;
+    cepCell*    prev;
+    size_t      position;
+    bool        hasPending;
+    bool        emitted;
+} cepTraversePastFrame;
+
+
+typedef struct {
+    cepTraverse             nodeFunc;
+    cepTraverse             endFunc;
+    void*                   context;
+    cepHeartbeat            heartbeat;
+    cepEntry*               userEntry;
+    cepEntry                endEntry;
+    cepTraversePastFrame*   frames;
+    unsigned                frameCount;
+    unsigned                maxDepthInUse;
+    bool                    aborted;
+} cepDeepTraversePastCtx;
+
+
+static inline bool cep_deep_traverse_past_flush_frame(cepDeepTraversePastCtx* ctx, unsigned depth, cepCell* nextCell) {
+    assert(ctx && depth < ctx->frameCount);
+
+    cepTraversePastFrame* frame = &ctx->frames[depth];
+
+    frame->pending.next = nextCell;
+    *ctx->userEntry     = frame->pending;
+    frame->lastEmitted  = frame->pending;
+    frame->hasPending   = false;
+    frame->emitted      = true;
+
+    if (ctx->nodeFunc) {
+        if (!ctx->nodeFunc(ctx->userEntry, ctx->context)) {
+            ctx->aborted = true;
+            return false;
+        }
+    }
+
+    frame->prev = frame->pending.cell;
+    frame->position++;
+
+    return true;
+}
+
+
+static inline bool cep_deep_traverse_past_sync_depth(cepDeepTraversePastCtx* ctx, unsigned depth) {
+    assert(ctx && depth < ctx->frameCount);
+
+    for (unsigned d = ctx->maxDepthInUse; d > depth; d--) {
+        cepTraversePastFrame* frame = &ctx->frames[d];
+
+        if (frame->hasPending) {
+            if (!cep_deep_traverse_past_flush_frame(ctx, d, NULL))
+                return false;
+        }
+
+        frame->prev     = NULL;
+        frame->position = 0;
+        frame->emitted  = false;
+    }
+
+    if (ctx->maxDepthInUse > depth)
+        ctx->maxDepthInUse = depth;
+
+    return true;
+}
+
+
+static inline bool cep_deep_traverse_past_proxy(cepEntry* entry, void* ctxPtr) {
+    cepDeepTraversePastCtx* ctx = ctxPtr;
+
+    if (!entry->cell)
+        return true;
+
+    unsigned depth = entry->depth;
+    assert(depth < ctx->frameCount);
+
+    if (!cep_deep_traverse_past_sync_depth(ctx, depth))
+        return false;
+
+    if (depth > ctx->maxDepthInUse)
+        ctx->maxDepthInUse = depth;
+
+    if (!cep_entry_has_heartbeat(entry, ctx->heartbeat))
+        return true;
+
+    cepTraversePastFrame* frame = &ctx->frames[depth];
+
+    if (frame->hasPending) {
+        if (!cep_deep_traverse_past_flush_frame(ctx, depth, entry->cell))
+            return false;
+    }
+
+    frame->pending          = *entry;
+    frame->pending.prev     = frame->prev;
+    frame->pending.position = frame->position;
+    frame->pending.next     = NULL;
+    frame->hasPending       = true;
+
+    return true;
+}
+
+
+static inline bool cep_deep_traverse_past_end_proxy(cepEntry* entry, void* ctxPtr) {
+    cepDeepTraversePastCtx* ctx = ctxPtr;
+
+    unsigned depth = entry->depth;
+    assert(depth < ctx->frameCount);
+
+    if (!cep_deep_traverse_past_sync_depth(ctx, depth))
+        return false;
+
+    cepTraversePastFrame* frame = &ctx->frames[depth];
+    if (!ctx->endFunc || !frame->emitted)
+        return true;
+
+    ctx->endEntry = frame->lastEmitted;
+
+    if (!ctx->endFunc(&ctx->endEntry, ctx->context)) {
+        ctx->aborted = true;
+        return false;
+    }
+
+    return true;
+}
+
+
+
 
 
 /*
@@ -1319,9 +1451,9 @@ void cep_cell_finalize(cepCell* cell) {
 
 
 #define CELL_FOLLOW_LINK_TO_STORE(cell, store, ...)                            \
-    assert(!cep_cell_is_void(cell));                                       \
-    cell = cep_link_pull(CEP_P(cell));                                     \
-    cepStore* store = cell->store;                                           \
+    assert(!cep_cell_is_void(cell));                                           \
+    cell = cep_link_pull(CEP_P(cell));                                         \
+    cepStore* store = cell->store;                                             \
     if (!store)                                                                \
         return __VA_ARGS__
 
@@ -1579,6 +1711,58 @@ bool cep_cell_traverse_past(cepCell* cell, cepHeartbeat heartbeat, cepTraverse f
 
     if (ok && ctx.hasPending)
         ok = cep_traverse_past_flush(&ctx, NULL);
+
+    if (!ok)
+        return false;
+
+    return !ctx.aborted;
+}
+
+
+bool cep_cell_deep_traverse_past(cepCell* cell, cepHeartbeat heartbeat, cepTraverse func, cepTraverse endFunc, void* context, cepEntry* entry) {
+    assert(!cep_cell_is_void(cell) && heartbeat && (func || endFunc));
+
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, true);
+
+    cepEntry* userEntry = entry;
+    if (!userEntry)
+        userEntry = cep_alloca(sizeof(cepEntry));
+    CEP_0(userEntry);
+
+    size_t frameCount = (size_t)MAX_DEPTH + 1;
+    size_t framesSize = frameCount * sizeof(cepTraversePastFrame);
+    bool useHeap = (frameCount > CEP_MAX_FAST_STACK_DEPTH);
+    cepTraversePastFrame* frames = useHeap? cep_malloc(framesSize): cep_alloca(framesSize);
+    memset(frames, 0, framesSize);
+
+    cepDeepTraversePastCtx ctx = {
+        .nodeFunc      = func,
+        .endFunc       = endFunc,
+        .context       = context,
+        .heartbeat     = heartbeat,
+        .userEntry     = userEntry,
+        .frames        = frames,
+        .frameCount    = (unsigned)frameCount,
+        .maxDepthInUse = 0,
+    };
+
+    cepEntry iterEntry;
+    bool ok = cep_cell_deep_traverse(cell,
+                                     cep_deep_traverse_past_proxy,
+                                     (endFunc? cep_deep_traverse_past_end_proxy: NULL),
+                                     &ctx,
+                                     &iterEntry);
+
+    if (ok) {
+        if (!cep_deep_traverse_past_sync_depth(&ctx, 0))
+            ok = false;
+    }
+
+    if (ok && ctx.frames[0].hasPending)
+        ok = cep_deep_traverse_past_flush_frame(&ctx, 0, NULL);
+
+    if (useHeap)
+        cep_free(frames);
 
     if (!ok)
         return false;

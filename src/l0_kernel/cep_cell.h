@@ -748,6 +748,7 @@ cepCell* cep_cell_find_next_by_path(const cepCell* start, cepPath* path, uintptr
 
 bool cep_cell_traverse      (cepCell* cell, cepTraverse func, void* context, cepEntry* entry);
 bool cep_cell_traverse_past (cepCell* cell, cepHeartbeat heartbeat, cepTraverse func, void* context, cepEntry* entry);
+bool cep_cell_deep_traverse_past(cepCell* cell, cepHeartbeat heartbeat, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 bool cep_cell_deep_traverse (cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 
 
