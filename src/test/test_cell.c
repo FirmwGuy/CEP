@@ -627,4 +627,3 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
     cep_cell_system_shutdown();
     return MUNIT_OK;
 }
-

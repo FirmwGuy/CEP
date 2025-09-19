@@ -46,6 +46,23 @@ static inline int cell_compare_by_name(const cepCell* restrict key, const cepCel
 
 
 
+static cepHeartbeat  HEARTBEAT;
+
+
+cepHeartbeat cep_cell_timestamp_next(void) {
+    cepHeartbeat next = ++HEARTBEAT;
+    if (!next)
+        next = ++HEARTBEAT;   // Avoid 0 as a valid timestamp.
+    return next;
+}
+
+void cep_cell_timestamp_reset(void) {
+    HEARTBEAT = 0;
+}
+
+
+
+
 /*
     Include child storage techs
 */
@@ -72,6 +89,8 @@ cepCell CEP_ROOT;   // The root cell.
     Initiates the cell system
 */
 void cep_cell_system_initiate(void) {
+    cep_cell_timestamp_reset();
+
     cep_cell_initialize_dictionary(   &CEP_ROOT,                      // Cell.
                                       CEP_DTAA("CEP", "/"),           // Name.
                                       CEP_DTAW("CEP", "dictionary"),  // Type.
@@ -191,6 +210,8 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
     data->tag       = type->tag;
     data->datatype  = datatype;
     data->writable  = writable;
+    data->created   = HEARTBEAT;
+    data->modified  = HEARTBEAT;
 
     CEP_PTR_SEC_SET(dataloc, address);
 
@@ -253,12 +274,15 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
     if (!data->writable)
         return NULL;
 
+    void* result = NULL;
+
     switch (data->datatype) {
       case CEP_DATATYPE_VALUE: {
         assert(data->capacity >= capacity);
         memcpy(data->value, value, size);
         data->size = size;
-        return data->value;
+        result = data->value;
+        break;
       }
 
       case CEP_DATATYPE_DATA: {
@@ -273,17 +297,21 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
             memcpy(data->data, value, size);
         }
         data->size = size;
-        return data->data;
+        result = data->data;
+        break;
       }
 
       case CEP_DATATYPE_HANDLE:
       case CEP_DATATYPE_STREAM: {
         // ToDo: pending!
-        return NULL;
+        break;
       }
     }
 
-    return NULL;
+    if (result)
+        data->modified = HEARTBEAT;
+
+    return result;
 }
 
 
@@ -380,6 +408,8 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
     store->indexing = indexing;
     store->writable = true;
     store->autoid   = 1;
+    store->created  = HEARTBEAT;
+    store->modified = HEARTBEAT;
 
     return store;
 }
@@ -389,6 +419,8 @@ void cep_store_del(cepStore* store) {
     assert(cep_store_valid(store));
 
     // ToDo: cleanup shadows.
+
+    store->deleted = HEARTBEAT;
 
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
@@ -423,6 +455,8 @@ void cep_store_del(cepStore* store) {
 void cep_store_delete_children(cepStore* store) {
     assert(cep_store_valid(store));
 
+    bool had_children = store->chdCount;
+
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
         list_del_all_children((cepList*) store);
@@ -448,6 +482,9 @@ void cep_store_delete_children(cepStore* store) {
 
     store->chdCount = 0;
     store->autoid   = 1;
+
+    if (had_children)
+        store->modified = HEARTBEAT;
 }
 
 
@@ -554,6 +591,7 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 
     cell->parent = store;
     store->chdCount++;
+    store->modified = HEARTBEAT;
 
     return cell;
 }
@@ -601,6 +639,7 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
 
     cell->parent = store;
     store->chdCount++;
+    store->modified = HEARTBEAT;
 
     return cell;
 }
@@ -899,6 +938,7 @@ static inline void store_to_dictionary(cepStore* store) {
         return;
 
     store->storage = CEP_INDEX_BY_NAME;
+    store->modified = HEARTBEAT;
 
     if (store->chdCount <= 1)
         return;
@@ -939,6 +979,7 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
         return;
 
     store->storage = CEP_INDEX_BY_FUNCTION;   // FixMe: by hash?
+    store->modified = HEARTBEAT;
 
     if (store->chdCount <= 1)
         return;
@@ -977,7 +1018,7 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
     assert(cep_store_valid(store) && target);
 
     if (!store->chdCount || !store->writable)
-        return NULL;
+        return false;
 
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
@@ -1003,6 +1044,7 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
     }
 
     store->chdCount--;
+    store->modified = HEARTBEAT;
 
     return true;
 }
@@ -1015,7 +1057,7 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
     assert(cep_store_valid(store) && target);
 
     if (!store->chdCount || !store->writable)
-        return NULL;
+        return false;
 
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
@@ -1041,6 +1083,7 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
     }
 
     store->chdCount--;
+    store->modified = HEARTBEAT;
 
     return true;
 }
@@ -1082,6 +1125,7 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
     }
 
     store->chdCount--;
+    store->modified = HEARTBEAT;
 }
 
 
