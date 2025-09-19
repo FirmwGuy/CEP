@@ -1017,7 +1017,8 @@ static inline bool cep_traverse_past_proxy(cepEntry* entry, void* ctxPtr) {
     if (!entry->cell)
         return true;
 
-    if (!cep_entry_has_heartbeat(entry, ctx->heartbeat))
+    bool match = cep_entry_has_heartbeat(entry, ctx->heartbeat);
+    if (!match)
         return true;
 
     if (ctx->hasPending) {
@@ -1124,6 +1125,11 @@ static inline bool cep_deep_traverse_past_proxy(cepEntry* entry, void* ctxPtr) {
 
     if (!cep_entry_has_heartbeat(entry, ctx->heartbeat))
         return true;
+
+    if (depth && ctx->frames[depth - 1].hasPending) {
+        if (!cep_deep_traverse_past_flush_frame(ctx, depth - 1, entry->cell))
+            return false;
+    }
 
     cepTraversePastFrame* frame = &ctx->frames[depth];
 
