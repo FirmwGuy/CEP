@@ -1,139 +1,106 @@
-# CEP L0 Native Types (Bootstrap)
+# CEP L0 Native Type
 
-This note defines the minimal, built‑in data types for CEP Layer 0 (Kernel). It balances two needs: making the kernel deterministic and replayable today, while leaving room for rich, user‑defined types in higher layers tomorrow.
+This note defines how native data works in CEP Layer 0 (Kernel). At L0, a value is only bytes plus a tiny label. The real meaning of those bytes lives above the kernel, where you can describe and evolve types as normal CEP cells.
 
 ---
 
-## 1) Plain‑Language Intro
+## 1) Intro
 
-Think of CEP as a careful librarian. At the bottom layer, the librarian must file cards in a way that is always the same anywhere in the world. To do that, the cards need a tiny, universal label that says what kind of thing is on the card and how to sort it, without reading any extra books.
+Imagine a storage box with a sticky label. The box holds some bytes; the label says just enough so future tools know what to do with the box, without forcing the storage system to open it. In CEP’s kernel, that label is a cepDT (a compact “domain:tag” name), and the contents are opaque bytes.
 
-That tiny label is our L0 “native type.” It’s not the whole story about the data (units, meaning, domain rules). It’s just enough to store, compare, and replay it exactly. The rich meaning lives in higher layers, where we can use normal CEP cells to describe schemas, units, and relationships.
+Examples of labels (tags) you might use:
+- math:INT32, math:FLOAT64
+- geom:VECTOR3D, img:RGBA8
+- text:UTF8, hash:SHA256
 
-To bootstrap cleanly, we keep L0 very small and practical:
-- Simple truth values (yes/no).
-- Whole numbers and real numbers in common sizes.
-- Text as UTF‑8.
-- Vectors: ordered lists of numbers or bytes (used for things like stream chunks). If you’ve heard “blob,” think of that as a vector of bytes – vector is just less opaque and more honest.
-
-This lets CEP run deterministically from day one, while still welcoming richer, user‑defined types above.
+The kernel doesn’t interpret those bytes. Enzymes (code that knows the domain) and higher layers decide what a tag means. This keeps the kernel small and predictable, while letting meaning, schemas, and conversions evolve freely in L1+.
 
 ---
 
 ## 2) Technical Specification
 
-Goal: provide a minimal, canonical descriptor that L0 can use to validate, compare, hash, and store values without consulting other cells. Everything else (schemas, units, domains) remains in L1+ as cells.
+Goal: make L0 deterministic and simple by treating payloads as opaque bytes and attaching only a cepDT tag. All rich typing (fields, units, constraints, shapes) is modeled in L1+ as regular cells and links.
 
-### 2.1 Binary Types (L0)
+### 2.1 Data Model at L0
 
-L0 defines a minimal set of binary types, encoded directly in `cepData`:
-- BOOLEAN
-- UNSIGNED (8/16/32/64‑bit)
-- INTEGER (8/16/32/64‑bit)
-- FLOAT (binary32/binary64)
-- UTF8 (as octets)
-- Internal: DT, PATH (as vectors of 64‑bit units)
+- Payload: a byte sequence (`size` bytes). No built‑in numeric/text/vector types. No element width or shape encoded at L0.
+- Tag: `cepDT` = (domain, tag). A compact name used for ordering and for higher‑layer routing/meaning.
+- Representation: `cepData` may store bytes inline or on the heap, and may also be a HANDLE/STREAM. In all cases, the payload is opaque; the cepDT travels with the data cell as its name.
 
-These correspond to the `_cepBinType` enum in the code. Shape (scalar vs vector) is orthogonal and is expressed by the `vector` flag inside `cepData`.
+### 2.2 What L0 Does (and Doesn’t) Do
 
-Out of scope at L0: matrices, decimal floating point, arbitrary precision; represent them via vectors or at higher layers. HASH values use `vector<UINT8>` with agreed length; specific algorithms belong to upper layers.
+- Does: store bytes; compare and hash deterministically; keep the cepDT; move/copy/update byte buffers; record/stream bytes.
+- Doesn’t: validate semantics (endianness, UTF‑8, IEEE754), track element width, or enforce shapes (scalar/vector/matrix). Those are enzyme/L1+ concerns.
 
-### 2.2 Widths and Sizes
+### 2.3 Deterministic Ordering and Hashing
 
-- Integers: 8/16/32/64 bits.
-- Floats: 32/64 bits (binary32/binary64).
-- BOOL: 1 byte canonical storage (values 0x00 or 0x01).
-- VECTOR: element width implied by its base type; total byte length carried by the data representation and must be an exact multiple of element size.
+To index and sort cells deterministically, L0 defines a stable total order and content hash without inspecting semantics:
+- Order: compare `(cepDT.domain, cepDT.tag)` lexicographically; if equal, compare `payload.size`; if equal, compare `payload.bytes` lexicographically.
+- Hash: combine `cepDT` and `payload.bytes` (implementation detail), e.g. `H = Hash(cepDT || size || bytes)`.
 
-Note: If you need 128‑bit integers or hashes at L0, represent them as `VECTOR<UINT8>` length 16/32 and add semantics at L1+.
+This guarantees stable behavior across platforms with zero knowledge of the byte meaning.
 
-### 2.3 Canonical Encoding
+### 2.4 Endianness, Encoding, and Canonicalization
 
-- Endianness: numerics are stored in canonical little‑endian form inside `cepData` bytes (both VALUE and DATA). On write/update, values are converted to LE; comparisons and hashing always use these canonical bytes.
-- TEXT_UTF8: stored as given after UTF‑8 validation; no Unicode normalization at L0. Comparison and hashing are bytewise.
-- BOOL: stored as single byte 0x00 (false) or 0x01 (true).
-- VECTOR: element bytes are individually canonicalized (e.g., LE per element for numeric element types). For `VECTOR<UINT8>`, bytes are as‑is.
+L0 doesn’t canonicalize numeric/text formats. Enzymes that write bytes for a given tag are responsible for choosing and documenting a canonical form (e.g., little‑endian for `math:INT32`, IEEE‑754 binary64 for `math:FLOAT64`, UTF‑8 for `text:UTF8`).
 
-### 2.4 Shape
+Guidelines for enzyme authors:
+- Pick a canonical byte format per tag and stick to it.
+- Prefer little‑endian for numerics unless domain requirements say otherwise.
+- For text, prefer UTF‑8 bytes; normalization rules (if any) belong in L1+.
 
-- L0 supports two shapes, encoded by `cepData.vector`:
-  - Scalar: a single value (BOOLEAN, INTEGER/UNSIGNED, FLOAT, UTF8 in rare cases).
-  - Vector: rank‑1 array of a base element type (including `UINT8` for raw bytes, UTF‑8 bytes, or 64‑bit units for DT/PATH).
-- Length of a vector is derived from payload size divided by element size; no embedded dimension field is required at L0.
-- Safety: Internal types `DT` and `PATH` are always vectors. `cep_data_new()` asserts that `vector == true` when `bintype` is `DT` or `PATH`.
+### 2.5 L1+ Type Descriptions (Optional but Recommended)
 
-### 2.5 Data Header
+While the cepDT is enough for the kernel, higher layers can attach richer meaning in normal CEP ways:
+- Schema cells: a child link like `@type → /types/math/INT32@v1` describing width, range, and encoding.
+- Composite definitions: cells describing structures (e.g., `geom:VECTOR3D` = 3 × `math:FLOAT32`).
+- Validation policies: enzymes can validate payloads against schemas during reads/writes.
 
-All information the kernel needs to validate, store, and compare values lives inside `cepData`:
-- `datatype`: VALUE | DATA | HANDLE | STREAM
-- `bintype`: one of `_cepBinType` (BOOLEAN, UNSIGNED, INTEGER, FLOAT, UTF8, DT, PATH)
-- `vector`: boolean flag indicating scalar vs vector shape
-- `writable` and `lock`: mutability controls
-- `encoding`: optional binary encoding id (reserved for future use)
-- `size` / `capacity`: payload sizes in bytes
-- `hash`: cached content hash (implementation detail)
-- `_dt` (`domain`, `tag`): L0 naming (for the data cell itself)
+The kernel remains unaware of these attachments; it just stores and orders bytes.
 
-This compact header is sufficient for L0 operations; richer semantics (units, schemas, constraints) are modeled as normal cells at higher layers.
+### 2.6 Interop with HANDLE/STREAM
 
-### 2.6 Comparison and Hashing
+- HANDLE: opaque external resource; still carries a cepDT. Any materialization to bytes must produce the same canonical bytes for its tag.
+- STREAM: windows of bytes over time; windows are tagged and remain opaque. Journaling/replay uses the same bytewise hashing and ordering.
 
-Total order and hashing are required for deterministic storage/indexing:
-1) Compare by family, then shape, then widths (and element widths for vectors).
-2) Compare by canonical bytes:
-   - Numerics: compare element bytes in LE.
-   - Text/UTF8: bytewise (no normalization at L0).
-   - Bool: 0x00 < 0x01.
-   - Vectors: lexicographic compare of element‑canonical bytes.
-3) Hash is computed over the tuple (descriptor fields) + canonical bytes.
+### 2.7 Backward Compatibility Notes
 
-NaN handling: for `FLOAT_BIN`, preserve bit‑patterns; comparisons are lexicographic on canonical bytes. Upper layers may impose semantic rules (e.g., ordering of NaNs) if desired.
-
-### 2.7 Data Representations Interop
-
-`cepData` supports four forms (VALUE, DATA, HANDLE, STREAM):
-- VALUE/DATA: store canonical bytes per sections above; validate size on write.
-- HANDLE/STREAM: carry the same `bintype`/`vector` info; staged windows for streams must match vector element sizing (commonly `vector<UINT8>`). Journaling and preconditions follow the I/O Streams note.
-
-### 2.8 Vectors vs “Blobs”
-
-We standardize on VECTOR terminology at L0:
-- `vector<UINT8>` is the precise, minimally opaque form often called a “blob.”
-- Using VECTOR keeps typed arrays and raw bytes under one concept and avoids hiding structure that may matter (e.g., `VECTOR<FLOAT_BIN/32>`).
-
-### 2.9 Upper Layers (L1+) Interop
-
-- Rich schemas, units, domains, field names, and composite types are expressed as normal CEP cells and bonds in L1+.
-- Data cells may also carry a higher‑level type reference (e.g., `@type → CEP:domain/type@v1`) without affecting L0 behavior.
-- Unknown or custom types remain usable at L0 as TEXT/VECTOR/INT/FLOAT — always deterministically comparable and replayable.
+Older drafts enumerated built‑in binary types (BOOLEAN, INT32, FLOAT64, UTF8, DT/PATH) and vector shapes. These are expressed as tags over opaque bytes. Suggested mappings:
+- BOOLEAN → `core:BOOL` with bytes 0x00 or 0x01.
+- INT32 → `math:INT32` with 4 bytes in chosen endianness (recommend LE).
+- FLOAT64 → `math:FLOAT64` with IEEE‑754 8 bytes.
+- UTF8 → `text:UTF8` with raw UTF‑8 bytes (validation in enzyme/L1+).
+- PATH/DT → represent as regular cells and links; when serialized to bytes, use explicit tags like `core:PATH` with a documented encoding.
 
 ---
 
-## 3) Q&A
+## 3) Practical Examples
 
-Q: Why not store all type info as cells instead of a built‑in descriptor?
-A: L0 must validate, compare, and hash values without chasing other cells. A tiny descriptor avoids circular dependencies and keeps the kernel deterministic and small. Rich meaning still lives as cells in upper layers.
+- geom:VECTOR3F — 12 bytes, three float32 values in LE. An enzyme that understands `geom:*` can read/write these floats; the kernel only stores 12 bytes.
+- hash:SHA256 — 32 bytes of digest. Any tool that knows `hash:SHA256` can validate the size; L0 treats it as just 32 bytes.
+- text:UTF8 — arbitrary length bytes. Rendering or normalization lives in enzymes; L0 uses bytewise compare and hash.
 
-Q: Will this block user‑defined types like complex numbers or meshes?
-A: No. Represent complex numbers as `VECTOR<FLOAT_BIN/32>` length 2 (or 64‑bit). Meshes can be trees of vectors: positions as `VECTOR<FLOAT_BIN/32>` length 3N, indices as `VECTOR<UINT/32>`, with a higher‑layer schema describing structure. L1+ can add a `@type` reference to a schema cell for introspection.
+---
 
-Q: What about 128‑bit hashes or IDs?
-A: Use `VECTOR<UINT8>` of the required length (16, 32, 64 bytes). If you need to name the algorithm (e.g., SHA‑256), attach that meaning at L1 via a `@type` or attribute cell.
+## 4) Q&A
 
-Q: Decimal vs hexadecimal floats?
-A: Presentation only. L0 stores IEEE binary32/64 canonical bytes; both decimal and hex text forms parse to the same stored value. If you need decimal floating point semantics, model them in L1+, or propose a future `FLOAT_DEC` extension.
+Q: Why make native data opaque?
+A: To keep the kernel small, deterministic, and future‑proof. Opaque bytes avoid a built‑in type explosion and push meaning to L1+, where it can evolve without touching L0.
 
-Q: Why little‑endian canonicalization?
-A: It yields stable bytes and hashes across architectures with simple, fast code. Endianness differences vanish at the boundary; comparison and hashing are uniform.
+Q: How do we ensure interoperability if L0 doesn’t canonicalize?
+A: By agreeing on canonical bytes per tag and writing them via enzymes. The cepDT identifies the convention; bytes carry the value.
 
-Q: Can we add matrices or other shapes later?
-A: Yes. Start with SCALAR and VECTOR at L0. Matrices and richer shapes can be added later as an additive, backward‑compatible extension or modeled as vectors today.
+Q: Can I mix endianness for the same tag?
+A: You can, but you shouldn’t. Pick one per tag (usually LE) so hashing, diffs, and equality remain stable.
 
-Q: Does UTF‑8 validation change the bytes?
-A: No. L0 only validates that the sequence is valid UTF‑8 and stores the bytes as‑is. No normalization is applied at L0; upper layers may add normalization policies if desired.
+Q: What happens if an enzyme doesn’t recognize a tag?
+A: Nothing breaks. The data remains comparable and storable. Unrecognized tags are simply opaque to that enzyme.
 
-Q: How does this help streams and external I/O?
-A: Streams naturally use `VECTOR<UINT8>` windows with offsets and lengths. The same canonicalization and hashing rules apply, enabling deterministic journaling and replay as defined in the I/O Streams document.
+Q: How do I model vectors, matrices, or structs now?
+A: Use L1+ schemas and tags (e.g., `geom:VECTOR3F`, `linalg:MATRIX4x4F32`) and document the byte layout. The kernel doesn’t need to know the shape.
 
-Q: Won’t this duplicate information at higher layers?
-A: Intentionally yes, but with different roles. L0’s descriptor ensures safe storage and replay. L1+ adds human/domain meaning. They align, not conflict: L1 types can restate or refine L0 expectations.
+Q: Does L0 still validate UTF‑8 or numbers?
+A: No. Validation is up to enzymes and L1+. L0 compares and hashes bytes only.
+
+Q: What about external handles and streams?
+A: They remain supported as opaque representations. When materialized or journaled, they must produce consistent bytes for their tag, so replay remains deterministic.
