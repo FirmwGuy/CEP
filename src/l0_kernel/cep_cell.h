@@ -353,34 +353,16 @@ size_t cep_word_to_text(cepID coded, char s[12]);
     Cell Data
 */
 
-typedef uint64_t  cepHeartbeat;
+typedef uint64_t  cepHeartbeat;         // CEP heartbeat id number.
 
-struct _cepData {
-    union {
-      cepDT             _dt;
-      
-      struct {
-        struct {
-          cepID         datatype:   2,  // Type of data (see _cepDataType).
-                        bintype:    3,  // Content binary type (see _cepBinType).
-                        vector:     1,  // True (1) if content is a vector.
+typedef struct _cepDataNode  cepDataNode;
 
-                        domain:     CEP_NAME_BITS;
-        };
-        struct {
-          cepID         writable:   1,  // If data can be updated.
-                        lock:       1,  // Lock on data content.
-                        _reserved:  4,
-                        
-                        tag:        CEP_NAME_BITS;
-        };
-      };
-    };
-
-    cepHeartbeat        heartbeat;      // CEP heartbeat in which data was created. 
+struct _cepDataNode {
+    cepHeartbeat        modified;       // CEP heartbeat in which data was modified (including creation/deletion). 
+    cepDataNode*        past;           // Pointer to past data content history.
+    
     size_t              size;           // Data size in bytes.
     size_t              capacity;       // Buffer capacity in bytes.
-    cepData*            past;           // Pointer to past data content history.
     uint64_t            hash;           // Hash value of content.
 
     union {
@@ -397,6 +379,33 @@ struct _cepData {
         };
         uint8_t         value[2 * sizeof(void*)];  // Data value may start from here.
     };
+};
+
+struct _cepData {
+    union {
+      cepDT             _dt;
+      
+      struct {
+        struct {
+          cepID         datatype:   2,  // Type of data (see _cepDataType).
+                        _unused:    4, 
+
+                        domain:     CEP_NAME_BITS;
+        };
+        struct {
+          cepID         writable:   1,  // If data can be updated.
+                        lock:       1,  // Lock on data content.
+                        _reserved:  4,
+                        
+                        tag:        CEP_NAME_BITS;
+        };
+      };
+    };
+    
+    cepHeartbeat        created;        // Data content creation time.
+    cepHeartbeat        deleted;        // Data content deletion time (if any).
+
+    cepDataNode;
 };
 
 enum _cepDataType {
@@ -427,6 +436,24 @@ typedef struct {
     cepCell*        cell[];     // Array of cells shadowing this one.
 } cepShadow;
 
+typedef struct _cepStoreNode  cepStoreNode;
+
+struct _cepStoreNode {
+    union {
+        cepCell*    linked;     // A linked shadow cell (when children, see in cepCell otherwise).
+        cepShadow*  shadow;     // Shadow structure (if cell has children).
+    };
+
+    cepHeartbeat    modified;   // CEP heartbeat in which store was modified (including creation/deletion). 
+    
+    cepStoreNode*   past;       // Points to the previous store index in history (only used if catalog is re-sorted/indexed with different sorting function).
+
+    size_t          chdCount;   // Number of child cells.
+    size_t          totCount;   // Number of all cells included dead ones.
+    cepCompare      compare;    // Compare function for indexing children.
+
+    // The specific storage structure will follow after this...
+};
 
 struct _cepStore {
     union {
@@ -450,21 +477,14 @@ struct _cepStore {
       };
     };
 
-    cepDT           dirtype;    // Type of directory (it depends on domain). This is used *only* if cell has no data (ie, as a pure directory).
-
     cepCell*        owner;      // Cell owning this child storage.
-    union {
-        cepCell*    linked;     // A linked shadow cell (when children, see in cepCell otherwise).
-        cepShadow*  shadow;     // Shadow structure (if cell has children).
-    };
 
-    cepStore*       next;       // Next attribute/index/storage (requires hard links?).
+    cepHeartbeat    created;    // CEP heartbeat in which store was created. 
+    cepHeartbeat    deleted;    // CEP heartbeat in which store was deleted (if any). 
 
-    size_t          chdCount;   // Number of child cells.
-    cepCompare      compare;    // Compare function for indexing children.
     cepID           autoid;     // Auto-increment ID for inserting new child cells.
 
-    // The specific storage structure will follow after this...
+    cepStoreNode;
 };
 
 enum _cepCellStorage {

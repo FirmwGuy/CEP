@@ -1,85 +1,65 @@
 Append-Only And Idempotency In CEP Cells
 
 Introduction
-- CEP cells are like folders or items in a well‑organized cabinet. Some cells hold a single value (like a note card), and some cells can also hold other cells inside (like a folder with labeled papers). When something changes, CEP does not overwrite or erase history; instead, it adds the new version in a way that preserves the previous ones. This makes it easy to see what the latest value is while still keeping a trail of what came before.
-- “Append‑only” means changes are recorded by adding new entries rather than editing or deleting old ones. “Idempotency” means repeating the same change has the same effect as doing it once, so accidental repeats don’t cause damage or duplicate states.
+CEP stores information the way a careful archivist files letters: every note and every folder is kept in the order it was received, with timestamps that tell you exactly when each item arrived. Nothing is ever overwritten or shuffled out of place, so you can always open the cabinet and see both the present state and any prior version. Whether the cell holds a single piece of data, behaves like a directory of children, or mixes both, the goal is the same—add new material without disturbing the trail that brought us here.
 
 Technical Overview
-- Single‑value cells (no children):
-  - These cells keep their history as a single linked list per cell, using the `next` member of `cepData` to point to the previous content in history.
-  - The current value sits at the head; `data->next` points to the immediate previous version; that one’s `next` points further back, and so on.
-  - Rationale: most runtime needs only require the latest or the N‑1 value; full history is rarely needed at once. This layout makes the latest fast to access while keeping older versions reachable on demand.
+CEP implements append-only storage through two complementary timelines: `cepData` for payload bytes and `cepStore` for the structure of children. Each timeline carries its own `cepHeartbeat` timestamp so the engine can answer "What did this look like at heartbeat H?" without rebuilding history.
 
-- Cells with children (lists, dictionaries, trees):
-  - Adds/edits of children are naturally append‑only: the parent simply incorporates the new or updated child without needing to rewrite past structure.
-  - Deletions are logical: when a child is removed, the child remains in place but is marked as deleted. This preserves history and avoids reshuffling siblings.
-  - Named children in dictionaries: a subtle case arises if a named child is deleted and a new child with the same name is later added. In that scenario, the original child receives a “re‑incarnated” flag so that CEP can maintain the continuity of “live” history for that name across incarnations.
-  - Implementation detail: CEP uses the `next` member of the `cepStore` structure as needed to thread together the incarnations so that lookups see the correct current child while older, deleted incarnations remain part of the history chain.
+Timeline Building Blocks
+- `cepData`
+  - Represents a single materialized value (bytes, handles, or streams) and carries a `modified` stamped when the value became current.
+  - Links to the previous value through `data->past`, forming a backward chain ordered from newest to oldest.
+- `cepStore`
+  - Describes the live view of a cell's children and holds its own `modified` for structural changes.
+  - Maintains a `store->past` pointer to the prior structural snapshot, letting the engine rewind the child set to any heartbeat.
+- `cepStoreNode`
+  - Represents one child within a store, bundles child metadata (name, ordering key, state), and is stamped with the `modified` at which the child entered or changed state.
+  - Links through `node->past` so name reuse, deletions, or catalog re-ordering can be backtracked without mutating old nodes.
 
-Data‑Only Cells: Historical Chain
-- Head (current): latest `cepData` instance.
-- Back‑link: `cepData->next` points to the immediate previous `cepData` snapshot.
-- Traversal: clients that need more than the current value can follow `next` to walk older versions. Most code only touches the head for speed.
+Data-Only Cells
+- The head `cepData` records the current payload alongside its `modified`.
+- Traversing history for heartbeat H involves following `data->past` until the chain finds the newest node whose `modified` is ≤ H.
+- Because nodes are only appended, equality checks between the requested payload and the head enforce idempotency: if the incoming payload matches the current head, no new node is added.
 
-Dictionary‑Style Cells: Name Reuse And Re‑Incarnation
-- Deleting a named child marks it deleted but leaves it in the parent’s store for history.
-- If a new child with the same name is added later:
-  - The old child is flagged as “re‑incarnated”.
-  - The store uses its `next` linkage to keep both the current incarnation and its prior live history connected.
-  - Lookups for “current by name” resolve to the newest live child, while history queries can still reach the older incarnations.
+Children-Only Cells
+- Directory-style cells use `cepStore` to capture the membership of their children at each structural change.
+- A read at heartbeat H selects the newest store whose `store->modified` ≤ H, then iterates its child nodes, skipping those whose `node->modified` is greater than H or that were marked deleted before H.
+- Sorted directories remain stable because inserts append new nodes while preserving the precomputed ordering key. Deletions mark a node as inactive but keep the node in place so older heartbeats still see it.
+- Catalogs that allow user-driven sorting keep an additional backtracking chain: `store->past` references the previous ordering snapshot, and each `node->past` preserves the earlier position or index. Replaying those links lets the engine rebuild the catalog order that was effective at heartbeat H without re-sorting.
 
-Operational Properties
-- Fast “current” access: the latest value or current child is directly reachable without scanning full history.
-- Cheap history retention: older versions remain linked without costly rewrites.
-- Stable identifiers: children aren’t physically removed; deletion is a state, not an erasure, which helps auditing and time‑travel scenarios.
-- Predictable memory growth: history grows only by appended nodes; no in‑place rewrites.
+Cells With Data And Children
+- These cells maintain both timelines in parallel: `cepData` for the payload and `cepStore` for child structure.
+- State reconstruction first resolves the child set by replaying `cepStore` against the requested heartbeat, then reads the payload chain. Because data and structure have separate timestamps, a query can combine the latest payload at heartbeat H with the appropriate child set even if the two were updated at different moments.
+- Idempotency applies independently—duplicate payloads do not create new `cepData` nodes, and repeated structural updates that do not change the effective child set do not append new `cepStore` snapshots.
 
-Notes For Implementers
-- `cepData->next` is used to chain historical data versions for single‑value cells.
-- `cepStore->next` is used to chain store incarnations when a named child is deleted and later re‑added, enabling re‑incarnation semantics.
-- Dictionary deletion should mark a child as deleted rather than physically removing it, so that subsequent name re‑use can re‑incarnate correctly.
-- Most read paths should fetch the head/current entry first; history traversal should be opt‑in to preserve performance.
+Heartbeat-Aware Traversal
+- To answer time-travel queries, the engine compares the target heartbeat against the timestamp on each node rather than scanning entire history.
+- A child is considered present at heartbeat H when its `node->modified` ≤ H and no later deletion heartbeat precedes H. The same rule applies to payloads using the `cepData` chain.
+- This approach keeps lookups O(1) for the current state and O(k) for stepping back k historical updates, while guaranteeing that all past states remain reconstructable.
 
-Idempotency
-- Concept: applying the same logical update one or many times results in the same state as applying it once. This avoids duplicate states when messages are retried or operations race.
-- Data‑only cells:
-  - Equivalence: two updates are equivalent if their effective payload bytes (plus relevant metadata like `encoding` and `attribute`) are identical. If equivalent to the current head, skip creating a new `cepData` node (no‑op).
-- Representation bridging: for `VALUE` vs `DATA`, compare bytewise payload; for `HANDLE`/`STREAM`, compare a stable identity (library id, resource id/path, offset/length, version/ETag). If they denote the same materialized content, treat as idempotent. Any per-tag canonicalization (endianness/encoding) is defined by enzymes/L1+, not by L0.
-  - Optional hashing: `cepData.hash` can store a content hash to accelerate equality checks; on collision, verify bytes for correctness.
-- Cells with children:
-  - Inserts/appends: if the new child matches the current live child with the same identity (e.g., same name in dictionaries, same position/autoid in insertion lists, or same compare‑key in sorted stores) and equal content, treat as a no‑op.
-  - Deletions: deleting an already deleted child is a no‑op. The first deletion marks the child deleted but keeps it in history; subsequent deletions do not alter state.
-  - Re‑incarnation: when a deleted name is added again, a new live incarnation is created and linked; adding the same incarnation again (same identity and equal content) is a no‑op.
-- Operation keys (optional): higher layers can supply idempotency keys with mutation intents. CEP can persist the last‑seen key alongside the head (data or child) and drop duplicates without even comparing content.
-- Invariants:
-  - No duplicate head states for identical inputs.
-  - Replaying the same sequence yields the same final state.
-  - History grows only when the effective state changes.
+Idempotency Guarantees
+- Content equality: CEP compares the incoming payload (bytes plus relevant metadata such as encoding or resource identity) against the head `cepData`. Matching content means the update is discarded as a no-op.
+- Structural equality: For children, CEP compares the intended mutation against the latest live node for that identity (name, ordering key, or auto-id). If the mutation would recreate the same child state, the update is skipped.
+- Stable ordering: Because directories are append-only, the ordering function is evaluated only when the child first appears or when the catalog explicitly changes sorting rules. Replay uses `store->past` and `node->past` to revisit earlier orderings without reprocessing live data.
+- Operation keys: Higher layers may store idempotency keys alongside heads to short-circuit duplicate operations before deep comparisons are needed.
+
+Implementation Notes
+- Always stamp both `cepData` and `cepStore` with the `cepHeartbeat` that made them current; history queries rely on those timestamps to gate traversal.
+- Mark deletions by setting the child state on the existing node and appending a new `cepStore` snapshot if the structural view changes. Never free or repurpose nodes that already belong to history.
+- Keep comparisons local: only the head of the relevant chain must be inspected to decide idempotency; deep history traversal is optional and on-demand.
+- Ensure catalog-oriented stores update both `store->past` and `node->past` whenever the user-facing sorting key changes so past ordering remains derivable.
 
 Q&A
-- Why not overwrite values in place?
-  - Append‑only preserves history for auditing, debugging, and time‑travel while keeping current access fast. Overwrites lose context and complicate concurrent reasoning.
-
-- Does keeping deleted children increase lookup cost?
-  - No for current reads: current entries are indexed for direct access. Historical/deleted entries are consulted only when explicitly traversing history.
-
-- What if the same name keeps getting deleted and re‑added?
-  - Each re‑addition creates a new live incarnation. Older ones stay linked and marked accordingly. Current reads still resolve to the latest live incarnation.
-
-- How do I read the previous value quickly?
-  - From the head `cepData`, follow `data->next` one step to get N‑1. This is O(1) to reach the current and O(k) to step back k versions.
-
-- Is full history ever removed?
-  - The model is append‑only by design. Compaction/GC policies, if any, would be explicit and outside the default semantics.
-
-- Where does idempotency come in?
-  - Idempotency complements append‑only by ensuring repeated application of the same logical update does not create multiple distinct “new” states. When a new value equals the current head (or a child addition equals the current live child), CEP performs a no‑op instead of appending.
-
-- How does CEP decide if two updates are the same?
-- By comparing payload bytes and relevant metadata. For handles/streams, a stable resource identity (e.g., library id + resource id + range + version) is used. A stored hash can speed this up but does not replace equality checks.
-
-- Do idempotent checks slow down writes?
-  - Current‑only checks are fast (hash + short‑circuit). Full history is not scanned; idempotency compares against the head state for the targeted identity.
-
-- What about concurrent retries or reordered deliveries?
-  - Append‑only makes order explicit in history. Idempotency prevents duplicate heads for the same logical update. Higher layers can supply idempotency keys for strong deduplication in the presence of retries.
+- What problem does append-only solve?
+  - It guarantees that every historical state stays available while still making the latest view fast to read, which is essential for auditing and recovery.
+- How do timestamps help with history?
+  - The per-node `cepHeartbeat` lets CEP answer "What existed at heartbeat H?" by simple comparisons instead of replaying every change from the beginning.
+- Does keeping deleted items slow the system down?
+  - No. Current reads go straight to the head nodes. Historical traversal only walks as far back as the heartbeat you requested.
+- Can directories lose their ordering after deletions?
+  - No. Inserts respect the original ordering key, and deletions mark nodes without moving anything, so sorted directories remain stable across time.
+- How are catalog re-sorts handled?
+  - When a user changes the sort criteria, CEP records a new `cepStore` snapshot and threads the previous layout through `store->past` and `node->past`, enabling backtracking to any prior index order.
+- What happens if the same update arrives twice?
+  - Idempotency checks compare it to the head state; if nothing changes, CEP skips the append so history only grows when the effective state changes.
