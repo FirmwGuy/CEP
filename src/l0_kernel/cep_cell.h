@@ -105,6 +105,8 @@ typedef struct _cepCell       cepCell;
 
 typedef int (*cepCompare)(const cepCell* restrict, const cepCell* restrict, void*);
 
+typedef uint64_t  cepOpCount;         // CEP per-cell operation id number.
+
 
 /*
  *  Domain-Tag (DT) Naming
@@ -353,15 +355,9 @@ size_t cep_word_to_text(cepID coded, char s[12]);
     Cell Data
 */
 
-typedef uint64_t  cepHeartbeat;         // CEP heartbeat id number.
-
 typedef struct _cepDataNode  cepDataNode;
-
-cepHeartbeat cep_cell_timestamp_next(void);
-void         cep_cell_timestamp_reset(void);
-
 struct _cepDataNode {
-    cepHeartbeat        modified;       // CEP heartbeat in which data was modified (including creation/deletion). 
+    cepOpCount          modified;       // CEP heartbeat in which data was modified (including creation/deletion). 
     cepDataNode*        past;           // Pointer to past data content history.
     
     size_t              size;           // Data size in bytes.
@@ -405,8 +401,8 @@ struct _cepData {
       };
     };
     
-    cepHeartbeat        created;        // Data content creation time.
-    cepHeartbeat        deleted;        // Data content deletion time (if any).
+    cepOpCount          created;        // Data content creation time.
+    cepOpCount          deleted;        // Data content deletion time (if any).
 
     cepDataNode;
 };
@@ -447,7 +443,7 @@ struct _cepStoreNode {
         cepShadow*  shadow;     // Shadow structure (if cell has children).
     };
 
-    cepHeartbeat    modified;   // CEP heartbeat in which store was modified (including creation/deletion). 
+    cepOpCount      modified;   // CEP heartbeat in which store was modified (including creation/deletion). 
     
     cepStoreNode*   past;       // Points to the previous store index in history (only used if catalog is re-sorted/indexed with different sorting function).
 
@@ -482,8 +478,8 @@ struct _cepStore {
 
     cepCell*        owner;      // Cell owning this child storage.
 
-    cepHeartbeat    created;    // CEP heartbeat in which store was created. 
-    cepHeartbeat    deleted;    // CEP heartbeat in which store was deleted (if any). 
+    cepOpCount      created;    // CEP heartbeat in which store was created. 
+    cepOpCount      deleted;    // CEP heartbeat in which store was deleted (if any). 
 
     cepID           autoid;     // Auto-increment ID for inserting new child cells.
 
@@ -656,7 +652,7 @@ static inline void cep_cell_replace(cepCell* oldr, cepCell* newr) {
 
 // Root dictionary
 static inline cepCell* cep_root(void)  {extern cepCell CEP_ROOT; assert(!cep_cell_is_void(&CEP_ROOT));  return &CEP_ROOT;}
-static inline cepHeartbeat cep_cell_timestamp(void)  {extern cepHeartbeat CEP_HEARTBEAT; return CEP_HEARTBEAT;}
+static inline cepOpCount cep_cell_timestamp(void)  {extern cepOpCount CEP_OP_COUNT; return CEP_OP_COUNT;}
 
 
 // Links
@@ -763,8 +759,8 @@ cepCell* cep_cell_find_next_by_name(const cepCell* cell, cepDT* name, uintptr_t*
 cepCell* cep_cell_find_next_by_path(const cepCell* start, cepPath* path, uintptr_t* prev);
 
 bool cep_cell_traverse      (cepCell* cell, cepTraverse func, void* context, cepEntry* entry);
-bool cep_cell_traverse_past (cepCell* cell, cepHeartbeat heartbeat, cepTraverse func, void* context, cepEntry* entry);
-bool cep_cell_deep_traverse_past(cepCell* cell, cepHeartbeat heartbeat, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
+bool cep_cell_traverse_past (cepCell* cell, cepOpCount timestamp, cepTraverse func, void* context, cepEntry* entry);
+bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 bool cep_cell_deep_traverse (cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 
 

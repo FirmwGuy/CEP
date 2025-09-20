@@ -671,25 +671,24 @@ static void test_cell_tech_sequencing_catalog(void) {
 
 
 
-// Build a linear list with interleaved heartbeats to confirm shallow traversal filtering.
+// Build a linear list with interleaved timestamps to confirm shallow traversal filtering.
+
+extern void cep_cell_timestamp_reset(void);
+
 static void test_cell_traverse_past_filters(void) {
     cep_cell_timestamp_reset();
 
     cepCell* list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("LST")), 0, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
 
     uint32_t value = 10;
-    cep_cell_timestamp_next();
     cepCell* first = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("A1")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
 
     value = 20;
-    cep_cell_timestamp_next();
     cepCell* second = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("B1")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
 
     value = 30;
-    cep_cell_timestamp_next();
     cepCell* third = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("C1")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
 
-    cep_cell_timestamp_next();
     value = 11;
     cep_cell_update_value(first, sizeof value, &value);
     value = 33;
@@ -724,33 +723,25 @@ static void test_cell_traverse_past_filters(void) {
 }
 
 
-// Build a small tree whose branches land on distinct heartbeats to validate deep traversal filtering.
+// Build a small tree whose branches land on distinct timestamps to validate deep traversal filtering.
 static void test_cell_deep_traverse_past_filters(void) {
-    cep_cell_timestamp_reset();
-
     cepCell* tree = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("TREE")), 0, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
 
-    cep_cell_timestamp_next();
     cepCell* branchA = cep_cell_append_list(tree, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("BRNA")), CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
 
     uint32_t value = 100;
-    cep_cell_timestamp_next();
     cepCell* top = cep_cell_append_value(tree, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("TOP")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
 
-    cep_cell_timestamp_next();
     cepCell* branchB = cep_cell_append_list(tree, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("BRNB")), CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
 
-    cep_cell_timestamp_next();
     value = 1;
     cepCell* a1 = cep_cell_append_value(branchA, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("A01")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
     value = 2;
     cepCell* a2 = cep_cell_append_value(branchA, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("A02")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
 
-    cep_cell_timestamp_next();
     value = 3;
     cepCell* b1 = cep_cell_append_value(branchB, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("B01")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
 
-    cep_cell_timestamp_next();
     value = 101;
     cep_cell_update_value(top, sizeof value, &value);
 

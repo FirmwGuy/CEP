@@ -46,18 +46,18 @@ static inline int cell_compare_by_name(const cepCell* restrict key, const cepCel
 
 
 
-cepHeartbeat  CEP_HEARTBEAT;
+cepOpCount  CEP_OP_COUNT;
 
 
-cepHeartbeat cep_cell_timestamp_next(void) {
-    cepHeartbeat next = ++CEP_HEARTBEAT;
+cepOpCount cep_cell_timestamp_next(void) {
+    cepOpCount next = ++CEP_OP_COUNT;
     if (!next)
-        next = ++CEP_HEARTBEAT;   // Avoid 0 as a valid timestamp.
+        next = ++CEP_OP_COUNT;   // Avoid 0 as a valid timestamp.
     return next;
 }
 
 void cep_cell_timestamp_reset(void) {
-    CEP_HEARTBEAT = 0;
+    CEP_OP_COUNT = 0;
 }
 
 
@@ -210,8 +210,10 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
     data->tag       = type->tag;
     data->datatype  = datatype;
     data->writable  = writable;
-    data->created   = CEP_HEARTBEAT;
-    data->modified  = CEP_HEARTBEAT;
+    
+    cepOpCount timestamp = cep_cell_timestamp_next();
+    data->created   = timestamp;
+    data->modified  = timestamp;
 
     CEP_PTR_SEC_SET(dataloc, address);
 
@@ -309,7 +311,7 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
     }
 
     if (result)
-        data->modified = CEP_HEARTBEAT;
+        data->modified = cep_cell_timestamp_next();
 
     return result;
 }
@@ -408,8 +410,10 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
     store->indexing = indexing;
     store->writable = true;
     store->autoid   = 1;
-    store->created  = CEP_HEARTBEAT;
-    store->modified = CEP_HEARTBEAT;
+    
+    cepOpCount timestamp = cep_cell_timestamp_next();
+    store->created  = timestamp;
+    store->modified = timestamp;
 
     return store;
 }
@@ -420,7 +424,7 @@ void cep_store_del(cepStore* store) {
 
     // ToDo: cleanup shadows.
 
-    store->deleted = CEP_HEARTBEAT;
+    store->deleted = cep_cell_timestamp_next();
 
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
@@ -484,7 +488,7 @@ void cep_store_delete_children_hard(cepStore* store) {
     store->autoid   = 1;
 
     if (had_children)
-        store->modified = CEP_HEARTBEAT;
+        store->modified = cep_cell_timestamp_next();
 }
 
 
@@ -591,7 +595,7 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 
     cell->parent = store;
     store->chdCount++;
-    store->modified = CEP_HEARTBEAT;
+    store->modified = cep_cell_timestamp_next();
 
     return cell;
 }
@@ -639,7 +643,7 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
 
     cell->parent = store;
     store->chdCount++;
-    store->modified = CEP_HEARTBEAT;
+    store->modified = cep_cell_timestamp_next();
 
     return cell;
 }
@@ -933,7 +937,7 @@ static inline bool store_traverse(cepStore* store, cepTraverse func, void* conte
 typedef struct {
     cepTraverse     func;
     void*           context;
-    cepHeartbeat    heartbeat;
+    cepOpCount    timestamp;
     cepEntry        pending;
     cepEntry*       userEntry;
     cepCell*        prev;
@@ -943,15 +947,15 @@ typedef struct {
 } cepTraversePastCtx;
 
 
-static inline bool cep_data_chain_has_heartbeat(const cepData* data, cepHeartbeat heartbeat) {
+static inline bool cep_data_chain_has_timestamp(const cepData* data, cepOpCount timestamp) {
     if (!data)
         return false;
 
     const cepDataNode* node = (const cepDataNode*) &data->modified;
     while (node) {
-        if (node->modified == heartbeat)
+        if (node->modified == timestamp)
             return true;
-        if (node->modified < heartbeat)
+        if (node->modified < timestamp)
             break;
         node = node->past;
     }
@@ -960,15 +964,15 @@ static inline bool cep_data_chain_has_heartbeat(const cepData* data, cepHeartbea
 }
 
 
-static inline bool cep_store_chain_has_heartbeat(const cepStore* store, cepHeartbeat heartbeat) {
+static inline bool cep_store_chain_has_timestamp(const cepStore* store, cepOpCount timestamp) {
     if (!store)
         return false;
 
     const cepStoreNode* node = (const cepStoreNode*) &store->modified;
     while (node) {
-        if (node->modified == heartbeat)
+        if (node->modified == timestamp)
             return true;
-        if (node->modified < heartbeat)
+        if (node->modified < timestamp)
             break;
         node = node->past;
     }
@@ -977,21 +981,21 @@ static inline bool cep_store_chain_has_heartbeat(const cepStore* store, cepHeart
 }
 
 
-static inline bool cep_entry_has_heartbeat(const cepEntry* entry, cepHeartbeat heartbeat) {
+static inline bool cep_entry_has_timestamp(const cepEntry* entry, cepOpCount timestamp) {
     assert(entry);
 
     const cepCell* cell = entry->cell;
-    if (!cell || !heartbeat)
+    if (!cell || !timestamp)
         return false;
 
     if (cell->metacell.type == CEP_TYPE_NORMAL) {
-        if (cep_data_chain_has_heartbeat(cell->data, heartbeat))
+        if (cep_data_chain_has_timestamp(cell->data, timestamp))
             return true;
-        if (cep_store_chain_has_heartbeat(cell->store, heartbeat))
+        if (cep_store_chain_has_timestamp(cell->store, timestamp))
             return true;
     }
 
-    return cep_store_chain_has_heartbeat(cell->parent, heartbeat);
+    return cep_store_chain_has_timestamp(cell->parent, timestamp);
 }
 
 
@@ -1017,7 +1021,7 @@ static inline bool cep_traverse_past_proxy(cepEntry* entry, void* ctxPtr) {
     if (!entry->cell)
         return true;
 
-    bool match = cep_entry_has_heartbeat(entry, ctx->heartbeat);
+    bool match = cep_entry_has_timestamp(entry, ctx->timestamp);
     if (!match)
         return true;
 
@@ -1050,7 +1054,7 @@ typedef struct {
     cepTraverse             nodeFunc;
     cepTraverse             endFunc;
     void*                   context;
-    cepHeartbeat            heartbeat;
+    cepOpCount            timestamp;
     cepEntry*               userEntry;
     cepEntry                endEntry;
     cepTraversePastFrame*   frames;
@@ -1123,7 +1127,7 @@ static inline bool cep_deep_traverse_past_proxy(cepEntry* entry, void* ctxPtr) {
     if (depth > ctx->maxDepthInUse)
         ctx->maxDepthInUse = depth;
 
-    if (!cep_entry_has_heartbeat(entry, ctx->heartbeat))
+    if (!cep_entry_has_timestamp(entry, ctx->timestamp))
         return true;
 
     if (depth && ctx->frames[depth - 1].hasPending) {
@@ -1185,7 +1189,7 @@ static inline void store_to_dictionary(cepStore* store) {
         return;
 
     store->storage = CEP_INDEX_BY_NAME;
-    store->modified = CEP_HEARTBEAT;
+    store->modified = cep_cell_timestamp_next();
 
     if (store->chdCount <= 1)
         return;
@@ -1226,7 +1230,7 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
         return;
 
     store->storage = CEP_INDEX_BY_FUNCTION;   // FixMe: by hash?
-    store->modified = CEP_HEARTBEAT;
+    store->modified = cep_cell_timestamp_next();
 
     if (store->chdCount <= 1)
         return;
@@ -1291,7 +1295,7 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
     }
 
     store->chdCount--;
-    store->modified = CEP_HEARTBEAT;
+    store->modified = cep_cell_timestamp_next();
 
     return true;
 }
@@ -1330,7 +1334,7 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
     }
 
     store->chdCount--;
-    store->modified = CEP_HEARTBEAT;
+    store->modified = cep_cell_timestamp_next();
 
     return true;
 }
@@ -1372,7 +1376,7 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
     }
 
     store->chdCount--;
-    store->modified = CEP_HEARTBEAT;
+    store->modified = cep_cell_timestamp_next();
 }
 
 
@@ -1694,8 +1698,8 @@ bool cep_cell_traverse(cepCell* cell, cepTraverse func, void* context, cepEntry*
 }
 
 
-bool cep_cell_traverse_past(cepCell* cell, cepHeartbeat heartbeat, cepTraverse func, void* context, cepEntry* entry) {
-    assert(!cep_cell_is_void(cell) && func && heartbeat);
+bool cep_cell_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, void* context, cepEntry* entry) {
+    assert(!cep_cell_is_void(cell) && func && timestamp);
 
     CELL_FOLLOW_LINK_TO_STORE(cell, store, true);
 
@@ -1709,7 +1713,7 @@ bool cep_cell_traverse_past(cepCell* cell, cepHeartbeat heartbeat, cepTraverse f
     cepTraversePastCtx ctx = {
         .func = func,
         .context = context,
-        .heartbeat = heartbeat,
+        .timestamp = timestamp,
         .userEntry = userEntry,
     };
 
@@ -1725,8 +1729,8 @@ bool cep_cell_traverse_past(cepCell* cell, cepHeartbeat heartbeat, cepTraverse f
 }
 
 
-bool cep_cell_deep_traverse_past(cepCell* cell, cepHeartbeat heartbeat, cepTraverse func, cepTraverse endFunc, void* context, cepEntry* entry) {
-    assert(!cep_cell_is_void(cell) && heartbeat && (func || endFunc));
+bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, cepTraverse endFunc, void* context, cepEntry* entry) {
+    assert(!cep_cell_is_void(cell) && timestamp && (func || endFunc));
 
     CELL_FOLLOW_LINK_TO_STORE(cell, store, true);
 
@@ -1745,7 +1749,7 @@ bool cep_cell_deep_traverse_past(cepCell* cell, cepHeartbeat heartbeat, cepTrave
         .nodeFunc      = func,
         .endFunc       = endFunc,
         .context       = context,
-        .heartbeat     = heartbeat,
+        .timestamp     = timestamp,
         .userEntry     = userEntry,
         .frames        = frames,
         .frameCount    = (unsigned)frameCount,
