@@ -30,6 +30,79 @@
 
 
 
+static inline uint64_t cep_hash_bytes(const void* data, size_t size) {
+    if (!data || !size)
+        return 0;
+
+    const uint8_t* bytes = data;
+    uint64_t hash = 1469598103934665603ULL;          // FNV-1a offset basis.
+    for (size_t i = 0; i < size; i++) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;                    // FNV-1a prime.
+    }
+    return hash;
+}
+
+
+static inline const void* cep_data_payload(const cepData* data) {
+    assert(data);
+
+    switch (data->datatype) {
+      case CEP_DATATYPE_VALUE:
+        return data->value;
+
+      case CEP_DATATYPE_DATA:
+        return data->data;
+
+      case CEP_DATATYPE_HANDLE:
+      case CEP_DATATYPE_STREAM:
+        break;
+    }
+
+    return NULL;
+}
+
+
+static inline bool cep_data_equals_bytes(const cepData* data, const void* bytes, size_t size) {
+    assert(data);
+
+    if (data->size != size)
+        return false;
+
+    if (!size)
+        return true;
+
+    const void* payload = cep_data_payload(data);
+    if (!payload || !bytes)
+        return false;
+
+    return memcmp(payload, bytes, size) == 0;
+}
+
+
+static inline uint64_t cep_data_compute_hash(const cepData* data) {
+    assert(data);
+
+    switch (data->datatype) {
+      case CEP_DATATYPE_VALUE:
+      case CEP_DATATYPE_DATA:
+        return cep_hash_bytes(cep_data_payload(data), data->size);
+
+      case CEP_DATATYPE_HANDLE:
+      case CEP_DATATYPE_STREAM: {
+        uint64_t hash = 0;
+        hash ^= cep_hash_bytes(&data->handle, sizeof data->handle);
+        hash ^= cep_hash_bytes(&data->library, sizeof data->library);
+        return hash;
+      }
+    }
+
+    return 0;
+}
+
+
+
+
 #define CEP_MAX_FAST_STACK_DEPTH  16
 
 unsigned MAX_DEPTH = CEP_MAX_FAST_STACK_DEPTH;     // FixMe: (used by path/traverse) better policy than a global for this.
@@ -58,6 +131,58 @@ cepOpCount cep_cell_timestamp_next(void) {
 
 void cep_cell_timestamp_reset(void) {
     CEP_OP_COUNT = 0;
+}
+
+
+static void cep_data_history_push(cepData* data) {
+    assert(data);
+
+    if (!data->modified)
+        return;
+
+    cepDataNode* past = cep_malloc(sizeof *past);
+    memcpy(past, (const cepDataNode*) &data->modified, sizeof *past);
+    past->past = data->past;
+    data->past = past;
+}
+
+static void cep_data_history_clear(cepData* data) {
+    if (!data)
+        return;
+
+    for (cepDataNode* node = data->past; node; ) {
+        cepDataNode* previous = node->past;
+        cep_free(node);
+        node = previous;
+    }
+
+    data->past = NULL;
+}
+
+
+static void cep_store_history_push(cepStore* store) {
+    assert(store);
+
+    if (!store->modified)
+        return;
+
+    cepStoreNode* past = cep_malloc(sizeof *past);
+    memcpy(past, (const cepStoreNode*) &store->modified, sizeof *past);
+    past->past = store->past;
+    store->past = past;
+}
+
+static void cep_store_history_clear(cepStore* store) {
+    if (!store)
+        return;
+
+    for (cepStoreNode* node = store->past; node; ) {
+        cepStoreNode* previous = node->past;
+        cep_free(node);
+        node = previous;
+    }
+
+    store->past = NULL;
 }
 
 
@@ -214,6 +339,7 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
     cepOpCount timestamp = cep_cell_timestamp_next();
     data->created   = timestamp;
     data->modified  = timestamp;
+    data->hash      = cep_data_compute_hash(data);
 
     CEP_PTR_SEC_SET(dataloc, address);
 
@@ -237,6 +363,7 @@ void cep_data_del(cepData* data) {
       }
     }
 
+    cep_data_history_clear(data);
     cep_free(data);
 }
 
@@ -276,10 +403,24 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
     if (!data->writable)
         return NULL;
 
+    if (!swap) {
+        switch (data->datatype) {
+          case CEP_DATATYPE_VALUE:
+          case CEP_DATATYPE_DATA:
+            if (cep_data_equals_bytes(data, value, size))
+                return (void*)cep_data_payload(data);
+            break;
+
+          default:
+            break;
+        }
+    }
+
     void* result = NULL;
 
     switch (data->datatype) {
       case CEP_DATATYPE_VALUE: {
+        cep_data_history_push(data);
         assert(data->capacity >= capacity);
         memcpy(data->value, value, size);
         data->size = size;
@@ -288,6 +429,7 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
       }
 
       case CEP_DATATYPE_DATA: {
+        cep_data_history_push(data);
         assert(value);
         if (swap) {
             if (data->destructor)
@@ -310,8 +452,10 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
       }
     }
 
-    if (result)
+    if (result) {
+        data->hash = cep_data_compute_hash(data);
         data->modified = cep_cell_timestamp_next();
+    }
 
     return result;
 }
@@ -423,6 +567,8 @@ void cep_store_del(cepStore* store) {
     assert(cep_store_valid(store));
 
     // ToDo: cleanup shadows.
+
+    cep_store_history_clear(store);
 
     store->deleted = cep_cell_timestamp_next();
 
@@ -1185,10 +1331,12 @@ static inline bool cep_deep_traverse_past_end_proxy(cepEntry* entry, void* ctxPt
 static inline void store_to_dictionary(cepStore* store) {
     assert(cep_store_valid(store));
 
-    if (store->storage == CEP_INDEX_BY_NAME)
+    if (store->indexing == CEP_INDEX_BY_NAME)
         return;
 
-    store->storage = CEP_INDEX_BY_NAME;
+    cep_store_history_push(store);
+
+    store->indexing = CEP_INDEX_BY_NAME;
     store->modified = cep_cell_timestamp_next();
 
     if (store->chdCount <= 1)
@@ -1224,12 +1372,13 @@ static inline void store_to_dictionary(cepStore* store) {
 static inline void store_sort(cepStore* store, cepCompare compare, void* context) {
     assert(cep_store_valid(store) && compare);
 
-    store->compare = compare;
-
-    if (store->storage == CEP_INDEX_BY_FUNCTION)
+    if (store->indexing == CEP_INDEX_BY_FUNCTION)
         return;
 
-    store->storage = CEP_INDEX_BY_FUNCTION;   // FixMe: by hash?
+    cep_store_history_push(store);
+
+    store->compare  = compare;
+    store->indexing = CEP_INDEX_BY_FUNCTION;   // FixMe: by hash?
     store->modified = cep_cell_timestamp_next();
 
     if (store->chdCount <= 1)

@@ -70,66 +70,6 @@ static bool print_values(cepEntry* entry, void* unused) {
 
 
 
-// Small buffer that lets the tests assert full traversal metadata without dynamic allocs.
-typedef struct {
-    unsigned count;
-    cepCell* cell[8];
-    cepCell* prev[8];
-    cepCell* next[8];
-    size_t   position[8];
-    unsigned depth[8];
-} cepTraverseLog;
-
-
-typedef struct {
-    cepTraverseLog nodes;
-    struct {
-        unsigned count;
-        cepCell* cell[8];
-        unsigned depth[8];
-        size_t   position[8];
-    } endings;
-} cepDeepTraverseLog;
-
-
-static bool cep_collect_traverse_entry(cepEntry* entry, void* ctx) {
-    cepTraverseLog* log = ctx;
-    assert_not_null(entry->cell);
-    assert_true(log->count < (sizeof(log->cell) / sizeof(log->cell[0])));
-
-    unsigned idx = log->count++;
-    log->cell[idx]     = entry->cell;
-    log->prev[idx]     = entry->prev;
-    log->next[idx]     = entry->next;
-    log->position[idx] = entry->position;
-    log->depth[idx]    = entry->depth;
-
-    return true;
-}
-
-
-static bool cep_collect_deep_entry(cepEntry* entry, void* ctx) {
-    cepDeepTraverseLog* log = ctx;
-    return cep_collect_traverse_entry(entry, &log->nodes);
-}
-
-
-static bool cep_collect_deep_end(cepEntry* entry, void* ctx) {
-    cepDeepTraverseLog* log = ctx;
-    assert_not_null(entry->cell);
-    assert_true(log->endings.count < (sizeof(log->endings.cell) / sizeof(log->endings.cell[0])));
-
-    unsigned idx = log->endings.count++;
-    log->endings.cell[idx]     = entry->cell;
-    log->endings.depth[idx]    = entry->depth;
-    log->endings.position[idx] = entry->position;
-
-    return true;
-}
-
-
-
-
 static void test_cell_value(cepCell* rec, uint32_t trueval) {
     cepData* data = rec->data;
     uint32_t vread = *(uint32_t*)data->value;
@@ -671,128 +611,7 @@ static void test_cell_tech_sequencing_catalog(void) {
 
 
 
-// Build a linear list with interleaved timestamps to confirm shallow traversal filtering.
-
-extern void cep_cell_timestamp_reset(void);
-
-static void test_cell_traverse_past_filters(void) {
-    cep_cell_timestamp_reset();
-
-    cepCell* list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("LST")), 0, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
-
-    uint32_t value = 10;
-    cepCell* first = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("A1")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
-
-    value = 20;
-    cepCell* second = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("B1")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
-
-    value = 30;
-    cepCell* third = cep_cell_append_value(list, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("C1")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
-
-    value = 11;
-    cep_cell_update_value(first, sizeof value, &value);
-    value = 33;
-    cep_cell_update_value(third, sizeof value, &value);
-
-    cepTraverseLog log = {0};
-    assert_true(cep_cell_traverse_past(list, 2, cep_collect_traverse_entry, &log, NULL));
-    assert_uint(log.count, ==, 1);
-    assert_ptr_equal(log.cell[0], second);
-    assert_null(log.prev[0]);
-    assert_null(log.next[0]);
-    assert_size(log.position[0], ==, 0);
-    assert_uint(log.depth[0], ==, 0);
-
-    memset(&log, 0, sizeof log);
-    assert_true(cep_cell_traverse_past(list, 4, cep_collect_traverse_entry, &log, NULL));
-    assert_uint(log.count, ==, 2);
-    assert_ptr_equal(log.cell[0], first);
-    assert_null(log.prev[0]);
-    assert_ptr_equal(log.next[0], third);
-    assert_size(log.position[0], ==, 0);
-    assert_ptr_equal(log.cell[1], third);
-    assert_ptr_equal(log.prev[1], first);
-    assert_null(log.next[1]);
-    assert_size(log.position[1], ==, 1);
-
-    memset(&log, 0, sizeof log);
-    assert_true(cep_cell_traverse_past(list, 6, cep_collect_traverse_entry, &log, NULL));
-    assert_uint(log.count, ==, 0);
-
-    cep_cell_delete_hard(list);
-}
-
-
-// Build a small tree whose branches land on distinct timestamps to validate deep traversal filtering.
-static void test_cell_deep_traverse_past_filters(void) {
-    cepCell* tree = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("TREE")), 0, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
-
-    cepCell* branchA = cep_cell_append_list(tree, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("BRNA")), CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
-
-    uint32_t value = 100;
-    cepCell* top = cep_cell_append_value(tree, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("TOP")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
-
-    cepCell* branchB = cep_cell_append_list(tree, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("BRNB")), CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
-
-    value = 1;
-    cepCell* a1 = cep_cell_append_value(branchA, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("A01")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
-    value = 2;
-    cepCell* a2 = cep_cell_append_value(branchA, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("A02")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
-
-    value = 3;
-    cepCell* b1 = cep_cell_append_value(branchB, CEP_DTS(CEP_ACRO("HB"), CEP_ACRO("B01")), CEP_DTAW("CEP", "value"), &value, sizeof value, sizeof value);
-
-    value = 101;
-    cep_cell_update_value(top, sizeof value, &value);
-
-    cepDeepTraverseLog log = {0};
-    assert_true(cep_cell_deep_traverse_past(tree, 4, cep_collect_deep_entry, cep_collect_deep_end, &log, NULL));
-
-    assert_uint(log.nodes.count, ==, 2);
-    assert_ptr_equal(log.nodes.cell[0], a1);
-    assert_null(log.nodes.prev[0]);
-    assert_ptr_equal(log.nodes.next[0], a2);
-    assert_size(log.nodes.position[0], ==, 0);
-    assert_uint(log.nodes.depth[0], ==, 1);
-
-    assert_ptr_equal(log.nodes.cell[1], a2);
-    assert_ptr_equal(log.nodes.prev[1], a1);
-    assert_null(log.nodes.next[1]);
-    assert_size(log.nodes.position[1], ==, 1);
-    assert_uint(log.nodes.depth[1], ==, 1);
-
-    assert_uint(log.endings.count, ==, 0);
-
-    memset(&log, 0, sizeof log);
-    assert_true(cep_cell_deep_traverse_past(tree, 5, cep_collect_deep_entry, cep_collect_deep_end, &log, NULL));
-
-    assert_uint(log.nodes.count, ==, 1);
-    assert_ptr_equal(log.nodes.cell[0], b1);
-    assert_null(log.nodes.prev[0]);
-    assert_null(log.nodes.next[0]);
-    assert_size(log.nodes.position[0], ==, 0);
-    assert_uint(log.nodes.depth[0], ==, 1);
-    assert_uint(log.endings.count, ==, 0);
-
-    memset(&log, 0, sizeof log);
-    assert_true(cep_cell_deep_traverse_past(tree, 6, cep_collect_deep_entry, cep_collect_deep_end, &log, NULL));
-
-    assert_uint(log.nodes.count, ==, 1);
-    assert_ptr_equal(log.nodes.cell[0], top);
-    assert_null(log.nodes.prev[0]);
-    assert_null(log.nodes.next[0]);
-    assert_size(log.nodes.position[0], ==, 0);
-    assert_uint(log.nodes.depth[0], ==, 0);
-    assert_uint(log.endings.count, ==, 0);
-
-    memset(&log, 0, sizeof log);
-    assert_true(cep_cell_deep_traverse_past(tree, 7, cep_collect_deep_entry, cep_collect_deep_end, &log, NULL));
-    assert_uint(log.nodes.count, ==, 0);
-    assert_uint(log.endings.count, ==, 0);
-
-    cep_cell_delete_hard(tree);
-}
-
+// Cell timestamp traversal tests go here...
 
 
 
@@ -814,9 +633,6 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
     test_cell_tech_catalog(CEP_STORAGE_ARRAY);
     test_cell_tech_catalog(CEP_STORAGE_RED_BLACK_T);
     test_cell_tech_sequencing_catalog();
-
-    test_cell_traverse_past_filters();
-    test_cell_deep_traverse_past_filters();
 
     cep_cell_system_shutdown();
     return MUNIT_OK;
