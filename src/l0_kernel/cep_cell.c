@@ -27,8 +27,61 @@
 
 #include <stdarg.h>
 
+typedef struct _cepHistoryCell       cepHistoryCell;
+typedef struct _cepStoreHistoryEntry cepStoreHistoryEntry;
+typedef struct _cepStoreHistory      cepStoreHistory;
+
+struct _cepHistoryCell {
+    cepMetacell     metacell;
+    cepData*        data;
+    cepStoreHistory*store;
+    cepCell*        link;
+};
+
+struct _cepStoreHistoryEntry {
+    cepDT                   name;
+    cepHistoryCell*         cell;
+    cepOpCount              modified;
+    bool                    alive;
+    cepStoreHistoryEntry*   past;
+};
+
+struct _cepStoreHistory {
+    cepStoreNode            node;
+    size_t                  entryCount;
+    cepStoreHistoryEntry*   entries;
+};
 
 
+static cepHistoryCell*         cep_history_cell_clone(const cepCell* cell);
+static void                    cep_history_cell_free(cepHistoryCell* cell);
+static cepStoreHistory*        cep_store_history_snapshot(const cepStore* store, const cepStoreHistory* previous);
+static void                    cep_store_history_free(cepStoreHistory* history);
+static cepStoreHistoryEntry*   cep_store_history_find_entry(const cepStoreHistory* history, const cepDT* name);
+static cepData*               cep_data_clone_full(const cepData* data);
+static void                   cep_data_clone_free(cepData* data);
+static cepDataNode*           cep_data_history_clone_chain(const cepDataNode* node, unsigned datatype);
+static void                   cep_data_history_free_chain(cepDataNode* node, unsigned datatype);
+static bool                   cep_cell_structural_equal(const cepCell* existing, const cepCell* incoming);
+static bool                   cep_data_structural_equal(const cepData* existing, const cepData* incoming);
+
+static void                    cep_store_history_push(cepStore* store);
+static void                    cep_store_history_clear(cepStore* store);
+
+
+static inline cepStoreHistory* cep_store_history_from_node(cepStoreNode* node) {
+    return node? (cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
+}
+
+static inline const cepStoreHistory* cep_store_history_from_const_node(const cepStoreNode* node) {
+    return node? (const cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
+}
+
+static inline cepCell* store_find_child_by_name(const cepStore* store, const cepDT* name);
+static inline cepCell* store_find_child_by_position(const cepStore* store, size_t position);
+static inline cepCell* store_first_child(const cepStore* store);
+static inline cepCell* store_last_child(const cepStore* store);
+static inline cepCell* store_next_child(const cepStore* store, cepCell* child);
 
 static inline uint64_t cep_hash_bytes(const void* data, size_t size) {
     if (!data || !size)
@@ -158,34 +211,6 @@ static void cep_data_history_clear(cepData* data) {
 
     data->past = NULL;
 }
-
-
-static void cep_store_history_push(cepStore* store) {
-    assert(store);
-
-    if (!store->modified)
-        return;
-
-    cepStoreNode* past = cep_malloc(sizeof *past);
-    memcpy(past, (const cepStoreNode*) &store->modified, sizeof *past);
-    past->past = store->past;
-    store->past = past;
-}
-
-static void cep_store_history_clear(cepStore* store) {
-    if (!store)
-        return;
-
-    for (cepStoreNode* node = store->past; node; ) {
-        cepStoreNode* previous = node->past;
-        cep_free(node);
-        node = previous;
-    }
-
-    store->past = NULL;
-}
-
-
 
 
 /*
@@ -461,7 +486,147 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
 }
 
 
+static cepDataNode* cep_data_history_clone_chain(const cepDataNode* node, unsigned datatype)
+{
+    if (!node)
+        return NULL;
 
+    cepDataNode* clone = cep_malloc0(sizeof *clone);
+    clone->modified = node->modified;
+    clone->size     = node->size;
+    clone->capacity = node->capacity;
+    clone->hash     = node->hash;
+
+    switch (datatype) {
+      case CEP_DATATYPE_VALUE: {
+        if (clone->size)
+            memcpy(clone->value, node->value, clone->size);
+        break;
+      }
+
+      case CEP_DATATYPE_DATA: {
+        if (node->data && clone->capacity) {
+            clone->data = cep_malloc(clone->capacity);
+            memcpy(clone->data, node->data, clone->size);
+        }
+        clone->destructor = cep_free;
+        break;
+      }
+
+      case CEP_DATATYPE_HANDLE:
+      case CEP_DATATYPE_STREAM: {
+        clone->handle  = node->handle;
+        clone->library = node->library;
+        break;
+      }
+    }
+
+    clone->past = cep_data_history_clone_chain(node->past, datatype);
+    return clone;
+}
+
+static void cep_data_history_free_chain(cepDataNode* node, unsigned datatype)
+{
+    while (node) {
+        cepDataNode* past = node->past;
+
+        if (datatype == CEP_DATATYPE_DATA && node->data) {
+            if (node->destructor)
+                node->destructor(node->data);
+        }
+
+        cep_free(node);
+        node = past;
+    }
+}
+
+static cepData* cep_data_clone_full(const cepData* data)
+{
+    if (!data)
+        return NULL;
+
+    cepData* clone = cep_malloc0(sizeof *clone);
+    clone->_dt      = data->_dt;
+    clone->datatype = data->datatype;
+    clone->writable = data->writable;
+    clone->created  = data->created;
+    clone->deleted  = data->deleted;
+    clone->modified = data->modified;
+    clone->size     = data->size;
+    clone->capacity = data->capacity;
+    clone->hash     = data->hash;
+
+    switch (data->datatype) {
+      case CEP_DATATYPE_VALUE: {
+        if (clone->size)
+            memcpy(clone->value, data->value, clone->size);
+        break;
+      }
+
+      case CEP_DATATYPE_DATA: {
+        if (data->data && clone->capacity) {
+            clone->data = cep_malloc(clone->capacity);
+            memcpy(clone->data, data->data, clone->size);
+        }
+        clone->destructor = cep_free;
+        break;
+      }
+
+      case CEP_DATATYPE_HANDLE:
+      case CEP_DATATYPE_STREAM: {
+        clone->handle  = data->handle;
+        clone->library = data->library;
+        break;
+      }
+    }
+
+    clone->past = cep_data_history_clone_chain(data->past, data->datatype);
+    return clone;
+}
+
+static void cep_data_clone_free(cepData* data)
+{
+    if (!data)
+        return;
+
+    if (data->datatype == CEP_DATATYPE_DATA && data->data) {
+        if (data->destructor)
+            data->destructor(data->data);
+    }
+
+    cep_data_history_free_chain(data->past, data->datatype);
+    cep_free(data);
+}
+
+static bool cep_data_structural_equal(const cepData* existing, const cepData* incoming)
+{
+    if (existing == incoming)
+        return true;
+    if (!existing || !incoming)
+        return false;
+
+    if (existing->datatype != incoming->datatype)
+        return false;
+
+    if (existing->size != incoming->size)
+        return false;
+
+    switch (existing->datatype) {
+      case CEP_DATATYPE_VALUE:
+      case CEP_DATATYPE_DATA:
+        return cep_data_equals_bytes(existing, cep_data_payload(incoming), incoming->size);
+
+      case CEP_DATATYPE_HANDLE:
+        return existing->handle == incoming->handle
+            && existing->library == incoming->library;
+
+      case CEP_DATATYPE_STREAM:
+        return existing->stream == incoming->stream
+            && existing->library == incoming->library;
+    }
+
+    return false;
+}
 
 /*
     Creates a new child store for cells:
@@ -607,6 +772,9 @@ void cep_store_delete_children_hard(cepStore* store) {
 
     bool had_children = store->chdCount;
 
+    if (had_children)
+        cep_store_history_push(store);
+
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
         list_del_all_children((cepList*) store);
@@ -657,6 +825,20 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 
     if (!store->writable)
         return NULL;
+
+    if (store->indexing == CEP_INDEX_BY_NAME) {
+        cepCell* existing = store_find_child_by_name(store, cep_cell_get_name(child));
+        if (existing && cep_cell_structural_equal(existing, child))
+            return existing;
+    } else if (store->indexing == CEP_INDEX_BY_INSERTION) {
+        if (store->chdCount && store->chdCount > (size_t)context) {
+            cepCell* existing = store_find_child_by_position(store, (size_t)context);
+            if (existing && cep_cell_structural_equal(existing, child))
+                return existing;
+        }
+    }
+
+    cep_store_history_push(store);
 
     cepCell* cell;
 
@@ -755,6 +937,14 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
 
     if (!store->writable)
         return NULL;
+
+    if (store->indexing == CEP_INDEX_BY_INSERTION && store->chdCount) {
+        cepCell* existing = prepend? store_first_child(store): store_last_child(store);
+        if (existing && cep_cell_structural_equal(existing, child))
+            return existing;
+    }
+
+    cep_store_history_push(store);
 
     cepCell* cell;
 
@@ -1324,6 +1514,174 @@ static inline bool cep_deep_traverse_past_end_proxy(cepEntry* entry, void* ctxPt
 
 
 
+static cepStoreHistoryEntry* cep_store_history_find_entry(const cepStoreHistory* history, const cepDT* name)
+{
+    if (!history || !history->entries)
+        return NULL;
+
+    for (size_t i = 0; i < history->entryCount; i++) {
+        cepStoreHistoryEntry* entry = (cepStoreHistoryEntry*)&history->entries[i];
+        if ((entry->name.domain == name->domain)
+         && (entry->name.tag == name->tag))
+            return entry;
+    }
+
+    return NULL;
+}
+
+static cepHistoryCell* cep_history_cell_clone(const cepCell* cell)
+{
+    if (!cell)
+        return NULL;
+
+    cepHistoryCell* clone = cep_malloc0(sizeof *clone);
+    clone->metacell = cell->metacell;
+
+    if (cep_cell_is_link(cell)) {
+        clone->link = cell->link;
+        return clone;
+    }
+
+    if (cep_cell_is_normal(cell)) {
+        if (cep_cell_has_data(cell))
+            clone->data = cep_data_clone_full(cell->data);
+        if (cep_cell_has_store(cell))
+            clone->store = cep_store_history_snapshot(cell->store, NULL);
+    }
+
+    return clone;
+}
+
+static void cep_history_cell_free(cepHistoryCell* cell)
+{
+    if (!cell)
+        return;
+
+    if (cell->data)
+        cep_data_clone_free(cell->data);
+
+    if (cell->store)
+        cep_store_history_free(cell->store);
+
+    cep_free(cell);
+}
+
+static cepStoreHistory* cep_store_history_snapshot(const cepStore* store, const cepStoreHistory* previous)
+{
+    assert(store);
+
+    cepStoreHistory* history = cep_malloc0(sizeof *history);
+    memcpy(&history->node, (const cepStoreNode*)&store->modified, sizeof(history->node));
+    history->node.past   = previous? (cepStoreNode*)&previous->node: NULL;
+    history->node.linked = NULL;
+    history->entryCount  = store->chdCount;
+
+    if (history->entryCount) {
+        history->entries = cep_malloc0(history->entryCount * sizeof *history->entries);
+        size_t index = 0;
+        for (cepCell* child = store_first_child(store); child; child = store_next_child(store, child)) {
+            cepStoreHistoryEntry* entry = &history->entries[index++];
+            entry->name     = *cep_cell_get_name(child);
+            entry->modified = store->modified;
+            entry->alive    = true;
+            entry->cell     = cep_history_cell_clone(child);
+            entry->past     = previous? cep_store_history_find_entry(previous, &entry->name): NULL;
+        }
+    }
+
+    return history;
+}
+
+static void cep_store_history_free(cepStoreHistory* history)
+{
+    if (!history)
+        return;
+
+    if (history->entries) {
+        for (size_t i = 0; i < history->entryCount; i++)
+            cep_history_cell_free(history->entries[i].cell);
+        cep_free(history->entries);
+    }
+
+    cep_free(history);
+}
+
+static void cep_store_history_push(cepStore* store)
+{
+    assert(store);
+
+    if (!store->modified)
+        return;
+
+    const cepStoreHistory* previous = cep_store_history_from_const_node(store->past);
+    cepStoreHistory* history = cep_store_history_snapshot(store, previous);
+    history->node.past = store->past;
+    store->past = &history->node;
+}
+
+static void cep_store_history_clear(cepStore* store)
+{
+    if (!store)
+        return;
+
+    for (cepStoreNode* node = store->past; node; ) {
+        cepStoreHistory* history = cep_store_history_from_node(node);
+        node = node->past;
+        cep_store_history_free(history);
+    }
+
+    store->past = NULL;
+}
+
+static bool cep_cell_structural_equal(const cepCell* existing, const cepCell* incoming)
+{
+    if (existing == incoming)
+        return true;
+
+    if (!existing || !incoming)
+        return false;
+
+    if (memcmp(&existing->metacell, &incoming->metacell, sizeof(cepMetacell)) != 0)
+        return false;
+
+    if (cep_cell_is_link(existing))
+        return existing->link == incoming->link;
+
+    bool existingHasData = cep_cell_is_normal(existing) && cep_cell_has_data(existing);
+    bool incomingHasData = cep_cell_is_normal(incoming) && cep_cell_has_data(incoming);
+    if (existingHasData != incomingHasData)
+        return false;
+    if (existingHasData && !cep_data_structural_equal(existing->data, incoming->data))
+        return false;
+
+    bool existingHasStore = cep_cell_is_normal(existing) && cep_cell_has_store(existing);
+    bool incomingHasStore = cep_cell_is_normal(incoming) && cep_cell_has_store(incoming);
+    if (existingHasStore != incomingHasStore)
+        return false;
+
+    if (existingHasStore) {
+        if (existing->store->indexing != incoming->store->indexing)
+            return false;
+        if (existing->store->chdCount != incoming->store->chdCount)
+            return false;
+
+        cepCell* exChild = store_first_child(existing->store);
+        cepCell* inChild = store_first_child(incoming->store);
+        while (exChild && inChild) {
+            if (!cep_cell_structural_equal(exChild, inChild))
+                return false;
+            exChild = store_next_child(existing->store, exChild);
+            inChild = store_next_child(incoming->store, inChild);
+        }
+
+        if (exChild || inChild)
+            return false;
+    }
+
+    return true;
+}
+
+
 
 /*
     Converts an unsorted store into a dictionary
@@ -1420,6 +1778,8 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
     if (!store->chdCount || !store->writable)
         return false;
 
+    cep_store_history_push(store);
+
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
         list_take((cepList*) store, target);
@@ -1459,6 +1819,8 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
     if (!store->chdCount || !store->writable)
         return false;
 
+    cep_store_history_push(store);
+
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
         list_pop((cepList*) store, target);
@@ -1494,6 +1856,8 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
 */
 static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* target) {
     assert(cep_store_valid(store) && store->chdCount);
+
+    cep_store_history_push(store);
 
     if (target)
         cep_cell_transfer(cell, target);  // Save cell.
