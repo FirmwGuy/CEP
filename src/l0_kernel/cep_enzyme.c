@@ -23,7 +23,7 @@
  */
 
 
-#include "cep_enzyme.h"
+#include "cep_heartbeat.h"
 
 
 
@@ -64,6 +64,10 @@ size_t cep_enzyme_registry_size(const cepEnzymeRegistry* registry) {
 
 
 int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor) {
+    if (!cep_heartbeat_bootstrap()) {
+        return CEP_ENZYME_FATAL;
+    }
+
     if (!registry || !query || !descriptor || !descriptor->callback) {
         return CEP_ENZYME_FATAL;
     }
@@ -74,6 +78,10 @@ int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const
 
 
 int cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor) {
+    if (!cep_heartbeat_bootstrap()) {
+        return CEP_ENZYME_FATAL;
+    }
+
     if (!registry || !query || !descriptor || registry->entry_count == 0u) {
         return CEP_ENZYME_FATAL;
     }

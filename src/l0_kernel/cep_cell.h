@@ -912,6 +912,8 @@ void cep_cell_sort(cepCell* cell, cepCompare compare, void* context);
 // Initiate and shutdown cell system
 void cep_cell_system_initiate(void);
 void cep_cell_system_shutdown(void);
+bool cep_cell_system_initialized(void);
+void cep_cell_system_ensure(void);
 
 
 /*

@@ -248,6 +248,18 @@ void cep_cell_system_shutdown(void) {
 }
 
 
+bool cep_cell_system_initialized(void) {
+    return !cep_cell_is_void(&CEP_ROOT);
+}
+
+
+void cep_cell_system_ensure(void) {
+    if (!cep_cell_system_initialized()) {
+        cep_cell_system_initiate();
+    }
+}
+
+
 
 
 /* Allocate and initialise a cepData payload for a cell. Select the proper 

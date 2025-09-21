@@ -22,17 +22,16 @@
  *
  */
 
-
 #include "cep_heartbeat.h"
 
-
+#include <string.h>
 
 
 static cepHeartbeatRuntime CEP_RUNTIME = {
     .current = CEP_BEAT_INVALID,
 };
 
-
+static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
 
 
 static bool cep_runtime_has_registry(void) {
@@ -40,36 +39,182 @@ static bool cep_runtime_has_registry(void) {
 }
 
 
-static void cep_runtime_reset_state(void) {
-    if (cep_runtime_has_registry()) {
+static void cep_runtime_reset_state(bool destroy_registry) {
+    if (destroy_registry && cep_runtime_has_registry()) {
         cep_enzyme_registry_destroy(CEP_RUNTIME.registry);
+        CEP_RUNTIME.registry = NULL;
     }
 
-    CEP_RUNTIME.registry = NULL;
     CEP_RUNTIME.current = CEP_BEAT_INVALID;
     CEP_RUNTIME.running = false;
+
     memset(&CEP_RUNTIME.topology, 0, sizeof(CEP_RUNTIME.topology));
     memset(&CEP_RUNTIME.policy, 0, sizeof(CEP_RUNTIME.policy));
 }
 
 
-bool cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHeartbeatPolicy* policy) {
-    if (!topology || !policy) {
-        return false;
-    }
-
-    CEP_RUNTIME.topology = *topology;
-    CEP_RUNTIME.policy = *policy;
-    return true;
+static void cep_runtime_reset_defaults(void) {
+    memset(&CEP_DEFAULT_TOPOLOGY, 0, sizeof(CEP_DEFAULT_TOPOLOGY));
 }
 
 
-bool cep_heartbeat_startup(void) {
+static cepCell* ensure_root_dictionary(cepCell* root, const cepDT* name) {
+    cepCell* cell = cep_cell_find_by_name(root, name);
+    if (!cell) {
+        cell = cep_cell_append_dictionary(root, (cepDT*)name, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_RED_BLACK_T);
+    }
+    return cell;
+}
+
+
+static cepCell* ensure_root_list(cepCell* root, const cepDT* name) {
+    cepCell* cell = cep_cell_find_by_name(root, name);
+    if (!cell) {
+        cell = cep_cell_append_list(root, (cepDT*)name, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
+    }
+    return cell;
+}
+
+
+static void cep_heartbeat_clear_store(cepCell* cell) {
+    if (!cell) {
+        return;
+    }
+
+    if (cell->store) {
+        cep_store_delete_children_hard(cell->store);
+    }
+}
+
+
+static void cep_heartbeat_reset_runtime_cells(void) {
+    /* Keep the structural nodes but clear their contents. */
+    cep_heartbeat_clear_store(CEP_RUNTIME.topology.rt);
+    cep_heartbeat_clear_store(CEP_RUNTIME.topology.journal);
+    cep_heartbeat_clear_store(CEP_RUNTIME.topology.tmp);
+    cep_heartbeat_clear_store(CEP_RUNTIME.topology.data);
+    cep_heartbeat_clear_store(CEP_RUNTIME.topology.cas);
+    cep_heartbeat_clear_store(CEP_RUNTIME.topology.env);
+    cep_heartbeat_clear_store(CEP_RUNTIME.topology.lib);
+    cep_heartbeat_clear_store(CEP_RUNTIME.topology.enzymes);
+}
+
+
+bool cep_heartbeat_bootstrap(void) {
+    cep_cell_system_ensure();
+
+    cepCell* root = cep_root();
+    CEP_DEFAULT_TOPOLOGY.root = root;
+    if (!CEP_RUNTIME.topology.root) {
+        CEP_RUNTIME.topology.root = root;
+    }
+
+    const cepDT* sys_name = CEP_DTAW("CEP", "sys");
+    cepCell* sys = ensure_root_dictionary(root, sys_name);
+    CEP_DEFAULT_TOPOLOGY.sys = sys;
+    if (!CEP_RUNTIME.topology.sys) {
+        CEP_RUNTIME.topology.sys = sys;
+    }
+
+    const cepDT* rt_name = CEP_DTAW("CEP", "rt");
+    cepCell* rt = ensure_root_dictionary(root, rt_name);
+    CEP_DEFAULT_TOPOLOGY.rt = rt;
+    if (!CEP_RUNTIME.topology.rt) {
+        CEP_RUNTIME.topology.rt = rt;
+    }
+
+    const cepDT* journal_name = CEP_DTAW("CEP", "journal");
+    cepCell* journal = ensure_root_dictionary(root, journal_name);
+    CEP_DEFAULT_TOPOLOGY.journal = journal;
+    if (!CEP_RUNTIME.topology.journal) {
+        CEP_RUNTIME.topology.journal = journal;
+    }
+
+    const cepDT* env_name = CEP_DTAW("CEP", "env");
+    cepCell* env = ensure_root_dictionary(root, env_name);
+    CEP_DEFAULT_TOPOLOGY.env = env;
+    if (!CEP_RUNTIME.topology.env) {
+        CEP_RUNTIME.topology.env = env;
+    }
+
+    const cepDT* cas_name = CEP_DTAW("CEP", "cas");
+    cepCell* cas = ensure_root_dictionary(root, cas_name);
+    CEP_DEFAULT_TOPOLOGY.cas = cas;
+    if (!CEP_RUNTIME.topology.cas) {
+        CEP_RUNTIME.topology.cas = cas;
+    }
+
+    const cepDT* lib_name = CEP_DTAW("CEP", "lib");
+    cepCell* lib = ensure_root_dictionary(root, lib_name);
+    CEP_DEFAULT_TOPOLOGY.lib = lib;
+    if (!CEP_RUNTIME.topology.lib) {
+        CEP_RUNTIME.topology.lib = lib;
+    }
+
+    const cepDT* data_name = CEP_DTAW("CEP", "data");
+    cepCell* data = ensure_root_dictionary(root, data_name);
+    CEP_DEFAULT_TOPOLOGY.data = data;
+    if (!CEP_RUNTIME.topology.data) {
+        CEP_RUNTIME.topology.data = data;
+    }
+
+    const cepDT* tmp_name = CEP_DTAW("CEP", "tmp");
+    cepCell* tmp = ensure_root_list(root, tmp_name);
+    CEP_DEFAULT_TOPOLOGY.tmp = tmp;
+    if (!CEP_RUNTIME.topology.tmp) {
+        CEP_RUNTIME.topology.tmp = tmp;
+    }
+
+    const cepDT* enzymes_name = CEP_DTAW("CEP", "enzymes");
+    cepCell* enzymes = ensure_root_dictionary(root, enzymes_name);
+    CEP_DEFAULT_TOPOLOGY.enzymes = enzymes;
+    if (!CEP_RUNTIME.topology.enzymes) {
+        CEP_RUNTIME.topology.enzymes = enzymes;
+    }
+
     if (!cep_runtime_has_registry()) {
         CEP_RUNTIME.registry = cep_enzyme_registry_create();
         if (!CEP_RUNTIME.registry) {
             return false;
         }
+    }
+
+    return true;
+}
+
+
+bool cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHeartbeatPolicy* policy) {
+    if (!policy) {
+        return false;
+    }
+
+    if (!cep_heartbeat_bootstrap()) {
+        return false;
+    }
+
+    cepHeartbeatTopology merged = CEP_DEFAULT_TOPOLOGY;
+    if (topology) {
+        if (topology->root)     merged.root     = topology->root;
+        if (topology->sys)      merged.sys      = topology->sys;
+        if (topology->rt)       merged.rt       = topology->rt;
+        if (topology->journal)  merged.journal  = topology->journal;
+        if (topology->env)      merged.env      = topology->env;
+        if (topology->cas)      merged.cas      = topology->cas;
+        if (topology->lib)      merged.lib      = topology->lib;
+        if (topology->data)     merged.data     = topology->data;
+        if (topology->tmp)      merged.tmp      = topology->tmp;
+        if (topology->enzymes)  merged.enzymes  = topology->enzymes;
+    }
+
+    CEP_RUNTIME.topology = merged;
+    CEP_RUNTIME.policy   = *policy;
+    return true;
+}
+
+
+bool cep_heartbeat_startup(void) {
+    if (!cep_heartbeat_bootstrap()) {
+        return false;
     }
 
     CEP_RUNTIME.current = CEP_RUNTIME.policy.start_at;
@@ -78,8 +223,21 @@ bool cep_heartbeat_startup(void) {
 }
 
 
+bool cep_heartbeat_restart(void) {
+    if (!cep_heartbeat_bootstrap()) {
+        return false;
+    }
+
+    cep_heartbeat_reset_runtime_cells();
+
+    CEP_RUNTIME.current = CEP_RUNTIME.policy.start_at;
+    CEP_RUNTIME.running = true;
+    return true;
+}
+
+
 bool cep_heartbeat_begin(cepBeatNumber beat) {
-    if (!cep_runtime_has_registry()) {
+    if (!cep_heartbeat_bootstrap()) {
         return false;
     }
 
@@ -122,7 +280,11 @@ bool cep_heartbeat_step(void) {
 
 
 void cep_heartbeat_shutdown(void) {
-    cep_runtime_reset_state();
+    cep_runtime_reset_state(true);
+    cep_runtime_reset_defaults();
+    if (cep_cell_system_initialized()) {
+        cep_cell_system_shutdown();
+    }
 }
 
 
@@ -151,6 +313,9 @@ const cepHeartbeatTopology* cep_heartbeat_topology(void) {
 
 
 cepEnzymeRegistry* cep_heartbeat_registry(void) {
+    if (!cep_heartbeat_bootstrap()) {
+        return NULL;
+    }
     return CEP_RUNTIME.registry;
 }
 
@@ -207,5 +372,12 @@ cepCell* cep_heartbeat_tmp_root(void) {
 
 cepCell* cep_heartbeat_enzymes_root(void) {
     return CEP_RUNTIME.topology.enzymes;
+}
+
+
+static void cep_heartbeat_auto_shutdown(void) CEP_AT_SHUTDOWN_(101);
+
+static void cep_heartbeat_auto_shutdown(void) {
+    cep_heartbeat_shutdown();
 }
 

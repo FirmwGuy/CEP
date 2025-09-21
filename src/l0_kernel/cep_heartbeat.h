@@ -71,7 +71,9 @@ typedef struct {
 
 
 bool  cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHeartbeatPolicy* policy);
+bool  cep_heartbeat_bootstrap(void);
 bool  cep_heartbeat_startup(void);
+bool  cep_heartbeat_restart(void);
 bool  cep_heartbeat_begin(cepBeatNumber beat);
 bool  cep_heartbeat_resolve_agenda(void);
 bool  cep_heartbeat_execute_agenda(void);
