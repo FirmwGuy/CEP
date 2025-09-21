@@ -1343,6 +1343,58 @@ static inline bool cep_cell_matches_snapshot(const cepCell* cell, cepOpCount sna
     return cep_entry_has_timestamp(&entry, snapshot);
 }
 
+static inline cepCell* store_find_child_by_name_past(const cepStore* store, const cepDT* name, cepOpCount snapshot) {
+    assert(cep_store_valid(store) && cep_dt_valid(name));
+
+    if (!store->chdCount)
+        return NULL;
+
+    if (!snapshot)
+        return store_find_child_by_name(store, name);
+
+    cepCell* cell = store_find_child_by_name(store, name);
+    if (cell && cep_cell_matches_snapshot(cell, snapshot))
+        return cell;
+
+    return NULL;
+}
+
+static inline cepCell* store_find_child_by_position_past(const cepStore* store, size_t position, cepOpCount snapshot) {
+    assert(cep_store_valid(store));
+
+    if (!snapshot)
+        return store_find_child_by_position(store, position);
+
+    if (!store->chdCount)
+        return NULL;
+
+    size_t index = 0;
+    for (cepCell* child = store_first_child(store); child; child = store_next_child(store, child)) {
+        if (!cep_cell_matches_snapshot(child, snapshot))
+            continue;
+        if (index == position)
+            return child;
+        index++;
+    }
+
+    return NULL;
+}
+
+static inline cepCell* store_find_next_child_by_name_past(const cepStore* store, cepDT* name, uintptr_t* childIdx, cepOpCount snapshot) {
+    assert(cep_store_valid(store) && cep_dt_valid(name));
+
+    if (!snapshot)
+        return store_find_next_child_by_name(store, name, childIdx);
+
+    cepCell* cell;
+    while ((cell = store_find_next_child_by_name(store, name, childIdx))) {
+        if (cep_cell_matches_snapshot(cell, snapshot))
+            return cell;
+    }
+
+    return NULL;
+}
+
 
 static inline bool cep_traverse_past_flush(cepTraversePastCtx* ctx, cepCell* nextCell) {
     ctx->pending.next = nextCell;
@@ -2118,11 +2170,11 @@ cepCell* cep_cell_last(const cepCell* cell) {
 
 
 /*
-    Retrieves a child cell by its ID
+    Retrieves a child cell by its ID at a specific snapshot
 */
-cepCell* cep_cell_find_by_name(const cepCell* cell, const cepDT* name) {
+cepCell* cep_cell_find_by_name_past(const cepCell* cell, const cepDT* name, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    return store_find_child_by_name(store, name);
+    return store_find_child_by_name_past(store, name, snapshot);
 }
 
 
@@ -2138,18 +2190,18 @@ cepCell* cep_cell_find_by_key(const cepCell* cell, cepCell* key, cepCompare comp
 
 
 /*
-    Gets the cell at index position in branch
+    Gets the cell at index position in branch at a specific snapshot
 */
-cepCell* cep_cell_find_by_position(const cepCell* cell, size_t position) {
+cepCell* cep_cell_find_by_position_past(const cepCell* cell, size_t position, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    return store_find_child_by_position(store, position);
+    return store_find_child_by_position_past(store, position, snapshot);
 }
 
 
 /*
     Gets the cell by its path from start cell
 */
-cepCell* cep_cell_find_by_path(const cepCell* start, const cepPath* path) {
+cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, cepOpCount snapshot) {
     assert(!cep_cell_is_void(start) && path && path->length);
     if (!cep_cell_children(start))
         return NULL;
@@ -2157,10 +2209,9 @@ cepCell* cep_cell_find_by_path(const cepCell* start, const cepPath* path) {
 
     for (unsigned depth = 0;  depth < path->length;  depth++) {
         const cepPast* segment = &path->past[depth];
-        cell = cep_cell_find_by_name(cell, &segment->dt);
+        cepOpCount segSnapshot = segment->timestamp? segment->timestamp: snapshot;
+        cell = cep_cell_find_by_name_past(cell, &segment->dt, segSnapshot);
         if (!cell)
-            return NULL;
-        if (segment->timestamp && !cep_cell_matches_snapshot(cell, segment->timestamp))
             return NULL;
     }
 
@@ -2197,16 +2248,16 @@ cepCell* cep_cell_next(const cepCell* cell, cepCell* child) {
 /*
     Retrieves the first/next child cell by its ID
 */
-cepCell* cep_cell_find_next_by_name(const cepCell* cell, cepDT* name, uintptr_t* childIdx) {
+cepCell* cep_cell_find_next_by_name_past(const cepCell* cell, cepDT* name, uintptr_t* childIdx, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    return store_find_next_child_by_name(store, name, childIdx);
+    return store_find_next_child_by_name_past(store, name, childIdx, snapshot);
 }
 
 
 /*
     Gets the next cell with the (same) ID as specified for each branch
 */
-cepCell* cep_cell_find_next_by_path(const cepCell* start, cepPath* path, uintptr_t* prev) {
+cepCell* cep_cell_find_next_by_path_past(const cepCell* start, cepPath* path, uintptr_t* prev, cepOpCount snapshot) {
     assert(cep_cell_children(start) && path && path->length);
     if (!cep_cell_children(start))
         return NULL;
@@ -2252,7 +2303,8 @@ cepCell* cep_cell_find_next_by_path(const cepCell* start, cepPath* path, uintptr
         uintptr_t* statePtr = states? &states[depth]: NULL;
 
         cepPast* segment = &path->past[depth];
-        cepCell* child = cep_cell_find_next_by_name(parent, &segment->dt, statePtr);
+        cepOpCount segSnapshot = segment->timestamp? segment->timestamp: snapshot;
+        cepCell* child = cep_cell_find_next_by_name_past(parent, &segment->dt, statePtr, segSnapshot);
         if (!child) {
             if (statePtr)
                 *statePtr = 0;
@@ -2265,11 +2317,6 @@ cepCell* cep_cell_find_next_by_path(const cepCell* start, cepPath* path, uintptr
         }
 
         parents[depth + 1] = child;
-
-        if (segment->timestamp && !cep_cell_matches_snapshot(child, segment->timestamp)) {
-            // Skip this branch/cell and continue searching siblings.
-            continue;
-        }
 
         if (depth + 1 == depthCount) {
             CEP_CLEAN_FIND_PATH();
