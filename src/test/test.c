@@ -26,6 +26,12 @@
 #include "test.h"
 
 
+static MunitParameterEnum timeout_params[] = {
+    {"timeout", NULL},
+    {NULL, NULL}
+};
+
+
 
 
 MunitTest tests[] = {
@@ -35,7 +41,15 @@ MunitTest tests[] = {
         test_cell_setup,
         test_cell_tear_down,
         MUNIT_TEST_OPTION_NONE,
-        NULL                      // Parameters.
+        timeout_params             // Parameters.
+    },
+    {
+        "/traverse",
+        test_traverse,
+        test_traverse_setup,
+        test_traverse_tear_down,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params             // Parameters.
     },
     {
         "/wordacron",

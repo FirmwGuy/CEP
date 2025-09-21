@@ -78,6 +78,7 @@ if get_option('tests').enabled()
     'src/test/munit.c',
     'src/test/test.c',
     'src/test/test_cell.c',
+    'src/test/test_traverse.c',
     'src/test/test_wordacron.c',
     'src/test/test_enzyme.c',
   )

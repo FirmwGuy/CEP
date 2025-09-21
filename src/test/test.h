@@ -30,9 +30,24 @@
 #include "munit.h"
 
 
+typedef struct TestWatchdog TestWatchdog;
+
+enum {
+    CEP_NAME_ENUMERATION = 100,
+    CEP_NAME_TEMP,
+    CEP_NAME_Z_COUNT
+};
+
+
 MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_cell_setup(const MunitParameter params[], void* user_data);
 void        test_cell_tear_down(void* fixture);
+
+MunitResult test_traverse(const MunitParameter params[], void* user_data_or_fixture);
+void*       test_traverse_setup(const MunitParameter params[], void* user_data);
+void        test_traverse_tear_down(void* fixture);
+
+void        test_watchdog_signal(TestWatchdog* wd);
 
 MunitResult test_wordacron(const MunitParameter params[], void* user_data_or_fixture);
 
