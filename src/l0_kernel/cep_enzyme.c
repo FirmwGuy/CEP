@@ -344,8 +344,11 @@ int cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, con
 
 typedef struct {
     const cepEnzymeDescriptor* descriptor;
-    size_t                     specificity;
+    size_t                     specificity_signal;
+    size_t                     specificity_target;
+    size_t                     specificity_total;
     size_t                     registration_order;
+    uint8_t                    match_type;
 } cepEnzymeMatch;
 
 
@@ -353,6 +356,12 @@ typedef struct {
     const cepDT* name;
     size_t       index;
 } cepEnzymeMatchLookup;
+
+
+enum {
+    CEP_ENZYME_MATCH_FLAG_SIGNAL = 1u << 0,
+    CEP_ENZYME_MATCH_FLAG_TARGET = 1u << 1,
+};
 
 
 static int cep_enzyme_match_lookup_sort(const void* lhs, const void* rhs) {
@@ -406,44 +415,169 @@ static size_t cep_enzyme_match_index_by_name(const cepEnzymeMatchLookup* lookup,
 }
 
 
-static bool cep_enzyme_match_entry(const cepEnzymeEntry* entry, const cepImpulse* impulse) {
+static uint8_t cep_enzyme_match_strength(uint8_t flags) {
+    return (flags == (CEP_ENZYME_MATCH_FLAG_SIGNAL | CEP_ENZYME_MATCH_FLAG_TARGET)) ? 2u : 1u;
+}
+
+
+static bool cep_enzyme_match_prefer(const cepEnzymeMatch* lhs, const cepEnzymeMatch* rhs) {
+    uint8_t lhs_strength = cep_enzyme_match_strength(lhs->match_type);
+    uint8_t rhs_strength = cep_enzyme_match_strength(rhs->match_type);
+    if (lhs_strength != rhs_strength) {
+        return lhs_strength > rhs_strength;
+    }
+
+    if (lhs->specificity_total != rhs->specificity_total) {
+        return lhs->specificity_total > rhs->specificity_total;
+    }
+
+    int name_cmp = cep_dt_compare(&lhs->descriptor->name, &rhs->descriptor->name);
+    if (name_cmp != 0) {
+        return name_cmp < 0;
+    }
+
+    return lhs->registration_order < rhs->registration_order;
+}
+
+
+static void cep_enzyme_ready_push(size_t* heap, size_t* heap_size, size_t value, const cepEnzymeMatch* matches) {
+    size_t child = (*heap_size)++;
+    heap[child] = value;
+
+    while (child > 0u) {
+        size_t parent = (child - 1u) / 2u;
+        if (!cep_enzyme_match_prefer(&matches[heap[child]], &matches[heap[parent]])) {
+            break;
+        }
+        size_t tmp = heap[parent];
+        heap[parent] = heap[child];
+        heap[child] = tmp;
+        child = parent;
+    }
+}
+
+
+static size_t cep_enzyme_ready_pop(size_t* heap, size_t* heap_size, const cepEnzymeMatch* matches) {
+    size_t result = heap[0u];
+    size_t last = --(*heap_size);
+    heap[0u] = heap[last];
+
+    size_t parent = 0u;
+    while (true) {
+        size_t left = parent * 2u + 1u;
+        if (left >= *heap_size) {
+            break;
+        }
+        size_t right = left + 1u;
+        size_t best_child = left;
+        if (right < *heap_size && cep_enzyme_match_prefer(&matches[heap[right]], &matches[heap[left]])) {
+            best_child = right;
+        }
+
+        if (!cep_enzyme_match_prefer(&matches[heap[best_child]], &matches[heap[parent]])) {
+            break;
+        }
+
+        size_t tmp = heap[parent];
+        heap[parent] = heap[best_child];
+        heap[best_child] = tmp;
+        parent = best_child;
+    }
+
+    return result;
+}
+
+
+static uint8_t cep_enzyme_match_flags(const cepEnzymeEntry* entry, const cepImpulse* impulse, size_t* signal_specificity, size_t* target_specificity) {
+    if (signal_specificity) {
+        *signal_specificity = 0u;
+    }
+    if (target_specificity) {
+        *target_specificity = 0u;
+    }
     if (!entry || !impulse) {
-        return false;
+        return 0u;
     }
 
     const cepPath* query = entry->query;
     if (!query || query->length == 0u) {
-        return false;
+        return 0u;
     }
 
     const cepPath* signal = impulse->signal_path;
     const cepPath* target = impulse->target_path;
 
-    bool matches = false;
+    const size_t specificity = query->length;
+    uint8_t flags = 0u;
 
     switch (entry->descriptor.match) {
       case CEP_ENZYME_MATCH_EXACT:
-        matches = (signal && cep_enzyme_paths_equal(query, signal)) ||
-                  (target && cep_enzyme_paths_equal(query, target));
+        if (signal && cep_enzyme_paths_equal(query, signal)) {
+            flags |= CEP_ENZYME_MATCH_FLAG_SIGNAL;
+            if (signal_specificity) {
+                *signal_specificity = specificity;
+            }
+        }
+        if (target && cep_enzyme_paths_equal(query, target)) {
+            flags |= CEP_ENZYME_MATCH_FLAG_TARGET;
+            if (target_specificity) {
+                *target_specificity = specificity;
+            }
+        }
         break;
 
       case CEP_ENZYME_MATCH_PREFIX:
-        matches = (signal && cep_enzyme_path_is_prefix(query, signal)) ||
-                  (target && cep_enzyme_path_is_prefix(query, target));
+        if (signal && cep_enzyme_path_is_prefix(query, signal)) {
+            flags |= CEP_ENZYME_MATCH_FLAG_SIGNAL;
+            if (signal_specificity) {
+                *signal_specificity = specificity;
+            }
+        }
+        if (target && cep_enzyme_path_is_prefix(query, target)) {
+            flags |= CEP_ENZYME_MATCH_FLAG_TARGET;
+            if (target_specificity) {
+                *target_specificity = specificity;
+            }
+        }
         break;
 
       default:
-        matches = false;
         break;
     }
 
-    return matches;
+    return flags;
 }
 
 
-/* Collects and sorts matching enzymes for a given impulse so execution can walk
- * descriptors by dependency-aware order, falling back to specificity and registration
- * when no additional constraints exist. 
+/*
+ * Impulse agenda construction follows a fixed pipeline to keep dispatch deterministic
+ * and to avoid quadratic hot paths when many enzymes collide on the same impulse.
+ * 
+ *   1. Scan the registry once, capturing every enzyme whose query path matches either
+ *      the impulse signal or target. For each match we record whether the hit came
+ *      from the signal, the target, or both, and we cache the per-path specificity
+ *      (currently the query length) so dual-path hits naturally outrank single-side
+ *      matches. The scan stays linear in the registry size, so idle enzymes cost only
+ *      a cheap mismatch check.
+ *   2. Build a name-indexed adjacency table on the fly from the collected matches,
+ *      translating descriptor before/after constraints into edges inside the active
+ *      set. Duplicate edges are skipped, and dependencies on enzymes that did not
+ *      match the impulse are ignored. Because the graph is scoped to the active set,
+ *      edge wiring grows with the square of the match count at worst, not the entire
+ *      registry, while each individual lookup is logarithmic thanks to the sorted
+ *      name cache built earlier.
+ *   3. Run Kahn's algorithm with a small binary heap rather than a linear scan for
+ *      zero-indegree nodes. The heap uses a deterministic priority tuple:
+ *         - match strength (both-path matches ahead of single-path ones)
+ *         - combined specificity (longer query beats shorter)
+ *         - descriptor name (lexicographic order)
+ *         - registration order (first registered wins)
+ *      This guarantees replayable agendas while keeping the ready-set selection at
+ *      O(log M) per placement instead of repeatedly scanning all matches.
+ *   4. Emit descriptors in the order they are popped. If a cycle is detected the
+ *      agenda is abandoned and the caller observes an empty resolution. The total
+ *      per-impulse cost is roughly O(M log M + E) (matches M, dependency edges E),
+ *      which scales cleanly even as the registry grows.
  */
 size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* impulse, const cepEnzymeDescriptor** ordered, size_t capacity) {
     if (!registry || !impulse || registry->entry_count == 0u) {
@@ -455,13 +589,22 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
 
     for (size_t i = 0; i < registry->entry_count; ++i) {
         const cepEnzymeEntry* entry = &registry->entries[i];
-        if (!cep_enzyme_match_entry(entry, impulse)) {
+        size_t signal_specificity = 0u;
+        size_t target_specificity = 0u;
+        uint8_t flags = cep_enzyme_match_flags(entry, impulse, &signal_specificity, &target_specificity);
+        if (!flags) {
             continue;
         }
 
-        matches[match_count].descriptor         = &entry->descriptor;
-        matches[match_count].specificity        = entry->query ? entry->query->length : 0u;
-        matches[match_count].registration_order = entry->registration_order;
+        matches[match_count].descriptor          = &entry->descriptor;
+        matches[match_count].match_type          = flags;
+        matches[match_count].specificity_signal  = signal_specificity;
+        matches[match_count].specificity_target  = target_specificity;
+        matches[match_count].specificity_total   = signal_specificity + target_specificity;
+        if (matches[match_count].specificity_total == 0u) {
+            matches[match_count].specificity_total = signal_specificity ? signal_specificity : target_specificity;
+        }
+        matches[match_count].registration_order  = entry->registration_order;
         match_count++;
     }
 
@@ -480,89 +623,145 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
     qsort(lookup, n, sizeof(*lookup), cep_enzyme_match_lookup_sort);
 
     size_t* indegree = cep_calloc(n, sizeof(*indegree));
-    uint8_t* edges = cep_calloc(n * n, sizeof(*edges));
+    size_t* adjacency_head = cep_malloc(n * sizeof(*adjacency_head));
+    for (size_t i = 0; i < n; ++i) {
+        adjacency_head[i] = SIZE_MAX;
+    }
 
+    size_t edge_capacity = 0u;
     for (size_t i = 0; i < n; ++i) {
         const cepEnzymeDescriptor* desc = matches[i].descriptor;
+        if (desc->before) {
+            edge_capacity += desc->before_count;
+        }
+        if (desc->after) {
+            edge_capacity += desc->after_count;
+        }
+    }
 
-        for (size_t b = 0; desc->before && b < desc->before_count; ++b) {
+    size_t* edge_to = NULL;
+    size_t* edge_next = NULL;
+    bool graph_ok = true;
+    if (edge_capacity > 0u) {
+        edge_to = cep_malloc(edge_capacity * sizeof(*edge_to));
+        edge_next = cep_malloc(edge_capacity * sizeof(*edge_next));
+        if (!edge_to || !edge_next) {
+            graph_ok = false;
+        }
+    }
+    size_t edge_count = 0u;
+
+    for (size_t i = 0; graph_ok && i < n; ++i) {
+        const cepEnzymeDescriptor* desc = matches[i].descriptor;
+
+        for (size_t b = 0; graph_ok && desc->before && b < desc->before_count; ++b) {
             size_t j = cep_enzyme_match_index_by_name(lookup, n, &desc->before[b]);
             if (j == SIZE_MAX) {
                 continue;
             }
-            size_t idx = i * n + j;
-            if (!edges[idx]) {
-                edges[idx] = 1u;
-                indegree[j]++;
+
+            size_t head = adjacency_head[i];
+            bool duplicate = false;
+            for (size_t edge = head; edge != SIZE_MAX; edge = edge_next[edge]) {
+                if (edge_to[edge] == j) {
+                    duplicate = true;
+                    break;
+                }
             }
+            if (duplicate) {
+                continue;
+            }
+
+            if (edge_count >= edge_capacity) {
+                graph_ok = false;
+                break;
+            }
+
+            size_t slot = edge_count++;
+            edge_to[slot] = j;
+            edge_next[slot] = adjacency_head[i];
+            adjacency_head[i] = slot;
+            indegree[j]++;
         }
 
-        for (size_t a = 0; desc->after && a < desc->after_count; ++a) {
+        for (size_t a = 0; graph_ok && desc->after && a < desc->after_count; ++a) {
             size_t j = cep_enzyme_match_index_by_name(lookup, n, &desc->after[a]);
             if (j == SIZE_MAX) {
                 continue;
             }
-            size_t idx = j * n + i;
-            if (!edges[idx]) {
-                edges[idx] = 1u;
-                indegree[i]++;
+
+            size_t head = adjacency_head[j];
+            bool duplicate = false;
+            for (size_t edge = head; edge != SIZE_MAX; edge = edge_next[edge]) {
+                if (edge_to[edge] == i) {
+                    duplicate = true;
+                    break;
+                }
             }
+            if (duplicate) {
+                continue;
+            }
+
+            if (edge_count >= edge_capacity) {
+                graph_ok = false;
+                break;
+            }
+
+            size_t slot = edge_count++;
+            edge_to[slot] = i;
+            edge_next[slot] = adjacency_head[j];
+            adjacency_head[j] = slot;
+            indegree[i]++;
         }
     }
 
-    bool* placed = cep_calloc(n, sizeof(*placed));
-    size_t* order = cep_malloc(n * sizeof(*order));
-    size_t order_count = 0u;
+    size_t resolved = 0u;
 
-    for (size_t processed = 0; processed < n; ++processed) {
-        size_t best = SIZE_MAX;
+    if (graph_ok) {
+        size_t* ready_heap = cep_malloc(n * sizeof(*ready_heap));
+        size_t ready_size = 0u;
+
         for (size_t i = 0; i < n; ++i) {
-            if (placed[i] || indegree[i] != 0u) {
-                continue;
-            }
-
-            if (best == SIZE_MAX) {
-                best = i;
-                continue;
-            }
-
-            bool more_specific    = matches[i].specificity        > matches[best].specificity;
-            bool equally_specific = matches[i].specificity       == matches[best].specificity;
-            bool earlier          = matches[i].registration_order < matches[best].registration_order;
-
-            if (more_specific || (equally_specific && earlier)) {
-                best = i;
+            if (indegree[i] == 0u) {
+                cep_enzyme_ready_push(ready_heap, &ready_size, i, matches);
             }
         }
 
-        if (best == SIZE_MAX) {
-            order_count = 0u;
-            break;
-        }
+        size_t* order = cep_malloc(n * sizeof(*order));
+        size_t order_count = 0u;
 
-        placed[best] = true;
-        order[order_count++] = best;
+        while (ready_size > 0u) {
+            size_t best = cep_enzyme_ready_pop(ready_heap, &ready_size, matches);
+            order[order_count++] = best;
 
-        for (size_t j = 0; j < n; ++j) {
-            size_t idx = best * n + j;
-            if (edges[idx] && indegree[j] > 0u) {
-                indegree[j]--;
+            for (size_t edge = adjacency_head[best]; edge != SIZE_MAX; edge = edge_next[edge]) {
+                size_t to = edge_to[edge];
+                if (indegree[to] > 0u) {
+                    indegree[to]--;
+                    if (indegree[to] == 0u) {
+                        cep_enzyme_ready_push(ready_heap, &ready_size, to, matches);
+                    }
+                }
             }
         }
+
+        if (order_count == n) {
+            resolved = n;
+            if (ordered && capacity > 0u) {
+                size_t limit = (resolved < capacity) ? resolved : capacity;
+                for (size_t i = 0; i < limit; ++i) {
+                    ordered[i] = matches[order[i]].descriptor;
+                }
+            }
+        }
+
+        CEP_FREE(order);
+        CEP_FREE(ready_heap);
     }
 
-    size_t resolved = (order_count == n) ? n : 0u;
-
-    if (resolved && ordered && capacity > 0u) {
-        size_t limit = (resolved < capacity) ? resolved : capacity;
-        for (size_t i = 0; i < limit; ++i) {
-            ordered[i] = matches[order[i]].descriptor;
-        }
-    }
-
-    CEP_FREE(order);
-    CEP_FREE(placed);
-    CEP_FREE(edges);
+    CEP_FREE(edge_next);
+    CEP_FREE(edge_to);
+    CEP_FREE(adjacency_head);
     CEP_FREE(indegree);
     CEP_FREE(lookup);
     CEP_FREE(matches);
