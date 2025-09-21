@@ -62,6 +62,7 @@ static bool cep_cell_structural_equal(const cepCell* existing, const cepCell* in
 static bool cep_data_structural_equal(const cepData* existing, const cepData* incoming);
 
 static inline cepCell* store_find_child_by_name(const cepStore* store, const cepDT* name);
+static inline cepCell* store_find_child_by_key(const cepStore* store, cepCell* key, cepCompare compare, void* context);
 static inline cepCell* store_find_child_by_position(const cepStore* store, size_t position);
 static inline cepCell* store_first_child(const cepStore* store);
 static inline cepCell* store_last_child(const cepStore* store);
@@ -821,6 +822,12 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
             if (existing && cep_cell_structural_equal(existing, child))
                 return existing;
         }
+    } else if (store->indexing == CEP_INDEX_BY_FUNCTION
+            || store->indexing == CEP_INDEX_BY_HASH) {
+        assert(store->compare);
+        cepCell* existing = store_find_child_by_key(store, child, store->compare, (void*)context);
+        if (existing && cep_cell_structural_equal(existing, child))
+            return existing;
     }
 
     cepCell* cell;
