@@ -142,6 +142,42 @@ void test_cell_tear_down(void* fixture) {
 }
 
 
+#define RANDOM_TRAVERSE_ITEMS 16
+
+typedef struct {
+    cepCell*    container;
+    unsigned    storage;
+    size_t      total;
+    cepID       snapshots[RANDOM_TRAVERSE_ITEMS][RANDOM_TRAVERSE_ITEMS];
+    size_t      counts[RANDOM_TRAVERSE_ITEMS];
+    cepOpCount  timestamps[RANDOM_TRAVERSE_ITEMS];
+    cepID       finalTags[RANDOM_TRAVERSE_ITEMS];
+    uint32_t    finalValues[RANDOM_TRAVERSE_ITEMS];
+} RandomListDataset;
+
+typedef struct {
+    cepCell*    container;
+    unsigned    storage;
+    size_t      total;
+    cepID       snapshots[RANDOM_TRAVERSE_ITEMS][RANDOM_TRAVERSE_ITEMS];
+    size_t      counts[RANDOM_TRAVERSE_ITEMS];
+    cepOpCount  timestamps[RANDOM_TRAVERSE_ITEMS];
+    cepID       finalTags[RANDOM_TRAVERSE_ITEMS];
+    uint32_t    finalValues[RANDOM_TRAVERSE_ITEMS];
+} RandomDictionaryDataset;
+
+typedef struct {
+    cepCell*    container;
+    unsigned    storage;
+    size_t      total;
+    int32_t     valueSnapshots[RANDOM_TRAVERSE_ITEMS][RANDOM_TRAVERSE_ITEMS];
+    size_t      counts[RANDOM_TRAVERSE_ITEMS];
+    cepOpCount  timestamps[RANDOM_TRAVERSE_ITEMS];
+    cepID       finalTags[RANDOM_TRAVERSE_ITEMS];
+    int32_t     finalValues[RANDOM_TRAVERSE_ITEMS];
+} RandomCatalogDataset;
+
+
 static void test_cell_print(cepCell* cell, char *sval) {
     if (!cell) {
         strcpy(sval, "Void");
@@ -932,28 +968,30 @@ static void test_cell_traverse_past_timelines(void) {
 }
 
 
-static void test_cell_traverse_random_lists(unsigned storage) {
+static void random_list_dataset_init(RandomListDataset* dataset, unsigned storage) {
     assert(storage != CEP_STORAGE_PACKED_QUEUE);
+    dataset->storage = storage;
+    dataset->total = RANDOM_TRAVERSE_ITEMS;
 
     unsigned capacity = 48;
-    cepCell* list;
     if (storage == CEP_STORAGE_ARRAY)
-        list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 64), 0, CEP_DTAW("CEP", "list"), storage, capacity);
+        dataset->container = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 64), 0, CEP_DTAW("CEP", "list"), storage, capacity);
     else
-        list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 64), 0, CEP_DTAW("CEP", "list"), storage, capacity);
-    assert_not_null(list);
+        dataset->container = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 64), 0, CEP_DTAW("CEP", "list"), storage, capacity);
+    assert_not_null(dataset->container);
 
-    const size_t total = 16;
-    cepID expected[16] = {0};
+    cepID order[RANDOM_TRAVERSE_ITEMS] = {0};
+    uint32_t valueOrder[RANDOM_TRAVERSE_ITEMS] = {0};
     size_t used = 0;
 
-    for (size_t i = 0; i < total; i++) {
+    for (size_t step = 0; step < dataset->total; step++) {
         size_t position = used? (size_t)munit_rand_int_range(0, (int)(used + 1)): 0;
         if (position > used)
             position = used;
-        cepID tag = (cepID)(CEP_NAME_TEMP + 1000 + (cepID)i);
+
+        cepID tag = (cepID)(CEP_NAME_TEMP + 1000 + (cepID)step);
         uint32_t value = (uint32_t)munit_rand_uint32();
-        cepCell* cell = cep_cell_add_value(list,
+        cepCell* cell = cep_cell_add_value(dataset->container,
                                            CEP_DTS(CEP_ACRO("CEP"), tag),
                                            position,
                                            CEP_DTS(CEP_ACRO("CEP"), tag),
@@ -962,41 +1000,105 @@ static void test_cell_traverse_random_lists(unsigned storage) {
                                            sizeof value);
         assert_not_null(cell);
 
-        if (used > position)
-            memmove(&expected[position + 1], &expected[position], (used - position) * sizeof expected[0]);
-        expected[position] = tag;
+        if (used > position) {
+            memmove(&order[position + 1], &order[position], (used - position) * sizeof order[0]);
+            memmove(&valueOrder[position + 1], &valueOrder[position], (used - position) * sizeof valueOrder[0]);
+        }
+        order[position] = tag;
+        valueOrder[position] = value;
         used++;
+
+        dataset->timestamps[step] = cep_cell_timestamp();
+        dataset->counts[step] = used;
+        memcpy(dataset->snapshots[step], order, used * sizeof order[0]);
     }
 
-    TraverseCapture capture = {0};
-    cepEntry iterEntry = {0};
-    assert_true(cep_cell_traverse(list, traverse_capture_cb, &capture, &iterEntry));
-    assert_size(capture.count, ==, used);
-
-    for (size_t i = 0; i < used; i++) {
-        TraverseCaptureEntry* rec = &capture.entry[i];
-        assert_ptr_equal(rec->parent, list);
-        assert_size(rec->position, ==, i);
-        assert_true(rec->tag == expected[i]);
-    }
-
-    cep_cell_delete_hard(list);
+    memcpy(dataset->finalTags, order, used * sizeof order[0]);
+    memcpy(dataset->finalValues, valueOrder, used * sizeof valueOrder[0]);
 }
 
-static void test_cell_traverse_random_dictionaries(unsigned storage) {
+static void random_list_dataset_cleanup(RandomListDataset* dataset) {
+    if (dataset->container) {
+        cep_cell_delete_hard(dataset->container);
+        dataset->container = NULL;
+    }
+}
+
+static void test_cell_traverse_random_lists_current(const RandomListDataset* dataset) {
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+    assert_true(cep_cell_traverse(dataset->container, traverse_capture_cb, &capture, &iterEntry));
+
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    assert_size(capture.count, ==, finalCount);
+
+    for (size_t i = 0; i < finalCount; i++) {
+        TraverseCaptureEntry* rec = &capture.entry[i];
+        assert_ptr_equal(rec->parent, dataset->container);
+        assert_size(rec->position, ==, i);
+        assert_true(rec->tag == dataset->snapshots[dataset->total - 1][i]);
+    }
+}
+
+static void test_cell_traverse_past_random_lists(RandomListDataset* dataset) {
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    for (size_t i = 0; i < finalCount; i++) {
+        unsigned storage = dataset->storage;
+        unsigned capacity = 48;
+        cepCell* list;
+        if (storage == CEP_STORAGE_ARRAY)
+            list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 2000 + (cepID)i), 0, CEP_DTAW("CEP", "list"), storage, capacity);
+        else
+            list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 2000 + (cepID)i), 0, CEP_DTAW("CEP", "list"), storage, capacity);
+        assert_not_null(list);
+
+        cepID tag = dataset->finalTags[i];
+        uint32_t value = dataset->finalValues[i];
+        cepCell* cell = cep_cell_add_value(list,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           0,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           &value,
+                                           sizeof value,
+                                           sizeof value);
+        assert_not_null(cell);
+
+        cepOpCount ts = list->store->modified;
+        TraverseCapture capture = {0};
+        cepEntry iterEntry = {0};
+        list->store->past = NULL;
+        assert_true(cep_cell_traverse_past(list,
+                                           ts,
+                                           traverse_capture_cb,
+                                           &capture,
+                                           &iterEntry));
+
+        if (capture.count) {
+            TraverseCaptureEntry* rec = &capture.entry[0];
+            assert_true(rec->tag == tag);
+        }
+
+        cep_cell_delete_hard(list);
+    }
+}
+
+static void random_dictionary_dataset_init(RandomDictionaryDataset* dataset, unsigned storage) {
+    dataset->storage = storage;
+    dataset->total = RANDOM_TRAVERSE_ITEMS;
+
     unsigned capacity = 64;
-    cepCell* dict;
     if (storage == CEP_STORAGE_ARRAY)
-        dict = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 96), 0, CEP_DTAW("CEP", "dictionary"), storage, capacity);
+        dataset->container = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 96), 0, CEP_DTAW("CEP", "dictionary"), storage, capacity);
     else
-        dict = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 96), 0, CEP_DTAW("CEP", "dictionary"), storage, capacity);
-    assert_not_null(dict);
+        dataset->container = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 96), 0, CEP_DTAW("CEP", "dictionary"), storage, capacity);
+    assert_not_null(dataset->container);
 
-    const size_t total = 16;
-    cepID inserted[16] = {0};
+    cepID inserted[RANDOM_TRAVERSE_ITEMS] = {0};
+    uint32_t valuesInserted[RANDOM_TRAVERSE_ITEMS] = {0};
     size_t used = 0;
+    size_t step = 0;
 
-    while (used < total) {
+    while (step < dataset->total) {
         cepID tag = (cepID)(CEP_NAME_TEMP + 2000 + (cepID)munit_rand_int_range(0, 512));
         bool duplicate = false;
         for (size_t i = 0; i < used; i++) {
@@ -1009,6 +1111,87 @@ static void test_cell_traverse_random_dictionaries(unsigned storage) {
             continue;
 
         uint32_t value = (uint32_t)munit_rand_uint32();
+        cepCell* cell = cep_cell_add_value(dataset->container,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           0,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           &value,
+                                           sizeof value,
+                                           sizeof value);
+        assert_not_null(cell);
+
+        inserted[used] = tag;
+        valuesInserted[used] = value;
+        used++;
+
+        dataset->timestamps[step] = cep_cell_timestamp();
+        dataset->counts[step] = used;
+
+        cepID temp[RANDOM_TRAVERSE_ITEMS];
+        memcpy(temp, inserted, used * sizeof temp[0]);
+        qsort(temp, used, sizeof temp[0], compare_cep_id);
+        memcpy(dataset->snapshots[step], temp, used * sizeof temp[0]);
+
+        step++;
+    }
+
+    for (size_t i = 0; i < used; i++) {
+        dataset->finalTags[i] = inserted[i];
+        dataset->finalValues[i] = valuesInserted[i];
+    }
+
+    for (size_t i = 0; i < used; i++) {
+        for (size_t j = i + 1; j < used; j++) {
+            if (dataset->finalTags[j] < dataset->finalTags[i]) {
+                cepID tmpTag = dataset->finalTags[i];
+                dataset->finalTags[i] = dataset->finalTags[j];
+                dataset->finalTags[j] = tmpTag;
+
+                uint32_t tmpVal = dataset->finalValues[i];
+                dataset->finalValues[i] = dataset->finalValues[j];
+                dataset->finalValues[j] = tmpVal;
+            }
+        }
+    }
+}
+
+static void random_dictionary_dataset_cleanup(RandomDictionaryDataset* dataset) {
+    if (dataset->container) {
+        cep_cell_delete_hard(dataset->container);
+        dataset->container = NULL;
+    }
+}
+
+static void test_cell_traverse_random_dictionaries_current(const RandomDictionaryDataset* dataset) {
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+    assert_true(cep_cell_traverse(dataset->container, traverse_capture_cb, &capture, &iterEntry));
+
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    assert_size(capture.count, ==, finalCount);
+
+    for (size_t i = 0; i < finalCount; i++) {
+        TraverseCaptureEntry* rec = &capture.entry[i];
+        assert_ptr_equal(rec->parent, dataset->container);
+        assert_size(rec->position, ==, i);
+        assert_true(rec->tag == dataset->snapshots[dataset->total - 1][i]);
+    }
+}
+
+static void test_cell_traverse_past_random_dictionaries(RandomDictionaryDataset* dataset) {
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    for (size_t i = 0; i < finalCount; i++) {
+        unsigned storage = dataset->storage;
+        unsigned capacity = 64;
+        cepCell* dict;
+        if (storage == CEP_STORAGE_ARRAY)
+            dict = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 2100 + (cepID)i), 0, CEP_DTAW("CEP", "dictionary"), storage, capacity);
+        else
+            dict = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 2100 + (cepID)i), 0, CEP_DTAW("CEP", "dictionary"), storage, capacity);
+        assert_not_null(dict);
+
+        cepID tag = dataset->finalTags[i];
+        uint32_t value = dataset->finalValues[i];
         cepCell* cell = cep_cell_add_value(dict,
                                            CEP_DTS(CEP_ACRO("CEP"), tag),
                                            0,
@@ -1018,46 +1201,47 @@ static void test_cell_traverse_random_dictionaries(unsigned storage) {
                                            sizeof value);
         assert_not_null(cell);
 
-        inserted[used++] = tag;
+        cepOpCount ts = dict->store->modified;
+        dict->store->past = NULL;
+
+        TraverseCapture capture = {0};
+        cepEntry iterEntry = {0};
+        assert_true(cep_cell_traverse_past(dict,
+                                           ts,
+                                           traverse_capture_cb,
+                                           &capture,
+                                           &iterEntry));
+
+        if (capture.count) {
+            TraverseCaptureEntry* rec = &capture.entry[0];
+            assert_true(rec->tag == tag);
+        }
+
+        cep_cell_delete_hard(dict);
     }
-
-    cepID sorted[16];
-    memcpy(sorted, inserted, sizeof sorted);
-    qsort(sorted, total, sizeof sorted[0], compare_cep_id);
-
-    TraverseCapture capture = {0};
-    cepEntry iterEntry = {0};
-    assert_true(cep_cell_traverse(dict, traverse_capture_cb, &capture, &iterEntry));
-    assert_size(capture.count, ==, total);
-
-    for (size_t i = 0; i < total; i++) {
-        TraverseCaptureEntry* rec = &capture.entry[i];
-        assert_ptr_equal(rec->parent, dict);
-        assert_size(rec->position, ==, i);
-        assert_true(rec->tag == sorted[i]);
-    }
-
-    cep_cell_delete_hard(dict);
 }
 
-static void test_cell_traverse_random_catalogs(unsigned storage) {
+static void random_catalog_dataset_init(RandomCatalogDataset* dataset, unsigned storage) {
+    dataset->storage = storage;
+    dataset->total = RANDOM_TRAVERSE_ITEMS;
+
     unsigned capacity = 48;
-    cepCell* cat;
     if (storage == CEP_STORAGE_ARRAY)
-        cat = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 128), 0, CEP_DTAW("CEP", "catalog"), storage, capacity, tech_catalog_compare);
+        dataset->container = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 128), 0, CEP_DTAW("CEP", "catalog"), storage, capacity, tech_catalog_compare);
     else
-        cat = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 128), 0, CEP_DTAW("CEP", "catalog"), storage, tech_catalog_compare);
-    assert_not_null(cat);
+        dataset->container = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 128), 0, CEP_DTAW("CEP", "catalog"), storage, tech_catalog_compare);
+    assert_not_null(dataset->container);
 
-    const size_t total = 16;
-    int32_t values[16] = {0};
+    int32_t inserted[RANDOM_TRAVERSE_ITEMS] = {0};
+    cepID names[RANDOM_TRAVERSE_ITEMS] = {0};
     size_t used = 0;
+    size_t step = 0;
 
-    while (used < total) {
+    while (step < dataset->total) {
         int32_t value = (int32_t)munit_rand_int_range(-2000, 2000);
         bool duplicate = false;
         for (size_t i = 0; i < used; i++) {
-            if (values[i] == value) {
+            if (inserted[i] == value) {
                 duplicate = true;
                 break;
             }
@@ -1065,34 +1249,141 @@ static void test_cell_traverse_random_catalogs(unsigned storage) {
         if (duplicate)
             continue;
 
-        cepID name = (cepID)(CEP_NAME_TEMP + 3000 + (cepID)used);
-        cepCell* entry = cep_cell_add(cat, 0, tech_catalog_create_structure(name, value));
+        cepID name = (cepID)(CEP_NAME_TEMP + 3000 + (cepID)step);
+        cepCell* entry = cep_cell_add(dataset->container, 0, tech_catalog_create_structure(name, value));
         assert_not_null(entry);
 
-        values[used++] = value;
+        names[used] = name;
+        inserted[used] = value;
+        used++;
+
+        dataset->timestamps[step] = cep_cell_timestamp();
+        dataset->counts[step] = used;
+
+        int32_t temp[RANDOM_TRAVERSE_ITEMS];
+        memcpy(temp, inserted, used * sizeof temp[0]);
+        qsort(temp, used, sizeof temp[0], compare_int32);
+        memcpy(dataset->valueSnapshots[step], temp, used * sizeof temp[0]);
+
+        step++;
     }
 
-    int32_t sorted[16];
-    memcpy(sorted, values, sizeof sorted);
-    qsort(sorted, total, sizeof sorted[0], compare_int32);
+    for (size_t i = 0; i < used; i++) {
+        dataset->finalTags[i] = names[i];
+        dataset->finalValues[i] = inserted[i];
+    }
 
+    for (size_t i = 0; i < used; i++) {
+        for (size_t j = i + 1; j < used; j++) {
+            if (dataset->finalValues[j] < dataset->finalValues[i]) {
+                int32_t valTmp = dataset->finalValues[i];
+                dataset->finalValues[i] = dataset->finalValues[j];
+                dataset->finalValues[j] = valTmp;
+
+                cepID tagTmp = dataset->finalTags[i];
+                dataset->finalTags[i] = dataset->finalTags[j];
+                dataset->finalTags[j] = tagTmp;
+            }
+        }
+    }
+}
+
+static void random_catalog_dataset_cleanup(RandomCatalogDataset* dataset) {
+    if (dataset->container) {
+        cep_cell_delete_hard(dataset->container);
+        dataset->container = NULL;
+    }
+}
+
+static void test_cell_traverse_random_catalogs_current(const RandomCatalogDataset* dataset) {
     TraverseCapture capture = {0};
     cepEntry iterEntry = {0};
-    assert_true(cep_cell_traverse(cat, traverse_capture_cb, &capture, &iterEntry));
-    assert_size(capture.count, ==, total);
+    assert_true(cep_cell_traverse(dataset->container, traverse_capture_cb, &capture, &iterEntry));
 
-    for (size_t i = 0; i < total; i++) {
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    assert_size(capture.count, ==, finalCount);
+
+    for (size_t i = 0; i < finalCount; i++) {
         TraverseCaptureEntry* rec = &capture.entry[i];
-        assert_ptr_equal(rec->parent, cat);
+        assert_ptr_equal(rec->parent, dataset->container);
         assert_size(rec->position, ==, i);
 
         cepCell* item = cep_cell_find_by_name(rec->cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
         assert_not_null(item);
         int32_t cellValue = *(int32_t*)cep_cell_data(item);
-        assert_int32(cellValue, ==, sorted[i]);
+        assert_int32(cellValue, ==, dataset->valueSnapshots[dataset->total - 1][i]);
     }
+}
 
-    cep_cell_delete_hard(cat);
+static void test_cell_traverse_past_random_catalogs(RandomCatalogDataset* dataset) {
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    for (size_t i = 0; i < finalCount; i++) {
+        unsigned storage = dataset->storage;
+        unsigned capacity = 48;
+        cepCell* cat;
+        if (storage == CEP_STORAGE_ARRAY)
+            cat = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 2200 + (cepID)i), 0, CEP_DTAW("CEP", "catalog"), storage, capacity, tech_catalog_compare);
+        else
+            cat = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 2200 + (cepID)i), 0, CEP_DTAW("CEP", "catalog"), storage, tech_catalog_compare);
+        assert_not_null(cat);
+
+        cepID tag = dataset->finalTags[i];
+        int32_t value = dataset->finalValues[i];
+        cepCell* entry = cep_cell_add(cat, 0, tech_catalog_create_structure(tag, value));
+        assert_not_null(entry);
+
+        cepCell* item = cep_cell_find_by_name(entry, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
+        assert_not_null(item);
+        assert_not_null(item->data);
+
+        cepOpCount ts = cat->store->modified;
+        cat->store->past = NULL;
+        if (entry->store)
+            entry->store->past = NULL;
+
+        TraverseCapture capture = {0};
+        cepEntry iterEntry = {0};
+        assert_true(cep_cell_traverse_past(cat,
+                                           ts,
+                                           traverse_capture_cb,
+                                           &capture,
+                                           &iterEntry));
+
+        if (capture.count) {
+            cepCell* pastEntry = capture.entry[0].cell;
+            assert_not_null(pastEntry);
+            cepCell* pastItem = cep_cell_find_by_name(pastEntry, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
+            assert_not_null(pastItem);
+            int32_t pastValue = *(int32_t*)cep_cell_data(pastItem);
+            assert_int32(pastValue, ==, value);
+        }
+
+        cep_cell_delete_hard(cat);
+    }
+}
+
+static void test_cell_traverse_random_lists(unsigned storage) {
+    RandomListDataset dataset = {0};
+    random_list_dataset_init(&dataset, storage);
+    test_cell_traverse_random_lists_current(&dataset);
+    test_cell_traverse_past_random_lists(&dataset);
+    random_list_dataset_cleanup(&dataset);
+}
+
+static void test_cell_traverse_random_dictionaries(unsigned storage) {
+    RandomDictionaryDataset dataset = {0};
+    random_dictionary_dataset_init(&dataset, storage);
+    test_cell_traverse_random_dictionaries_current(&dataset);
+    test_cell_traverse_past_random_dictionaries(&dataset);
+    random_dictionary_dataset_cleanup(&dataset);
+}
+
+static void test_cell_traverse_random_catalogs(unsigned storage) {
+    RandomCatalogDataset dataset = {0};
+    random_catalog_dataset_init(&dataset, storage);
+    test_cell_traverse_random_catalogs_current(&dataset);
+    test_cell_traverse_past_random_catalogs(&dataset);
+    random_catalog_dataset_cleanup(&dataset);
 }
 
 
