@@ -265,6 +265,25 @@ static bool traverse_stop_after_first(cepEntry* entry, void* ctx) {
     return false;
 }
 
+typedef struct {
+    TraverseCapture* nodeCapture;
+    TraverseCapture* endCapture;
+} DeepTraverseCaptureCtx;
+
+static bool deep_traverse_node_capture(cepEntry* entry, void* ctx) {
+    DeepTraverseCaptureCtx* capture = ctx;
+    if (!capture || !capture->nodeCapture)
+        return true;
+    return traverse_capture_cb(entry, capture->nodeCapture);
+}
+
+static bool deep_traverse_end_capture(cepEntry* entry, void* ctx) {
+    DeepTraverseCaptureCtx* capture = ctx;
+    if (!capture || !capture->endCapture)
+        return true;
+    return traverse_capture_cb(entry, capture->endCapture);
+}
+
 static int compare_cep_id(const void* a, const void* b) {
     cepID lhs = *(const cepID*)a;
     cepID rhs = *(const cepID*)b;
@@ -285,6 +304,107 @@ static int compare_int32(const void* a, const void* b) {
     return 0;
 }
 
+typedef struct {
+    cepCell* root;
+    cepCell* first;
+    cepCell* branch;
+    cepCell* branchLeaf;
+    cepCell* branchDictionary;
+    cepCell* dictionaryValue;
+    cepCell* third;
+} DeepTraverseFixture;
+
+static void deep_traverse_fixture_init(DeepTraverseFixture* fixture) {
+    assert(fixture);
+    memset(fixture, 0, sizeof *fixture);
+
+    fixture->root = cep_cell_add_list(cep_root(),
+                                      CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 40000),
+                                      0,
+                                      CEP_DTAW("CEP", "list"),
+                                      CEP_STORAGE_LINKED_LIST,
+                                      8);
+    assert_not_null(fixture->root);
+
+    cepID base = (cepID)(CEP_NAME_TEMP + 40500);
+
+    uint32_t firstValue = 101u;
+    fixture->first = cep_cell_append_value(fixture->root,
+                                           CEP_DTS(CEP_ACRO("CEP"), base + (cepID)0),
+                                           CEP_DTS(CEP_ACRO("CEP"), base + (cepID)0),
+                                           &firstValue,
+                                           sizeof firstValue,
+                                           sizeof firstValue);
+    assert_not_null(fixture->first);
+
+    fixture->branch = cep_cell_append_list(fixture->root,
+                                           CEP_DTS(CEP_ACRO("CEP"), base + (cepID)1),
+                                           CEP_DTAW("CEP", "list"),
+                                           CEP_STORAGE_LINKED_LIST,
+                                           4);
+    assert_not_null(fixture->branch);
+
+    uint32_t branchLeafValue = 202u;
+    fixture->branchLeaf = cep_cell_append_value(fixture->branch,
+                                                CEP_DTS(CEP_ACRO("CEP"), base + (cepID)2),
+                                                CEP_DTS(CEP_ACRO("CEP"), base + (cepID)2),
+                                                &branchLeafValue,
+                                                sizeof branchLeafValue,
+                                                sizeof branchLeafValue);
+    assert_not_null(fixture->branchLeaf);
+
+    fixture->branchDictionary = cep_cell_append_dictionary(fixture->branch,
+                                                           CEP_DTS(CEP_ACRO("CEP"), base + (cepID)3),
+                                                           CEP_DTAW("CEP", "dictionary"),
+                                                           CEP_STORAGE_ARRAY,
+                                                           4);
+    assert_not_null(fixture->branchDictionary);
+
+    uint32_t dictionaryValue = 303u;
+    fixture->dictionaryValue = cep_cell_add_value(fixture->branchDictionary,
+                                                  CEP_DTS(CEP_ACRO("CEP"), base + (cepID)4),
+                                                  0,
+                                                  CEP_DTS(CEP_ACRO("CEP"), base + (cepID)4),
+                                                  &dictionaryValue,
+                                                  sizeof dictionaryValue,
+                                                  sizeof dictionaryValue);
+    assert_not_null(fixture->dictionaryValue);
+
+    uint32_t thirdValue = 404u;
+    fixture->third = cep_cell_append_value(fixture->root,
+                                           CEP_DTS(CEP_ACRO("CEP"), base + (cepID)5),
+                                           CEP_DTS(CEP_ACRO("CEP"), base + (cepID)5),
+                                           &thirdValue,
+                                           sizeof thirdValue,
+                                           sizeof thirdValue);
+    assert_not_null(fixture->third);
+}
+
+static void deep_traverse_fixture_reset_past(const DeepTraverseFixture* fixture) {
+    if (!fixture)
+        return;
+    if (fixture->root && fixture->root->store)
+        fixture->root->store->past = NULL;
+    if (fixture->branch && fixture->branch->store)
+        fixture->branch->store->past = NULL;
+    if (fixture->branchDictionary && fixture->branchDictionary->store)
+        fixture->branchDictionary->store->past = NULL;
+}
+
+static void deep_traverse_fixture_cleanup(DeepTraverseFixture* fixture) {
+    if (!fixture)
+        return;
+    if (fixture->root) {
+        cep_cell_delete_hard(fixture->root);
+        fixture->root = NULL;
+    }
+}
+
+/*
+ * Validates forward traversal over a simple list to guarantee neighbour metadata and
+ * position reporting stay consistent, underscoring why list consumers can trust
+ * shallow iteration for ordered data access.
+ */
 static void test_cell_traverse_sequences(void) {
     cepCell* list = cep_cell_add_list(cep_root(),
                                       CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 32),
@@ -341,6 +461,11 @@ static void test_cell_traverse_sequences(void) {
     cep_cell_delete_hard(list);
 }
 
+/*
+ * Exercises timestamp-gated traversal to prove we only revisit children modified
+ * at a given operation count, ensuring historical queries remain scoped to the
+ * intended edits and avoid replaying unrelated siblings.
+ */
 static void test_cell_traverse_past_timelines(void) {
     cepCell* list = cep_cell_add_list(cep_root(),
                                       CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 48),
@@ -417,6 +542,185 @@ static void test_cell_traverse_past_timelines(void) {
 }
 
 
+/*
+ * Walks a crafted multi-level hierarchy using deep traversal to check that node
+ * callbacks observe depth transitions, neighbour wiring, and sibling ordering,
+ * confirming recursive structure navigation behaves predictably across levels.
+ */
+static void test_cell_deep_traverse_sequences(void) {
+    DeepTraverseFixture fixture;
+    deep_traverse_fixture_init(&fixture);
+
+    TraverseCapture nodeCapture = {0};
+    TraverseCapture endCapture = {0};
+    DeepTraverseCaptureCtx ctx = {
+        .nodeCapture = &nodeCapture,
+        .endCapture  = &endCapture,
+    };
+
+    cepEntry iterEntry = {0};
+    assert_true(cep_cell_deep_traverse(fixture.root,
+                                       deep_traverse_node_capture,
+                                       deep_traverse_end_capture,
+                                       &ctx,
+                                       &iterEntry));
+
+    cepCell* expectedNodes[] = {
+        fixture.first,
+        fixture.branch,
+        fixture.branchLeaf,
+        fixture.branchDictionary,
+        fixture.dictionaryValue,
+        fixture.third,
+    };
+    size_t expectedCount = sizeof expectedNodes / sizeof expectedNodes[0];
+    assert_size(nodeCapture.count, ==, expectedCount);
+
+    cepCell* expectedParents[] = {
+        fixture.root,
+        fixture.root,
+        fixture.branch,
+        fixture.branch,
+        fixture.branchDictionary,
+        fixture.root,
+    };
+    unsigned expectedDepths[] = {0u, 0u, 1u, 1u, 2u, 0u};
+    size_t expectedPositions[] = {0u, 1u, 0u, 1u, 0u, 2u};
+    cepCell* expectedPrev[] = {
+        NULL,
+        fixture.first,
+        NULL,
+        fixture.branchLeaf,
+        NULL,
+        fixture.branch,
+    };
+    cepCell* expectedNext[] = {
+        fixture.branch,
+        fixture.third,
+        fixture.branchDictionary,
+        NULL,
+        NULL,
+        NULL,
+    };
+
+    for (size_t i = 0; i < expectedCount; i++) {
+        TraverseCaptureEntry* rec = &nodeCapture.entry[i];
+
+        assert_ptr_equal(rec->cell, expectedNodes[i]);
+        assert_ptr_equal(rec->parent, expectedParents[i]);
+        assert_uint(rec->depth, ==, expectedDepths[i]);
+        assert_size(rec->position, ==, expectedPositions[i]);
+
+        if (expectedPrev[i])
+            assert_ptr_equal(rec->prev, expectedPrev[i]);
+        else
+            assert_null(rec->prev);
+
+        if (expectedNext[i])
+            assert_ptr_equal(rec->next, expectedNext[i]);
+        else
+            assert_null(rec->next);
+    }
+
+    assert_size(endCapture.count, ==, 2);
+
+    TraverseCaptureEntry* dictEnd = &endCapture.entry[0];
+    assert_ptr_equal(dictEnd->cell, fixture.branchDictionary);
+    assert_ptr_equal(dictEnd->parent, fixture.branch);
+    assert_uint(dictEnd->depth, ==, 1);
+    assert_size(dictEnd->position, ==, 1);
+    assert_ptr_equal(dictEnd->prev, fixture.branchLeaf);
+    assert_null(dictEnd->next);
+
+    TraverseCaptureEntry* branchEnd = &endCapture.entry[1];
+    assert_ptr_equal(branchEnd->cell, fixture.branch);
+    assert_ptr_equal(branchEnd->parent, fixture.root);
+    assert_uint(branchEnd->depth, ==, 0);
+    assert_size(branchEnd->position, ==, 1);
+    assert_ptr_equal(branchEnd->prev, fixture.first);
+    assert_ptr_equal(branchEnd->next, fixture.third);
+
+    size_t callCount = 0;
+    assert_false(cep_cell_deep_traverse(fixture.root,
+                                        traverse_stop_after_first,
+                                        NULL,
+                                        &callCount,
+                                        NULL));
+    assert_size(callCount, ==, 1);
+
+    deep_traverse_fixture_cleanup(&fixture);
+}
+
+
+/*
+ * Replays deep traversal history filters to verify timestamp scoping drills down
+ * through nested stores, ensuring that only descendants touched by an update get
+ * surfaced when auditing past states.
+ */
+static void test_cell_deep_traverse_past_timelines(void) {
+    DeepTraverseFixture fixture;
+    deep_traverse_fixture_init(&fixture);
+
+    uint32_t updatedDictionaryValue = 505u;
+    cep_cell_update_value(fixture.dictionaryValue, sizeof updatedDictionaryValue, &updatedDictionaryValue);
+    cepOpCount tsDictionary = cep_cell_timestamp();
+
+    deep_traverse_fixture_reset_past(&fixture);
+
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+    assert_true(cep_cell_deep_traverse_past(fixture.root,
+                                            tsDictionary,
+                                            traverse_capture_cb,
+                                            NULL,
+                                            &capture,
+                                            &iterEntry));
+    assert_size(capture.count, ==, 1);
+    TraverseCaptureEntry* rec = &capture.entry[0];
+    assert_ptr_equal(rec->cell, fixture.dictionaryValue);
+    assert_ptr_equal(rec->parent, fixture.branchDictionary);
+    assert_uint(rec->depth, ==, 2);
+    assert_size(rec->position, ==, 0);
+    assert_null(rec->prev);
+    assert_null(rec->next);
+
+    size_t callCount = 0;
+    deep_traverse_fixture_reset_past(&fixture);
+    assert_false(cep_cell_deep_traverse_past(fixture.root,
+                                             tsDictionary,
+                                             traverse_stop_after_first,
+                                             NULL,
+                                             &callCount,
+                                             NULL));
+    assert_size(callCount, ==, 1);
+
+    uint32_t updatedThirdValue = 606u;
+    cep_cell_update_value(fixture.third, sizeof updatedThirdValue, &updatedThirdValue);
+    cepOpCount tsThird = cep_cell_timestamp();
+
+    deep_traverse_fixture_reset_past(&fixture);
+
+    capture = (TraverseCapture){0};
+    iterEntry = (cepEntry){0};
+    assert_true(cep_cell_deep_traverse_past(fixture.root,
+                                            tsThird,
+                                            traverse_capture_cb,
+                                            NULL,
+                                            &capture,
+                                            &iterEntry));
+    assert_size(capture.count, ==, 1);
+    rec = &capture.entry[0];
+    assert_ptr_equal(rec->cell, fixture.third);
+    assert_ptr_equal(rec->parent, fixture.root);
+    assert_uint(rec->depth, ==, 0);
+    assert_size(rec->position, ==, 0);
+    assert_null(rec->prev);
+    assert_null(rec->next);
+
+    deep_traverse_fixture_cleanup(&fixture);
+}
+
+
 static void random_list_dataset_init(RandomListDataset* dataset, unsigned storage) {
     assert(storage != CEP_STORAGE_PACKED_QUEUE);
     dataset->storage = storage;
@@ -473,6 +777,11 @@ static void random_list_dataset_cleanup(RandomListDataset* dataset) {
     }
 }
 
+/*
+ * Samples randomly mutated lists to assert shallow traversal reflects the final
+ * insertion order, bolstering confidence that dynamic list edits still produce
+ * deterministic iteration surfaces.
+ */
 static void test_cell_traverse_random_lists_current(const RandomListDataset* dataset) {
     TraverseCapture capture = {0};
     cepEntry iterEntry = {0};
@@ -489,6 +798,11 @@ static void test_cell_traverse_random_lists_current(const RandomListDataset* dat
     }
 }
 
+/*
+ * Reconstructs recorded list states to ensure past traversal isolates entries
+ * tied to specific modification stamps, validating history playback for list
+ * storage backends under varied insertion orders.
+ */
 static void test_cell_traverse_past_random_lists(RandomListDataset* dataset) {
     size_t finalCount = dataset->counts[dataset->total - 1];
     for (size_t i = 0; i < finalCount; i++) {
@@ -525,6 +839,85 @@ static void test_cell_traverse_past_random_lists(RandomListDataset* dataset) {
         if (capture.count) {
             TraverseCaptureEntry* rec = &capture.entry[0];
             assert_true(rec->tag == tag);
+        }
+
+        cep_cell_delete_hard(list);
+    }
+}
+
+/*
+ * Uses deep traversal on random list datasets to make sure recursive walkers
+ * still visit flat structures in the same deterministic order, reinforcing the
+ * expectation that deep traversals are stable even without nested children.
+ */
+static void test_cell_deep_traverse_random_lists_current(const RandomListDataset* dataset) {
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+    assert_true(cep_cell_deep_traverse(dataset->container,
+                                       traverse_capture_cb,
+                                       NULL,
+                                       &capture,
+                                       &iterEntry));
+
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    assert_size(capture.count, ==, finalCount);
+
+    for (size_t i = 0; i < finalCount; i++) {
+        TraverseCaptureEntry* rec = &capture.entry[i];
+        assert_ptr_equal(rec->parent, dataset->container);
+        assert_uint(rec->depth, ==, 0);
+        assert_size(rec->position, ==, i);
+        assert_true(rec->tag == dataset->snapshots[dataset->total - 1][i]);
+    }
+}
+
+/*
+ * Rehydrates per-element list histories and uses deep traversal filtering to
+ * confirm only cells updated at the tracked timestamp surface, demonstrating
+ * that history-aware deep walks behave identically to their shallow siblings.
+ */
+static void test_cell_deep_traverse_past_random_lists(RandomListDataset* dataset) {
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    for (size_t i = 0; i < finalCount; i++) {
+        unsigned storage = dataset->storage;
+        unsigned capacity = 48;
+        cepCell* list;
+        if (storage == CEP_STORAGE_ARRAY)
+            list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 2600 + (cepID)i), 0, CEP_DTAW("CEP", "list"), storage, capacity);
+        else
+            list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 2600 + (cepID)i), 0, CEP_DTAW("CEP", "list"), storage, capacity);
+        assert_not_null(list);
+
+        cepID tag = dataset->finalTags[i];
+        uint32_t value = dataset->finalValues[i];
+        cepCell* cell = cep_cell_add_value(list,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           0,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           &value,
+                                           sizeof value,
+                                           sizeof value);
+        assert_not_null(cell);
+
+        cepOpCount ts = list->store->modified;
+        TraverseCapture capture = {0};
+        cepEntry iterEntry = {0};
+        list->store->past = NULL;
+        assert_true(cep_cell_deep_traverse_past(list,
+                                                ts,
+                                                traverse_capture_cb,
+                                                NULL,
+                                                &capture,
+                                                &iterEntry));
+
+        if (capture.count) {
+            TraverseCaptureEntry* rec = &capture.entry[0];
+            assert_ptr_equal(rec->cell, cell);
+            assert_ptr_equal(rec->parent, list);
+            assert_uint(rec->depth, ==, 0);
+            assert_size(rec->position, ==, 0);
+            assert_null(rec->prev);
+            assert_null(rec->next);
         }
 
         cep_cell_delete_hard(list);
@@ -611,6 +1004,11 @@ static void random_dictionary_dataset_cleanup(RandomDictionaryDataset* dataset) 
     }
 }
 
+/*
+ * Checks that shallow traversal over dictionaries preserves comparator ordering
+ * after randomized insertions, demonstrating why name-indexed stores remain
+ * predictably ordered for consumer iterators.
+ */
 static void test_cell_traverse_random_dictionaries_current(const RandomDictionaryDataset* dataset) {
     TraverseCapture capture = {0};
     cepEntry iterEntry = {0};
@@ -627,6 +1025,11 @@ static void test_cell_traverse_random_dictionaries_current(const RandomDictionar
     }
 }
 
+/*
+ * Verifies historical dictionary traversals only surface entries aligned with a
+ * reference timestamp, safeguarding time-travel queries from leaking unrelated
+ * dictionary members.
+ */
 static void test_cell_traverse_past_random_dictionaries(RandomDictionaryDataset* dataset) {
     size_t finalCount = dataset->counts[dataset->total - 1];
     for (size_t i = 0; i < finalCount; i++) {
@@ -663,6 +1066,85 @@ static void test_cell_traverse_past_random_dictionaries(RandomDictionaryDataset*
 
         if (capture.count) {
             TraverseCaptureEntry* rec = &capture.entry[0];
+            assert_true(rec->tag == tag);
+        }
+
+        cep_cell_delete_hard(dict);
+    }
+}
+
+/*
+ * Applies deep traversal to dictionary datasets to double-check that node
+ * callbacks mirror shallow traversal ordering while reporting the expected
+ * metadata for top-level entries.
+ */
+static void test_cell_deep_traverse_random_dictionaries_current(const RandomDictionaryDataset* dataset) {
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+    assert_true(cep_cell_deep_traverse(dataset->container,
+                                       traverse_capture_cb,
+                                       NULL,
+                                       &capture,
+                                       &iterEntry));
+
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    assert_size(capture.count, ==, finalCount);
+
+    for (size_t i = 0; i < finalCount; i++) {
+        TraverseCaptureEntry* rec = &capture.entry[i];
+        assert_ptr_equal(rec->parent, dataset->container);
+        assert_uint(rec->depth, ==, 0);
+        assert_size(rec->position, ==, i);
+        assert_true(rec->tag == dataset->snapshots[dataset->total - 1][i]);
+    }
+}
+
+/*
+ * Rebuilds timestamped dictionary snapshots and replays deep traversal to
+ * guarantee that history queries still isolate the correct entry while keeping
+ * depth and neighbour metadata intact.
+ */
+static void test_cell_deep_traverse_past_random_dictionaries(RandomDictionaryDataset* dataset) {
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    for (size_t i = 0; i < finalCount; i++) {
+        unsigned storage = dataset->storage;
+        unsigned capacity = 64;
+        cepCell* dict;
+        if (storage == CEP_STORAGE_ARRAY)
+            dict = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 2800 + (cepID)i), 0, CEP_DTAW("CEP", "dictionary"), storage, capacity);
+        else
+            dict = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 2800 + (cepID)i), 0, CEP_DTAW("CEP", "dictionary"), storage, capacity);
+        assert_not_null(dict);
+
+        cepID tag = dataset->finalTags[i];
+        uint32_t value = dataset->finalValues[i];
+        cepCell* cell = cep_cell_add_value(dict,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           0,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           &value,
+                                           sizeof value,
+                                           sizeof value);
+        assert_not_null(cell);
+
+        cepOpCount ts = dict->store->modified;
+        dict->store->past = NULL;
+
+        TraverseCapture capture = {0};
+        cepEntry iterEntry = {0};
+        assert_true(cep_cell_deep_traverse_past(dict,
+                                                ts,
+                                                traverse_capture_cb,
+                                                NULL,
+                                                &capture,
+                                                &iterEntry));
+
+        if (capture.count) {
+            TraverseCaptureEntry* rec = &capture.entry[0];
+            assert_ptr_equal(rec->cell, cell);
+            assert_ptr_equal(rec->parent, dict);
+            assert_uint(rec->depth, ==, 0);
+            assert_size(rec->position, ==, 0);
             assert_true(rec->tag == tag);
         }
 
@@ -744,6 +1226,11 @@ static void random_catalog_dataset_cleanup(RandomCatalogDataset* dataset) {
     }
 }
 
+/*
+ * Ensures catalog traversals respect comparator-driven ordering after random
+ * insertions, reinforcing guarantees that sorted catalog views iterate in the
+ * expected value sequence.
+ */
 static void test_cell_traverse_random_catalogs_current(const RandomCatalogDataset* dataset) {
     TraverseCapture capture = {0};
     cepEntry iterEntry = {0};
@@ -764,6 +1251,11 @@ static void test_cell_traverse_random_catalogs_current(const RandomCatalogDatase
     }
 }
 
+/*
+ * Confirms catalog history playback yields nodes modified at a target moment,
+ * illustrating how deep comparator-backed stores support precise temporal
+ * inspection.
+ */
 static void test_cell_traverse_past_random_catalogs(RandomCatalogDataset* dataset) {
     size_t finalCount = dataset->counts[dataset->total - 1];
     for (size_t i = 0; i < finalCount; i++) {
@@ -811,6 +1303,106 @@ static void test_cell_traverse_past_random_catalogs(RandomCatalogDataset* datase
     }
 }
 
+/*
+ * Runs deep traversal against catalog datasets so we can confirm recursive walks
+ * yield sorted entries followed immediately by their enumeration payloads,
+ * guaranteeing predictable sequencing through multi-level catalog cells.
+ */
+static void test_cell_deep_traverse_random_catalogs_current(const RandomCatalogDataset* dataset) {
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+    assert_true(cep_cell_deep_traverse(dataset->container,
+                                       traverse_capture_cb,
+                                       NULL,
+                                       &capture,
+                                       &iterEntry));
+
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    assert_size(capture.count, ==, finalCount * 2);
+
+    for (size_t i = 0; i < finalCount; i++) {
+        TraverseCaptureEntry* entryRec = &capture.entry[i * 2];
+        assert_ptr_equal(entryRec->parent, dataset->container);
+        assert_uint(entryRec->depth, ==, 0);
+        assert_size(entryRec->position, ==, i);
+
+        cepCell* item = cep_cell_find_by_name(entryRec->cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
+        assert_not_null(item);
+        int32_t cellValue = *(int32_t*)cep_cell_data(item);
+        assert_int32(cellValue, ==, dataset->valueSnapshots[dataset->total - 1][i]);
+
+        TraverseCaptureEntry* valueRec = &capture.entry[i * 2 + 1];
+        assert_ptr_equal(valueRec->cell, item);
+        assert_ptr_equal(valueRec->parent, entryRec->cell);
+        assert_uint(valueRec->depth, ==, 1);
+        assert_size(valueRec->position, ==, 0);
+    }
+}
+
+/*
+ * Reconstructs catalog entries and replays deep traversal past queries to ensure
+ * both the catalog entry and its enumeration payload appear when filtering by
+ * the captured modification timestamp.
+ */
+static void test_cell_deep_traverse_past_random_catalogs(RandomCatalogDataset* dataset) {
+    size_t finalCount = dataset->counts[dataset->total - 1];
+    for (size_t i = 0; i < finalCount; i++) {
+        unsigned storage = dataset->storage;
+        unsigned capacity = 48;
+        cepCell* cat;
+        if (storage == CEP_STORAGE_ARRAY)
+            cat = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 3400 + (cepID)i), 0, CEP_DTAW("CEP", "catalog"), storage, capacity, tech_catalog_compare);
+        else
+            cat = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 3400 + (cepID)i), 0, CEP_DTAW("CEP", "catalog"), storage, tech_catalog_compare);
+        assert_not_null(cat);
+
+        cepID tag = dataset->finalTags[i];
+        int32_t value = dataset->finalValues[i];
+        cepCell* entry = cep_cell_add(cat, 0, tech_catalog_create_structure(tag, value));
+        assert_not_null(entry);
+
+        cepCell* item = cep_cell_find_by_name(entry, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
+        assert_not_null(item);
+        assert_not_null(item->data);
+
+        cepOpCount ts = cat->store->modified;
+        cat->store->past = NULL;
+        if (entry->store)
+            entry->store->past = NULL;
+
+        TraverseCapture capture = {0};
+        cepEntry iterEntry = {0};
+        assert_true(cep_cell_deep_traverse_past(cat,
+                                                ts,
+                                                traverse_capture_cb,
+                                                NULL,
+                                                &capture,
+                                                &iterEntry));
+
+        if (capture.count) {
+            TraverseCaptureEntry* entryRec = &capture.entry[0];
+            assert_ptr_equal(entryRec->cell, entry);
+            assert_ptr_equal(entryRec->parent, cat);
+            assert_uint(entryRec->depth, ==, 0);
+            assert_size(entryRec->position, ==, 0);
+
+            if (capture.count > 1) {
+                TraverseCaptureEntry* valueRec = &capture.entry[1];
+                assert_ptr_equal(valueRec->cell, item);
+                assert_ptr_equal(valueRec->parent, entry);
+                assert_uint(valueRec->depth, ==, 1);
+            }
+        }
+
+        cep_cell_delete_hard(cat);
+    }
+}
+
+/*
+ * Drives the random list dataset through current and historical shallow
+ * traversal checks for a given storage mode, proving coverage across back-end
+ * implementations.
+ */
 static void test_cell_traverse_random_lists(unsigned storage) {
     RandomListDataset dataset = {0};
     random_list_dataset_init(&dataset, storage);
@@ -819,6 +1411,24 @@ static void test_cell_traverse_random_lists(unsigned storage) {
     random_list_dataset_cleanup(&dataset);
 }
 
+/*
+ * Mirrors the random list coverage with deep traversal to ensure recursive
+ * walkers behave consistently across storage implementations, both for live and
+ * historical views.
+ */
+static void test_cell_deep_traverse_random_lists(unsigned storage) {
+    RandomListDataset dataset = {0};
+    random_list_dataset_init(&dataset, storage);
+    test_cell_deep_traverse_random_lists_current(&dataset);
+    test_cell_deep_traverse_past_random_lists(&dataset);
+    random_list_dataset_cleanup(&dataset);
+}
+
+/*
+ * Aggregates dictionary traversal scenarios for each storage backend so we can
+ * spot regressions across both live and historical iterations under varying
+ * ordering strategies.
+ */
 static void test_cell_traverse_random_dictionaries(unsigned storage) {
     RandomDictionaryDataset dataset = {0};
     random_dictionary_dataset_init(&dataset, storage);
@@ -827,6 +1437,23 @@ static void test_cell_traverse_random_dictionaries(unsigned storage) {
     random_dictionary_dataset_cleanup(&dataset);
 }
 
+/*
+ * Extends dictionary traversal coverage into the deep traversal path so nested
+ * history logic is exercised for each storage backend.
+ */
+static void test_cell_deep_traverse_random_dictionaries(unsigned storage) {
+    RandomDictionaryDataset dataset = {0};
+    random_dictionary_dataset_init(&dataset, storage);
+    test_cell_deep_traverse_random_dictionaries_current(&dataset);
+    test_cell_deep_traverse_past_random_dictionaries(&dataset);
+    random_dictionary_dataset_cleanup(&dataset);
+}
+
+/*
+ * Runs catalog traversal sweeps for the selected storage type to ensure
+ * comparator-based stores maintain stable iteration semantics across current
+ * and replayed timelines.
+ */
 static void test_cell_traverse_random_catalogs(unsigned storage) {
     RandomCatalogDataset dataset = {0};
     random_catalog_dataset_init(&dataset, storage);
@@ -835,6 +1462,23 @@ static void test_cell_traverse_random_catalogs(unsigned storage) {
     random_catalog_dataset_cleanup(&dataset);
 }
 
+/*
+ * Replays random catalog scenarios using deep traversal so that nested catalog
+ * payloads and their historical timelines stay validated across storage backends.
+ */
+static void test_cell_deep_traverse_random_catalogs(unsigned storage) {
+    RandomCatalogDataset dataset = {0};
+    random_catalog_dataset_init(&dataset, storage);
+    test_cell_deep_traverse_random_catalogs_current(&dataset);
+    test_cell_deep_traverse_past_random_catalogs(&dataset);
+    random_catalog_dataset_cleanup(&dataset);
+}
+
+/*
+ * Central test entry that wires up traversal exercises, ensuring the suite
+ * initiates CEP and executes every shallow and deep traversal scenario within a
+ * unified watchdog-managed session.
+ */
 MunitResult test_traverse(const MunitParameter params[], void* user_data_or_fixture) {
     TestWatchdog* watchdog = user_data_or_fixture;
     (void)params;
@@ -843,14 +1487,24 @@ MunitResult test_traverse(const MunitParameter params[], void* user_data_or_fixt
 
     test_cell_traverse_sequences();
     test_cell_traverse_past_timelines();
+    test_cell_deep_traverse_sequences();
+    test_cell_deep_traverse_past_timelines();
     test_cell_traverse_random_lists(CEP_STORAGE_LINKED_LIST);
     test_cell_traverse_random_lists(CEP_STORAGE_ARRAY);
+    test_cell_deep_traverse_random_lists(CEP_STORAGE_LINKED_LIST);
+    test_cell_deep_traverse_random_lists(CEP_STORAGE_ARRAY);
     test_cell_traverse_random_dictionaries(CEP_STORAGE_LINKED_LIST);
     test_cell_traverse_random_dictionaries(CEP_STORAGE_ARRAY);
     test_cell_traverse_random_dictionaries(CEP_STORAGE_RED_BLACK_T);
+    test_cell_deep_traverse_random_dictionaries(CEP_STORAGE_LINKED_LIST);
+    test_cell_deep_traverse_random_dictionaries(CEP_STORAGE_ARRAY);
+    test_cell_deep_traverse_random_dictionaries(CEP_STORAGE_RED_BLACK_T);
     test_cell_traverse_random_catalogs(CEP_STORAGE_LINKED_LIST);
     test_cell_traverse_random_catalogs(CEP_STORAGE_ARRAY);
     test_cell_traverse_random_catalogs(CEP_STORAGE_RED_BLACK_T);
+    test_cell_deep_traverse_random_catalogs(CEP_STORAGE_LINKED_LIST);
+    test_cell_deep_traverse_random_catalogs(CEP_STORAGE_ARRAY);
+    test_cell_deep_traverse_random_catalogs(CEP_STORAGE_RED_BLACK_T);
 
     if (watchdog)
         test_watchdog_signal(watchdog);
