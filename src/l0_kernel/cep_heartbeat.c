@@ -329,7 +329,7 @@ int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path,
 }
 
 
-int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepEnzymeImpulse* impulse) {
+int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse) {
     (void)beat;
     (void)impulse;
     return CEP_ENZYME_FATAL;

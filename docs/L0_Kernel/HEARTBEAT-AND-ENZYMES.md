@@ -32,19 +32,24 @@ Signal structure
 Registering enzymes
 - API sketch
   - `typedef int (*cepEnzyme)(const cepPath *signal, const cepPath *target);`
-  - `int cep_enzyme_register(const cepPath *query, cepEnzyme enzyme);`
+  - `int cep_enzyme_register(const cepPath *query, const cepEnzymeDescriptor *descriptor);`
 - Semantics
   - The `query` path describes what an enzyme is interested in. During the heartbeat match phase, an enzyme is eligible to run if its query matches either the `signal_path` or the `target_path`.
   - Multiple enzymes can register under the same `query` (fan-out).
-  - Registration order is stable and contributes to deterministic execution order (see below).
+  - Each enzyme advertises a deterministic identity (a `cepDT` name)
+    and optional dependency metadata indicating other enzyme names it must
+    run before or after when they are triggered together.
 
 Matching and determinism
 - Matching
   - An enzyme runs when `query matches target_path` OR `query matches signal_path`.
-  - Matching policy is implementation-defined but must be deterministic. Common choices: exact equality, prefix match, or a constrained pattern match. Prefer a specificity-first ordering (longer, more specific paths before shorter, general ones), then registration order.
+- Matching policy is implementation-defined but must be deterministic. Common choices: exact equality, prefix match, or a constrained pattern match. Prefer a specificity-first ordering (longer, more specific paths before shorter, general ones), then compare enzyme names deterministically.
 - Ordering
   - Inbox order is by insertion.
-  - For a given inbox item, enzymes run in deterministic order: specificity (most specific first), then registration order.
+  - For a given inbox item, enzymes run in deterministic order: specificity
+    (most specific first), then dependency constraints (topological ordering
+    derived from each enzyme’s `before`/`after` lists), and finally enzyme name
+    as a stable tie-breaker.
   - Each enzyme runs at most once per `(signal_path, target_path, beat)` pair.
 
 Heartbeat cycle
@@ -69,21 +74,32 @@ Pseudocode (C-style sketch)
 ```
 typedef int (*cepEnzyme)(const cepPath *signal, const cepPath *target);
 
-int cep_enzyme_register(const cepPath *query, cepEnzyme enzyme);
+typedef struct {
+  cepDT                name;
+  const cepDT*         before;
+  size_t               before_count;
+  const cepDT*         after;
+  size_t               after_count;
+  cepEnzyme            callback;
+  cepEnzymeMatchPolicy match;
+  cepEnzymeFlags       flags;
+} cepEnzymeDescriptor;
+
+int cep_enzyme_register(const cepPath *query, const cepEnzymeDescriptor *descriptor);
 int cep_enqueue_signal(size_t beatN, const cepPath *signal, const cepPath *target);
 
 void cep_heartbeat_tick(size_t beatN) {
-  // 1) resolve agenda from inbox
   for (item in rt.beat[beatN].inbox) {
-    matches = registry_find(item.signal_path, item.target_path);
-    for (enzyme in order_by_specificity_then_registration(matches)) {
-      // 2) run
-      int rc = enzyme(&item.signal_path, &item.target_path);
-      // 3) enzyme body may stage outputs and enqueue N+1 signals
+    const cepEnzymeDescriptor* ordered[CAP];
+    size_t count = cep_enzyme_resolve(registry, &item, ordered, CAP);
+    for (size_t i = 0; i < count; ++i) {
+      const cepEnzymeDescriptor* ez = ordered[i];
+      int rc = ez->callback(&item.signal_path, &item.target_path);
+      // enzyme body may stage outputs and enqueue N+1 signals
       // rc policy determines retries or metrics
     }
   }
-  // 4) commit staged outputs at boundary N -> N+1
+  // commit staged outputs at boundary N -> N+1
 }
 ```
 
@@ -97,7 +113,8 @@ Example flow
 5) Beat 2 commits the thumbnail write and processes any further signals.
 
 Design invariants
-- Deterministic order at every step (inbox insertion, match ordering, registration order).
+- Deterministic order at every step (inbox insertion, match ordering,
+  dependency-aware enzyme ordering, name-based tie-breaks).
 - Single-run per enzyme per pair in a beat.
 - No visibility leaks: outputs from N only become visible at N+1.
 - Pure path addressing: enzymes receive only paths, never raw internal pointers.
@@ -113,7 +130,17 @@ Q&A
   Enzymes are the actors that catalyze work; signals are the conditions that trigger them. This mirrors the biological metaphor and keeps terminology clear: functions do work; signals request work.
 
 - Can multiple enzymes react to the same signal? 
-  Yes. Any enzyme whose query matches the signal or the target runs. Order is deterministic; all eligible enzymes can run.
+  Yes. Any enzyme whose query matches the signal or the target runs. Order is
+  deterministic: specificity wins first, dependency constraints are honoured,
+  and enzymes with identical specificity and no dependency relation are
+  ordered by name.
+
+- How do enzymes coordinate when dynamic registration changes the available set during a beat?
+  Enzymes declare a stable `cepDT` name plus optional `before` / `after` lists.
+  At resolve time CEP builds a temporary dependency graph of the enzymes that
+  match the impulse, performs a topological sort, and orders the agenda
+  accordingly. Registration can occur at program start, shared-library load, or
+  mid-run: the dependency metadata keeps execution deterministic in all cases.
 
 - What prevents infinite loops? 
   Budgets, match constraints, and idempotent checks. If an enzyme would emit the same signal repeatedly without changing state, it should detect and skip.

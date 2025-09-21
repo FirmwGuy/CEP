@@ -32,17 +32,17 @@
 
 
 typedef struct {
-    cepPath*             query;
-    cepEnzymeDescriptor  descriptor;
-    size_t               registration_order;
+    cepPath*            query;
+    cepEnzymeDescriptor descriptor;
+    size_t              registration_order;
 } cepEnzymeEntry;
 
 
 struct _cepEnzymeRegistry {
-    cepEnzymeEntry* entries;
-    size_t          entry_count;
-    size_t          entry_capacity;
-    size_t          next_registration_order;
+    cepEnzymeEntry*     entries;
+    size_t              entry_count;
+    size_t              entry_capacity;
+    size_t              next_registration_order;
 };
 
 
@@ -101,9 +101,9 @@ static void cep_enzyme_registry_free_all(cepEnzymeRegistry* registry) {
     }
 
     CEP_FREE(registry->entries);
-    registry->entries = NULL;
-    registry->entry_count = 0;
-    registry->entry_capacity = 0;
+    registry->entries                 = NULL;
+    registry->entry_count             = 0;
+    registry->entry_capacity          = 0;
     registry->next_registration_order = 0;
 }
 
@@ -113,10 +113,10 @@ static cepPath* cep_enzyme_path_clone(const cepPath* path) {
         return NULL;
     }
 
-    size_t bytes = sizeof(cepPath) + (size_t)path->length * sizeof(cepPast);
+    size_t   bytes = sizeof(cepPath) + (size_t)path->length * sizeof(cepPast);
     cepPath* clone = cep_malloc(bytes);
 
-    clone->length = path->length;
+    clone->length   = path->length;
     clone->capacity = path->length;
     memcpy(clone->past, path->past, (size_t)path->length * sizeof(cepPast));
 
@@ -224,8 +224,8 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
     }
 
     if (!registry->entries) {
-        registry->entry_count = 0;
-        registry->entry_capacity = 0;
+        registry->entry_count             = 0;
+        registry->entry_capacity          = 0;
         registry->next_registration_order = 0;
         return;
     }
@@ -234,7 +234,7 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
         cep_enzyme_entry_clear(&registry->entries[i]);
     }
 
-    registry->entry_count = 0;
+    registry->entry_count             = 0;
     registry->next_registration_order = 0;
 }
 
@@ -264,7 +264,7 @@ static bool cep_enzyme_registry_ensure_capacity(cepEnzymeRegistry* registry) {
         memset(((uint8_t*)new_entries) + previous_bytes, 0, total_bytes - previous_bytes);
     }
 
-    registry->entries = new_entries;
+    registry->entries        = new_entries;
     registry->entry_capacity = new_capacity;
     return true;
 }
@@ -289,8 +289,8 @@ int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const
     }
 
     cepEnzymeEntry* entry = &registry->entries[registry->entry_count++];
-    entry->query = copy;
-    entry->descriptor = *descriptor;
+    entry->query              = copy;
+    entry->descriptor         = *descriptor;
     entry->registration_order = registry->next_registration_order++;
 
     return CEP_ENZYME_SUCCESS;
@@ -336,7 +336,7 @@ typedef struct {
 } cepEnzymeMatch;
 
 
-static bool cep_enzyme_match_entry(const cepEnzymeEntry* entry, const cepEnzymeImpulse* impulse) {
+static bool cep_enzyme_match_entry(const cepEnzymeEntry* entry, const cepImpulse* impulse) {
     if (!entry || !impulse) {
         return false;
     }
@@ -371,7 +371,7 @@ static bool cep_enzyme_match_entry(const cepEnzymeEntry* entry, const cepEnzymeI
 }
 
 
-size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepEnzymeImpulse* impulse, const cepEnzymeDescriptor** ordered, size_t capacity) {
+size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* impulse, const cepEnzymeDescriptor** ordered, size_t capacity) {
     if (!registry || !impulse || registry->entry_count == 0u) {
         return 0u;
     }
@@ -385,8 +385,8 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepEnzymeImpu
             continue;
         }
 
-        matches[match_count].descriptor = &entry->descriptor;
-        matches[match_count].specificity = entry->query ? entry->query->length : 0u;
+        matches[match_count].descriptor         = &entry->descriptor;
+        matches[match_count].specificity        = entry->query ? entry->query->length : 0u;
         matches[match_count].registration_order = entry->registration_order;
         match_count++;
     }
@@ -399,9 +399,9 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepEnzymeImpu
     for (size_t i = 0; i + 1u < match_count; ++i) {
         size_t best = i;
         for (size_t j = i + 1u; j < match_count; ++j) {
-            bool more_specific = matches[j].specificity > matches[best].specificity;
-            bool equally_specific = matches[j].specificity == matches[best].specificity;
-            bool earlier = matches[j].registration_order < matches[best].registration_order;
+            bool more_specific    = matches[j].specificity        > matches[best].specificity;
+            bool equally_specific = matches[j].specificity       == matches[best].specificity;
+            bool earlier          = matches[j].registration_order < matches[best].registration_order;
 
             if (more_specific || (equally_specific && earlier)) {
                 best = j;
@@ -409,7 +409,7 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepEnzymeImpu
         }
         if (best != i) {
             cepEnzymeMatch temp = matches[i];
-            matches[i] = matches[best];
+            matches[i]    = matches[best];
             matches[best] = temp;
         }
     }

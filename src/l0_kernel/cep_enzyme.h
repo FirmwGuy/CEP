@@ -63,7 +63,12 @@ typedef enum {
 
 
 typedef struct {
-    const char*             name;
+    cepDT                   name;           /* Deterministic identity */
+    const char*             label;          /* Optional human readable label */
+    const cepDT*            before;         /* Names that must run after this enzyme */
+    size_t                  before_count;
+    const cepDT*            after;          /* Names that must run before this enzyme */
+    size_t                  after_count;
     cepEnzyme               callback;
     cepEnzymeFlags          flags;
     cepEnzymeMatchPolicy    match;
@@ -73,7 +78,7 @@ typedef struct {
 typedef struct {
     const cepPath*          signal_path;
     const cepPath*          target_path;
-} cepEnzymeImpulse;
+} cepImpulse;
 
 
 typedef struct _cepEnzymeRegistry  cepEnzymeRegistry;
@@ -88,7 +93,7 @@ size_t              cep_enzyme_registry_size(const cepEnzymeRegistry* registry);
 int                 cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor);
 int                 cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor);
 
-size_t              cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepEnzymeImpulse* impulse, const cepEnzymeDescriptor** ordered, size_t capacity);
+size_t              cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* impulse, const cepEnzymeDescriptor** ordered, size_t capacity);
 
 
 #ifdef __cplusplus
