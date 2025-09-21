@@ -2154,18 +2154,36 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
 /*
     Gets the first child cell
 */
-cepCell* cep_cell_first(const cepCell* cell) {
+cepCell* cep_cell_first_past(const cepCell* cell, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    return store_first_child(store);
+    cepCell* child = store_first_child(store);
+    if (!snapshot)
+        return child;
+
+    for (; child; child = store_next_child(store, child)) {
+        if (cep_cell_matches_snapshot(child, snapshot))
+            return child;
+    }
+
+    return NULL;
 }
 
 
 /*
     Gets the last child cell
 */
-cepCell* cep_cell_last(const cepCell* cell) {
+cepCell* cep_cell_last_past(const cepCell* cell, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    return store_last_child(store);
+    cepCell* child = store_last_child(store);
+    if (!snapshot)
+        return child;
+
+    for (; child; child = store_prev_child(store, child)) {
+        if (cep_cell_matches_snapshot(child, snapshot))
+            return child;
+    }
+
+    return NULL;
 }
 
 
@@ -2224,22 +2242,38 @@ cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, c
 /*
     Retrieves the previous sibling of cell
 */
-cepCell* cep_cell_prev(const cepCell* cell, cepCell* child) {
+cepCell* cep_cell_prev_past(const cepCell* cell, cepCell* child, cepOpCount snapshot) {
     if (!cell)
         cell = cep_cell_parent(child);
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    return store_prev_child(store, child);
+
+    cepCell* prev = store_prev_child(store, child);
+    if (!snapshot)
+        return prev;
+
+    while (prev && !cep_cell_matches_snapshot(prev, snapshot))
+        prev = store_prev_child(store, prev);
+
+    return prev;
 }
 
 
 /*
     Retrieves the next sibling of cell (sorted or unsorted)
 */
-cepCell* cep_cell_next(const cepCell* cell, cepCell* child) {
+cepCell* cep_cell_next_past(const cepCell* cell, cepCell* child, cepOpCount snapshot) {
     if (!cell)
         cell = cep_cell_parent(child);
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    return store_next_child(store, child);
+
+    cepCell* next = store_next_child(store, child);
+    if (!snapshot)
+        return next;
+
+    while (next && !cep_cell_matches_snapshot(next, snapshot))
+        next = store_next_child(store, next);
+
+    return next;
 }
 
 

@@ -749,8 +749,10 @@ bool cep_cell_path(const cepCell* cell, cepPath** path);
 
 
 // Accessing branched cells
-cepCell* cep_cell_first(const cepCell* cell);
-cepCell* cep_cell_last (const cepCell* cell);
+cepCell* cep_cell_first_past(const cepCell* cell, cepOpCount snapshot);
+#define cep_cell_first(cell)            cep_cell_first_past((cell), 0)
+cepCell* cep_cell_last_past (const cepCell* cell, cepOpCount snapshot);
+#define cep_cell_last(cell)             cep_cell_last_past((cell), 0)
 
 cepCell* cep_cell_find_by_name_past(const cepCell* cell, const cepDT* name, cepOpCount snapshot);
 #define  cep_cell_find_by_name(cell, name)                  cep_cell_find_by_name_past((cell), (name), 0)
@@ -760,8 +762,10 @@ cepCell* cep_cell_find_by_position_past(const cepCell* cell, size_t position, ce
 cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, cepOpCount snapshot);
 #define  cep_cell_find_by_path(start, path)                 cep_cell_find_by_path_past((start), (path), 0)
 
-cepCell* cep_cell_prev(const cepCell* cell, cepCell* child);
-cepCell* cep_cell_next(const cepCell* cell, cepCell* child);
+cepCell* cep_cell_prev_past(const cepCell* cell, cepCell* child, cepOpCount snapshot);
+#define cep_cell_prev(cell, child)      cep_cell_prev_past((cell), (child), 0)
+cepCell* cep_cell_next_past(const cepCell* cell, cepCell* child, cepOpCount snapshot);
+#define cep_cell_next(cell, child)      cep_cell_next_past((cell), (child), 0)
 
 cepCell* cep_cell_find_next_by_name_past(const cepCell* cell, cepDT* name, uintptr_t* childIdx, cepOpCount snapshot);
 #define  cep_cell_find_next_by_name(cell, name, childIdx)   cep_cell_find_next_by_name_past((cell), (name), (childIdx), 0)
