@@ -22,6 +22,8 @@
  *
  */
 
+#include <stdlib.h>
+
 #include "cep_heartbeat.h"
 
 
@@ -347,18 +349,60 @@ typedef struct {
 } cepEnzymeMatch;
 
 
-static size_t cep_enzyme_match_index_by_name(const cepEnzymeMatch* matches, size_t count, const cepDT* name) {
-    if (!matches || !name) {
+typedef struct {
+    const cepDT* name;
+    size_t       index;
+} cepEnzymeMatchLookup;
+
+
+static int cep_enzyme_match_lookup_sort(const void* lhs, const void* rhs) {
+    const cepEnzymeMatchLookup* a = lhs;
+    const cepEnzymeMatchLookup* b = rhs;
+
+    int cmp = cep_dt_compare(a->name, b->name);
+    if (cmp != 0) {
+        return cmp;
+    }
+
+    if (a->index < b->index) {
+        return -1;
+    }
+    if (a->index > b->index) {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+static int cep_enzyme_match_lookup_compare_name(const void* needle, const void* haystack) {
+    const cepDT*                 name  = needle;
+    const cepEnzymeMatchLookup*  entry = haystack;
+
+    return cep_dt_compare(name, entry->name);
+}
+
+
+static size_t cep_enzyme_match_index_by_name(const cepEnzymeMatchLookup* lookup, size_t count, const cepDT* name) {
+    if (!lookup || !name || count == 0u) {
         return SIZE_MAX;
     }
 
-    for (size_t i = 0; i < count; ++i) {
-        if (cep_dt_compare(&matches[i].descriptor->name, name) == 0) {
-            return i;
-        }
+    const cepEnzymeMatchLookup* found = bsearch(name,
+                                                lookup,
+                                                count,
+                                                sizeof(*lookup),
+                                                cep_enzyme_match_lookup_compare_name);
+    if (!found) {
+        return SIZE_MAX;
     }
 
-    return SIZE_MAX;
+    size_t position = (size_t)(found - lookup);
+    while (position > 0u && cep_dt_compare(lookup[position - 1u].name, name) == 0) {
+        position--;
+    }
+
+    return lookup[position].index;
 }
 
 
@@ -427,6 +471,14 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
     }
 
     size_t n = match_count;
+
+    cepEnzymeMatchLookup* lookup = cep_malloc(n * sizeof(*lookup));
+    for (size_t i = 0; i < n; ++i) {
+        lookup[i].name  = &matches[i].descriptor->name;
+        lookup[i].index = i;
+    }
+    qsort(lookup, n, sizeof(*lookup), cep_enzyme_match_lookup_sort);
+
     size_t* indegree = cep_calloc(n, sizeof(*indegree));
     uint8_t* edges = cep_calloc(n * n, sizeof(*edges));
 
@@ -434,7 +486,7 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
         const cepEnzymeDescriptor* desc = matches[i].descriptor;
 
         for (size_t b = 0; desc->before && b < desc->before_count; ++b) {
-            size_t j = cep_enzyme_match_index_by_name(matches, n, &desc->before[b]);
+            size_t j = cep_enzyme_match_index_by_name(lookup, n, &desc->before[b]);
             if (j == SIZE_MAX) {
                 continue;
             }
@@ -446,7 +498,7 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
         }
 
         for (size_t a = 0; desc->after && a < desc->after_count; ++a) {
-            size_t j = cep_enzyme_match_index_by_name(matches, n, &desc->after[a]);
+            size_t j = cep_enzyme_match_index_by_name(lookup, n, &desc->after[a]);
             if (j == SIZE_MAX) {
                 continue;
             }
@@ -512,6 +564,7 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
     CEP_FREE(placed);
     CEP_FREE(edges);
     CEP_FREE(indegree);
+    CEP_FREE(lookup);
     CEP_FREE(matches);
 
     return resolved;
