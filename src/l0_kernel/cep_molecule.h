@@ -35,6 +35,12 @@
 #include <assert.h>
 
 
+#ifndef __cplusplus
+#ifndef typeof
+#define typeof __typeof__
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

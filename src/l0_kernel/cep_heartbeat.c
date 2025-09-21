@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <limits.h>
 
 
 
@@ -174,18 +175,6 @@ static void cep_heartbeat_impulse_queue_swap(cepHeartbeatImpulseQueue* a, cepHea
 }
 
 
-typedef struct {
-    size_t                             index;
-    const cepHeartbeatImpulseRecord*   record;
-} cepHeartbeatImpulseView;
-
-
-typedef struct {
-    size_t                       resolved;
-    const cepEnzymeDescriptor**  descriptors;
-} cepHeartbeatImpulseDispatch;
-
-
 static int cep_heartbeat_path_compare(const cepPath* lhs, const cepPath* rhs) {
     if (lhs == rhs) {
         return 0;
@@ -215,32 +204,201 @@ static int cep_heartbeat_path_compare(const cepPath* lhs, const cepPath* rhs) {
 }
 
 
-static bool cep_heartbeat_impulse_records_equal(const cepHeartbeatImpulseRecord* a, const cepHeartbeatImpulseRecord* b) {
-    if (a == b) {
-        return true;
-    }
-    if (!a || !b) {
-        return false;
-    }
-
-    if (cep_heartbeat_path_compare(a->signal_path, b->signal_path) != 0) {
-        return false;
-    }
-
-    return cep_heartbeat_path_compare(a->target_path, b->target_path) == 0;
+static uint64_t cep_heartbeat_hash_mix(uint64_t hash, uint64_t value) {
+    hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    return hash;
 }
 
 
-static int cep_heartbeat_impulse_view_compare(const void* lhs, const void* rhs) {
-    const cepHeartbeatImpulseView* a = (const cepHeartbeatImpulseView*)lhs;
-    const cepHeartbeatImpulseView* b = (const cepHeartbeatImpulseView*)rhs;
-
-    int cmp = cep_heartbeat_path_compare(a->record->signal_path, b->record->signal_path);
-    if (cmp != 0) {
-        return cmp;
+static uint64_t cep_heartbeat_path_hash(const cepPath* path) {
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    if (!path) {
+        return hash;
     }
 
-    return cep_heartbeat_path_compare(a->record->target_path, b->record->target_path);
+    hash = cep_heartbeat_hash_mix(hash, path->length);
+    for (unsigned i = 0; i < path->length; ++i) {
+        const cepPast* segment = &path->past[i];
+        hash = cep_heartbeat_hash_mix(hash, segment->dt.domain);
+        hash = cep_heartbeat_hash_mix(hash, segment->dt.tag);
+        hash = cep_heartbeat_hash_mix(hash, segment->timestamp);
+    }
+
+    return hash;
+}
+
+
+static uint64_t cep_heartbeat_impulse_hash(const cepHeartbeatImpulseRecord* record) {
+    uint64_t hash = 0x84222325cbf29ce4ULL;
+    if (!record) {
+        return hash;
+    }
+
+    hash = cep_heartbeat_hash_mix(hash, cep_heartbeat_path_hash(record->signal_path));
+    hash = cep_heartbeat_hash_mix(hash, cep_heartbeat_path_hash(record->target_path));
+    return hash;
+}
+
+
+static bool cep_heartbeat_scratch_ensure_ordered(cepHeartbeatScratch* scratch, size_t required) {
+    if (!scratch) {
+        return false;
+    }
+    if (required == 0u) {
+        return true;
+    }
+    if (scratch->ordered_capacity >= required) {
+        return true;
+    }
+
+    size_t bytes = required * sizeof(*scratch->ordered);
+    const cepEnzymeDescriptor** buffer = scratch->ordered ? cep_realloc(scratch->ordered, bytes) : cep_malloc(bytes);
+    if (!buffer) {
+        return false;
+    }
+
+    scratch->ordered = buffer;
+    scratch->ordered_capacity = required;
+    return true;
+}
+
+
+static bool cep_heartbeat_dispatch_cache_reserve(cepHeartbeatScratch* scratch, size_t min_capacity) {
+    if (!scratch || min_capacity == 0u) {
+        return true;
+    }
+
+    if (scratch->entry_capacity >= min_capacity) {
+        return true;
+    }
+
+    size_t capacity = scratch->entry_capacity ? scratch->entry_capacity : 8u;
+    while (capacity < min_capacity && capacity < (SIZE_MAX >> 1)) {
+        capacity <<= 1u;
+    }
+    if (capacity < min_capacity) {
+        capacity = min_capacity;
+    }
+
+    size_t bytes = capacity * sizeof(*scratch->entries);
+    cepHeartbeatDispatchCacheEntry* entries = scratch->entries ? cep_realloc(scratch->entries, bytes) : cep_malloc(bytes);
+    if (!entries) {
+        return false;
+    }
+
+    if (capacity > scratch->entry_capacity) {
+        size_t old_capacity = scratch->entry_capacity;
+        memset(entries + old_capacity, 0, (capacity - old_capacity) * sizeof(*entries));
+    }
+
+    scratch->entries = entries;
+    scratch->entry_capacity = capacity;
+    return true;
+}
+
+
+static void cep_heartbeat_dispatch_cache_destroy(cepHeartbeatScratch* scratch) {
+    if (!scratch) {
+        return;
+    }
+
+    if (scratch->entries) {
+        for (size_t i = 0; i < scratch->entry_capacity; ++i) {
+            CEP_FREE(scratch->entries[i].descriptors);
+            scratch->entries[i].descriptors = NULL;
+            scratch->entries[i].descriptor_capacity = 0u;
+            scratch->entries[i].descriptor_count = 0u;
+            scratch->entries[i].signal_path = NULL;
+            scratch->entries[i].target_path = NULL;
+            scratch->entries[i].used = 0u;
+            scratch->entries[i].stamp = 0u;
+            scratch->entries[i].hash = 0u;
+        }
+        CEP_FREE(scratch->entries);
+    }
+
+    CEP_FREE(scratch->ordered);
+
+    memset(scratch, 0, sizeof(*scratch));
+}
+
+
+static void cep_heartbeat_scratch_next_generation(cepHeartbeatScratch* scratch) {
+    if (!scratch) {
+        return;
+    }
+
+    scratch->generation += 1u;
+    if (scratch->generation == 0u) {
+        scratch->generation = 1u;
+        if (scratch->entries) {
+            for (size_t i = 0; i < scratch->entry_capacity; ++i) {
+                scratch->entries[i].stamp = 0u;
+                scratch->entries[i].used = 0u;
+                scratch->entries[i].hash = 0u;
+                scratch->entries[i].signal_path = NULL;
+                scratch->entries[i].target_path = NULL;
+                scratch->entries[i].descriptor_count = 0u;
+            }
+        }
+    }
+}
+
+
+static cepHeartbeatDispatchCacheEntry* cep_heartbeat_dispatch_cache_acquire(cepHeartbeatScratch* scratch, const cepHeartbeatImpulseRecord* record, uint64_t hash, bool* fresh) {
+    if (!scratch || !scratch->entries || scratch->entry_capacity == 0u) {
+        return NULL;
+    }
+
+    size_t mask = scratch->entry_capacity - 1u;
+    size_t index = (size_t)hash & mask;
+
+    for (size_t probe = 0; probe < scratch->entry_capacity; ++probe) {
+        cepHeartbeatDispatchCacheEntry* entry = &scratch->entries[index];
+        if (entry->stamp != scratch->generation || !entry->used) {
+            entry->used = 1u;
+            entry->stamp = scratch->generation;
+            entry->hash = hash;
+            entry->signal_path = record ? record->signal_path : NULL;
+            entry->target_path = record ? record->target_path : NULL;
+            entry->descriptor_count = 0u;
+            if (fresh) {
+                *fresh = true;
+            }
+            return entry;
+        }
+
+        if (entry->hash == hash &&
+            cep_heartbeat_path_compare(entry->signal_path, record ? record->signal_path : NULL) == 0 &&
+            cep_heartbeat_path_compare(entry->target_path, record ? record->target_path : NULL) == 0) {
+            if (fresh) {
+                *fresh = false;
+            }
+            return entry;
+        }
+
+        index = (index + 1u) & mask;
+    }
+
+    return NULL;
+}
+
+
+static void cep_heartbeat_dispatch_cache_cleanup_generation(cepHeartbeatScratch* scratch) {
+    if (!scratch || !scratch->entries) {
+        return;
+    }
+
+    for (size_t i = 0; i < scratch->entry_capacity; ++i) {
+        cepHeartbeatDispatchCacheEntry* entry = &scratch->entries[i];
+        if (entry->stamp == scratch->generation && entry->used) {
+            entry->used = 0u;
+            entry->hash = 0u;
+            entry->signal_path = NULL;
+            entry->target_path = NULL;
+            entry->descriptor_count = 0u;
+        }
+    }
 }
 
 
@@ -257,6 +415,7 @@ static void cep_runtime_reset_state(bool destroy_registry) {
 
     cep_heartbeat_impulse_queue_destroy(&CEP_RUNTIME.inbox_current);
     cep_heartbeat_impulse_queue_destroy(&CEP_RUNTIME.inbox_next);
+    cep_heartbeat_dispatch_cache_destroy(&CEP_RUNTIME.scratch);
 
     CEP_RUNTIME.current = CEP_BEAT_INVALID;
     CEP_RUNTIME.running = false;
@@ -565,135 +724,104 @@ bool cep_heartbeat_process_impulses(void) {
 
     cepEnzymeRegistry* registry = CEP_RUNTIME.registry;
     size_t registry_size = registry ? cep_enzyme_registry_size(registry) : 0u;
-    const cepEnzymeDescriptor** ordered = NULL;
+    cepHeartbeatScratch* scratch = &CEP_RUNTIME.scratch;
+
     if (registry_size > 0u) {
-        ordered = cep_malloc(registry_size * sizeof(*ordered));
-        if (!ordered) {
+        if (!cep_heartbeat_scratch_ensure_ordered(scratch, registry_size)) {
             return false;
         }
     }
 
-    bool ok = true;
-
     cepHeartbeatImpulseQueue* inbox = &CEP_RUNTIME.inbox_current;
     size_t impulse_count = inbox->count;
 
-    cepHeartbeatImpulseView* views = NULL;
-    size_t* record_to_group = NULL;
-    const cepHeartbeatImpulseRecord** group_records = NULL;
-    cepHeartbeatImpulseDispatch* dispatches = NULL;
-    size_t group_count = 0u;
-    bool drained = false;
+    if (impulse_count == 0u) {
+        cep_heartbeat_scratch_next_generation(scratch);
+        cep_heartbeat_dispatch_cache_cleanup_generation(scratch);
+        return true;
+    }
 
-    if (impulse_count > 0u) {
-        views = cep_malloc(impulse_count * sizeof(*views));
-        record_to_group = cep_malloc(impulse_count * sizeof(*record_to_group));
-        group_records = cep_malloc(impulse_count * sizeof(*group_records));
-        dispatches = cep_calloc(impulse_count, sizeof(*dispatches));
+    size_t desired_slots = impulse_count * 2u;
+    if (desired_slots < 8u) {
+        desired_slots = 8u;
+    }
+    size_t reserve = cep_next_pow_of_two(desired_slots);
+    if (!cep_heartbeat_dispatch_cache_reserve(scratch, reserve)) {
+        return false;
+    }
 
-        if (!views || !record_to_group || !group_records || !dispatches) {
+    cep_heartbeat_scratch_next_generation(scratch);
+
+    bool ok = true;
+
+    for (size_t i = 0; i < impulse_count && ok; ++i) {
+        cepHeartbeatImpulseRecord* record = &inbox->records[i];
+        cepImpulse impulse = {
+            .signal_path = record->signal_path,
+            .target_path = record->target_path,
+        };
+
+        bool fresh = false;
+        uint64_t hash = cep_heartbeat_impulse_hash(record);
+        cepHeartbeatDispatchCacheEntry* entry = cep_heartbeat_dispatch_cache_acquire(scratch, record, hash, &fresh);
+        if (!entry) {
             ok = false;
-            goto CLEANUP;
+            break;
         }
 
-        for (size_t i = 0; i < impulse_count; ++i) {
-            views[i].index = i;
-            views[i].record = &inbox->records[i];
-        }
-
-        qsort(views, impulse_count, sizeof(*views), cep_heartbeat_impulse_view_compare);
-
-        size_t current_group = SIZE_MAX;
-        for (size_t i = 0; i < impulse_count; ++i) {
-            if (i == 0u || !cep_heartbeat_impulse_records_equal(views[i].record, views[i - 1u].record)) {
-                current_group = group_count++;
-                group_records[current_group] = views[i].record;
-            }
-
-            record_to_group[views[i].index] = current_group;
-        }
-
-        for (size_t g = 0; g < group_count && ok; ++g) {
-            const cepHeartbeatImpulseRecord* key = group_records[g];
-            cepImpulse impulse = {
-                .signal_path = key ? key->signal_path : NULL,
-                .target_path = key ? key->target_path : NULL,
-            };
-
+        if (fresh) {
             size_t resolved = 0u;
-            if (registry && registry_size > 0u && key) {
-                resolved = cep_enzyme_resolve(registry, &impulse, ordered, registry_size);
+            if (registry && registry_size > 0u) {
+                resolved = cep_enzyme_resolve(registry, &impulse, scratch->ordered, scratch->ordered_capacity);
             }
 
-            dispatches[g].resolved = resolved;
             if (resolved > 0u) {
-                dispatches[g].descriptors = cep_malloc(resolved * sizeof(*dispatches[g].descriptors));
-                if (!dispatches[g].descriptors) {
-                    ok = false;
-                    break;
-                }
-                memcpy(dispatches[g].descriptors, ordered, resolved * sizeof(*ordered));
-            }
-        }
-
-        if (!ok) {
-            goto CLEANUP;
-        }
-
-        for (size_t i = 0; i < impulse_count && ok; ++i) {
-            cepHeartbeatImpulseRecord* record = &inbox->records[i];
-            size_t group_index = record_to_group ? record_to_group[i] : SIZE_MAX;
-            const cepHeartbeatImpulseDispatch* dispatch = (group_index < group_count) ? &dispatches[group_index] : NULL;
-
-            cepImpulse impulse = {
-                .signal_path = record->signal_path,
-                .target_path = record->target_path,
-            };
-
-            if (dispatch && dispatch->resolved > 0u && dispatch->descriptors) {
-                for (size_t j = 0; j < dispatch->resolved && ok; ++j) {
-                    const cepEnzymeDescriptor* descriptor = dispatch->descriptors[j];
-                    if (!descriptor || !descriptor->callback) {
-                        continue;
-                    }
-
-                    int rc = descriptor->callback(impulse.signal_path, impulse.target_path);
-                    if (rc == CEP_ENZYME_FATAL) {
+                if (entry->descriptor_capacity < resolved) {
+                    size_t bytes = resolved * sizeof(*entry->descriptors);
+                    const cepEnzymeDescriptor** buffer = entry->descriptors ?
+                        cep_realloc(entry->descriptors, bytes) :
+                        cep_malloc(bytes);
+                    if (!buffer) {
                         ok = false;
                         break;
                     }
+                    entry->descriptors = buffer;
+                    entry->descriptor_capacity = resolved;
+                }
+                memcpy(entry->descriptors, scratch->ordered, resolved * sizeof(*scratch->ordered));
+            }
+            entry->descriptor_count = resolved;
+        }
 
-                    if (rc == CEP_ENZYME_RETRY) {
-                        if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.inbox_next, &impulse)) {
-                            ok = false;
-                            break;
-                        }
+        if (entry->descriptor_count > 0u && entry->descriptors) {
+            for (size_t j = 0; j < entry->descriptor_count && ok; ++j) {
+                const cepEnzymeDescriptor* descriptor = entry->descriptors[j];
+                if (!descriptor || !descriptor->callback) {
+                    continue;
+                }
+
+                int rc = descriptor->callback(impulse.signal_path, impulse.target_path);
+                if (rc == CEP_ENZYME_FATAL) {
+                    ok = false;
+                    break;
+                }
+
+                if (rc == CEP_ENZYME_RETRY) {
+                    if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.inbox_next, &impulse)) {
+                        ok = false;
+                        break;
                     }
                 }
             }
-
-            cep_heartbeat_impulse_record_clear(record);
-        }
-
-        drained = true;
-    }
-
-CLEANUP:
-    if (dispatches) {
-        for (size_t g = 0; g < group_count; ++g) {
-            CEP_FREE(dispatches[g].descriptors);
         }
     }
 
-    CEP_FREE(dispatches);
-    CEP_FREE(group_records);
-    CEP_FREE(record_to_group);
-    CEP_FREE(views);
-    CEP_FREE(ordered);
-
-    if (drained) {
-        CEP_RUNTIME.inbox_current.count = 0u;
+    for (size_t i = 0; i < impulse_count; ++i) {
+        cep_heartbeat_impulse_record_clear(&inbox->records[i]);
     }
+    inbox->count = 0u;
+
+    cep_heartbeat_dispatch_cache_cleanup_generation(scratch);
 
     return ok;
 }

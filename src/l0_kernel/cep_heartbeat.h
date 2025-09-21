@@ -74,12 +74,34 @@ typedef struct {
 
 
 typedef struct {
+    uint8_t                      used;
+    size_t                       stamp;
+    uint64_t                     hash;
+    cepPath*                     signal_path;
+    cepPath*                     target_path;
+    const cepEnzymeDescriptor**  descriptors;
+    size_t                       descriptor_count;
+    size_t                       descriptor_capacity;
+} cepHeartbeatDispatchCacheEntry;
+
+
+typedef struct {
+    cepHeartbeatDispatchCacheEntry*  entries;
+    size_t                           entry_capacity;
+    size_t                           generation;
+    const cepEnzymeDescriptor**      ordered;
+    size_t                           ordered_capacity;
+} cepHeartbeatScratch;
+
+
+typedef struct {
     cepBeatNumber             current;
     cepHeartbeatTopology      topology;
     cepHeartbeatPolicy        policy;
     cepEnzymeRegistry*        registry;
     cepHeartbeatImpulseQueue  inbox_current;
     cepHeartbeatImpulseQueue  inbox_next;
+    cepHeartbeatScratch       scratch;
     bool                      running;
 } cepHeartbeatRuntime;
 
