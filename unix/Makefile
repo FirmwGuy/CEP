@@ -17,8 +17,10 @@ CFLAGS ?= -g -Wall -D_GNU_SOURCE -fplan9-extensions \
           -I$(SRCDIR)/l0_kernel -I$(SRCDIR)/test
 LDFLAGS :=
 
-# Sources and objects (only cep_cell.* and tests)
+# Sources and objects (core kernel plus tests)
 SRC := $(SRCDIR)/l0_kernel/cep_cell.c \
+       $(SRCDIR)/l0_kernel/cep_enzyme.c \
+       $(SRCDIR)/l0_kernel/cep_heartbeat.c \
        $(wildcard $(SRCDIR)/test/*.c)
 OBJ := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRC))
 

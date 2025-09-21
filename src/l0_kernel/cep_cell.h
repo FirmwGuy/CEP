@@ -29,6 +29,11 @@
 #include "cep_molecule.h"
 
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 /*
     CEP - Layer 0 - Cell implementation
     -----------------------------------
@@ -920,6 +925,11 @@ void cep_cell_system_shutdown(void);
     - Add cep_cell_update_nested_links(old, new).
     - If a cell is added with its name explicitly above "auto_id", then that must be updated.
 */
+
+
+#ifdef __cplusplus
+}
+#endif
 
 
 #endif

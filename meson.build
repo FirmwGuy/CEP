@@ -48,9 +48,11 @@ if asan_opt and cc.has_argument('-fsanitize=address')
   add_project_link_arguments(asan_args, language: 'c')
 endif
 
-# Core library sources (explicitly do not add cep_enzyme.* or cep_heartbeat.*)
+# Core library sources (heartbeat/enzymes are stubs for now but compiled in)
 l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
+  'src/l0_kernel/cep_enzyme.c',
+  'src/l0_kernel/cep_heartbeat.c',
 )
 
 exe_cargs = []

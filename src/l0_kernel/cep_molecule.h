@@ -35,6 +35,11 @@
 #include <assert.h>
 
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
 #define     CEPPASTIT(a,b)            a##b
 #define     CEPPASTE(a,b)             CEPPASTIT(a, b)
 #define     CEP(_, i)                 CEPPASTE(__##i, _)
@@ -168,6 +173,11 @@ typedef void (*cepDel)(void*);
   #define CEP_ASSERT(exp)       (({bool e = (bool)(exp);  if (!e) assert(#exp && e);  e;}))
 #endif
 #define   CEP_NOT_ASSERT(exp)   (!CEP_ASSERT(exp))
+
+
+#ifdef __cplusplus
+}
+#endif
 
 
 #endif

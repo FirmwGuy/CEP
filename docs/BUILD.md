@@ -22,7 +22,6 @@ What Gets Built
 
 - Library: `cep` built from sources under `src/l0_kernel/` (e.g., `cep_cell.c`).
 - Executable: the unit test harness under `src/test/` builds a single program named `cep_tests` in the `build/` folder, linked against the library.
-- Note: Files `cep_enzyme.*` and `cep_heartbeat.*` are intentionally excluded from the build.
 
 Developer Details
 
@@ -100,6 +99,6 @@ Offline Fallback (No Meson/Ninja)
   - Build: `make -C unix`
   - Run: `../build-make/bin/cep_tests --log-visible debug`
   - Clean: `make -C unix clean`
-  - Notes: This fallback compiles the core library sources into the test executable. It intentionally excludes `cep_enzyme.*` and `cep_heartbeat.*`.
+  - Notes: This fallback compiles the core library sources into the test executable.
 Notes
 - Optional sanitizers: `meson setup build -Dasan=true` (best with Clang on MSYS2 UCRT64).
