@@ -27,55 +27,8 @@
 
 #include <stdarg.h>
 
-typedef struct _cepHistoryCell       cepHistoryCell;
-typedef struct _cepStoreHistoryEntry cepStoreHistoryEntry;
-typedef struct _cepStoreHistory      cepStoreHistory;
-
-struct _cepHistoryCell {
-    cepMetacell     metacell;
-    cepData*        data;
-    cepStoreHistory*store;
-    cepCell*        link;
-};
-
-struct _cepStoreHistoryEntry {
-    cepDT                   name;
-    cepHistoryCell*         cell;
-    cepOpCount              modified;
-    bool                    alive;
-    cepStoreHistoryEntry*   past;
-};
-
-struct _cepStoreHistory {
-    cepStoreNode            node;
-    size_t                  entryCount;
-    cepStoreHistoryEntry*   entries;
-};
-
-
-static cepHistoryCell*         cep_history_cell_clone(const cepCell* cell);
-static void                    cep_history_cell_free(cepHistoryCell* cell);
-static cepStoreHistory*        cep_store_history_snapshot(const cepStore* store, const cepStoreHistory* previous);
-static void                    cep_store_history_free(cepStoreHistory* history);
-static cepStoreHistoryEntry*   cep_store_history_find_entry(const cepStoreHistory* history, const cepDT* name);
-static cepData*               cep_data_clone_full(const cepData* data);
-static void                   cep_data_clone_free(cepData* data);
-static cepDataNode*           cep_data_history_clone_chain(const cepDataNode* node, unsigned datatype);
-static void                   cep_data_history_free_chain(cepDataNode* node, unsigned datatype);
 static bool                   cep_cell_structural_equal(const cepCell* existing, const cepCell* incoming);
 static bool                   cep_data_structural_equal(const cepData* existing, const cepData* incoming);
-
-static void                    cep_store_history_push(cepStore* store);
-static void                    cep_store_history_clear(cepStore* store);
-
-
-static inline cepStoreHistory* cep_store_history_from_node(cepStoreNode* node) {
-    return node? (cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
-}
-
-static inline const cepStoreHistory* cep_store_history_from_const_node(const cepStoreNode* node) {
-    return node? (const cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
-}
 
 static inline cepCell* store_find_child_by_name(const cepStore* store, const cepDT* name);
 static inline cepCell* store_find_child_by_position(const cepStore* store, size_t position);
@@ -501,118 +454,6 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
 }
 
 
-static cepDataNode* cep_data_history_clone_chain(const cepDataNode* node, unsigned datatype)
-{
-    if (!node)
-        return NULL;
-
-    cepDataNode* clone = cep_malloc0(sizeof *clone);
-    clone->modified = node->modified;
-    clone->size     = node->size;
-    clone->capacity = node->capacity;
-    clone->hash     = node->hash;
-
-    switch (datatype) {
-      case CEP_DATATYPE_VALUE: {
-        if (clone->size)
-            memcpy(clone->value, node->value, clone->size);
-        break;
-      }
-
-      case CEP_DATATYPE_DATA: {
-        if (node->data && clone->capacity) {
-            clone->data = cep_malloc(clone->capacity);
-            memcpy(clone->data, node->data, clone->size);
-        }
-        clone->destructor = cep_free;
-        break;
-      }
-
-      case CEP_DATATYPE_HANDLE:
-      case CEP_DATATYPE_STREAM: {
-        clone->handle  = node->handle;
-        clone->library = node->library;
-        break;
-      }
-    }
-
-    clone->past = cep_data_history_clone_chain(node->past, datatype);
-    return clone;
-}
-
-static void cep_data_history_free_chain(cepDataNode* node, unsigned datatype)
-{
-    while (node) {
-        cepDataNode* past = node->past;
-
-        if (datatype == CEP_DATATYPE_DATA && node->data) {
-            if (node->destructor)
-                node->destructor(node->data);
-        }
-
-        cep_free(node);
-        node = past;
-    }
-}
-
-static cepData* cep_data_clone_full(const cepData* data)
-{
-    if (!data)
-        return NULL;
-
-    cepData* clone = cep_malloc0(sizeof *clone);
-    clone->_dt      = data->_dt;
-    clone->datatype = data->datatype;
-    clone->writable = data->writable;
-    clone->created  = data->created;
-    clone->deleted  = data->deleted;
-    clone->modified = data->modified;
-    clone->size     = data->size;
-    clone->capacity = data->capacity;
-    clone->hash     = data->hash;
-
-    switch (data->datatype) {
-      case CEP_DATATYPE_VALUE: {
-        if (clone->size)
-            memcpy(clone->value, data->value, clone->size);
-        break;
-      }
-
-      case CEP_DATATYPE_DATA: {
-        if (data->data && clone->capacity) {
-            clone->data = cep_malloc(clone->capacity);
-            memcpy(clone->data, data->data, clone->size);
-        }
-        clone->destructor = cep_free;
-        break;
-      }
-
-      case CEP_DATATYPE_HANDLE:
-      case CEP_DATATYPE_STREAM: {
-        clone->handle  = data->handle;
-        clone->library = data->library;
-        break;
-      }
-    }
-
-    clone->past = cep_data_history_clone_chain(data->past, data->datatype);
-    return clone;
-}
-
-static void cep_data_clone_free(cepData* data)
-{
-    if (!data)
-        return;
-
-    if (data->datatype == CEP_DATATYPE_DATA && data->data) {
-        if (data->destructor)
-            data->destructor(data->data);
-    }
-
-    cep_data_history_free_chain(data->past, data->datatype);
-    cep_free(data);
-}
-
 static bool cep_data_structural_equal(const cepData* existing, const cepData* incoming)
 {
     if (existing == incoming)
@@ -757,7 +598,8 @@ void cep_store_del(cepStore* store) {
 
     // ToDo: cleanup shadows.
 
-    cep_store_history_clear(store);
+    // Append-only design: store->past is unused because we keep history inline.
+    store->past = NULL;
 
     store->deleted = cep_cell_timestamp_next();
 
@@ -791,18 +633,15 @@ void cep_store_del(cepStore* store) {
 }
 
 
-/* Remove every child cell from a store while preserving the store itself. 
-   Optionally snapshot history, invoke the backend bulk delete helper, update 
-   counters, and refresh metadata. Offer callers a way to wipe a store clean 
-   without reallocating the container.
+/* Remove every child cell from a store while preserving the store itself.
+   This is a destructive GC helper: we bypass append-only guarantees and wipe
+   the backing container directly, so callers should use the soft delete path
+   whenever history needs to stay observable.
 */
 void cep_store_delete_children_hard(cepStore* store) {
     assert(cep_store_valid(store));
 
     bool had_children = store->chdCount;
-
-    if (had_children)
-        cep_store_history_push(store);
 
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
@@ -846,10 +685,11 @@ static inline void store_check_auto_id(cepStore* store, cepCell* child) {
 }
 
 
-/* Insert a child cell into a store according to its indexing policy. 
-   Deduplicate structural matches, snapshot history, and delegate to the 
-   backend-specific insertion helper before updating metadata. Offer a uniform 
-   entry point for populating stores across all storage engines.
+/* Insert a child cell into a store according to its indexing policy.
+   Deduplicate structural matches, then delegate to the backend-specific helper
+   before updating metadata. Append-only invariant: mutations must leave the
+   sibling ordering intact so historical traversals can rebuild the directory
+   (see docs/L0_Kernel/APPEND-ONLY-AND-IDEMPOTENCY.md).
 */
 cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child) {
     assert(cep_store_valid(store) && !cep_cell_is_void(child));
@@ -868,8 +708,6 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
                 return existing;
         }
     }
-
-    cep_store_history_push(store);
 
     cepCell* cell;
 
@@ -954,16 +792,16 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 
     cell->parent = store;
     store->chdCount++;
-    store->modified = cep_cell_timestamp_next();
+    store->modified = cep_cell_timestamp_next();   // Append-only trail lives in timestamps.
 
     return cell;
 }
 
 
-/* Append or prepend a child cell into an insertion-ordered store. Optionally 
-   deduplicate, snapshot history, then call the backend append helper before 
-   patching parent pointers and metadata. Simplify ordered insertions without 
-   exposing storage-specific details.
+/* Append or prepend a child cell into an insertion-ordered store. Optionally
+   deduplicate, call the backend append helper, then patch parent pointers and
+   metadata. Keep the append-only contract: we rely on timestamps instead of
+   snapshots, so ordering must not be disturbed.
 */
 cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
     assert(cep_store_valid(store) && !cep_cell_is_void(child));
@@ -976,8 +814,6 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
         if (existing && cep_cell_structural_equal(existing, child))
             return existing;
     }
-
-    cep_store_history_push(store);
 
     cepCell* cell;
 
@@ -1012,7 +848,7 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
 
     cell->parent = store;
     store->chdCount++;
-    store->modified = cep_cell_timestamp_next();
+    store->modified = cep_cell_timestamp_next();   // Append-only trail lives in timestamps.
 
     return cell;
 }
@@ -1658,125 +1494,6 @@ static inline bool cep_deep_traverse_past_end_proxy(cepEntry* entry, void* ctxPt
 
 
 
-static cepStoreHistoryEntry* cep_store_history_find_entry(const cepStoreHistory* history, const cepDT* name)
-{
-    if (!history || !history->entries)
-        return NULL;
-
-    for (size_t i = 0; i < history->entryCount; i++) {
-        cepStoreHistoryEntry* entry = (cepStoreHistoryEntry*)&history->entries[i];
-        if ((entry->name.domain == name->domain)
-         && (entry->name.tag == name->tag))
-            return entry;
-    }
-
-    return NULL;
-}
-
-static cepHistoryCell* cep_history_cell_clone(const cepCell* cell)
-{
-    if (!cell)
-        return NULL;
-
-    cepHistoryCell* clone = cep_malloc0(sizeof *clone);
-    clone->metacell = cell->metacell;
-
-    if (cep_cell_is_link(cell)) {
-        clone->link = cell->link;
-        return clone;
-    }
-
-    if (cep_cell_is_normal(cell)) {
-        if (cep_cell_has_data(cell))
-            clone->data = cep_data_clone_full(cell->data);
-        if (cep_cell_has_store(cell))
-            clone->store = cep_store_history_snapshot(cell->store, NULL);
-    }
-
-    return clone;
-}
-
-static void cep_history_cell_free(cepHistoryCell* cell)
-{
-    if (!cell)
-        return;
-
-    if (cell->data)
-        cep_data_clone_free(cell->data);
-
-    if (cell->store)
-        cep_store_history_free(cell->store);
-
-    cep_free(cell);
-}
-
-static cepStoreHistory* cep_store_history_snapshot(const cepStore* store, const cepStoreHistory* previous)
-{
-    assert(store);
-
-    cepStoreHistory* history = cep_malloc0(sizeof *history);
-    memcpy(&history->node, (const cepStoreNode*)&store->modified, sizeof(history->node));
-    history->node.past   = previous? (cepStoreNode*)&previous->node: NULL;
-    history->node.linked = NULL;
-    history->entryCount  = store->chdCount;
-
-    if (history->entryCount) {
-        history->entries = cep_malloc0(history->entryCount * sizeof *history->entries);
-        size_t index = 0;
-        for (cepCell* child = store_first_child(store); child; child = store_next_child(store, child)) {
-            cepStoreHistoryEntry* entry = &history->entries[index++];
-            entry->name     = *cep_cell_get_name(child);
-            entry->modified = store->modified;
-            entry->alive    = true;
-            entry->cell     = cep_history_cell_clone(child);
-            entry->past     = previous? cep_store_history_find_entry(previous, &entry->name): NULL;
-        }
-    }
-
-    return history;
-}
-
-static void cep_store_history_free(cepStoreHistory* history)
-{
-    if (!history)
-        return;
-
-    if (history->entries) {
-        for (size_t i = 0; i < history->entryCount; i++)
-            cep_history_cell_free(history->entries[i].cell);
-        cep_free(history->entries);
-    }
-
-    cep_free(history);
-}
-
-static void cep_store_history_push(cepStore* store)
-{
-    assert(store);
-
-    if (!store->modified)
-        return;
-
-    const cepStoreHistory* previous = cep_store_history_from_const_node(store->past);
-    cepStoreHistory* history = cep_store_history_snapshot(store, previous);
-    history->node.past = store->past;
-    store->past = &history->node;
-}
-
-static void cep_store_history_clear(cepStore* store)
-{
-    if (!store)
-        return;
-
-    for (cepStoreNode* node = store->past; node; ) {
-        cepStoreHistory* history = cep_store_history_from_node(node);
-        node = node->past;
-        cep_store_history_free(history);
-    }
-
-    store->past = NULL;
-}
-
 static bool cep_cell_structural_equal(const cepCell* existing, const cepCell* incoming)
 {
     if (existing == incoming)
@@ -1836,14 +1553,13 @@ static inline void store_to_dictionary(cepStore* store) {
     if (store->indexing == CEP_INDEX_BY_NAME)
         return;
 
-    cep_store_history_push(store);
-
     store->indexing = CEP_INDEX_BY_NAME;
     store->modified = cep_cell_timestamp_next();
 
     if (store->chdCount <= 1)
         return;
 
+    // WARNING: reindexing reorders siblings; see append-only note in the docs.
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
         list_sort((cepList*) store, cell_compare_by_name, NULL);
@@ -1877,8 +1593,6 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
     if (store->indexing == CEP_INDEX_BY_FUNCTION)
         return;
 
-    cep_store_history_push(store);
-
     store->compare  = compare;
     store->indexing = CEP_INDEX_BY_FUNCTION;   // FixMe: by hash?
     store->modified = cep_cell_timestamp_next();
@@ -1886,6 +1600,7 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
     if (store->chdCount <= 1)
         return;
 
+    // WARNING: reindexing reorders siblings; see append-only note in the docs.
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
         list_sort((cepList*) store, compare, context);
@@ -1914,15 +1629,15 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
 
 
 /*
-    Removes last child from store (re-organizing siblings)
+    Removes last child from store (re-organizing siblings).
+    Hard-delete helper used by *_hard callers; history is already captured via
+    per-cell timestamps, so we purposely skip any cloning.
 */
 static inline bool store_take_cell(cepStore* store, cepCell* target) {
     assert(cep_store_valid(store) && target);
 
     if (!store->chdCount || !store->writable)
         return false;
-
-    cep_store_history_push(store);
 
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
@@ -1948,22 +1663,21 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
     }
 
     store->chdCount--;
-    store->modified = cep_cell_timestamp_next();
+    store->modified = cep_cell_timestamp_next();   // Hard path still logs via timestamp only.
 
     return true;
 }
 
 
 /*
-    Removes first child from store (re-organizing siblings)
+    Removes first child from store (re-organizing siblings).
+    Same hard-delete contract as store_take_cell – rely on timestamps only.
 */
 static inline bool store_pop_child(cepStore* store, cepCell* target) {
     assert(cep_store_valid(store) && target);
 
     if (!store->chdCount || !store->writable)
         return false;
-
-    cep_store_history_push(store);
 
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
@@ -1989,19 +1703,19 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
     }
 
     store->chdCount--;
-    store->modified = cep_cell_timestamp_next();
+    store->modified = cep_cell_timestamp_next();   // Hard path still logs via timestamp only.
 
     return true;
 }
 
 
 /*
-    Deletes a cell and all its children re-organizing (sibling) storage
+    Deletes a cell and all its children re-organizing (sibling) storage.
+    GC path: ensure callers understand we mutate in place and depend on the
+    append-only timestamps for historical visibility.
 */
 static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* target) {
     assert(cep_store_valid(store) && store->chdCount);
-
-    cep_store_history_push(store);
 
     if (target)
         cep_cell_transfer(cell, target);  // Save cell.
@@ -2033,7 +1747,7 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
     }
 
     store->chdCount--;
-    store->modified = cep_cell_timestamp_next();
+    store->modified = cep_cell_timestamp_next();   // Even for GC deletes we only rely on timestamps.
 }
 
 
@@ -2890,9 +2604,9 @@ bool cep_cell_child_pop(cepCell* cell, cepCell* target) {
 }
 
 
-/* Physically remove the last child from a store. Resolve the store and call 
-   the backend take helper which also shifts sibling metadata. Support destructive 
-   pops when history retention is unnecessary.
+/* Physically remove the last child from a store. Resolve the store and call
+   the backend take helper which also shifts sibling metadata. GC-only: history
+   retention relies on the per-cell timestamps instead of cloned snapshots.
 */
 bool cep_cell_child_take_hard(cepCell* cell, cepCell* target) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
@@ -2900,9 +2614,9 @@ bool cep_cell_child_take_hard(cepCell* cell, cepCell* target) {
 }
 
 
-/* Physically remove the first child from a store. Resolve the store and use 
-   the backend pop helper to unlink the head entry and rebalance metadata. Provide 
-   deque-style semantics when callers truly want to delete the child.
+/* Physically remove the first child from a store. Resolve the store and use
+   the backend pop helper to unlink the head entry and rebalance metadata. Same
+   GC caveat as cep_cell_child_take_hard.
 */
 bool cep_cell_child_pop_hard(cepCell* cell, cepCell* target) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
@@ -2910,10 +2624,9 @@ bool cep_cell_child_pop_hard(cepCell* cell, cepCell* target) {
 }
 
 
-/* Remove a cell from its parent and destroy its subtree. Snapshot history, 
-   optionally transfer the cell, then invoke storage-specific removal hooks and 
-   decrement counters. Support destructive deletes that collapse sibling ordering 
-   to fill the gap.
+/* Remove a cell from its parent and destroy its subtree. Optionally transfer
+   the cell, then invoke storage-specific removal hooks and decrement counters.
+   Destructive path: the append-only audit trail is carried by timestamps alone.
 */
 void cep_cell_remove_hard(cepCell* cell, cepCell* target) {
     assert(cell && !cep_cell_is_root(cell));
