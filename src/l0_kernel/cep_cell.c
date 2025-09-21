@@ -2581,19 +2581,93 @@ void cep_cell_sort(cepCell* cell, cepCompare compare, void* context) {
 
 
 /*
-    Removes last child from cell
+    Soft-removes last child from cell by marking it deleted and returning a link to the snapshot.
 */
 bool cep_cell_child_take(cepCell* cell, cepCell* target) {
-    CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+    if (!target)
+        return false;
+
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
+
+    if (!store->writable || !store->chdCount)
+        return false;
+
+    cepCell* child = store_last_child(store);
+    if (!child)
+        return false;
+
+    bool childAlreadyDeleted = cep_cell_is_deleted(child);
+    cepOpCount snapshot = childAlreadyDeleted? cep_cell_timestamp(): cep_cell_timestamp_next();
+    if (!childAlreadyDeleted)
+        cep_cell_delete(child);
+    store->modified = snapshot;
+
+    CEP_0(target);
+    cepDT name = *cep_cell_get_name(child);
+    cep_link_initialize(target, &name, child);
+
+    if (!cep_cell_is_shadowed(child))
+        child->metacell.shadowing = CEP_SHADOW_SINGLE;
+    else if (child->metacell.shadowing == CEP_SHADOW_SINGLE)
+        child->metacell.shadowing = CEP_SHADOW_MULTIPLE;
+
+    // ToDo: attach link to the snapshot metadata once snapshot-aware links are implemented.
+
+    return true;
+}
+
+
+/*
+    Soft-removes first child from cell by marking it deleted and returning a link to the snapshot.
+*/
+bool cep_cell_child_pop(cepCell* cell, cepCell* target) {
+    if (!target)
+        return false;
+
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
+
+    if (!store->writable || !store->chdCount)
+        return false;
+
+    cepCell* child = store_first_child(store);
+    if (!child)
+        return false;
+
+    bool childAlreadyDeleted = cep_cell_is_deleted(child);
+    cepOpCount snapshot = childAlreadyDeleted? cep_cell_timestamp(): cep_cell_timestamp_next();
+    if (!childAlreadyDeleted)
+        cep_cell_delete(child);
+    store->modified = snapshot;
+
+    CEP_0(target);
+    cepDT name = *cep_cell_get_name(child);
+    cep_link_initialize(target, &name, child);
+
+    if (!cep_cell_is_shadowed(child))
+        child->metacell.shadowing = CEP_SHADOW_SINGLE;
+    else if (child->metacell.shadowing == CEP_SHADOW_SINGLE)
+        child->metacell.shadowing = CEP_SHADOW_MULTIPLE;
+
+    // ToDo: attach link to the snapshot metadata once snapshot-aware links are implemented.
+
+    return true;
+}
+
+
+/*
+    Removes last child from cell (hard, reorganizing sibling storage).
+*/
+bool cep_cell_child_take_hard(cepCell* cell, cepCell* target) {
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
     return store_take_cell(store, target);
 }
 
 
 /*
-    Removes first child from cell.
+    Removes first child from cell (hard, reorganizing sibling storage).
 */
-bool cep_cell_child_pop(cepCell* cell, cepCell* target) {
-    CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+bool cep_cell_child_pop_hard(cepCell* cell, cepCell* target) {
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
     return store_pop_child(store, target);
 }
 

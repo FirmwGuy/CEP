@@ -74,7 +74,7 @@ Primary API (Patterns)
   - By name/key/position/path: `cep_cell_find_by_*`
   - Traverse shallow/deep: `cep_cell_traverse`, `cep_cell_deep_traverse`
 - Removal
-  - Remove/pull from parent store: `cep_cell_child_take|pop` (reorganizes siblings), `cep_cell_remove`
+  - Remove/pull from parent store: soft delete via `cep_cell_child_take|pop`, hard removal via `cep_cell_child_take_hard|pop_hard` (reorganizes siblings), `cep_cell_remove`
 - Data access/update
   - Read: `cep_cell_data(cell)`
   - Update: `cep_cell_update(cell, size, capacity, value, swap)`
