@@ -2150,9 +2150,91 @@ void* cep_cell_data_find_by_name_past(const cepCell* cell, cepDT* name, cepOpCou
 
 
 /*
-   Updates the data of a cell
+   Updates the data of a cell while preserving historical payload snapshots.
 */
 void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, bool swap) {
+    assert(!cep_cell_is_void(cell) && size && capacity);
+
+    cell = cep_link_pull(cell);
+
+    cepData* data = cell->data;
+    if CEP_NOT_ASSERT(data)
+        return NULL;
+
+    if (!data->writable)
+        return NULL;
+
+    cepDataNode* snapshot = cep_malloc0(sizeof *snapshot);
+    memcpy(snapshot, (const cepDataNode*) &data->modified, sizeof *snapshot);
+    snapshot->past = data->past;
+
+    bool snapshotOwnsCopy = false;
+
+    if (data->datatype == CEP_DATATYPE_DATA && snapshot->data && snapshot->size) {
+        if (!swap) {
+            size_t allocSize = snapshot->capacity ? snapshot->capacity : snapshot->size;
+            void* copy = cep_malloc(allocSize);
+            memcpy(copy, snapshot->data, snapshot->size);
+            snapshot->data = copy;
+            snapshot->destructor = cep_free;
+            snapshotOwnsCopy = true;
+        }
+        // For swap=true we keep the original pointer so history owns it via the copied descriptor.
+    }
+
+    data->past = snapshot;
+
+    void* result = NULL;
+
+    switch (data->datatype) {
+      case CEP_DATATYPE_VALUE: {
+        assert(data->capacity >= capacity);
+        memcpy(data->value, value, size);
+        data->size = size;
+        result = data->value;
+        break;
+      }
+
+      case CEP_DATATYPE_DATA: {
+        assert(value);
+        if (swap) {
+            data->data     = value;
+            data->capacity = capacity;
+        } else {
+            assert(data->capacity >= capacity);
+            memcpy(data->data, value, size);
+        }
+        data->size = size;
+        result = data->data;
+        break;
+      }
+
+      case CEP_DATATYPE_HANDLE:
+      case CEP_DATATYPE_STREAM: {
+        // ToDo: provide snapshot support for handle/stream datatypes.
+        break;
+      }
+    }
+
+    if (!result) {
+        data->past = snapshot->past;
+        if (snapshotOwnsCopy && snapshot->data && snapshot->destructor)
+            snapshot->destructor(snapshot->data);
+        cep_free(snapshot);
+        return NULL;
+    }
+
+    data->hash = cep_data_compute_hash(data);
+    data->modified = cep_cell_timestamp_next();
+
+    return result;
+}
+
+
+/*
+   Updates the data of a cell without preserving payload history (hard).
+*/
+void* cep_cell_update_hard(cepCell* cell, size_t size, size_t capacity, void* value, bool swap) {
     assert(!cep_cell_is_void(cell) && size && capacity);
 
     cell = cep_link_pull(cell);

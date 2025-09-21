@@ -894,6 +894,7 @@ static inline void* cep_cell_data_find_by_name(const cepCell* cell, cepDT* name)
 }
 
 void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, bool swap);
+void* cep_cell_update_hard(cepCell* cell, size_t size, size_t capacity, void* value, bool swap);
 #define cep_cell_update_value(r, z, v)    cep_cell_update(r, (z), sizeof(*(v)), v, false)
 //#define cep_cell_update_attribute(r, a)   do{ assert(cep_cell_has_data(r));  (r)->data.attribute.id = CEP_ID(a); }while(0)
 
