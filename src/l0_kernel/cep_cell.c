@@ -790,7 +790,9 @@ void cep_store_delete_children_hard(cepStore* store) {
 
 
 /*
-    Assign auto-id if necessary
+    Assign auto-id if necessary:
+    Cells that want CEP to pick the numeric tag should prime their metacell tag
+    with CEP_AUTOID before insertion; user-assigned numeric tags skip this path.
 */
 static inline void store_check_auto_id(cepStore* store, cepCell* child) {
     if (cep_cell_id_is_pending(child)) {
