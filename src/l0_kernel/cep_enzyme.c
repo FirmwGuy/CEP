@@ -181,17 +181,13 @@ static bool cep_enzyme_descriptor_equal(const cepEnzymeDescriptor* a, const cepE
         return false;
     }
 
-    if (a->name == b->name) {
-        return true;
-    }
-    if (!a->name || !b->name) {
-        return false;
-    }
-
-    return strcmp(a->name, b->name) == 0;
+    return cep_dt_compare(&a->name, &b->name) == 0;
 }
 
 
+/* Creates a registry instance so enzymes can be registered and does an upfront
+ * capacity reservation based on environment hints to reduce later reallocations.
+ */
 cepEnzymeRegistry* cep_enzyme_registry_create(void) {
     CEP_NEW(cepEnzymeRegistry, registry);
     if (!registry) {
@@ -208,6 +204,9 @@ cepEnzymeRegistry* cep_enzyme_registry_create(void) {
 }
 
 
+/* Tears down a registry by releasing all tracked entries so callers can avoid
+ * leaking per-enzyme allocations when a runtime shuts down.
+ */
 void cep_enzyme_registry_destroy(cepEnzymeRegistry* registry) {
     if (!registry) {
         return;
@@ -218,6 +217,9 @@ void cep_enzyme_registry_destroy(cepEnzymeRegistry* registry) {
 }
 
 
+/* Clears the registry contents while keeping the buffer alive so repeated test
+ * runs can start from a clean slate without paying the allocation cost again.
+ */
 void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
     if (!registry) {
         return;
@@ -239,6 +241,9 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
 }
 
 
+/* Reports how many enzymes are currently tracked so higher layers can decide
+ * whether new registrations are needed or whether iteration should even start.
+ */
 size_t cep_enzyme_registry_size(const cepEnzymeRegistry* registry) {
     return registry ? registry->entry_count : 0u;
 }
@@ -270,6 +275,9 @@ static bool cep_enzyme_registry_ensure_capacity(cepEnzymeRegistry* registry) {
 }
 
 
+/* Registers a new enzyme by cloning the query path and storing the descriptor
+ * so dispatch can later use the captured data without relying on caller memory.
+ */
 int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor) {
     if (!cep_heartbeat_bootstrap()) {
         return CEP_ENZYME_FATAL;
@@ -297,6 +305,9 @@ int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const
 }
 
 
+/* Removes a previously registered enzyme entry to keep dispatch decisions in
+ * sync with caller intent, compacting the table so subsequent lookups stay fast.
+ */
 int cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor) {
     if (!cep_heartbeat_bootstrap()) {
         return CEP_ENZYME_FATAL;
@@ -336,6 +347,21 @@ typedef struct {
 } cepEnzymeMatch;
 
 
+static size_t cep_enzyme_match_index_by_name(const cepEnzymeMatch* matches, size_t count, const cepDT* name) {
+    if (!matches || !name) {
+        return SIZE_MAX;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        if (cep_dt_compare(&matches[i].descriptor->name, name) == 0) {
+            return i;
+        }
+    }
+
+    return SIZE_MAX;
+}
+
+
 static bool cep_enzyme_match_entry(const cepEnzymeEntry* entry, const cepImpulse* impulse) {
     if (!entry || !impulse) {
         return false;
@@ -371,6 +397,10 @@ static bool cep_enzyme_match_entry(const cepEnzymeEntry* entry, const cepImpulse
 }
 
 
+/* Collects and sorts matching enzymes for a given impulse so execution can walk
+ * descriptors by dependency-aware order, falling back to specificity and registration
+ * when no additional constraints exist. 
+ */
 size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* impulse, const cepEnzymeDescriptor** ordered, size_t capacity) {
     if (!registry || !impulse || registry->entry_count == 0u) {
         return 0u;
@@ -396,31 +426,93 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
         return 0u;
     }
 
-    for (size_t i = 0; i + 1u < match_count; ++i) {
-        size_t best = i;
-        for (size_t j = i + 1u; j < match_count; ++j) {
-            bool more_specific    = matches[j].specificity        > matches[best].specificity;
-            bool equally_specific = matches[j].specificity       == matches[best].specificity;
-            bool earlier          = matches[j].registration_order < matches[best].registration_order;
+    size_t n = match_count;
+    size_t* indegree = cep_calloc(n, sizeof(*indegree));
+    uint8_t* edges = cep_calloc(n * n, sizeof(*edges));
 
-            if (more_specific || (equally_specific && earlier)) {
-                best = j;
+    for (size_t i = 0; i < n; ++i) {
+        const cepEnzymeDescriptor* desc = matches[i].descriptor;
+
+        for (size_t b = 0; desc->before && b < desc->before_count; ++b) {
+            size_t j = cep_enzyme_match_index_by_name(matches, n, &desc->before[b]);
+            if (j == SIZE_MAX) {
+                continue;
+            }
+            size_t idx = i * n + j;
+            if (!edges[idx]) {
+                edges[idx] = 1u;
+                indegree[j]++;
             }
         }
-        if (best != i) {
-            cepEnzymeMatch temp = matches[i];
-            matches[i]    = matches[best];
-            matches[best] = temp;
+
+        for (size_t a = 0; desc->after && a < desc->after_count; ++a) {
+            size_t j = cep_enzyme_match_index_by_name(matches, n, &desc->after[a]);
+            if (j == SIZE_MAX) {
+                continue;
+            }
+            size_t idx = j * n + i;
+            if (!edges[idx]) {
+                edges[idx] = 1u;
+                indegree[i]++;
+            }
         }
     }
 
-    if (ordered && capacity > 0u) {
-        size_t limit = (match_count < capacity) ? match_count : capacity;
+    bool* placed = cep_calloc(n, sizeof(*placed));
+    size_t* order = cep_malloc(n * sizeof(*order));
+    size_t order_count = 0u;
+
+    for (size_t processed = 0; processed < n; ++processed) {
+        size_t best = SIZE_MAX;
+        for (size_t i = 0; i < n; ++i) {
+            if (placed[i] || indegree[i] != 0u) {
+                continue;
+            }
+
+            if (best == SIZE_MAX) {
+                best = i;
+                continue;
+            }
+
+            bool more_specific    = matches[i].specificity        > matches[best].specificity;
+            bool equally_specific = matches[i].specificity       == matches[best].specificity;
+            bool earlier          = matches[i].registration_order < matches[best].registration_order;
+
+            if (more_specific || (equally_specific && earlier)) {
+                best = i;
+            }
+        }
+
+        if (best == SIZE_MAX) {
+            order_count = 0u;
+            break;
+        }
+
+        placed[best] = true;
+        order[order_count++] = best;
+
+        for (size_t j = 0; j < n; ++j) {
+            size_t idx = best * n + j;
+            if (edges[idx] && indegree[j] > 0u) {
+                indegree[j]--;
+            }
+        }
+    }
+
+    size_t resolved = (order_count == n) ? n : 0u;
+
+    if (resolved && ordered && capacity > 0u) {
+        size_t limit = (resolved < capacity) ? resolved : capacity;
         for (size_t i = 0; i < limit; ++i) {
-            ordered[i] = matches[i].descriptor;
+            ordered[i] = matches[order[i]].descriptor;
         }
     }
 
+    CEP_FREE(order);
+    CEP_FREE(placed);
+    CEP_FREE(edges);
+    CEP_FREE(indegree);
     CEP_FREE(matches);
-    return match_count;
+
+    return resolved;
 }

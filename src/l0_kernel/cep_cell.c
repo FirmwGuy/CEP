@@ -245,6 +245,7 @@ void cep_cell_system_initiate(void) {
 */
 void cep_cell_system_shutdown(void) {
     cep_cell_finalize(&CEP_ROOT);
+    CEP_0(&CEP_ROOT);
 }
 
 

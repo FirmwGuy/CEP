@@ -107,7 +107,7 @@ static MunitResult test_enzyme_dependencies(void) {
     munit_assert_int(cep_enzyme_register(registry, query_path, &desc_b), ==, CEP_ENZYME_SUCCESS);
     munit_assert_int(cep_enzyme_register(registry, query_path, &desc_c), ==, CEP_ENZYME_SUCCESS);
 
-    cepEnzymeImpulse impulse = {
+    cepImpulse impulse = {
         .signal_path = query_path,
         .target_path = NULL,
     };
@@ -168,7 +168,7 @@ static MunitResult test_enzyme_dependency_cycle(void) {
     munit_assert_int(cep_enzyme_register(registry, query_path, &desc_d), ==, CEP_ENZYME_SUCCESS);
     munit_assert_int(cep_enzyme_register(registry, query_path, &desc_e), ==, CEP_ENZYME_SUCCESS);
 
-    cepEnzymeImpulse impulse = {
+    cepImpulse impulse = {
         .signal_path = query_path,
         .target_path = NULL,
     };

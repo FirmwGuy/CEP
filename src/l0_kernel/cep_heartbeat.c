@@ -62,7 +62,7 @@ static void cep_runtime_reset_defaults(void) {
 static cepCell* ensure_root_dictionary(cepCell* root, const cepDT* name) {
     cepCell* cell = cep_cell_find_by_name(root, name);
     if (!cell) {
-        cell = cep_cell_append_dictionary(root, (cepDT*)name, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_RED_BLACK_T);
+        cell = cep_cell_add_dictionary(root, (cepDT*)name, 0, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_RED_BLACK_T);
     }
     return cell;
 }
@@ -71,7 +71,7 @@ static cepCell* ensure_root_dictionary(cepCell* root, const cepDT* name) {
 static cepCell* ensure_root_list(cepCell* root, const cepDT* name) {
     cepCell* cell = cep_cell_find_by_name(root, name);
     if (!cell) {
-        cell = cep_cell_append_list(root, (cepDT*)name, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
+        cell = cep_cell_add_list(root, (cepDT*)name, 0, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
     }
     return cell;
 }
@@ -101,6 +101,10 @@ static void cep_heartbeat_reset_runtime_cells(void) {
 }
 
 
+/* Establishes the heartbeat runtime by wiring up the root cells and lazy
+ * allocating the enzyme registry so every public entry point works from a
+ * consistent topology baseline.
+ */
 bool cep_heartbeat_bootstrap(void) {
     cep_cell_system_ensure();
 
@@ -184,6 +188,10 @@ bool cep_heartbeat_bootstrap(void) {
 }
 
 
+/* Merges caller supplied topology and policy values with the defaults so the
+ * runtime can respect overrides without losing the safety of fully initialised
+ * fallback structures.
+ */
 bool cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHeartbeatPolicy* policy) {
     if (!policy) {
         return false;
@@ -213,6 +221,9 @@ bool cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHear
 }
 
 
+/* Starts the heartbeat loop at the configured entry point so the scheduler can
+ * begin advancing beats using the state prepared during configuration.
+ */
 bool cep_heartbeat_startup(void) {
     if (!cep_heartbeat_bootstrap()) {
         return false;
@@ -224,6 +235,9 @@ bool cep_heartbeat_startup(void) {
 }
 
 
+/* Restarts execution by clearing per-run cells and resetting the beat counter
+ * so a fresh cycle can reuse the existing topology without leaking data.
+ */
 bool cep_heartbeat_restart(void) {
     if (!cep_heartbeat_bootstrap()) {
         return false;
@@ -237,6 +251,9 @@ bool cep_heartbeat_restart(void) {
 }
 
 
+/* Forces the runtime to begin at an explicit beat to support manual recovery or
+ * replay scenarios where the caller chooses the next cadence.
+ */
 bool cep_heartbeat_begin(cepBeatNumber beat) {
     if (!cep_heartbeat_bootstrap()) {
         return false;
@@ -248,21 +265,33 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
 }
 
 
+/* Resolves the agenda for the current beat; presently that means reporting
+ * whether the engine is running, keeping the control flow plumbed for future work. 
+ */
 bool cep_heartbeat_resolve_agenda(void) {
     return CEP_RUNTIME.running;
 }
 
 
+/* Executes the resolved agenda; for now it simply mirrors the running flag so
+ * callers can already chain the step flow before real executors arrive.
+ */
 bool cep_heartbeat_execute_agenda(void) {
     return CEP_RUNTIME.running;
 }
 
 
+/* Commits staged work at the end of a beat; currently it just keeps the step
+ * pipeline shape intact by reflecting whether the loop is active.
+ */
 bool cep_heartbeat_stage_commit(void) {
     return CEP_RUNTIME.running;
 }
 
 
+/* Drives a full beat by cascading resolve, execute, and commit stages and bumps
+ * the counter when everything succeeds so the loop progresses deterministically.
+ */
 bool cep_heartbeat_step(void) {
     if (!CEP_RUNTIME.running) {
         return false;
@@ -280,6 +309,9 @@ bool cep_heartbeat_step(void) {
 }
 
 
+/* Shuts the heartbeat down by releasing runtime state and the cell system so a
+ * subsequent bootstrap starts from a completely clean environment.
+ */
 void cep_heartbeat_shutdown(void) {
     cep_runtime_reset_state(true);
     cep_runtime_reset_defaults();
@@ -289,11 +321,17 @@ void cep_heartbeat_shutdown(void) {
 }
 
 
+/* Exposes the currently active beat so observers can align their work with the
+ * scheduler state.
+ */
 cepBeatNumber cep_heartbeat_current(void) {
     return CEP_RUNTIME.current;
 }
 
 
+/* Computes the next beat index while guarding against the invalid sentinel so
+ * callers never advance past an uninitialised state.
+ */
 cepBeatNumber cep_heartbeat_next(void) {
     if (CEP_RUNTIME.current == CEP_BEAT_INVALID) {
         return CEP_BEAT_INVALID;
@@ -303,16 +341,25 @@ cepBeatNumber cep_heartbeat_next(void) {
 }
 
 
+/* Returns a pointer to the current policy so readers can inspect timing rules
+ * without taking ownership of the underlying storage.
+ */
 const cepHeartbeatPolicy* cep_heartbeat_policy(void) {
     return &CEP_RUNTIME.policy;
 }
 
 
+/* Returns the active topology structure so clients can access shared roots the
+ * runtime prepared during bootstrap.
+ */
 const cepHeartbeatTopology* cep_heartbeat_topology(void) {
     return &CEP_RUNTIME.topology;
 }
 
 
+/* Ensures the runtime is initialised and exposes the shared enzyme registry so
+ * listeners can register dispatchers without duplicating bootstrap checks.
+ */
 cepEnzymeRegistry* cep_heartbeat_registry(void) {
     if (!cep_heartbeat_bootstrap()) {
         return NULL;
@@ -321,6 +368,9 @@ cepEnzymeRegistry* cep_heartbeat_registry(void) {
 }
 
 
+/* Placeholder for signal enqueuing that keeps the public API stable while the
+ * actual queueing mechanics are still under construction.
+ */
 int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path, const cepPath* target_path) {
     (void)beat;
     (void)signal_path;
@@ -329,6 +379,9 @@ int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path,
 }
 
 
+/* Placeholder for impulse enqueuing that already captures the intended inputs
+ * so future implementations can focus on storage without changing signatures.
+ */
 int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse) {
     (void)beat;
     (void)impulse;
@@ -336,41 +389,65 @@ int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse)
 }
 
 
+/* Provides the root cell for the sys namespace so integrations can attach
+ * system-level state without digging through runtime internals.
+ */
 cepCell* cep_heartbeat_sys_root(void) {
     return CEP_RUNTIME.topology.sys;
 }
 
 
+/* Shares the runtime root cell to support modules that need direct access to
+ * transient execution state.
+ */
 cepCell* cep_heartbeat_rt_root(void) {
     return CEP_RUNTIME.topology.rt;
 }
 
 
+/* Returns the journal root so persistence helpers can append entries in the
+ * same tree the scheduler maintains.
+ */
 cepCell* cep_heartbeat_journal_root(void) {
     return CEP_RUNTIME.topology.journal;
 }
 
 
+/* Supplies the environment root cell so configuration loaders can coordinate on
+ * a single namespace.
+ */
 cepCell* cep_heartbeat_env_root(void) {
     return CEP_RUNTIME.topology.env;
 }
 
 
+/* Exposes the data root so consumers can store long-lived datasets alongside
+ * the runtime without guessing the internal layout.
+ */
 cepCell* cep_heartbeat_data_root(void) {
     return CEP_RUNTIME.topology.data;
 }
 
 
+/* Returns the content-addressable storage root to let utilities share cached
+ * assets with the engine-provided store.
+ */
 cepCell* cep_heartbeat_cas_root(void) {
     return CEP_RUNTIME.topology.cas;
 }
 
 
+/* Provides the temporary root so callers can manage short-lived buffers in the
+ * same compartment the runtime clears between runs.
+ */
 cepCell* cep_heartbeat_tmp_root(void) {
     return CEP_RUNTIME.topology.tmp;
 }
 
 
+/* Shares the enzymes root dictionary so tooling can inspect or organise enzyme
+ * metadata alongside the registry.
+ */
 cepCell* cep_heartbeat_enzymes_root(void) {
     return CEP_RUNTIME.topology.enzymes;
 }
@@ -381,4 +458,3 @@ static void cep_heartbeat_auto_shutdown(void) CEP_AT_SHUTDOWN_(101);
 static void cep_heartbeat_auto_shutdown(void) {
     cep_heartbeat_shutdown();
 }
-
