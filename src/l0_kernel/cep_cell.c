@@ -1300,6 +1300,50 @@ static inline bool cep_data_chain_has_timestamp(const cepData* data, cepOpCount 
 }
 
 
+static inline const cepDataNode* cep_data_chain_find_snapshot(const cepData* data, cepOpCount snapshot) {
+    if (!data)
+        return NULL;
+
+    if (data->deleted) {
+        cepOpCount deleted = data->deleted;
+        if (!snapshot || deleted <= snapshot)
+            return NULL;
+    }
+
+    const cepDataNode* node = (const cepDataNode*) &data->modified;
+
+    if (!snapshot)
+        return node;
+
+    while (node) {
+        if (node->modified <= snapshot)
+            return node;
+        node = node->past;
+    }
+
+    return NULL;
+}
+
+static inline void* cep_data_node_payload(const cepData* owner, const cepDataNode* node) {
+    if (!owner || !node)
+        return NULL;
+
+    switch (owner->datatype) {
+      case CEP_DATATYPE_VALUE:
+        return CEP_P(((cepDataNode*) node)->value);
+
+      case CEP_DATATYPE_DATA:
+        return ((cepDataNode*) node)->data;
+
+      case CEP_DATATYPE_HANDLE:
+      case CEP_DATATYPE_STREAM:
+        // ToDo: provide snapshot payloads for handle and stream datatypes.
+        break;
+    }
+
+    return NULL;
+}
+
 static inline bool cep_store_chain_has_timestamp(const cepStore* store, cepOpCount timestamp) {
     if (!store)
         return false;
@@ -2075,6 +2119,33 @@ void* cep_cell_data(const cepCell* cell) {
         return NULL;
 
     return cep_data(data);
+}
+
+
+void* cep_cell_data_find_by_name_past(const cepCell* cell, cepDT* name, cepOpCount snapshot) {
+    assert(!cep_cell_is_void(cell) && cep_dt_valid(name));
+
+    cepCell* found = cep_cell_find_by_name_past(cell, name, snapshot);
+    if (!found)
+        return NULL;
+
+    if (!snapshot)
+        return cep_cell_data(found);
+
+    found = cep_link_pull(found);
+
+    if (!cep_cell_is_normal(found))
+        return NULL;
+
+    if (!cep_cell_has_data(found))
+        return NULL;
+
+    const cepData* data = found->data;
+    const cepDataNode* node = cep_data_chain_find_snapshot(data, snapshot);
+    if (!node)
+        return NULL;
+
+    return cep_data_node_payload(data, node);
 }
 
 

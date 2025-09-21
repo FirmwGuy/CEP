@@ -887,15 +887,10 @@ static inline void cep_cell_dispose_hard(cepCell* cell) {
 
 // Accessing data
 void* cep_cell_data(const cepCell* cell);
+void* cep_cell_data_find_by_name_past(const cepCell* cell, cepDT* name, cepOpCount snapshot);
 
 static inline void* cep_cell_data_find_by_name(const cepCell* cell, cepDT* name) {
-    assert(!cep_cell_is_void(cell) && cep_dt_valid(name));
-    
-    cepCell* found = cep_cell_find_by_name(cell, name);
-    if (!found)
-        return NULL;
-    
-    return cep_cell_data(found);
+    return cep_cell_data_find_by_name_past(cell, name, 0);
 }
 
 void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, bool swap);
