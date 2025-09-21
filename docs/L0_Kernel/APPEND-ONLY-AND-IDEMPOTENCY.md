@@ -12,7 +12,7 @@ Timeline Building Blocks
   - Links to the previous value through `data->past`, forming a backward chain ordered from newest to oldest.
 - `cepStore`
   - Describes the live view of a cell's children and holds its own `modified` for structural changes.
-  - Copies the live layout into `store->past` on every structural mutation (insert, erase, re-sort) so earlier snapshots remain available for rewind.
+  - Keeps historical layout snapshots *only* when the indexing technique changes (for example, converting an insertion-ordered list into a dictionary). Regular inserts, appends, and soft deletions rely on per-cell timestamps instead of cloning the entire store.
 - `cepStoreNode`
   - Represents one child within a store, bundles child metadata (name, ordering key, state), and is stamped with the `modified` at which the child entered or changed state.
   - Populates `node->past` with the prior snapshot for the same child identity, enabling per-entry rewind across insert/update/delete sequences.
@@ -23,7 +23,7 @@ Data-Only Cells
 - Because nodes are only appended, equality checks between the requested payload and the head enforce idempotency: if the incoming payload matches the current head, no new node is added.
 
 Children-Only Cells
-- Directory-style cells capture a snapshot of their layout in `store->past` before every structural change. Replaying those snapshots reconstructs the child set (and ordering) that was visible at any heartbeat.
+- Directory-style cells leverage the appended timestamps on each child to replay history. Only indexing changes append a snapshot of the layout (with pointers to the original children) to `store->past`; ordinary inserts/deletes keep the sibling list untouched and let timestamp filtering reconstruct earlier views.
 - Each child snapshot threads its own `node->past` chain, so renames, replacements, and soft deletions can be revisited without mutating older nodes.
 - Deleting a child via the normal APIs records the removal in history while keeping a clone for time-travel. The explicit "hard" deletion helper is the only path that tears the clone down immediately.
 
@@ -40,14 +40,14 @@ timestamp-Aware Traversal
 Idempotency Guarantees
 - Content equality: CEP compares the incoming payload (bytes plus relevant metadata such as encoding or resource identity) against the head `cepData`. Matching content means the update is discarded as a no-op.
 - Structural equality: CEP compares the incoming child against the live entry. If nothing changes, the operation is discarded as a no-op (supported today for insertion-order and dictionary updates).
-- Stable ordering: Because directories are append-only, the ordering function is evaluated only when the child first appears or when the catalog explicitly changes sorting rules. Replay relies on the `store->past` snapshots together with each child's `node->past` chain.
+- Stable ordering: Because directories are append-only, the ordering function is evaluated only when the child first appears or when the catalog explicitly changes sorting rules. Replay relies on the `store->past` snapshots emitted during indexing changes together with each child's `node->past` chain.
 - Operation keys: Higher layers may store idempotency keys alongside heads to short-circuit duplicate operations before deep comparisons are needed.
 
 Implementation Notes
 - Always stamp both `cepData` and `cepStore` with the `cepOpCount` that made them current; history queries rely on those timestamps to gate traversal.
 - Prefer soft deletions: use the regular remove helpers to detach a child without destroying its contents. Call the `*_hard` variants only when the child and all descendants should be reclaimed immediately; soft removes now preserve history clones automatically.
 - Garbage-collection note: the `*_hard` deleters are reserved for GC, after link/shadow tracking has proven no live references remain. Under that gate, reclaiming the branch does not break historical traversal.
-- Every structural mutation pushes a fresh snapshot into `store->past` before the live view is rewritten.
+- Only indexing changes push a snapshot into `store->past` (storing references to the original child cells); other structural edits keep the existing layout and depend on timestamps plus soft-delete markers.
 - Keep comparisons local: only the head of the relevant chain must be inspected to decide idempotency; deep history traversal is optional and on-demand.
 - Catalog-oriented stores update both `store->past` and each child's `node->past` whenever the user-facing sorting key changes so past ordering remains derivable.
 

@@ -27,6 +27,37 @@
 
 #include <stdarg.h>
 
+typedef struct _cepStoreHistoryEntry cepStoreHistoryEntry;
+typedef struct _cepStoreHistory      cepStoreHistory;
+
+struct _cepStoreHistoryEntry {
+    cepDT                   name;
+    cepCell*                cell;
+    cepOpCount              modified;
+    bool                    alive;
+    cepStoreHistoryEntry*   past;
+};
+
+struct _cepStoreHistory {
+    cepStoreNode            node;
+    size_t                  entryCount;
+    cepStoreHistoryEntry*   entries;
+};
+
+
+static cepStoreHistory*        cep_store_history_snapshot(const cepStore* store, const cepStoreHistory* previous);
+static void                    cep_store_history_free(cepStoreHistory* history);
+static void                    cep_store_history_push(cepStore* store);
+static void                    cep_store_history_clear(cepStore* store);
+
+static inline cepStoreHistory* cep_store_history_from_node(cepStoreNode* node) {
+    return node? (cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
+}
+
+static inline const cepStoreHistory* cep_store_history_from_const_node(const cepStoreNode* node) {
+    return node? (const cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
+}
+
 static bool                   cep_cell_structural_equal(const cepCell* existing, const cepCell* incoming);
 static bool                   cep_data_structural_equal(const cepData* existing, const cepData* incoming);
 
@@ -454,6 +485,89 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
 }
 
 
+static cepStoreHistoryEntry* cep_store_history_find_entry(const cepStoreHistory* history, const cepDT* name)
+{
+    if (!history || !history->entries)
+        return NULL;
+
+    for (size_t i = 0; i < history->entryCount; i++) {
+        cepStoreHistoryEntry* entry = (cepStoreHistoryEntry*)&history->entries[i];
+        if ((entry->name.domain == name->domain)
+         && (entry->name.tag == name->tag))
+            return entry;
+    }
+
+    return NULL;
+}
+
+static cepStoreHistory* cep_store_history_snapshot(const cepStore* store, const cepStoreHistory* previous)
+{
+    assert(store);
+
+    cepStoreHistory* history = cep_malloc0(sizeof *history);
+    memcpy(&history->node, (const cepStoreNode*)&store->modified, sizeof(history->node));
+    history->node.past   = previous? (cepStoreNode*)&previous->node: NULL;
+    history->node.linked = NULL;
+    history->entryCount  = store->chdCount;
+
+    if (history->entryCount) {
+        history->entries = cep_malloc0(history->entryCount * sizeof *history->entries);
+        size_t index = 0;
+        for (cepCell* child = store_first_child(store); child; child = store_next_child(store, child)) {
+            cepStoreHistoryEntry* entry = &history->entries[index++];
+            entry->name     = *cep_cell_get_name(child);
+            entry->modified = store->modified;
+            entry->alive    = true;
+            entry->cell     = child;
+            entry->past     = previous? cep_store_history_find_entry(previous, &entry->name): NULL;
+        }
+    }
+
+    return history;
+}
+
+static void cep_store_history_free(cepStoreHistory* history)
+{
+    if (!history)
+        return;
+
+    if (history->entries)
+        cep_free(history->entries);
+
+    cep_free(history);
+}
+
+/* Clone the current store layout so reindexing can replay the previous order.
+   Regular edits never call this helper; timestamps alone carry history for
+   append-only mutations. */
+static void cep_store_history_push(cepStore* store)
+{
+    assert(store);
+
+    if (!store->chdCount)
+        return;
+
+    const cepStoreHistory* previous = cep_store_history_from_const_node(store->past);
+    cepStoreHistory* history = cep_store_history_snapshot(store, previous);
+    history->node.past = store->past;
+    store->past = &history->node;
+}
+
+static void cep_store_history_clear(cepStore* store)
+{
+    if (!store)
+        return;
+
+    for (cepStoreNode* node = store->past; node; ) {
+        cepStoreHistory* history = cep_store_history_from_node(node);
+        node = node->past;
+        cep_store_history_free(history);
+    }
+
+    store->past = NULL;
+}
+
+
 static bool cep_data_structural_equal(const cepData* existing, const cepData* incoming)
 {
     if (existing == incoming)
@@ -598,8 +712,7 @@ void cep_store_del(cepStore* store) {
 
     // ToDo: cleanup shadows.
 
-    // Append-only design: store->past is unused because we keep history inline.
-    store->past = NULL;
+    cep_store_history_clear(store);
 
     store->deleted = cep_cell_timestamp_next();
 
@@ -1553,6 +1666,8 @@ static inline void store_to_dictionary(cepStore* store) {
     if (store->indexing == CEP_INDEX_BY_NAME)
         return;
 
+    cep_store_history_push(store);   // Only snapshot when the indexing scheme changes (re-sorts rewrite sibling order).
+
     store->indexing = CEP_INDEX_BY_NAME;
     store->modified = cep_cell_timestamp_next();
 
@@ -1592,6 +1707,8 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
 
     if (store->indexing == CEP_INDEX_BY_FUNCTION)
         return;
+
+    cep_store_history_push(store);   // Snapshot current layout before re-sorting by custom comparator.
 
     store->compare  = compare;
     store->indexing = CEP_INDEX_BY_FUNCTION;   // FixMe: by hash?
