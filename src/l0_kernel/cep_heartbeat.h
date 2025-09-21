@@ -105,6 +105,7 @@ cepEnzymeRegistry*          cep_heartbeat_registry(void);
 
 int   cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path, const cepPath* target_path);
 int   cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse);
+bool  cep_heartbeat_process_impulses(void);
 
 
 cepCell*  cep_heartbeat_sys_root(void);

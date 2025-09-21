@@ -53,6 +53,11 @@ struct _cepEnzymeRegistry {
 
 
 
+static bool cep_enzyme_registry_ensure_capacity(cepEnzymeRegistry* registry);
+static bool cep_enzyme_registry_pending_ensure_capacity(cepEnzymeRegistry* registry);
+static int  cep_enzyme_registry_pending_add(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor);
+
+
 static size_t cep_enzyme_registry_hint_capacity(void) {
     static size_t cached_hint;
     static bool   hint_initialised;
@@ -288,15 +293,18 @@ void cep_enzyme_registry_activate_pending(cepEnzymeRegistry* registry) {
         return;
     }
 
+    size_t required = registry->entry_count + registry->pending_count;
+    while (registry->entry_capacity < required) {
+        if (!cep_enzyme_registry_ensure_capacity(registry)) {
+            return;
+        }
+    }
+
     for (size_t i = 0; i < registry->pending_count; ++i) {
         cepEnzymeEntry* pending = &registry->pending_entries[i];
         if (!pending->query || !pending->descriptor.callback) {
-            CEP_0(pending);
+            cep_enzyme_entry_clear(pending);
             continue;
-        }
-
-        if (!cep_enzyme_registry_ensure_capacity(registry)) {
-            break;
         }
 
         cepEnzymeEntry* entry = &registry->entries[registry->entry_count++];
@@ -377,6 +385,7 @@ static int cep_enzyme_registry_pending_add(cepEnzymeRegistry* registry, const ce
     }
 
     cepEnzymeEntry* entry = &registry->pending_entries[registry->pending_count++];
+    CEP_0(entry);
     entry->query              = copy;
     entry->descriptor         = *descriptor;
     entry->registration_order = 0u;

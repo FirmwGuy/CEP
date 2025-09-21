@@ -26,6 +26,8 @@
 #include "cep_heartbeat.h"
 
 #include <string.h>
+#include <stdint.h>
+#include <stdlib.h>
 
 
 
@@ -169,6 +171,76 @@ static void cep_heartbeat_impulse_queue_swap(cepHeartbeatImpulseQueue* a, cepHea
     }
 
     CEP_SWAP(*a, *b);
+}
+
+
+typedef struct {
+    size_t                             index;
+    const cepHeartbeatImpulseRecord*   record;
+} cepHeartbeatImpulseView;
+
+
+typedef struct {
+    size_t                       resolved;
+    const cepEnzymeDescriptor**  descriptors;
+} cepHeartbeatImpulseDispatch;
+
+
+static int cep_heartbeat_path_compare(const cepPath* lhs, const cepPath* rhs) {
+    if (lhs == rhs) {
+        return 0;
+    }
+    if (!lhs) {
+        return rhs ? -1 : 0;
+    }
+    if (!rhs) {
+        return 1;
+    }
+
+    if (lhs->length < rhs->length) {
+        return -1;
+    }
+    if (lhs->length > rhs->length) {
+        return 1;
+    }
+
+    for (unsigned i = 0; i < lhs->length; ++i) {
+        int cmp = cep_dt_compare(&lhs->past[i].dt, &rhs->past[i].dt);
+        if (cmp != 0) {
+            return cmp;
+        }
+    }
+
+    return 0;
+}
+
+
+static bool cep_heartbeat_impulse_records_equal(const cepHeartbeatImpulseRecord* a, const cepHeartbeatImpulseRecord* b) {
+    if (a == b) {
+        return true;
+    }
+    if (!a || !b) {
+        return false;
+    }
+
+    if (cep_heartbeat_path_compare(a->signal_path, b->signal_path) != 0) {
+        return false;
+    }
+
+    return cep_heartbeat_path_compare(a->target_path, b->target_path) == 0;
+}
+
+
+static int cep_heartbeat_impulse_view_compare(const void* lhs, const void* rhs) {
+    const cepHeartbeatImpulseView* a = (const cepHeartbeatImpulseView*)lhs;
+    const cepHeartbeatImpulseView* b = (const cepHeartbeatImpulseView*)rhs;
+
+    int cmp = cep_heartbeat_path_compare(a->record->signal_path, b->record->signal_path);
+    if (cmp != 0) {
+        return cmp;
+    }
+
+    return cep_heartbeat_path_compare(a->record->target_path, b->record->target_path);
 }
 
 
@@ -371,6 +443,8 @@ bool cep_heartbeat_startup(void) {
 
     CEP_RUNTIME.current = CEP_RUNTIME.policy.start_at;
     CEP_RUNTIME.running = true;
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
     return true;
 }
 
@@ -387,6 +461,8 @@ bool cep_heartbeat_restart(void) {
 
     CEP_RUNTIME.current = CEP_RUNTIME.policy.start_at;
     CEP_RUNTIME.running = true;
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
     return true;
 }
 
@@ -401,15 +477,25 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
 
     CEP_RUNTIME.current = beat;
     CEP_RUNTIME.running = true;
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
     return true;
 }
 
 
-/* Resolves the agenda for the current beat; presently that means reporting
- * whether the engine is running, keeping the control flow plumbed for future work. 
+/* Resolves the agenda for the current beat by activating deferred enzyme
+ * registrations and draining the impulse inbox into deterministic execution order.
  */
 bool cep_heartbeat_resolve_agenda(void) {
-    return CEP_RUNTIME.running;
+    if (!CEP_RUNTIME.running) {
+        return false;
+    }
+
+    if (CEP_RUNTIME.registry) {
+        cep_enzyme_registry_activate_pending(CEP_RUNTIME.registry);
+    }
+
+    return cep_heartbeat_process_impulses();
 }
 
 
@@ -421,11 +507,18 @@ bool cep_heartbeat_execute_agenda(void) {
 }
 
 
-/* Commits staged work at the end of a beat; currently it just keeps the step
- * pipeline shape intact by reflecting whether the loop is active.
+/* Commits staged work by rotating the impulse queues so signals emitted during
+ * beat N become visible to the dispatcher at beat N+1.
  */
 bool cep_heartbeat_stage_commit(void) {
-    return CEP_RUNTIME.running;
+    if (!CEP_RUNTIME.running) {
+        return false;
+    }
+
+    cep_heartbeat_impulse_queue_swap(&CEP_RUNTIME.inbox_current, &CEP_RUNTIME.inbox_next);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
+
+    return true;
 }
 
 
@@ -458,6 +551,151 @@ void cep_heartbeat_shutdown(void) {
     if (cep_cell_system_initialized()) {
         cep_cell_system_shutdown();
     }
+}
+
+
+/* By looking at the complete inbox the dispatcher groups identical impulses,
+ * reuses their dependency resolution, and still walks the agenda in enqueue
+ * order so repeated graph work disappears without losing determinism.
+ */
+bool cep_heartbeat_process_impulses(void) {
+    if (!CEP_RUNTIME.running) {
+        return false;
+    }
+
+    cepEnzymeRegistry* registry = CEP_RUNTIME.registry;
+    size_t registry_size = registry ? cep_enzyme_registry_size(registry) : 0u;
+    const cepEnzymeDescriptor** ordered = NULL;
+    if (registry_size > 0u) {
+        ordered = cep_malloc(registry_size * sizeof(*ordered));
+        if (!ordered) {
+            return false;
+        }
+    }
+
+    bool ok = true;
+
+    cepHeartbeatImpulseQueue* inbox = &CEP_RUNTIME.inbox_current;
+    size_t impulse_count = inbox->count;
+
+    cepHeartbeatImpulseView* views = NULL;
+    size_t* record_to_group = NULL;
+    const cepHeartbeatImpulseRecord** group_records = NULL;
+    cepHeartbeatImpulseDispatch* dispatches = NULL;
+    size_t group_count = 0u;
+    bool drained = false;
+
+    if (impulse_count > 0u) {
+        views = cep_malloc(impulse_count * sizeof(*views));
+        record_to_group = cep_malloc(impulse_count * sizeof(*record_to_group));
+        group_records = cep_malloc(impulse_count * sizeof(*group_records));
+        dispatches = cep_calloc(impulse_count, sizeof(*dispatches));
+
+        if (!views || !record_to_group || !group_records || !dispatches) {
+            ok = false;
+            goto CLEANUP;
+        }
+
+        for (size_t i = 0; i < impulse_count; ++i) {
+            views[i].index = i;
+            views[i].record = &inbox->records[i];
+        }
+
+        qsort(views, impulse_count, sizeof(*views), cep_heartbeat_impulse_view_compare);
+
+        size_t current_group = SIZE_MAX;
+        for (size_t i = 0; i < impulse_count; ++i) {
+            if (i == 0u || !cep_heartbeat_impulse_records_equal(views[i].record, views[i - 1u].record)) {
+                current_group = group_count++;
+                group_records[current_group] = views[i].record;
+            }
+
+            record_to_group[views[i].index] = current_group;
+        }
+
+        for (size_t g = 0; g < group_count && ok; ++g) {
+            const cepHeartbeatImpulseRecord* key = group_records[g];
+            cepImpulse impulse = {
+                .signal_path = key ? key->signal_path : NULL,
+                .target_path = key ? key->target_path : NULL,
+            };
+
+            size_t resolved = 0u;
+            if (registry && registry_size > 0u && key) {
+                resolved = cep_enzyme_resolve(registry, &impulse, ordered, registry_size);
+            }
+
+            dispatches[g].resolved = resolved;
+            if (resolved > 0u) {
+                dispatches[g].descriptors = cep_malloc(resolved * sizeof(*dispatches[g].descriptors));
+                if (!dispatches[g].descriptors) {
+                    ok = false;
+                    break;
+                }
+                memcpy(dispatches[g].descriptors, ordered, resolved * sizeof(*ordered));
+            }
+        }
+
+        if (!ok) {
+            goto CLEANUP;
+        }
+
+        for (size_t i = 0; i < impulse_count && ok; ++i) {
+            cepHeartbeatImpulseRecord* record = &inbox->records[i];
+            size_t group_index = record_to_group ? record_to_group[i] : SIZE_MAX;
+            const cepHeartbeatImpulseDispatch* dispatch = (group_index < group_count) ? &dispatches[group_index] : NULL;
+
+            cepImpulse impulse = {
+                .signal_path = record->signal_path,
+                .target_path = record->target_path,
+            };
+
+            if (dispatch && dispatch->resolved > 0u && dispatch->descriptors) {
+                for (size_t j = 0; j < dispatch->resolved && ok; ++j) {
+                    const cepEnzymeDescriptor* descriptor = dispatch->descriptors[j];
+                    if (!descriptor || !descriptor->callback) {
+                        continue;
+                    }
+
+                    int rc = descriptor->callback(impulse.signal_path, impulse.target_path);
+                    if (rc == CEP_ENZYME_FATAL) {
+                        ok = false;
+                        break;
+                    }
+
+                    if (rc == CEP_ENZYME_RETRY) {
+                        if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.inbox_next, &impulse)) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            cep_heartbeat_impulse_record_clear(record);
+        }
+
+        drained = true;
+    }
+
+CLEANUP:
+    if (dispatches) {
+        for (size_t g = 0; g < group_count; ++g) {
+            CEP_FREE(dispatches[g].descriptors);
+        }
+    }
+
+    CEP_FREE(dispatches);
+    CEP_FREE(group_records);
+    CEP_FREE(record_to_group);
+    CEP_FREE(views);
+    CEP_FREE(ordered);
+
+    if (drained) {
+        CEP_RUNTIME.inbox_current.count = 0u;
+    }
+
+    return ok;
 }
 
 
@@ -512,20 +750,34 @@ cepEnzymeRegistry* cep_heartbeat_registry(void) {
  * actual queueing mechanics are still under construction.
  */
 int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path, const cepPath* target_path) {
-    (void)beat;
-    (void)signal_path;
-    (void)target_path;
-    return CEP_ENZYME_FATAL;
+    cepImpulse impulse = {
+        .signal_path = signal_path,
+        .target_path = target_path,
+    };
+
+    return cep_heartbeat_enqueue_impulse(beat, &impulse);
 }
 
 
-/* Placeholder for impulse enqueuing that already captures the intended inputs
- * so future implementations can focus on storage without changing signatures.
+/* Records an impulse for processing at the next beat boundary, cloning the
+ * supplied paths so callers can release their buffers immediately.
  */
 int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse) {
+    if (!cep_heartbeat_bootstrap()) {
+        return CEP_ENZYME_FATAL;
+    }
+
     (void)beat;
-    (void)impulse;
-    return CEP_ENZYME_FATAL;
+
+    if (!impulse || (!impulse->signal_path && !impulse->target_path)) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.inbox_next, impulse)) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    return CEP_ENZYME_SUCCESS;
 }
 
 
