@@ -32,8 +32,8 @@ MunitTest tests[] = {
     {
         "/cell",
         test_cell,
-        NULL,                     // Setup.
-        NULL,                     // Tear_down.
+        test_cell_setup,
+        test_cell_tear_down,
         MUNIT_TEST_OPTION_NONE,
         NULL                      // Parameters.
     },
@@ -76,4 +76,3 @@ const MunitSuite testSuite = {
 int main(int argC, char* argV[MUNIT_ARRAY_PARAM(argC + 1)]) {
     return munit_suite_main(&testSuite, NULL, argC, argV);
 }
-

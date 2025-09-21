@@ -31,6 +31,8 @@
 
 
 MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture);
+void*       test_cell_setup(const MunitParameter params[], void* user_data);
+void        test_cell_tear_down(void* fixture);
 
 MunitResult test_wordacron(const MunitParameter params[], void* user_data_or_fixture);
 

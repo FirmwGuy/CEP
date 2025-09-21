@@ -31,6 +31,16 @@
 #include <stdio.h>      // sprintf()
 #include <string.h>     // memset()
 #include <inttypes.h>   // PRIX64
+#include <stdlib.h>     // qsort()
+#include <stdatomic.h>
+#if defined(_WIN32)
+#  include <windows.h>
+#  include <process.h>
+#else
+#  include <pthread.h>
+#  include <unistd.h>
+#  include <time.h>
+#endif
 
 
 
@@ -42,6 +52,94 @@ enum {
     CEP_NAME_Z_COUNT
 };
 
+
+
+typedef struct {
+    atomic_bool done;
+    unsigned    timeoutSeconds;
+#if defined(_WIN32)
+    HANDLE      thread;
+#else
+    pthread_t   thread;
+#endif
+} TestWatchdog;
+
+#define TEST_CELL_TIMEOUT_SECONDS  60u
+
+#if defined(_WIN32)
+static unsigned __stdcall test_watchdog_thread(void* param) {
+    TestWatchdog* wd = param;
+    for (unsigned elapsed = 0; elapsed < wd->timeoutSeconds; elapsed++) {
+        Sleep(1000);
+        if (atomic_load_explicit(&wd->done, memory_order_acquire))
+            return 0;
+    }
+
+    fputs("test_cell timed out after 60 seconds\n", stderr);
+    fflush(stderr);
+    _Exit(EXIT_FAILURE);
+}
+#else
+static void* test_watchdog_thread(void* param) {
+    TestWatchdog* wd = param;
+    for (unsigned elapsed = 0; elapsed < wd->timeoutSeconds; elapsed++) {
+        struct timespec ts = {1, 0};
+        nanosleep(&ts, NULL);
+        if (atomic_load_explicit(&wd->done, memory_order_acquire))
+            return NULL;
+    }
+
+    fputs("test_cell timed out after 60 seconds\n", stderr);
+    fflush(stderr);
+    _Exit(EXIT_FAILURE);
+    return NULL;
+}
+#endif
+
+static void test_watchdog_start(TestWatchdog* wd, unsigned seconds) {
+    atomic_init(&wd->done, false);
+    wd->timeoutSeconds = seconds;
+#if defined(_WIN32)
+    uintptr_t handle = _beginthreadex(NULL, 0, test_watchdog_thread, wd, 0, NULL);
+    assert(handle);
+    wd->thread = (HANDLE)handle;
+#else
+    int rc = pthread_create(&wd->thread, NULL, test_watchdog_thread, wd);
+    assert(rc == 0);
+#endif
+}
+
+static void test_watchdog_signal(TestWatchdog* wd) {
+    atomic_store_explicit(&wd->done, true, memory_order_release);
+}
+
+static void test_watchdog_stop(TestWatchdog* wd) {
+    test_watchdog_signal(wd);
+#if defined(_WIN32)
+    WaitForSingleObject(wd->thread, INFINITE);
+    CloseHandle(wd->thread);
+#else
+    pthread_join(wd->thread, NULL);
+#endif
+}
+
+void* test_cell_setup(const MunitParameter params[], void* user_data) {
+    (void)params;
+    (void)user_data;
+
+    TestWatchdog* wd = munit_malloc(sizeof *wd);
+    test_watchdog_start(wd, TEST_CELL_TIMEOUT_SECONDS);
+    return wd;
+}
+
+void test_cell_tear_down(void* fixture) {
+    if (!fixture)
+        return;
+
+    TestWatchdog* wd = fixture;
+    test_watchdog_stop(wd);
+    free(wd);
+}
 
 
 static void test_cell_print(cepCell* cell, char *sval) {
@@ -140,6 +238,12 @@ static void test_cell_nested_one_item_ops(cepCell* cat, cepID name, cepCell* ite
 
 
 
+/*
+ * List verification block: stresses append/prepend/delete paths to prove that
+ * every list backend (linked list, array, packed queue) keeps ordering and
+ * lookup semantics consistent while IDs churn under randomised edits.
+ */
+ 
 static void test_cell_tech_list(unsigned storage) {
     cepCell* list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP), 0, CEP_DTAW("CEP", "list"), storage, 20);
 
@@ -235,6 +339,14 @@ static void test_cell_tech_list(unsigned storage) {
 }
 
 
+
+
+/*
+ * Dictionary coverage overview: validates that by-name stores across storage
+ * backends honour uniqueness, replacement, and mixed deletion/insert regimes
+ * while maintaining stable lookups and sibling pointers.
+ */
+ 
 static void test_cell_tech_dictionary(unsigned storage) {
     cepCell* dict = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP), 0, CEP_DTAW("CEP", "dictionary"), storage, 20);
 
@@ -316,6 +428,14 @@ static void test_cell_tech_dictionary(unsigned storage) {
 }
 
 
+
+
+/*
+ * Catalog scenarios: ensure comparator-driven stores agree across
+ * implementations, keeping sorted order, replacement symmetry, and key-based
+ * lookups intact even as catalog entries shuffle.
+ */
+ 
 static cepCell* tech_catalog_create_structure(cepID name, int32_t value) {
     static cepCell cell;
     CEP_0(&cell);
@@ -331,6 +451,7 @@ static int tech_catalog_compare(const cepCell* key, const cepCell* cell, void* u
     assert(itemK && itemB);
     return *(int32_t*)cep_cell_data(itemK) - *(int32_t*)cep_cell_data(itemB);
 }
+
 
 static void test_cell_tech_catalog(unsigned storage) {
     cepCell* cat;
@@ -425,6 +546,9 @@ static void test_cell_tech_catalog(unsigned storage) {
 
 
 
+/* Extra item sequencing checks for different back ends.
+ */
+  
 static void test_cell_tech_sequencing_list(void) {
     size_t maxItems = munit_rand_int_range(2, 100);
 
@@ -611,12 +735,372 @@ static void test_cell_tech_sequencing_catalog(void) {
 
 
 
-// Cell timestamp traversal tests go here...
+/*
+ * Traversal focus: capture callbacks record neighbour metadata so we can assert
+ * that shallow and timestamped traversals walk children in the intended order
+ * and honour early abort semantics.
+ */
+#define TRAVERSE_CAPTURE_MAX  64
 
+typedef struct {
+    cepCell*    cell;
+    cepCell*    prev;
+    cepCell*    next;
+    cepCell*    parent;
+    size_t      position;
+    unsigned    depth;
+    cepID       tag;
+} TraverseCaptureEntry;
+
+typedef struct {
+    TraverseCaptureEntry entry[TRAVERSE_CAPTURE_MAX];
+    size_t               count;
+} TraverseCapture;
+
+static bool traverse_capture_cb(cepEntry* entry, void* ctx) {
+    TraverseCapture* capture = ctx;
+    assert_size(capture->count, <, TRAVERSE_CAPTURE_MAX);
+
+    TraverseCaptureEntry* slot = &capture->entry[capture->count++];
+    slot->cell     = entry->cell;
+    slot->prev     = entry->prev;
+    slot->next     = entry->next;
+    slot->parent   = entry->parent;
+    slot->position = entry->position;
+    slot->depth    = entry->depth;
+    slot->tag      = entry->cell? cep_cell_get_name(entry->cell)->tag: 0;
+
+    return true;
+}
+
+static bool traverse_stop_after_first(cepEntry* entry, void* ctx) {
+    size_t* calls = ctx;
+    (void)entry;
+    (*calls)++;
+    return false;
+}
+
+static int compare_cep_id(const void* a, const void* b) {
+    cepID lhs = *(const cepID*)a;
+    cepID rhs = *(const cepID*)b;
+    if (lhs < rhs)
+        return -1;
+    if (lhs > rhs)
+        return 1;
+    return 0;
+}
+
+static int compare_int32(const void* a, const void* b) {
+    int32_t lhs = *(const int32_t*)a;
+    int32_t rhs = *(const int32_t*)b;
+    if (lhs < rhs)
+        return -1;
+    if (lhs > rhs)
+        return 1;
+    return 0;
+}
+
+static void test_cell_traverse_sequences(void) {
+    cepCell* list = cep_cell_add_list(cep_root(),
+                                      CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 32),
+                                      0,
+                                      CEP_DTAW("CEP", "list"),
+                                      CEP_STORAGE_LINKED_LIST,
+                                      8);
+    assert_not_null(list);
+
+    cepCell* expected[3] = {0};
+    cepID    expectedTags[3] = {0};
+    for (size_t i = 0; i < 3; i++) {
+        uint32_t value = (uint32_t)(i + 1);
+        cepID nameId = (cepID)(CEP_NAME_TEMP + 100 + (cepID)i);
+        expected[i] = cep_cell_append_value(list,
+                                            CEP_DTS(CEP_ACRO("CEP"), nameId),
+                                            CEP_DTS(CEP_ACRO("CEP"), nameId),
+                                            &value,
+                                            sizeof value,
+                                            sizeof value);
+        assert_not_null(expected[i]);
+        expectedTags[i] = cep_cell_get_name(expected[i])->tag;
+    }
+
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+
+    assert_true(cep_cell_traverse(list, traverse_capture_cb, &capture, &iterEntry));
+    assert_size(capture.count, ==, 3);
+
+    for (size_t i = 0; i < capture.count; i++) {
+        TraverseCaptureEntry* rec = &capture.entry[i];
+        assert_ptr_equal(rec->parent, list);
+        assert_ptr_equal(rec->cell, expected[i]);
+        assert_uint(rec->depth, ==, 0);
+        assert_size(rec->position, ==, i);
+        assert_true(rec->tag == expectedTags[i]);
+
+        if (!i)
+            assert_null(rec->prev);
+        else
+            assert_ptr_equal(rec->prev, expected[i - 1]);
+
+        if (i + 1 < capture.count)
+            assert_ptr_equal(rec->next, expected[i + 1]);
+        else
+            assert_null(rec->next);
+    }
+
+    size_t callCount = 0;
+    assert_false(cep_cell_traverse(list, traverse_stop_after_first, &callCount, NULL));
+    assert_size(callCount, ==, 1);
+
+    cep_cell_delete_hard(list);
+}
+
+static void test_cell_traverse_past_timelines(void) {
+    cepCell* list = cep_cell_add_list(cep_root(),
+                                      CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 48),
+                                      0,
+                                      CEP_DTAW("CEP", "list"),
+                                      CEP_STORAGE_LINKED_LIST,
+                                      8);
+    assert_not_null(list);
+
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+
+    cepID nameBase = (cepID)(CEP_NAME_TEMP + 200);
+
+    uint32_t valueA = 10;
+    cepCell* first = cep_cell_append_value(list,
+                                           CEP_DTS(CEP_ACRO("CEP"), nameBase + (cepID)0),
+                                           CEP_DTS(CEP_ACRO("CEP"), nameBase + (cepID)0),
+                                           &valueA,
+                                           sizeof valueA,
+                                           sizeof valueA);
+    assert_not_null(first);
+    cepID tagFirst = cep_cell_get_name(first)->tag;
+
+    uint32_t valueB = 20;
+    cepCell* second = cep_cell_append_value(list,
+                                            CEP_DTS(CEP_ACRO("CEP"), nameBase + (cepID)1),
+                                            CEP_DTS(CEP_ACRO("CEP"), nameBase + (cepID)1),
+                                            &valueB,
+                                            sizeof valueB,
+                                            sizeof valueB);
+    assert_not_null(second);
+    cepID tagSecond = cep_cell_get_name(second)->tag;
+
+    uint32_t valueBUpdated = 30;
+    cep_cell_update_value(second, sizeof valueBUpdated, &valueBUpdated);
+    cepOpCount tsUpdateB = cep_cell_timestamp();
+
+    list->store->past = NULL;
+    assert_true(cep_cell_traverse_past(list, tsUpdateB, traverse_capture_cb, &capture, &iterEntry));
+    assert_size(capture.count, ==, 1);
+    assert_ptr_equal(capture.entry[0].cell, second);
+    assert_ptr_equal(capture.entry[0].parent, list);
+    assert_true(capture.entry[0].tag == tagSecond);
+    assert_size(capture.entry[0].position, ==, 0);
+    assert_uint(capture.entry[0].depth, ==, 0);
+    assert_null(capture.entry[0].prev);
+    assert_null(capture.entry[0].next);
+
+    size_t pastCalls = 0;
+    list->store->past = NULL;
+    assert_false(cep_cell_traverse_past(list, tsUpdateB, traverse_stop_after_first, &pastCalls, NULL));
+    assert_size(pastCalls, ==, 1);
+
+    capture = (TraverseCapture){0};
+    iterEntry = (cepEntry){0};
+
+    uint32_t valueAUpdated = 40;
+    cep_cell_update_value(first, sizeof valueAUpdated, &valueAUpdated);
+    cepOpCount tsUpdateA = cep_cell_timestamp();
+
+    list->store->past = NULL;
+    assert_true(cep_cell_traverse_past(list, tsUpdateA, traverse_capture_cb, &capture, &iterEntry));
+    assert_size(capture.count, ==, 1);
+    assert_ptr_equal(capture.entry[0].cell, first);
+    assert_ptr_equal(capture.entry[0].parent, list);
+    assert_true(capture.entry[0].tag == tagFirst);
+    assert_size(capture.entry[0].position, ==, 0);
+    assert_uint(capture.entry[0].depth, ==, 0);
+    assert_null(capture.entry[0].prev);
+    assert_null(capture.entry[0].next);
+
+    cep_cell_delete_hard(list);
+}
+
+
+static void test_cell_traverse_random_lists(unsigned storage) {
+    assert(storage != CEP_STORAGE_PACKED_QUEUE);
+
+    unsigned capacity = 48;
+    cepCell* list;
+    if (storage == CEP_STORAGE_ARRAY)
+        list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 64), 0, CEP_DTAW("CEP", "list"), storage, capacity);
+    else
+        list = cep_cell_add_list(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 64), 0, CEP_DTAW("CEP", "list"), storage, capacity);
+    assert_not_null(list);
+
+    const size_t total = 16;
+    cepID expected[16] = {0};
+    size_t used = 0;
+
+    for (size_t i = 0; i < total; i++) {
+        size_t position = used? (size_t)munit_rand_int_range(0, (int)(used + 1)): 0;
+        if (position > used)
+            position = used;
+        cepID tag = (cepID)(CEP_NAME_TEMP + 1000 + (cepID)i);
+        uint32_t value = (uint32_t)munit_rand_uint32();
+        cepCell* cell = cep_cell_add_value(list,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           position,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           &value,
+                                           sizeof value,
+                                           sizeof value);
+        assert_not_null(cell);
+
+        if (used > position)
+            memmove(&expected[position + 1], &expected[position], (used - position) * sizeof expected[0]);
+        expected[position] = tag;
+        used++;
+    }
+
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+    assert_true(cep_cell_traverse(list, traverse_capture_cb, &capture, &iterEntry));
+    assert_size(capture.count, ==, used);
+
+    for (size_t i = 0; i < used; i++) {
+        TraverseCaptureEntry* rec = &capture.entry[i];
+        assert_ptr_equal(rec->parent, list);
+        assert_size(rec->position, ==, i);
+        assert_true(rec->tag == expected[i]);
+    }
+
+    cep_cell_delete_hard(list);
+}
+
+static void test_cell_traverse_random_dictionaries(unsigned storage) {
+    unsigned capacity = 64;
+    cepCell* dict;
+    if (storage == CEP_STORAGE_ARRAY)
+        dict = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 96), 0, CEP_DTAW("CEP", "dictionary"), storage, capacity);
+    else
+        dict = cep_cell_add_dictionary(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 96), 0, CEP_DTAW("CEP", "dictionary"), storage, capacity);
+    assert_not_null(dict);
+
+    const size_t total = 16;
+    cepID inserted[16] = {0};
+    size_t used = 0;
+
+    while (used < total) {
+        cepID tag = (cepID)(CEP_NAME_TEMP + 2000 + (cepID)munit_rand_int_range(0, 512));
+        bool duplicate = false;
+        for (size_t i = 0; i < used; i++) {
+            if (inserted[i] == tag) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate)
+            continue;
+
+        uint32_t value = (uint32_t)munit_rand_uint32();
+        cepCell* cell = cep_cell_add_value(dict,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           0,
+                                           CEP_DTS(CEP_ACRO("CEP"), tag),
+                                           &value,
+                                           sizeof value,
+                                           sizeof value);
+        assert_not_null(cell);
+
+        inserted[used++] = tag;
+    }
+
+    cepID sorted[16];
+    memcpy(sorted, inserted, sizeof sorted);
+    qsort(sorted, total, sizeof sorted[0], compare_cep_id);
+
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+    assert_true(cep_cell_traverse(dict, traverse_capture_cb, &capture, &iterEntry));
+    assert_size(capture.count, ==, total);
+
+    for (size_t i = 0; i < total; i++) {
+        TraverseCaptureEntry* rec = &capture.entry[i];
+        assert_ptr_equal(rec->parent, dict);
+        assert_size(rec->position, ==, i);
+        assert_true(rec->tag == sorted[i]);
+    }
+
+    cep_cell_delete_hard(dict);
+}
+
+static void test_cell_traverse_random_catalogs(unsigned storage) {
+    unsigned capacity = 48;
+    cepCell* cat;
+    if (storage == CEP_STORAGE_ARRAY)
+        cat = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 128), 0, CEP_DTAW("CEP", "catalog"), storage, capacity, tech_catalog_compare);
+    else
+        cat = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 128), 0, CEP_DTAW("CEP", "catalog"), storage, tech_catalog_compare);
+    assert_not_null(cat);
+
+    const size_t total = 16;
+    int32_t values[16] = {0};
+    size_t used = 0;
+
+    while (used < total) {
+        int32_t value = (int32_t)munit_rand_int_range(-2000, 2000);
+        bool duplicate = false;
+        for (size_t i = 0; i < used; i++) {
+            if (values[i] == value) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate)
+            continue;
+
+        cepID name = (cepID)(CEP_NAME_TEMP + 3000 + (cepID)used);
+        cepCell* entry = cep_cell_add(cat, 0, tech_catalog_create_structure(name, value));
+        assert_not_null(entry);
+
+        values[used++] = value;
+    }
+
+    int32_t sorted[16];
+    memcpy(sorted, values, sizeof sorted);
+    qsort(sorted, total, sizeof sorted[0], compare_int32);
+
+    TraverseCapture capture = {0};
+    cepEntry iterEntry = {0};
+    assert_true(cep_cell_traverse(cat, traverse_capture_cb, &capture, &iterEntry));
+    assert_size(capture.count, ==, total);
+
+    for (size_t i = 0; i < total; i++) {
+        TraverseCaptureEntry* rec = &capture.entry[i];
+        assert_ptr_equal(rec->parent, cat);
+        assert_size(rec->position, ==, i);
+
+        cepCell* item = cep_cell_find_by_name(rec->cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
+        assert_not_null(item);
+        int32_t cellValue = *(int32_t*)cep_cell_data(item);
+        assert_int32(cellValue, ==, sorted[i]);
+    }
+
+    cep_cell_delete_hard(cat);
+}
 
 
 
 MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture) {
+    TestWatchdog* watchdog = user_data_or_fixture;
+    (void)watchdog;
+
     cep_cell_system_initiate();
 
     test_cell_tech_list(CEP_STORAGE_LINKED_LIST);
@@ -633,6 +1117,20 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
     test_cell_tech_catalog(CEP_STORAGE_ARRAY);
     test_cell_tech_catalog(CEP_STORAGE_RED_BLACK_T);
     test_cell_tech_sequencing_catalog();
+
+    test_cell_traverse_sequences();
+    test_cell_traverse_past_timelines();
+    test_cell_traverse_random_lists(CEP_STORAGE_LINKED_LIST);
+    test_cell_traverse_random_lists(CEP_STORAGE_ARRAY);
+    test_cell_traverse_random_dictionaries(CEP_STORAGE_LINKED_LIST);
+    test_cell_traverse_random_dictionaries(CEP_STORAGE_ARRAY);
+    test_cell_traverse_random_dictionaries(CEP_STORAGE_RED_BLACK_T);
+    test_cell_traverse_random_catalogs(CEP_STORAGE_LINKED_LIST);
+    test_cell_traverse_random_catalogs(CEP_STORAGE_ARRAY);
+    test_cell_traverse_random_catalogs(CEP_STORAGE_RED_BLACK_T);
+
+    if (watchdog)
+        test_watchdog_signal(watchdog);
 
     cep_cell_system_shutdown();
     return MUNIT_OK;
