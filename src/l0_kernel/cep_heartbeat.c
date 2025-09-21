@@ -22,9 +22,10 @@
  *
  */
 
+
 #include "cep_heartbeat.h"
 
-#include <string.h>
+
 
 
 static cepHeartbeatRuntime CEP_RUNTIME = {

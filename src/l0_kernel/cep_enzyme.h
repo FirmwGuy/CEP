@@ -76,7 +76,7 @@ typedef struct {
 } cepEnzymeImpulse;
 
 
-typedef struct cepEnzymeRegistry cepEnzymeRegistry;
+typedef struct _cepEnzymeRegistry  cepEnzymeRegistry;
 
 
 cepEnzymeRegistry*  cep_enzyme_registry_create(void);
