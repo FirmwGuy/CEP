@@ -60,13 +60,27 @@ typedef struct {
     bool                enforce_visibility;
 } cepHeartbeatPolicy;
 
+typedef struct {
+    cepPath* signal_path;
+    cepPath* target_path;
+} cepHeartbeatImpulseRecord;
+
 
 typedef struct {
-    cepBeatNumber        current;
-    cepHeartbeatTopology topology;
-    cepHeartbeatPolicy   policy;
-    cepEnzymeRegistry*   registry;
-    bool                 running;
+    cepHeartbeatImpulseRecord* records;
+    size_t                     count;
+    size_t                     capacity;
+} cepHeartbeatImpulseQueue;
+
+
+typedef struct {
+    cepBeatNumber             current;
+    cepHeartbeatTopology      topology;
+    cepHeartbeatPolicy        policy;
+    cepEnzymeRegistry*        registry;
+    cepHeartbeatImpulseQueue  inbox_current;
+    cepHeartbeatImpulseQueue  inbox_next;
+    bool                      running;
 } cepHeartbeatRuntime;
 
 

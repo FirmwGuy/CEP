@@ -45,6 +45,9 @@ struct _cepEnzymeRegistry {
     size_t              entry_count;
     size_t              entry_capacity;
     size_t              next_registration_order;
+    cepEnzymeEntry*     pending_entries;
+    size_t              pending_count;
+    size_t              pending_capacity;
 };
 
 
@@ -94,18 +97,30 @@ static void cep_enzyme_entry_clear(cepEnzymeEntry* entry) {
 
 
 static void cep_enzyme_registry_free_all(cepEnzymeRegistry* registry) {
-    if (!registry || !registry->entries) {
+    if (!registry) {
         return;
     }
 
-    for (size_t i = 0; i < registry->entry_count; ++i) {
-        cep_enzyme_entry_clear(&registry->entries[i]);
+    if (registry->entries) {
+        for (size_t i = 0; i < registry->entry_count; ++i) {
+            cep_enzyme_entry_clear(&registry->entries[i]);
+        }
+        CEP_FREE(registry->entries);
     }
 
-    CEP_FREE(registry->entries);
+    if (registry->pending_entries) {
+        for (size_t i = 0; i < registry->pending_count; ++i) {
+            cep_enzyme_entry_clear(&registry->pending_entries[i]);
+        }
+        CEP_FREE(registry->pending_entries);
+    }
+
     registry->entries                 = NULL;
     registry->entry_count             = 0;
     registry->entry_capacity          = 0;
+    registry->pending_entries         = NULL;
+    registry->pending_count           = 0;
+    registry->pending_capacity        = 0;
     registry->next_registration_order = 0;
 }
 
@@ -201,6 +216,8 @@ cepEnzymeRegistry* cep_enzyme_registry_create(void) {
     if (hint) {
         registry->entries = cep_malloc0(hint * sizeof(*registry->entries));
         registry->entry_capacity = hint;
+        registry->pending_entries = cep_malloc0(hint * sizeof(*registry->pending_entries));
+        registry->pending_capacity = hint;
     }
     return registry;
 }
@@ -227,18 +244,29 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
         return;
     }
 
-    if (!registry->entries) {
+    if (!registry->entries && !registry->pending_entries) {
         registry->entry_count             = 0;
         registry->entry_capacity          = 0;
+        registry->pending_count           = 0;
+        registry->pending_capacity        = 0;
         registry->next_registration_order = 0;
         return;
     }
 
-    for (size_t i = 0; i < registry->entry_count; ++i) {
-        cep_enzyme_entry_clear(&registry->entries[i]);
+    if (registry->entries) {
+        for (size_t i = 0; i < registry->entry_count; ++i) {
+            cep_enzyme_entry_clear(&registry->entries[i]);
+        }
+    }
+
+    if (registry->pending_entries) {
+        for (size_t i = 0; i < registry->pending_count; ++i) {
+            cep_enzyme_entry_clear(&registry->pending_entries[i]);
+        }
     }
 
     registry->entry_count             = 0;
+    registry->pending_count           = 0;
     registry->next_registration_order = 0;
 }
 
@@ -248,6 +276,36 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
  */
 size_t cep_enzyme_registry_size(const cepEnzymeRegistry* registry) {
     return registry ? registry->entry_count : 0u;
+}
+
+
+/* Promotes pending enzyme registrations into the active registry so
+ * the next beat observes them in deterministic order without mutating the
+ * frozen agenda mid-cycle.
+ */
+void cep_enzyme_registry_activate_pending(cepEnzymeRegistry* registry) {
+    if (!registry || registry->pending_count == 0u) {
+        return;
+    }
+
+    for (size_t i = 0; i < registry->pending_count; ++i) {
+        cepEnzymeEntry* pending = &registry->pending_entries[i];
+        if (!pending->query || !pending->descriptor.callback) {
+            CEP_0(pending);
+            continue;
+        }
+
+        if (!cep_enzyme_registry_ensure_capacity(registry)) {
+            break;
+        }
+
+        cepEnzymeEntry* entry = &registry->entries[registry->entry_count++];
+        *entry = *pending;
+        entry->registration_order = registry->next_registration_order++;
+        CEP_0(pending);
+    }
+
+    registry->pending_count = 0u;
 }
 
 
@@ -277,8 +335,59 @@ static bool cep_enzyme_registry_ensure_capacity(cepEnzymeRegistry* registry) {
 }
 
 
+static bool cep_enzyme_registry_pending_ensure_capacity(cepEnzymeRegistry* registry) {
+    if (!registry) {
+        return false;
+    }
+
+    if (registry->pending_count < registry->pending_capacity) {
+        return true;
+    }
+
+    size_t new_capacity = registry->pending_capacity ? (registry->pending_capacity * 2u) : cep_enzyme_registry_hint_capacity();
+    if (!new_capacity) {
+        new_capacity = CEP_ENZYME_REGISTRY_DEFAULT_CAPACITY;
+    }
+
+    size_t bytes = new_capacity * sizeof(*registry->pending_entries);
+    cepEnzymeEntry* entries = registry->pending_entries ? cep_realloc(registry->pending_entries, bytes) : cep_malloc0(bytes);
+    if (!entries) {
+        return false;
+    }
+
+    if (new_capacity > registry->pending_capacity) {
+        size_t previous_bytes = registry->pending_capacity * sizeof(*registry->pending_entries);
+        memset(((uint8_t*)entries) + previous_bytes, 0, bytes - previous_bytes);
+    }
+
+    registry->pending_entries  = entries;
+    registry->pending_capacity = new_capacity;
+    return true;
+}
+
+
+static int cep_enzyme_registry_pending_add(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor) {
+    if (!cep_enzyme_registry_pending_ensure_capacity(registry)) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    cepPath* copy = cep_enzyme_path_clone(query);
+    if (!copy) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    cepEnzymeEntry* entry = &registry->pending_entries[registry->pending_count++];
+    entry->query              = copy;
+    entry->descriptor         = *descriptor;
+    entry->registration_order = 0u;
+
+    return CEP_ENZYME_SUCCESS;
+}
+
+
 /* Registers a new enzyme by cloning the query path and storing the descriptor
- * so dispatch can later use the captured data without relying on caller memory.
+ * for deterministic dispatch, deferring activation to the next beat when the
+ * heartbeat is live so mid-beat registrations never perturb the frozen agenda.
  */
 int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor) {
     if (!cep_heartbeat_bootstrap()) {
@@ -287,6 +396,11 @@ int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const
 
     if (!registry || !query || !descriptor || !descriptor->callback) {
         return CEP_ENZYME_FATAL;
+    }
+
+    cepBeatNumber current = cep_heartbeat_current();
+    if (current != CEP_BEAT_INVALID) {
+        return cep_enzyme_registry_pending_add(registry, query, descriptor);
     }
 
     if (!cep_enzyme_registry_ensure_capacity(registry)) {
@@ -335,6 +449,25 @@ int cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, con
         }
 
         registry->entry_count--;
+        return CEP_ENZYME_SUCCESS;
+    }
+
+    for (size_t i = 0; i < registry->pending_count; ++i) {
+        cepEnzymeEntry* entry = &registry->pending_entries[i];
+        if (!cep_enzyme_paths_equal(entry->query, query)) {
+            continue;
+        }
+        if (!cep_enzyme_descriptor_equal(&entry->descriptor, descriptor)) {
+            continue;
+        }
+
+        cep_enzyme_entry_clear(entry);
+
+        if (i + 1u < registry->pending_count) {
+            memmove(&registry->pending_entries[i], &registry->pending_entries[i + 1u], (registry->pending_count - (i + 1u)) * sizeof(*registry->pending_entries));
+        }
+
+        registry->pending_count--;
         return CEP_ENZYME_SUCCESS;
     }
 

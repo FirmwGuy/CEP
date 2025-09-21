@@ -89,6 +89,7 @@ void                cep_enzyme_registry_destroy(cepEnzymeRegistry* registry);
 void                cep_enzyme_registry_reset(cepEnzymeRegistry* registry);
 
 size_t              cep_enzyme_registry_size(const cepEnzymeRegistry* registry);
+void                cep_enzyme_registry_activate_pending(cepEnzymeRegistry* registry);
 
 int                 cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor);
 int                 cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor);
