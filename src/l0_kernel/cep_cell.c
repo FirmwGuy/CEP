@@ -175,6 +175,10 @@ static inline int cell_compare_by_name(const cepCell* restrict key, const cepCel
 cepOpCount  CEP_OP_COUNT;
 
 
+/*
+ * Advances the global cell operation timestamp, incrementing CEP_OP_COUNT while
+ * skipping zero so history tracking always remains unambiguous.
+ */
 cepOpCount cep_cell_timestamp_next(void) {
     cepOpCount next = ++CEP_OP_COUNT;
     if (!next)
@@ -182,6 +186,10 @@ cepOpCount cep_cell_timestamp_next(void) {
     return next;
 }
 
+/*
+ * Resets the global cell operation counter so the next operation count sequence
+ * can restart cleanly.
+ */
 void cep_cell_timestamp_reset(void) {
     CEP_OP_COUNT = 0;
 }
@@ -235,8 +243,8 @@ static void cep_data_history_clear(cepData* data) {
 cepCell CEP_ROOT;   // The root cell.
 
 
-/*
-    Initiates the cell system
+/* Bootstrap the root cell hierarchy. Ensure every CEP run starts from a 
+   consistent canonical root container.
 */
 void cep_cell_system_initiate(void) {
     cep_cell_timestamp_reset();
@@ -248,8 +256,7 @@ void cep_cell_system_initiate(void) {
 }
 
 
-/*
-    Shutdowns the cell system
+/* Leave the kernel in a clean state when applications terminate.
 */
 void cep_cell_system_shutdown(void) {
     cep_cell_finalize(&CEP_ROOT);
@@ -258,8 +265,10 @@ void cep_cell_system_shutdown(void) {
 
 
 
-/*
-    Create a new data store for cells
+/* Allocate and initialise a cepData payload for a cell. Select the proper 
+   storage strategy via the datatype, pull sizing/destructor arguments, seed 
+   metadata, and expose the data pointer when requested. Centralise payload 
+   allocation rules so all cells share consistent memory and timestamp semantics.
 */
 
 #define VALUE_CAP_MIN       (sizeof((cepData){}.value))
@@ -372,6 +381,10 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
 }
 
 
+/* Release a cepData payload and its historical snapshots. Dispatch the stored 
+   destructor for owned buffers, clear past nodes, and free the container. Prevent 
+   memory leaks when a cell discards or replaces its payload.
+*/
 void cep_data_del(cepData* data) {
     assert(data);
 
@@ -393,8 +406,10 @@ void cep_data_del(cepData* data) {
 }
 
 
-/*
-   Gets data address
+/* Retrieve the public pointer for a cell's payload. Switch on the datatype to 
+   expose inline values or heap buffers while leaving handles/streams for 
+   specialised APIs. Offer a single accessor so callers do not need to inspect 
+   cepData internals.
 */
 void* cep_data(const cepData* data) {
     assert(cep_data_valid(data));
@@ -628,7 +643,11 @@ static bool cep_data_structural_equal(const cepData* existing, const cepData* in
     return false;
 }
 
-/*
+/* Construct a child store backend for a cell. Allocate the requested storage 
+   engine via varargs configuration and seed store metadata and timestamps. 
+   Centralise child container creation so indexing behaviour stays consistent 
+   across storage types.
+
     Creates a new child store for cells:
     ------------------------------------
     
@@ -728,6 +747,11 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
 }
 
 
+/* Dispose of a child store and all of its managed cells. Clear historical 
+   snapshots, stamp a deletion heartbeat, and call the backend-specific 
+   destructors. Ensure store teardown releases every child resource and records 
+   the event for history queries.
+*/
 void cep_store_del(cepStore* store) {
     assert(cep_store_valid(store));
 
@@ -767,6 +791,11 @@ void cep_store_del(cepStore* store) {
 }
 
 
+/* Remove every child cell from a store while preserving the store itself. 
+   Optionally snapshot history, invoke the backend bulk delete helper, update 
+   counters, and refresh metadata. Offer callers a way to wipe a store clean 
+   without reallocating the container.
+*/
 void cep_store_delete_children_hard(cepStore* store) {
     assert(cep_store_valid(store));
 
@@ -817,8 +846,10 @@ static inline void store_check_auto_id(cepStore* store, cepCell* child) {
 }
 
 
-/*
-    Adds/inserts a *copy* of the specified cell into a store
+/* Insert a child cell into a store according to its indexing policy. 
+   Deduplicate structural matches, snapshot history, and delegate to the 
+   backend-specific insertion helper before updating metadata. Offer a uniform 
+   entry point for populating stores across all storage engines.
 */
 cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child) {
     assert(cep_store_valid(store) && !cep_cell_is_void(child));
@@ -929,8 +960,10 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 }
 
 
-/*
-    Appends/prepends a copy of cell into store
+/* Append or prepend a child cell into an insertion-ordered store. Optionally 
+   deduplicate, snapshot history, then call the backend append helper before 
+   patching parent pointers and metadata. Simplify ordered insertions without 
+   exposing storage-specific details.
 */
 cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
     assert(cep_store_valid(store) && !cep_cell_is_void(child));
@@ -985,8 +1018,10 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
 }
 
 
-/*
-    Gets the first child cell from store
+/* Retrieve the first child visible at a given snapshot. Resolve the parent 
+   store (following links) and iterate from the head until a child satisfies the 
+   snapshot filter. Anchor snapshot-aware traversal at the beginning of the 
+   sibling list.
 */
 static inline cepCell* store_first_child(const cepStore* store) {
     assert(cep_store_valid(store));
@@ -1076,8 +1111,9 @@ static inline cepCell* store_find_child_by_name(const cepStore* store, const cep
 
 
 
-/*
-    Finds a child cell based on specified key
+/* Locate a child that matches an arbitrary compare function. Resolve the 
+   parent store and delegate to the backend key search helper. Allow callers to 
+   reuse store ordering without reimplementing comparisons.
 */
 static inline cepCell* store_find_child_by_key(const cepStore* store, cepCell* key, cepCompare compare, void* context) {
     assert(cep_store_valid(store) && !cep_cell_is_void(key) && compare);
@@ -1138,8 +1174,9 @@ static inline cepCell* store_find_child_by_position(const cepStore* store, size_
 }
 
 
-/*
-    Retrieves the previous sibling of cell
+/* Return the previous sibling that exists at a snapshot. Walk backward from 
+   the given child, skipping entries that do not match the snapshot filter. 
+   Support bidirectional snapshot traversal across siblings.
 */
 static inline cepCell* store_prev_child(const cepStore* store, cepCell* child) {
     assert(!cep_cell_is_void(child));
@@ -1166,8 +1203,9 @@ static inline cepCell* store_prev_child(const cepStore* store, cepCell* child) {
 }
 
 
-/*
-    Retrieves the next sibling of cell (sorted or unsorted)
+/* Return the next sibling that exists at a snapshot. Walk forward from the 
+   given child, ignoring siblings that are invisible at the requested timestamp. 
+   Enable forward iteration that honours historical visibility rules.
 */
 static inline cepCell* store_next_child(const cepStore* store, cepCell* child) {
     assert(!cep_cell_is_void(child));
@@ -1196,8 +1234,9 @@ static inline cepCell* store_next_child(const cepStore* store, cepCell* child) {
 
 
 
-/*
-    Retrieves the first/next child cell by its ID
+/* Iterate over children that share the same name across snapshots. Delegate to 
+   the store helper that tracks iteration state and snapshot filtering. Allow 
+   repeated lookups without restarting scans from the beginning.
 */
 static inline cepCell* store_find_next_child_by_name(const cepStore* store, cepDT* name, uintptr_t* childIdx) {
     assert(cep_store_valid(store) && cep_dt_valid(name));
@@ -2000,8 +2039,11 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
 
 
 
-/*
-    Initiates a cell structure
+/* Initialise a cell with its type, name, payload, and optional child store. 
+   Validate arguments, assign metacell fields, connect data/store pointers, and 
+   link store ownership for normal cells. Provide a single constructor that 
+   enforces CEP invariants before a cell enters the tree.
+
 */
 void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* data, cepStore* store) {
     assert(cell && cep_dt_valid(name) && (type && type < CEP_TYPE_COUNT));
@@ -2020,8 +2062,10 @@ void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* dat
 }
 
 
-/*
-    Creates a deep copy of cell and all its data
+/* Seed a clone cell with the metadata of an existing cell. Validate the 
+   source, zero the destination, and copy the metacell fields while deferring 
+   data/store duplication. Lay the groundwork for future deep-clone support 
+   without breaking current callers.
 */
 void cep_cell_initialize_clone(cepCell* clone, cepDT* name, cepCell* cell) {
     assert(clone && cep_cell_is_normal(cell));
@@ -2033,12 +2077,12 @@ void cep_cell_initialize_clone(cepCell* clone, cepDT* name, cepCell* cell) {
     CEP_0(clone);
 
     clone->metacell = cell->metacell;
-    //clone->metacell.name = ...
 }
 
 
-/*
-    De-initiates a cell
+/* Finalise a cell and reclaim any owned storage. Inspect the cell type, delete 
+   child stores and data where applicable, and release resources. Prevent resource 
+   leaks when cells are removed or the system shuts down.
 */
 void cep_cell_finalize(cepCell* cell) {
     assert(!cep_cell_is_void(cell) && !cep_cell_is_shadowed(cell));
@@ -2071,8 +2115,6 @@ void cep_cell_finalize(cepCell* cell) {
         break;
       }
     }
-
-    // ToDo: unlink from 'self' list.
 }
 
 
@@ -2086,8 +2128,10 @@ void cep_cell_finalize(cepCell* cell) {
         return __VA_ARGS__
 
 
-/*
-    Adds/inserts a *copy* of the specified cell into another cell
+/* Insert a child cell into a parent at a specific position or key. Follow 
+   links to the owning store and call cep_store_add_child with the supplied 
+   context. Let callers compose structures without handling storage-specific 
+   mechanics.
 */
 cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
@@ -2095,8 +2139,9 @@ cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
 }
 
 
-/*
-    Appends/prepends a copy of cell into another
+/* Append or prepend a child cell relative to its siblings. Resolve the parent 
+   store (following links) and invoke cep_store_append_child with the prepend 
+   flag. Provide a simple ordered mutation helper for insertion-mode stores.
 */
 cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
@@ -2106,8 +2151,9 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child) {
 
 
 
-/*
-   Gets data address from a cell
+/* Fetch the live payload pointer for a cell. Follow links to the concrete 
+   cell and return its cepData buffer through cep_data(). Give callers a direct 
+   way to inspect a cell's value without duplicating link resolution logic.
 */
 void* cep_cell_data(const cepCell* cell) {
     assert(!cep_cell_is_void(cell));
@@ -2122,6 +2168,11 @@ void* cep_cell_data(const cepCell* cell) {
 }
 
 
+/* Retrieve a child's payload by name at a given snapshot. Resolve the target 
+   cell for the requested heartbeat and read the appropriate history node before 
+   exposing the payload. Support temporal queries so callers can inspect prior 
+   states without altering the live cell.
+*/
 void* cep_cell_data_find_by_name_past(const cepCell* cell, cepDT* name, cepOpCount snapshot) {
     assert(!cep_cell_is_void(cell) && cep_dt_valid(name));
 
@@ -2231,8 +2282,9 @@ void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, 
 }
 
 
-/*
-   Updates the data of a cell without preserving payload history (hard).
+/* Overwrite a cell's payload without recording history. Resolve the live 
+   cepData instance and delegate to cep_data_update for an in-place modification. 
+   Provide a faster option for callers that intentionally discard previous values.
 */
 void* cep_cell_update_hard(cepCell* cell, size_t size, size_t capacity, void* value, bool swap) {
     assert(!cep_cell_is_void(cell) && size && capacity);
@@ -2249,9 +2301,10 @@ void* cep_cell_update_hard(cepCell* cell, size_t size, size_t capacity, void* va
 
 
 
-/*
-    Constructs the full path (sequence of ids) for a given cell, returning the depth.
-    The cepPath structure may be reallocated.
+/* Build the domain/tag path from the root down to a cell. Walk ancestor 
+   pointers into a temporary buffer, growing it on demand, then normalise the 
+   sequence into the caller-provided cepPath. Expose a stable identifier for cells 
+   so higher layers can reference or persist locations.
 */
 bool cep_cell_path(const cepCell* cell, cepPath** path) {
     assert(cell && path);
@@ -2304,8 +2357,10 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
 
 
 
-/*
-    Gets the first child cell
+/* Retrieve the first child visible at a given snapshot. Resolve the parent 
+   store (following links) and iterate from the head until a child satisfies the 
+   snapshot filter. Anchor snapshot-aware traversal at the beginning of the 
+   sibling list.
 */
 cepCell* cep_cell_first_past(const cepCell* cell, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
@@ -2322,8 +2377,9 @@ cepCell* cep_cell_first_past(const cepCell* cell, cepOpCount snapshot) {
 }
 
 
-/*
-    Gets the last child cell
+/* Retrieve the last child visible at a given snapshot. Resolve the parent 
+   store and walk backwards from the tail until a child matches the snapshot 
+   filter. Support reverse traversal while respecting historical visibility.
 */
 cepCell* cep_cell_last_past(const cepCell* cell, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
@@ -2340,8 +2396,9 @@ cepCell* cep_cell_last_past(const cepCell* cell, cepOpCount snapshot) {
 }
 
 
-/*
-    Retrieves a child cell by its ID at a specific snapshot
+/* Find a child by domain/tag for a given snapshot. Resolve the parent store 
+   and ask it for the snapshot-aware lookup. Provide snapshot-consistent name 
+   lookups without exposing store internals.
 */
 cepCell* cep_cell_find_by_name_past(const cepCell* cell, const cepDT* name, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
@@ -2360,8 +2417,9 @@ cepCell* cep_cell_find_by_key(const cepCell* cell, cepCell* key, cepCompare comp
 }
 
 
-/*
-    Gets the cell at index position in branch at a specific snapshot
+/* Fetch a child by positional index for a snapshot. Resolve the store and 
+   iterate through snapshot-visible children until the requested position is 
+   reached. Enable snapshot-stable positional addressing within sibling lists.
 */
 cepCell* cep_cell_find_by_position_past(const cepCell* cell, size_t position, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
@@ -2369,8 +2427,9 @@ cepCell* cep_cell_find_by_position_past(const cepCell* cell, size_t position, ce
 }
 
 
-/*
-    Gets the cell by its path from start cell
+/* Resolve a descendant cell that matches a recorded path. Step through each 
+   path segment, performing snapshot-aware name lookups per depth. Allow callers 
+   to replay stored paths against historical tree states.
 */
 cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, cepOpCount snapshot) {
     assert(!cep_cell_is_void(start) && path && path->length);
@@ -2392,8 +2451,9 @@ cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, c
 
 
 
-/*
-    Retrieves the previous sibling of cell
+/* Return the previous sibling that exists at a snapshot. Walk backward from 
+   the given child, skipping entries that are hidden at the requested timestamp. 
+   Support reverse iteration across siblings under historical views.
 */
 cepCell* cep_cell_prev_past(const cepCell* cell, cepCell* child, cepOpCount snapshot) {
     if (!cell)
@@ -2411,8 +2471,9 @@ cepCell* cep_cell_prev_past(const cepCell* cell, cepCell* child, cepOpCount snap
 }
 
 
-/*
-    Retrieves the next sibling of cell (sorted or unsorted)
+/* Return the next sibling that exists at a snapshot. Walk forward from the 
+   given child, ignoring siblings invisible at the requested timestamp. Support 
+   forward iteration across siblings while respecting history filters.
 */
 cepCell* cep_cell_next_past(const cepCell* cell, cepCell* child, cepOpCount snapshot) {
     if (!cell)
@@ -2432,8 +2493,9 @@ cepCell* cep_cell_next_past(const cepCell* cell, cepCell* child, cepOpCount snap
 
 
 
-/*
-    Retrieves the first/next child cell by its ID
+/* Iterate over children that share a given name across snapshots. Delegate to 
+   store helpers that maintain iteration state and snapshot filtering. Allow 
+   callers to enumerate name collisions without restarting the search.
 */
 cepCell* cep_cell_find_next_by_name_past(const cepCell* cell, cepDT* name, uintptr_t* childIdx, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
@@ -2441,8 +2503,10 @@ cepCell* cep_cell_find_next_by_name_past(const cepCell* cell, cepDT* name, uintp
 }
 
 
-/*
-    Gets the next cell with the (same) ID as specified for each branch
+/* Walk a stored path and produce the next matching descendant for each branch. 
+   Maintain per-depth iteration state while issuing snapshot-aware name lookups 
+   down the path. Support cursor-style enumeration of repeated path matches 
+   through the tree.
 */
 cepCell* cep_cell_find_next_by_path_past(const cepCell* start, cepPath* path, uintptr_t* prev, cepOpCount snapshot) {
     assert(cep_cell_children(start) && path && path->length);
@@ -2475,12 +2539,12 @@ cepCell* cep_cell_find_next_by_path_past(const cepCell* start, cepPath* path, ui
 
     parents[0] = (cepCell*)CEP_P(start);
 
-#define CEP_CLEAN_FIND_PATH()                                                     \
-    do {                                                                         \
-        if (!prev && stateHeap)                                                  \
-            cep_free(states);                                                    \
-        if (parentsHeap)                                                         \
-            cep_free(parents);                                                   \
+#define CEP_CLEAN_FIND_PATH()                                                  \
+    do {                                                                       \
+        if (!prev && stateHeap)                                                \
+            cep_free(states);                                                  \
+        if (parentsHeap)                                                       \
+            cep_free(parents);                                                 \
     } while (0)
 
     unsigned depth = 0;
@@ -2519,8 +2583,9 @@ cepCell* cep_cell_find_next_by_path_past(const cepCell* start, cepPath* path, ui
 }
 
 
-/*
-    Traverses the children of a cell, applying a function to each one
+/* Visit each direct child of a cell in storage order. Resolve through links to 
+   the owning store and delegate to store_traverse with the provided callback. 
+   Expose a shallow iteration primitive without leaking storage-specific details.
 */
 bool cep_cell_traverse(cepCell* cell, cepTraverse func, void* context, cepEntry* entry) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
@@ -2528,6 +2593,11 @@ bool cep_cell_traverse(cepCell* cell, cepTraverse func, void* context, cepEntry*
 }
 
 
+/* Traverse children as they existed at a specific time. Build a filtering 
+   context around store_traverse that emits only entries visible at the requested 
+   timestamp. Allow observers to inspect historical states without mutating the 
+   structure.
+*/
 bool cep_cell_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, void* context, cepEntry* entry) {
     assert(!cep_cell_is_void(cell) && func && timestamp);
 
@@ -2559,6 +2629,11 @@ bool cep_cell_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse fun
 }
 
 
+/* Perform a depth-first traversal of a cell hierarchy for a given snapshot. 
+   Allocate per-depth frames, wrap callbacks with snapshot-aware proxies, and 
+   reuse the generic deep traversal engine. Support history analyses that need 
+   recursive inspection without altering the tree.
+*/
 bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, cepTraverse endFunc, void* context, cepEntry* entry) {
     assert(!cep_cell_is_void(cell) && timestamp && (func || endFunc));
 
@@ -2713,8 +2788,10 @@ bool cep_cell_deep_traverse(cepCell* cell, cepTraverse func, cepTraverse endFunc
 
 
 
-/*
-    Converts an unsorted cell into a dictionary
+/* Reindex a cell's children as a dictionary keyed by name. Resolve the child 
+   store and invoke store_to_dictionary to rebuild its indexing mode. Enable 
+   name-based lookups after data was initially appended without ordering 
+   constraints.
 */
 void cep_cell_to_dictionary(cepCell* cell) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store);
@@ -2722,8 +2799,10 @@ void cep_cell_to_dictionary(cepCell* cell) {
 }
 
 
-/*
-    Sorts unsorted cells according to user defined function
+/* Order a cell's children using a caller supplied comparator. Resolve the 
+   underlying store and delegate to store_sort with the provided function and 
+   context. Allow collections to impose deterministic ordering beyond insertion 
+   order.
 */
 void cep_cell_sort(cepCell* cell, cepCompare compare, void* context) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store);
@@ -2733,8 +2812,10 @@ void cep_cell_sort(cepCell* cell, cepCompare compare, void* context) {
 
 
 
-/*
-    Soft-removes last child from cell by marking it deleted and returning a link to the snapshot.
+/* Soft-remove the last child while keeping historical access. Mark the child 
+   deleted, stamp a snapshot, and initialise the target as a link to the archived 
+   cell. Preserve history without reshaping sibling order when popping from the 
+   tail.
 */
 bool cep_cell_child_take(cepCell* cell, cepCell* target) {
     if (!target)
@@ -2770,8 +2851,10 @@ bool cep_cell_child_take(cepCell* cell, cepCell* target) {
 }
 
 
-/*
-    Soft-removes first child from cell by marking it deleted and returning a link to the snapshot.
+/* Soft-remove the first child while keeping a link back to it. Mark the head 
+   child deleted, capture the heartbeat, and transform the target into a link 
+   pointing at the archived cell. Allow queue-like semantics without losing access 
+   to prior state.
 */
 bool cep_cell_child_pop(cepCell* cell, cepCell* target) {
     if (!target)
@@ -2807,8 +2890,9 @@ bool cep_cell_child_pop(cepCell* cell, cepCell* target) {
 }
 
 
-/*
-    Removes last child from cell (hard, reorganizing sibling storage).
+/* Physically remove the last child from a store. Resolve the store and call 
+   the backend take helper which also shifts sibling metadata. Support destructive 
+   pops when history retention is unnecessary.
 */
 bool cep_cell_child_take_hard(cepCell* cell, cepCell* target) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
@@ -2816,8 +2900,9 @@ bool cep_cell_child_take_hard(cepCell* cell, cepCell* target) {
 }
 
 
-/*
-    Removes first child from cell (hard, reorganizing sibling storage).
+/* Physically remove the first child from a store. Resolve the store and use 
+   the backend pop helper to unlink the head entry and rebalance metadata. Provide 
+   deque-style semantics when callers truly want to delete the child.
 */
 bool cep_cell_child_pop_hard(cepCell* cell, cepCell* target) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
@@ -2825,8 +2910,10 @@ bool cep_cell_child_pop_hard(cepCell* cell, cepCell* target) {
 }
 
 
-/*
-    Deletes a cell and all its children re-organizing (sibling) storage
+/* Remove a cell from its parent and destroy its subtree. Snapshot history, 
+   optionally transfer the cell, then invoke storage-specific removal hooks and 
+   decrement counters. Support destructive deletes that collapse sibling ordering 
+   to fill the gap.
 */
 void cep_cell_remove_hard(cepCell* cell, cepCell* target) {
     assert(cell && !cep_cell_is_root(cell));
@@ -2839,7 +2926,10 @@ void cep_cell_remove_hard(cepCell* cell, cepCell* target) {
 
 
 /*
-    Encoding of names to/from 6-bit values.
+   Encoding of names to/from 6-bit values:
+   Decode an acronym identifier into readable text. Walk the 6-bit segments 
+   stored in the ID, translate them to ASCII, and trim trailing padding spaces. 
+   Present acronym-based cell names in human-friendly form.
 */
 CEP_TEXT_TO_ACRONYM_(cep_text_to_acronym)
 
@@ -2866,10 +2956,12 @@ size_t cep_acronym_to_text(cepID acro, char s[10]) {
 
 
 /*
-    Encoding of names to/from 5-bit values.
-*/
+   Encoding of names to/from 5-bit values:
+   Decode a word identifier into lowercase text. Iterate through 5-bit 
+   segments, map them to characters or punctuation, and return the effective 
+   length. Allow tooling to display word-based names stored in compact ID form.
+*/ 
 CEP_TEXT_TO_WORD_(cep_text_to_word)
-
 
 size_t cep_word_to_text(cepID word, char s[12]) {
     assert(cep_id_text_valid(word));
