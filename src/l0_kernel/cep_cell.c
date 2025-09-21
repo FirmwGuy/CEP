@@ -45,10 +45,10 @@ struct _cepStoreHistory {
 };
 
 
-static cepStoreHistory*        cep_store_history_snapshot(const cepStore* store, const cepStoreHistory* previous);
-static void                    cep_store_history_free(cepStoreHistory* history);
-static void                    cep_store_history_push(cepStore* store);
-static void                    cep_store_history_clear(cepStore* store);
+static cepStoreHistory*     cep_store_history_snapshot(const cepStore* store, const cepStoreHistory* previous);
+static void                 cep_store_history_free(cepStoreHistory* history);
+static void                 cep_store_history_push(cepStore* store);
+static void                 cep_store_history_clear(cepStore* store);
 
 static inline cepStoreHistory* cep_store_history_from_node(cepStoreNode* node) {
     return node? (cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
@@ -58,8 +58,8 @@ static inline const cepStoreHistory* cep_store_history_from_const_node(const cep
     return node? (const cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
 }
 
-static bool                   cep_cell_structural_equal(const cepCell* existing, const cepCell* incoming);
-static bool                   cep_data_structural_equal(const cepData* existing, const cepData* incoming);
+static bool cep_cell_structural_equal(const cepCell* existing, const cepCell* incoming);
+static bool cep_data_structural_equal(const cepData* existing, const cepData* incoming);
 
 static inline cepCell* store_find_child_by_name(const cepStore* store, const cepDT* name);
 static inline cepCell* store_find_child_by_position(const cepStore* store, size_t position);
@@ -597,6 +597,7 @@ static bool cep_data_structural_equal(const cepData* existing, const cepData* in
 
     return false;
 }
+
 
 /* Construct a child store backend for a cell. Allocate the requested storage 
    engine via varargs configuration and seed store metadata and timestamps. 
