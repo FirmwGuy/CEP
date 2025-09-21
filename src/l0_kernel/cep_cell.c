@@ -1334,6 +1334,15 @@ static inline bool cep_entry_has_timestamp(const cepEntry* entry, cepOpCount tim
     return cep_store_chain_has_timestamp(cell->parent, timestamp);
 }
 
+static inline bool cep_cell_matches_snapshot(const cepCell* cell, cepOpCount snapshot) {
+    if (!cell || !snapshot)
+        return true;
+
+    cepEntry entry = {0};
+    entry.cell = (cepCell*)cell;
+    return cep_entry_has_timestamp(&entry, snapshot);
+}
+
 
 static inline bool cep_traverse_past_flush(cepTraversePastCtx* ctx, cepCell* nextCell) {
     ctx->pending.next = nextCell;
@@ -2047,7 +2056,7 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
         tempPath = *path;
         assert(tempPath->capacity);
     } else {
-        tempPath = cep_dyn_malloc(cepPath, cepDT, MAX_DEPTH);
+        tempPath = cep_dyn_malloc(cepPath, cepPast, MAX_DEPTH);
         tempPath->capacity = MAX_DEPTH;
         *path = tempPath;
     }
@@ -2057,22 +2066,31 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
     for (const cepCell* current = cell;  current;  current = cep_cell_parent(current)) {  // FixMe: assuming single parenthood for now.
         if (tempPath->length >= tempPath->capacity) {
             unsigned newCapacity = tempPath->capacity * 2;
-            cepPath* newPath = cep_dyn_malloc(cepPath, cepDT, newCapacity);     // FixMe: use realloc.
+            cepPath* newPath = cep_dyn_malloc(cepPath, cepPast, newCapacity);     // FixMe: use realloc.
 
-            memcpy(&newPath->dt[tempPath->capacity], tempPath->dt, tempPath->capacity);
+            unsigned used = tempPath->length;
+            unsigned start = tempPath->capacity - used;
+            memcpy(&newPath->past[newCapacity - used], &tempPath->past[start], used * sizeof(cepPast));
 
-            newPath->length   = tempPath->capacity;
+            newPath->length   = used;
             newPath->capacity = newCapacity;
             CEP_PTR_OVERW(tempPath, newPath);
             *path = tempPath;
         }
 
         // Prepend the current cell's id to the path
-        cepDT* dt = &tempPath->dt[tempPath->capacity - tempPath->length - 1];
-        dt->domain = current->metacell.domain;
-        dt->tag    = current->metacell.tag;
-        
+        cepPast* segment = &tempPath->past[tempPath->capacity - tempPath->length - 1];
+        segment->dt.domain = current->metacell.domain;
+        segment->dt.tag    = current->metacell.tag;
+        segment->timestamp = 0;
+
         tempPath->length++;
+    }
+
+    if (tempPath->length) {
+        unsigned start = tempPath->capacity - tempPath->length;
+        if (start)
+            memmove(tempPath->past, &tempPath->past[start], tempPath->length * sizeof(cepPast));
     }
 
     return true;
@@ -2138,8 +2156,11 @@ cepCell* cep_cell_find_by_path(const cepCell* start, const cepPath* path) {
     cepCell* cell = CEP_P(start);
 
     for (unsigned depth = 0;  depth < path->length;  depth++) {
-        cell = cep_cell_find_by_name(cell, &path->dt[depth]);
+        const cepPast* segment = &path->past[depth];
+        cell = cep_cell_find_by_name(cell, &segment->dt);
         if (!cell)
+            return NULL;
+        if (segment->timestamp && !cep_cell_matches_snapshot(cell, segment->timestamp))
             return NULL;
     }
 
@@ -2187,18 +2208,80 @@ cepCell* cep_cell_find_next_by_name(const cepCell* cell, cepDT* name, uintptr_t*
 */
 cepCell* cep_cell_find_next_by_path(const cepCell* start, cepPath* path, uintptr_t* prev) {
     assert(cep_cell_children(start) && path && path->length);
-    if (!cep_cell_children(start))  return NULL;
-    cepCell* cell = CEP_P(start);
+    if (!cep_cell_children(start))
+        return NULL;
 
-    for (unsigned depth = 0;  depth < path->length;  depth++) {
-        // FixMe: depth must be stored in a stack as well!
-        // ...(pending)
-        cell = cep_cell_find_next_by_name(cell, &path->dt[depth], prev);
-        if (!cell)
-            return NULL;
+    size_t depthCount = path->length;
+    size_t parentCount = depthCount + 1;
+
+    cepCell* parentLocal[CEP_MAX_FAST_STACK_DEPTH + 1];
+    cepCell** parents = parentLocal;
+    bool parentsHeap = false;
+    if (parentCount > CEP_MAX_FAST_STACK_DEPTH + 1) {
+        parents = cep_malloc(parentCount * sizeof(*parents));
+        parentsHeap = true;
     }
 
-    return cell;
+    uintptr_t stateLocal[CEP_MAX_FAST_STACK_DEPTH];
+    uintptr_t* states = prev;
+    bool stateHeap = false;
+    if (!states) {
+        if (depthCount <= CEP_MAX_FAST_STACK_DEPTH) {
+            states = stateLocal;
+        } else {
+            states = cep_malloc(depthCount * sizeof(*states));
+            stateHeap = true;
+        }
+        memset(states, 0, depthCount * sizeof(*states));
+    }
+
+    parents[0] = (cepCell*)CEP_P(start);
+
+#define CEP_CLEAN_FIND_PATH()                                                     \
+    do {                                                                         \
+        if (!prev && stateHeap)                                                  \
+            cep_free(states);                                                    \
+        if (parentsHeap)                                                         \
+            cep_free(parents);                                                   \
+    } while (0)
+
+    unsigned depth = 0;
+    while (true) {
+        assert(depth < depthCount);
+        cepCell* parent = parents[depth];
+        uintptr_t* statePtr = states? &states[depth]: NULL;
+
+        cepPast* segment = &path->past[depth];
+        cepCell* child = cep_cell_find_next_by_name(parent, &segment->dt, statePtr);
+        if (!child) {
+            if (statePtr)
+                *statePtr = 0;
+            if (depth == 0) {
+                CEP_CLEAN_FIND_PATH();
+                return NULL;
+            }
+            depth--;
+            continue;
+        }
+
+        parents[depth + 1] = child;
+
+        if (segment->timestamp && !cep_cell_matches_snapshot(child, segment->timestamp)) {
+            // Skip this branch/cell and continue searching siblings.
+            continue;
+        }
+
+        if (depth + 1 == depthCount) {
+            CEP_CLEAN_FIND_PATH();
+            return child;
+        }
+
+        depth++;
+        if (states)
+            states[depth] = 0;
+    }
+
+#undef CEP_CLEAN_FIND_PATH
 }
 
 

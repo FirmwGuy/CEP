@@ -526,9 +526,14 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child);
 */
 
 typedef struct {
+    cepDT           dt;         // Path segment identifier.
+    cepOpCount      timestamp;  // Snapshot timestamp for this segment (0 means latest).
+} cepPast;
+
+typedef struct {
     unsigned        length;
     unsigned        capacity;
-    cepDT           dt[];
+    cepPast         past[];
 } cepPath;
 
 

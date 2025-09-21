@@ -76,10 +76,11 @@ static void test_cell_zero_item_ops(cepCell* cell) {
     assert_null(cep_cell_last(cell));
     assert_null(cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION)));
     assert_null(cep_cell_find_by_position(cell, 0));
-    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepID)));
+    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepPast)));
     path->length = 1;
     path->capacity = 1;
-    path->dt[0] = (cepDT){0};
+    path->past[0].dt = (cepDT){0};
+    path->past[0].timestamp = 0;
     assert_null(cep_cell_find_by_path(cell, path));
     assert_true(cep_cell_traverse(cell, print_values, NULL, NULL));
 }
@@ -93,10 +94,11 @@ static void test_cell_one_item_ops(cepCell* cell, cepCell* item) {
     assert_ptr_equal(found, item);
     found = cep_cell_find_by_position(cell, 0);
     assert_ptr_equal(found, item);
-    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepID)));
+    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepPast)));
     path->length = 1;
     path->capacity = 1;
-    path->dt[0] = *cep_cell_get_name(item);
+    path->past[0].dt = *cep_cell_get_name(item);
+    path->past[0].timestamp = 0;
     found = cep_cell_find_by_path(cell, path);
     assert_ptr_equal(found, item);
     assert_true(cep_cell_traverse(cell, print_values, NULL, NULL));
@@ -116,10 +118,11 @@ static void test_cell_nested_one_item_ops(cepCell* cat, cepID name, cepCell* ite
     found  = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
     assert_ptr_equal(found, item);
 
-    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepID)));
+    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepPast)));
     path->length = 1;
     path->capacity = 1;
-    path->dt[0] = *CEP_DTS(CEP_ACRO("CEP"), name);
+    path->past[0].dt = *CEP_DTS(CEP_ACRO("CEP"), name);
+    path->past[0].timestamp = 0;
     cell = cep_cell_find_by_path(cat, path);
     found  = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
     assert_ptr_equal(found, item);
@@ -157,9 +160,10 @@ static void test_cell_tech_list(unsigned storage) {
     test_cell_one_item_ops(list, item);
 
     // Multi-item ops
-    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepID)));
+    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepPast)));
     path->length = 1;
     path->capacity = 1;
+    path->past[0].timestamp = 0;
     cepCell* found;
     uint32_t first = 1, last = 1;
     size_t index;
@@ -213,7 +217,8 @@ static void test_cell_tech_list(unsigned storage) {
         found = cep_cell_find_by_position(list, index);
         assert_ptr_equal(found, item);
 
-        path->dt[0] = *cep_cell_get_name(item);
+        path->past[0].dt = *cep_cell_get_name(item);
+        path->past[0].timestamp = 0;
         found = cep_cell_find_by_path(list, path);
         assert_ptr_equal(found, item);
 
@@ -253,9 +258,10 @@ static void test_cell_tech_dictionary(unsigned storage) {
     cep_cell_delete_hard(item);
 
     // Multi-item ops
-    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepID)));
+    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepPast)));
     path->length = 1;
     path->capacity = 1;
+    path->past[0].timestamp = 0;
     cepCell* found;
     uint32_t vmax = 1, vmin = 1000;
     cepID name;
@@ -302,7 +308,8 @@ static void test_cell_tech_dictionary(unsigned storage) {
         found = cep_cell_find_by_position(dict, cep_cell_children(dict) - 1);
         test_cell_value(found, vmax);
 
-        path->dt[0] = *cep_cell_get_name(item);
+        path->past[0].dt = *cep_cell_get_name(item);
+        path->past[0].timestamp = 0;
         found = cep_cell_find_by_path(dict, path);
         assert_ptr_equal(found, item);
 
@@ -364,9 +371,10 @@ static void test_cell_tech_catalog(unsigned storage) {
     cep_cell_delete_hard(cell);
 
     // Multi-item ops
-    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepID)));
+    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepPast)));
     path->length = 1;
     path->capacity = 1;
+    path->past[0].timestamp = 0;
     cepCell* found;
     int32_t vmax = 1, vmin = 1000;
     cepID name;
@@ -421,7 +429,8 @@ static void test_cell_tech_catalog(unsigned storage) {
         found  = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
         test_cell_value(found, vmax);
 
-        path->dt[0] = *CEP_DTS(CEP_ACRO("CEP"), name);
+        path->past[0].dt = *CEP_DTS(CEP_ACRO("CEP"), name);
+        path->past[0].timestamp = 0;
         cell = cep_cell_find_by_path(cat, path);
         found  = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
         assert_ptr_equal(found, item);
