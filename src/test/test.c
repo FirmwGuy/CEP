@@ -73,6 +73,14 @@ MunitTest tests[] = {
             {NULL, NULL}
         }
     },
+    {
+        "/heartbeat",
+        test_heartbeat,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
 
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL}  // EOL
 };

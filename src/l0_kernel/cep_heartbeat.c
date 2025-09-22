@@ -823,6 +823,11 @@ bool cep_heartbeat_process_impulses(void) {
 
     cep_heartbeat_dispatch_cache_cleanup_generation(scratch);
 
+    /* TODO: Feed this resolver cache with real-time stats—e.g. track miss ratios,
+     * impulse uniqueness, and registry churn—to adapt cache sizes, fall back to
+     * direct dispatch when reuse is low, or pre-populate hot pairs before the beat.
+     * */
+     
     return ok;
 }
 

@@ -35,12 +35,30 @@ typedef struct {
     cepPast     segments[1];
 } CepPathBuf;
 
+typedef struct {
+    unsigned    length;
+    unsigned    capacity;
+    cepPast     segments[4];
+} CepPathBufDyn;
+
 
 static const cepPath* make_single_segment_path(CepPathBuf* buf, const cepDT* segment) {
     buf->length = 1u;
     buf->capacity = 1u;
     buf->segments[0].dt = *segment;
     buf->segments[0].timestamp = 0u;
+    return (const cepPath*)buf;
+}
+
+
+static const cepPath* make_path_from_segments(CepPathBufDyn* buf, const cepDT* segments, unsigned count) {
+    munit_assert_uint(count, <=, cep_lengthof(buf->segments));
+    buf->length = count;
+    buf->capacity = cep_lengthof(buf->segments);
+    for (unsigned i = 0; i < count; ++i) {
+        buf->segments[i].dt = segments[i];
+        buf->segments[i].timestamp = 0u;
+    }
     return (const cepPath*)buf;
 }
 
@@ -182,6 +200,127 @@ static MunitResult test_enzyme_dependency_cycle(void) {
 }
 
 
+static MunitResult test_enzyme_name_tiebreak(void) {
+    cepEnzymeRegistry* registry = cep_enzyme_registry_create();
+    munit_assert_not_null(registry);
+
+    const cepDT seg_root = *CEP_DTWW("CMP", "ROOT");
+    const cepDT seg_signal = *CEP_DTWW("SIG", "GAMMA");
+
+    CepPathBufDyn path_buf = {0};
+    const cepDT signal_segments[] = { seg_root, seg_signal };
+    const cepPath* signal_path = make_path_from_segments(&path_buf, signal_segments, cep_lengthof(signal_segments));
+
+    cepDT name_late = *CEP_DTAA("EZ", "LATE");
+    cepEnzymeDescriptor desc_late = {
+        .name   = name_late,
+        .label  = "late",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    cepDT name_early = *CEP_DTAA("EZ", "EARL");
+    cepEnzymeDescriptor desc_early = {
+        .name   = name_early,
+        .label  = "early",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &desc_late), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &desc_early), ==, CEP_ENZYME_SUCCESS);
+
+    cepImpulse impulse = {
+        .signal_path = signal_path,
+        .target_path = NULL,
+    };
+
+    const cepEnzymeDescriptor* ordered[4] = {0};
+    size_t resolved = cep_enzyme_resolve(registry, &impulse, ordered, cep_lengthof(ordered));
+    munit_assert_size(resolved, ==, 2);
+
+    munit_assert_int(cep_dt_compare(&ordered[0]->name, &name_early), ==, 0);
+    munit_assert_int(cep_dt_compare(&ordered[1]->name, &name_late), ==, 0);
+
+    cep_enzyme_registry_destroy(registry);
+    return MUNIT_OK;
+}
+
+
+static MunitResult test_enzyme_specificity_priority(void) {
+    cepEnzymeRegistry* registry = cep_enzyme_registry_create();
+    munit_assert_not_null(registry);
+
+    const cepDT seg_root = *CEP_DTWW("CMP", "ROOT");
+    const cepDT seg_detail = *CEP_DTWW("SIG", "BETA");
+
+    CepPathBufDyn signal_buf = {0};
+    const cepDT signal_segments[] = { seg_root, seg_detail };
+    const cepPath* signal_path = make_path_from_segments(&signal_buf, signal_segments, cep_lengthof(signal_segments));
+
+    CepPathBufDyn prefix_buf = {0};
+    const cepDT prefix_segments[] = { seg_root };
+    const cepPath* prefix_path = make_path_from_segments(&prefix_buf, prefix_segments, cep_lengthof(prefix_segments));
+
+    CepPathBufDyn exact_buf = {0};
+    const cepPath* exact_path = make_path_from_segments(&exact_buf, signal_segments, cep_lengthof(signal_segments));
+
+    cepDT name_specific = *CEP_DTAA("EZ", "SP");
+    cepEnzymeDescriptor desc_specific = {
+        .name   = name_specific,
+        .label  = "specific",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    cepDT name_general = *CEP_DTAA("EZ", "GE");
+    cepEnzymeDescriptor desc_general = {
+        .name   = name_general,
+        .label  = "general",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    munit_assert_int(cep_enzyme_register(registry, prefix_path, &desc_general), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_enzyme_register(registry, exact_path, &desc_specific), ==, CEP_ENZYME_SUCCESS);
+
+    cepImpulse impulse = {
+        .signal_path = signal_path,
+        .target_path = NULL,
+    };
+
+    const cepEnzymeDescriptor* ordered[4] = {0};
+    size_t resolved = cep_enzyme_resolve(registry, &impulse, ordered, cep_lengthof(ordered));
+    munit_assert_size(resolved, ==, 2);
+
+    munit_assert_int(cep_dt_compare(&ordered[0]->name, &name_specific), ==, 0);
+    munit_assert_int(cep_dt_compare(&ordered[1]->name, &name_general), ==, 0);
+
+    cep_enzyme_registry_destroy(registry);
+    return MUNIT_OK;
+}
+
+
 void* test_enzyme_setup(const MunitParameter params[], void* user_data) {
     (void)params;
     (void)user_data;
@@ -206,6 +345,16 @@ MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixtur
     }
 
     result = test_enzyme_dependency_cycle();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_enzyme_name_tiebreak();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_enzyme_specificity_priority();
     if (result != MUNIT_OK) {
         return result;
     }

@@ -54,3 +54,5 @@ MunitResult test_wordacron(const MunitParameter params[], void* user_data_or_fix
 MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_enzyme_setup(const MunitParameter params[], void* user_data);
 void        test_enzyme_tear_down(void* fixture);
+
+MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fixture);

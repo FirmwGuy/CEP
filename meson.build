@@ -83,6 +83,7 @@ if get_option('tests').enabled()
     'src/test/test_traverse.c',
     'src/test/test_wordacron.c',
     'src/test/test_enzyme.c',
+    'src/test/test_heartbeat.c',
   )
   exe = executable('cep_tests', test_srcs,
     c_args: exe_cargs,
