@@ -13,7 +13,7 @@ Binding semantics
 - Where to store: keep enzyme bindings as compact entries on the target cell and/or its ancestors (parent binding implies subtree). This avoids duplicating bindings on every child.
 - What is stored: only the enzyme identity (`cepDT name`) and an optional scope flag (default is subtree; “node‑only” can opt out of inheritance).
 - How it composes: at resolve time, union all bindings along the path root→…→target and de‑duplicate by enzyme name.
-- Append‑only: bindings are append‑only with soft removes; visibility follows heartbeat boundaries (N→N+1).
+- Append‑only: bindings append new records (tombstone for removes). They currently become visible immediately; callers should schedule bind/unbind work outside the active beat to preserve N→N+1 semantics.
 
 Signal filter and registry
 - Registry continues to own descriptors (callback, before/after, match policy, flags).
@@ -25,28 +25,18 @@ Signal filter and registry
 Matching policy (hybrid)
 - Target present: an enzyme must be bound on the target path (via ancestor union). If a signal is also present, it must additionally match the signal (intersection of sets).
 - No target: signal‑only/broadcast dispatch using the signal index.
-- Optional modes (for compatibility): legacy OR, TARGET_ONLY, SIGNAL_ONLY, STRICT_BOTH. Defaults remain TARGET_THEN_SIGNAL.
+- Future compatibility: a policy switch could re-enable legacy modes (OR, TARGET_ONLY, SIGNAL_ONLY, STRICT_BOTH) if needed. The current implementation always applies TARGET_THEN_SIGNAL semantics.
 
 Data structures
-- Cell side (stored under a reserved child name, e.g., `CEP:enzymes`):
-  - Linked list node (in‑memory representation):
-    - `name: cepDT` — enzyme identity.
-    - `flags: uint32_t` — includes a mandatory tombstone bit (for removals) and a propagate bit indicating whether the binding applies to descendants.
-    - `next: *` — pointer to next binding in the list.
-  - Storage location inside a cell:
-    - If the cell has `cepStore`, the binding list is stored/anchored in the store (preferred when both store and data exist).
-    - Else, if the cell has only `cepData`, the list is stored/anchored in the data.
-    - Precedence: `cepStore` bindings take precedence over `cepData` when both are present for the same cell.
-  - Semantics at resolve time:
-    - At the leaf (the exact target), include all bindings regardless of the propagate bit.
-    - From ancestors, include only bindings whose propagate bit is set.
-  - Append‑only on disk/journal:
-    - Additions append a new node (tombstone=0) with the current heartbeat timestamp.
-    - Removals append a tombstone node (tombstone=1) keyed by `name` to cancel the binding from that point in time.
-    - Do not create full `store->past` snapshots for binding changes; history is preserved by the per‑entry append‑only chain.
-    - Alternative representation: keep bindings as a dedicated child cell `CEP:enzymes`. In that case, only the `cepStoreNode` for that child is updated on changes; the entire parent store is not snapshotted.
-  - Inheritance masking:
-    - A tombstone on a child can mask an inherited binding of the same `name` coming from an ancestor. During resolve, the first non‑tombstoned occurrence wins; tombstones prevent propagation at or below that node.
+- Cell side (current implementation):
+  - Each `cepStore` / `cepData` holds an in-memory singly linked list of bindings.
+  - Node layout: `name` (enzyme identity), `flags` (tombstone + propagate bits), `next` pointer, and `modified` heartbeat.
+  - Precedence: when both store and data exist, the store list is used; otherwise the data list is used.
+  - Resolve semantics: the target cell contributes all non-tombstoned entries; ancestors contribute only entries with the propagate flag set.
+  - Runtime append-only trail: bind/unbind operations append nodes and stamp `modified` with `cep_cell_timestamp_next()`. Persisting this chain into the historical journal is future work; today the list is kept in memory.
+  - Future option: bindings could be materialised as a dedicated child (e.g., `CEP:enzymes`) so only that child’s `cepStoreNode` mutates. The current implementation avoids `store->past` snapshots by keeping the list alongside existing store/data structures.
+- Inheritance masking:
+  - A tombstone appended on a child masks inherited bindings with the same name. The resolver skips masked names downstream.
 - Registry side:
   - `signal_head_buckets[]` and `signal_indices[]` for head‑segment lookup.
   - `by_name` map for descriptor materialization and de‑dup.

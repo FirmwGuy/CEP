@@ -33,25 +33,22 @@ Registering enzymes
 - API sketch
   - `typedef int (*cepEnzyme)(const cepPath *signal, const cepPath *target);`
   - `int cep_enzyme_register(const cepPath *query, const cepEnzymeDescriptor *descriptor);`
+  - `int cep_cell_bind_enzyme(cepCell *cell, const cepDT *name, bool propagate);`
 - Semantics
-  - The `query` path describes what an enzyme is interested in. During the heartbeat match phase, an enzyme is eligible to run if its query matches either the `signal_path` or the `target_path`.
-  - Multiple enzymes can register under the same `query` (fan-out).
-  - Each enzyme advertises a deterministic identity (a `cepDT` name)
-    and optional dependency metadata indicating other enzyme names it must
-    run before or after when they are triggered together.
+  - Registration publishes descriptor metadata (callback, name, before/after dependencies, match policy) under a query path.
+  - Binding attaches the descriptor name to a cell. Bindings can propagate to descendants; tombstones cancel inherited bindings at or below a node.
+  - Multiple descriptors can share the same query and a cell can bind several enzyme names; deterministic identifiers keep agenda ordering stable.
 
 Matching and determinism
 - Matching
-  - Target-first gating: when a `target_path` (cell path) is present, an enzyme must match the `target_path`. If a `signal_path` is also present, the same enzyme must additionally match the `signal_path`. When no `target_path` is present, matching falls back to `signal_path` only.
-- Matching policy is implementation-defined but must be deterministic. Common choices: exact equality, prefix match, or a constrained pattern match. Prefer a specificity-first ordering (longer, more specific paths before shorter, general ones), then compare enzyme names deterministically.
+  - If a `target_path` is present, gather bindings along the target’s ancestor chain (propagate flag extends bindings downward, tombstones cancel inherited entries). Only bound enzyme names are considered.
+  - If a `signal_path` is also present, filter those bound enzymes to descriptors whose query matches the signal (exact or prefix, depending on the descriptor policy).
+  - If no `target_path` is present, resolve candidates directly from the signal index (broadcast).
+- Matching policy for descriptors remains deterministic: prefer higher specificity, then descriptor name, then registration order.
 - Ordering
   - Inbox order is by insertion.
-  - For a given impulse, CEP first honours dependency constraints via a
-    topological pass. Whenever multiple enzymes are simultaneously eligible,
-    the ready set is prioritised by: dual-path matches (target + signal) ahead
-    of single-path matches, higher combined specificity, descriptor name,
-    and finally registration order.
-  - Each enzyme runs at most once per `(signal_path, target_path, beat)` pair.
+  - Resolved enzymes run through Kahn’s algorithm to honour `before`/`after` constraints. When several enzymes are simultaneously ready, the dispatcher keeps the priority tuple: dual-path matches (target + signal) ahead of single-path, higher combined specificity, descriptor name, then registration order.
+  - Each descriptor runs at most once per `(signal_path, target_path, beat)` pair.
 
 Heartbeat cycle
 1) Begin beat N: create/ensure `rt/beat/<N>/*` structures.
@@ -87,6 +84,7 @@ typedef struct {
 } cepEnzymeDescriptor;
 
 int cep_enzyme_register(const cepPath *query, const cepEnzymeDescriptor *descriptor);
+int cep_cell_bind_enzyme(cepCell *cell, const cepDT *name, bool propagate);
 int cep_enqueue_signal(size_t beatN, const cepPath *signal, const cepPath *target);
 
 void cep_heartbeat_tick(size_t beatN) {
@@ -104,14 +102,17 @@ void cep_heartbeat_tick(size_t beatN) {
 }
 ```
 
+During setup, register descriptors first and then call `cep_cell_bind_enzyme` on the cells that should emit the work. Bindings are append-only at runtime; apply them before starting the heartbeat loop to keep the beat boundary deterministic.
+
 Example flow
 1) Beat 1, inbox receives `(signal=/signals/image/thumbnail, target=/env/fs/projects/p1/img123.jpg)`.
-2) Registry has enzymes:
+2) Registry has descriptors:
    - `resize_image` registered under `/signals/image/thumbnail`.
    - `image_metadata` registered under `/env/fs/projects/*`.
-3) Both match (one by signal, one by target). Order: the more specific path first.
-4) `resize_image` reads the file, stages thumbnail bytes, and enqueues `(signal=/signals/db/write, target=/data/assets/img123/thumbnail)` for beat 2.
-5) Beat 2 commits the thumbnail write and processes any further signals.
+   The `/env/fs/projects/` cell binds `image_metadata` with propagation enabled.
+3) Bindings gathered along the target path yield `image_metadata`; the signal adds `resize_image`. Signal filtering keeps both; `resize_image` wins the first slot thanks to the dual match.
+4) `resize_image` stages thumbnail bytes and enqueues `(signal=/signals/db/write, target=/data/assets/img123/thumbnail)` for beat 2.
+5) Beat 2 repeats the process, using bindings under `/data/assets/` to drive follow-up work.
 
 Design invariants
 - Deterministic order at every step (inbox insertion, match ordering,
@@ -131,10 +132,7 @@ Q&A
   Enzymes are the actors that catalyze work; signals are the conditions that trigger them. This mirrors the biological metaphor and keeps terminology clear: functions do work; signals request work.
 
 - Can multiple enzymes react to the same signal? 
-  Yes. Any enzyme whose query matches the signal or the target runs. Order is
-  deterministic: specificity wins first, dependency constraints are honoured,
-  and enzymes with identical specificity and no dependency relation are
-  ordered by name.
+  Yes. Any bound enzyme whose descriptor also passes the signal filter runs. Order remains deterministic: specificity, name, and registration order decide ties after dependencies are satisfied.
 
 - How do enzymes coordinate when dynamic registration changes the available set during a beat?
   Enzymes declare a stable `cepDT` name plus optional `before` / `after` lists.
