@@ -15,6 +15,7 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
 | Link handling & shadowing | 📎 Planned | Link macros resolve references; soft take/pop expose archived children as links | 📎 Track link lifetimes, clean shadow metadata, and record snapshot provenance |
 | Lifecycle & GC | ⚙️ Partial | `cep_cell_finalize`, `cep_store_del`, and hard delete helpers reclaim stores and payloads | ⚙️ Implement FLEX semantics, clone support, and shadow-aware teardown |
 | Tooling & safety nets | ⚙️ Partial | Assertions wrap public APIs; Meson builds + unit tests guard regressions | ⚙️ Add adaptive traversal stacks, locks, persistence hooks, and broader coverage |
+| Heartbeat dispatcher | ⚙️ Partial | `cep_heartbeat_*` stages beats, memoises per-impulse resolver output, and honours dependency/name ordering | ⚙️ Wire agency execution, agenda persistence, and telemetry hooks before parallelism |
 
 ### Current Foundations
 - ✅ Deterministic cell manipulation through `cep_cell_add`, `cep_cell_append`, and traversal helpers keeps storage engines aligned.
@@ -42,7 +43,7 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
   - ⚙️ Auto-ID cursor fixes still pending for caller-supplied numeric tags.
   - 📎 Link archiving metadata remains planned so historic trees stay replayable.
 - **Milestone 2 - Structural resilience**: 📎 Planned — deliver traversal depth management, shadow cleanup, packed queue recycling, and re-sort helpers for RB-tree/octree back-ends to keep large collections stable.
-- **Milestone 3 - Runtime baseline**: 📎 Planned — implement heartbeat start/step/shutdown loops, agency execution, and channel wiring so the kernel can drive real workloads.
+- **Milestone 3 - Runtime baseline**: ⚙️ Partial — heartbeat bootstrap/start/step/shutdown loops now run with memoised agenda resolution and deterministic enzyme ordering; still pending are agency executors, channel wiring, and runtime telemetry.
 - **Milestone 4 - Extended feature set**: 📎 Planned — add HANDLE/STREAM lifetimes, FLEX semantics, deep cloning, persistence hooks, and expanded tests once the core runtime is proven.
 
 ## Q&A

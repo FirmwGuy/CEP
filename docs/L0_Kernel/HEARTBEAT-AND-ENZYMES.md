@@ -46,15 +46,16 @@ Matching and determinism
 - Matching policy is implementation-defined but must be deterministic. Common choices: exact equality, prefix match, or a constrained pattern match. Prefer a specificity-first ordering (longer, more specific paths before shorter, general ones), then compare enzyme names deterministically.
 - Ordering
   - Inbox order is by insertion.
-  - For a given inbox item, enzymes run in deterministic order: specificity
-    (most specific first), then dependency constraints (topological ordering
-    derived from each enzyme’s `before`/`after` lists), and finally enzyme name
-    as a stable tie-breaker.
+  - For a given impulse, CEP first honours dependency constraints via a
+    topological pass. Whenever multiple enzymes are simultaneously eligible,
+    the ready set is prioritised by: dual-path matches (signal *and* target)
+    ahead of single-path matches, higher combined specificity, descriptor name,
+    and finally registration order.
   - Each enzyme runs at most once per `(signal_path, target_path, beat)` pair.
 
 Heartbeat cycle
 1) Begin beat N: create/ensure `rt/beat/<N>/*` structures.
-2) Resolve agenda: for each inbox item, find all matching enzymes via the registry, order them deterministically, and enqueue them in `rt/beat/<N>/agenda`.
+2) Resolve agenda: for each inbox item, find all matching enzymes via the registry, order them deterministically, and enqueue them in `rt/beat/<N>/agenda`. The dispatcher memoises the resolved descriptor list for each unique `(signal_path, target_path)` pair during the beat so later duplicates reuse the cached ordering instead of repeating the registry scan.
 3) Execute agenda: call each enzyme with `(signal_path, target_path)`.
 4) Staging: enzymes write outputs and side effects to `rt/beat/<N>/stage` and may emit new signals destined for `rt/beat/<N+1>/inbox`.
 5) Commit boundary (N → N+1): staged outputs become visible; newly emitted signals are now eligible for processing in the next beat.
@@ -141,6 +142,9 @@ Q&A
   match the impulse, performs a topological sort, and orders the agenda
   accordingly. Registration can occur at program start, shared-library load, or
   mid-run: the dependency metadata keeps execution deterministic in all cases.
+  The heartbeat’s memoised cache is scoped to the current beat, so once pending
+  registrations are activated they cause a fresh resolve and populate new cache
+  entries automatically.
 
 - What prevents infinite loops? 
   Budgets, match constraints, and idempotent checks. If an enzyme would emit the same signal repeatedly without changing state, it should detect and skip.
