@@ -49,6 +49,7 @@ static cepStoreHistory*     cep_store_history_snapshot(const cepStore* store, co
 static void                 cep_store_history_free(cepStoreHistory* history);
 static void                 cep_store_history_push(cepStore* store);
 static void                 cep_store_history_clear(cepStore* store);
+static void                 cep_enzyme_binding_list_destroy(cepEnzymeBinding* bindings);
 
 static inline cepStoreHistory* cep_store_history_from_node(cepStoreNode* node) {
     return node? (cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
@@ -67,6 +68,14 @@ static inline cepCell* store_find_child_by_position(const cepStore* store, size_
 static inline cepCell* store_first_child(const cepStore* store);
 static inline cepCell* store_last_child(const cepStore* store);
 static inline cepCell* store_next_child(const cepStore* store, cepCell* child);
+
+static void cep_enzyme_binding_list_destroy(cepEnzymeBinding* bindings) {
+    while (bindings) {
+        cepEnzymeBinding* next = bindings->next;
+        cep_free(bindings);
+        bindings = next;
+    }
+}
 
 static inline uint64_t cep_hash_bytes(const void* data, size_t size) {
     if (!data || !size)
@@ -189,6 +198,7 @@ static void cep_data_history_push(cepData* data) {
     cepDataNode* past = cep_malloc(sizeof *past);
     memcpy(past, (const cepDataNode*) &data->modified, sizeof *past);
     past->past = data->past;
+    past->bindings = NULL;
     data->past = past;
 }
 
@@ -372,6 +382,7 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
     data->created   = timestamp;
     data->modified  = timestamp;
     data->hash      = cep_data_compute_hash(data);
+    data->bindings  = NULL;
 
     CEP_PTR_SEC_SET(dataloc, address);
 
@@ -400,6 +411,7 @@ void cep_data_del(cepData* data) {
     }
 
     cep_data_history_clear(data);
+    cep_enzyme_binding_list_destroy(data->bindings);
     cep_free(data);
 }
 
@@ -522,6 +534,7 @@ static cepStoreHistory* cep_store_history_snapshot(const cepStore* store, const 
     memcpy(&history->node, (const cepStoreNode*)&store->modified, sizeof(history->node));
     history->node.past   = previous? (cepStoreNode*)&previous->node: NULL;
     history->node.linked = NULL;
+    history->node.bindings = NULL;
     history->entryCount  = store->chdCount;
 
     if (history->entryCount) {
@@ -712,6 +725,7 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
     cepOpCount timestamp = cep_cell_timestamp_next();
     store->created  = timestamp;
     store->modified = timestamp;
+    store->bindings = NULL;
 
     return store;
 }
@@ -728,6 +742,8 @@ void cep_store_del(cepStore* store) {
     // ToDo: cleanup shadows.
 
     cep_store_history_clear(store);
+    cep_enzyme_binding_list_destroy(store->bindings);
+    store->bindings = NULL;
 
     store->deleted = cep_cell_timestamp_next();
 

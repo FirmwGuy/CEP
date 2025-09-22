@@ -360,10 +360,26 @@ size_t cep_word_to_text(cepID coded, char s[12]);
     Cell Data
 */
 
+typedef struct _cepEnzymeBinding cepEnzymeBinding;
+
+enum {
+    CEP_ENZYME_BIND_PROPAGATE = 1u << 0,
+    CEP_ENZYME_BIND_TOMBSTONE = 1u << 1,
+};
+
+struct _cepEnzymeBinding {
+    cepEnzymeBinding*   next;
+    cepDT               name;
+    uint32_t            flags;
+    cepOpCount          modified;
+};
+
 typedef struct _cepDataNode  cepDataNode;
 struct _cepDataNode {
     cepOpCount          modified;       // CEP heartbeat in which data was modified (including creation/deletion). 
     cepDataNode*        past;           // Pointer to past data content history.
+    
+    cepEnzymeBinding*   bindings;       // List of enzyme bindings.
     
     size_t              size;           // Data size in bytes.
     size_t              capacity;       // Buffer capacity in bytes.
@@ -452,6 +468,8 @@ struct _cepStoreNode {
     
     cepStoreNode*   past;       // Points to the previous store index in history (only used if catalog is re-sorted/indexed with different sorting function).
 
+    cepEnzymeBinding* bindings; // List of enzyme bindings.
+    
     size_t          chdCount;   // Number of child cells.
     size_t          totCount;   // Number of all cells included dead ones.
     cepCompare      compare;    // Compare function for indexing children.
@@ -662,6 +680,8 @@ static inline void cep_cell_replace(cepCell* oldr, cepCell* newr) {
 
 // Root dictionary
 static inline cepCell* cep_root(void)  {extern cepCell CEP_ROOT; assert(!cep_cell_is_void(&CEP_ROOT));  return &CEP_ROOT;}
+cepOpCount  cep_cell_timestamp_next(void);
+void        cep_cell_timestamp_reset(void);
 static inline cepOpCount cep_cell_timestamp(void)  {extern cepOpCount CEP_OP_COUNT; return CEP_OP_COUNT;}
 
 

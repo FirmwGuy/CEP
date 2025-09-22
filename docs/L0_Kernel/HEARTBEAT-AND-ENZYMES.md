@@ -42,14 +42,14 @@ Registering enzymes
 
 Matching and determinism
 - Matching
-  - An enzyme runs when `query matches target_path` OR `query matches signal_path`.
+  - Target-first gating: when a `target_path` (cell path) is present, an enzyme must match the `target_path`. If a `signal_path` is also present, the same enzyme must additionally match the `signal_path`. When no `target_path` is present, matching falls back to `signal_path` only.
 - Matching policy is implementation-defined but must be deterministic. Common choices: exact equality, prefix match, or a constrained pattern match. Prefer a specificity-first ordering (longer, more specific paths before shorter, general ones), then compare enzyme names deterministically.
 - Ordering
   - Inbox order is by insertion.
   - For a given impulse, CEP first honours dependency constraints via a
     topological pass. Whenever multiple enzymes are simultaneously eligible,
-    the ready set is prioritised by: dual-path matches (signal *and* target)
-    ahead of single-path matches, higher combined specificity, descriptor name,
+    the ready set is prioritised by: dual-path matches (target + signal) ahead
+    of single-path matches, higher combined specificity, descriptor name,
     and finally registration order.
   - Each enzyme runs at most once per `(signal_path, target_path, beat)` pair.
 

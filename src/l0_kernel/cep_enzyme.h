@@ -96,6 +96,10 @@ int                 cep_enzyme_unregister(cepEnzymeRegistry* registry, const cep
 
 size_t              cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* impulse, const cepEnzymeDescriptor** ordered, size_t capacity);
 
+int                 cep_cell_bind_enzyme(cepCell* cell, const cepDT* name, bool propagate);
+int                 cep_cell_unbind_enzyme(cepCell* cell, const cepDT* name);
+const cepEnzymeBinding* cep_cell_enzyme_bindings(const cepCell* cell);
+
 
 #ifdef __cplusplus
 }

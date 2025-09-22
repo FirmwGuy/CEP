@@ -33,11 +33,25 @@
 #define CEP_ENZYME_REGISTRY_MAX_HINT            65536u
 
 
+static const cepEnzymeRegistry* CEP_ENZYME_SORT_REGISTRY;
+
 typedef struct {
     cepPath*            query;
     cepEnzymeDescriptor descriptor;
     size_t              registration_order;
 } cepEnzymeEntry;
+
+typedef struct {
+    cepDT   key;
+    size_t  offset;
+    size_t  count;
+} cepEnzymeIndexBucket;
+
+typedef struct {
+    cepDT name;
+} cepEffectiveBinding;
+
+typedef struct cepEnzymeMatch cepEnzymeMatch;
 
 
 struct _cepEnzymeRegistry {
@@ -48,6 +62,14 @@ struct _cepEnzymeRegistry {
     cepEnzymeEntry*     pending_entries;
     size_t              pending_count;
     size_t              pending_capacity;
+    size_t*             index_by_name;
+    size_t              index_by_name_count;
+    cepEnzymeIndexBucket* name_buckets;
+    size_t              name_bucket_count;
+    size_t*             index_by_signal;
+    size_t              index_by_signal_count;
+    cepEnzymeIndexBucket* signal_buckets;
+    size_t              signal_bucket_count;
 };
 
 
@@ -56,7 +78,461 @@ struct _cepEnzymeRegistry {
 static bool cep_enzyme_registry_ensure_capacity(cepEnzymeRegistry* registry);
 static bool cep_enzyme_registry_pending_ensure_capacity(cepEnzymeRegistry* registry);
 static int  cep_enzyme_registry_pending_add(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor);
+static bool cep_enzyme_registry_rebuild_indexes(cepEnzymeRegistry* registry);
+static cepDT cep_enzyme_query_head(const cepPath* path);
+static int cep_enzyme_compare_name_index(const void* lhs, const void* rhs);
+static int cep_enzyme_compare_signal_index(const void* lhs, const void* rhs);
+static bool cep_enzyme_match_prefer(const cepEnzymeMatch* lhs, const cepEnzymeMatch* rhs);
+static const cepEnzymeIndexBucket* cep_enzyme_find_bucket(const cepEnzymeIndexBucket* buckets, size_t bucket_count, const cepDT* key);
+static bool cep_enzyme_binding_name_equals(const cepDT* a, const cepDT* b);
+static bool cep_enzyme_binding_contains(const cepEffectiveBinding* list, size_t count, const cepDT* name, size_t* index_out);
+static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target, size_t* out_count);
+static bool cep_enzyme_matches_signal(const cepEnzymeEntry* entry, const cepPath* signal, size_t* specificity_out);
+static void cep_enzyme_match_merge(cepEnzymeMatch* matches, size_t* match_count, const cepEnzymeMatch* candidate);
+static bool cep_enzyme_paths_equal(const cepPath* a, const cepPath* b);
+static bool cep_enzyme_path_is_prefix(const cepPath* prefix, const cepPath* path);
 
+static cepEnzymeBinding** cep_cell_binding_slot(cepCell* cell, cepOpCount** modified_out) {
+    if (modified_out) {
+        *modified_out = NULL;
+    }
+
+    if (!cell || !cep_cell_is_normal(cell)) {
+        return NULL;
+    }
+
+    if (cell->store) {
+        if (modified_out) {
+            *modified_out = &cell->store->modified;
+        }
+        return &cell->store->bindings;
+    }
+
+    if (cell->data) {
+        if (modified_out) {
+            *modified_out = &cell->data->modified;
+        }
+        return &cell->data->bindings;
+    }
+
+    return NULL;
+}
+
+static int cep_cell_append_binding(cepCell* cell, const cepDT* name, uint32_t flags) {
+    if (!cell || !cep_cell_is_normal(cell) || !name || !cep_dt_valid(name)) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    cepOpCount* modified_slot = NULL;
+    cepEnzymeBinding** head = cep_cell_binding_slot(cell, &modified_slot);
+    if (!head) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    cepEnzymeBinding* binding = cep_malloc(sizeof *binding);
+    if (!binding) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    cepOpCount timestamp = cep_cell_timestamp_next();
+    binding->next = *head;
+    binding->name = *name;
+    binding->flags = flags;
+    binding->modified = timestamp;
+
+    *head = binding;
+
+    if (modified_slot) {
+        *modified_slot = timestamp;
+    }
+
+    return CEP_ENZYME_SUCCESS;
+}
+
+int cep_cell_bind_enzyme(cepCell* cell, const cepDT* name, bool propagate) {
+    uint32_t flags = propagate ? CEP_ENZYME_BIND_PROPAGATE : 0u;
+    return cep_cell_append_binding(cell, name, flags);
+}
+
+int cep_cell_unbind_enzyme(cepCell* cell, const cepDT* name) {
+    return cep_cell_append_binding(cell, name, CEP_ENZYME_BIND_TOMBSTONE);
+}
+
+const cepEnzymeBinding* cep_cell_enzyme_bindings(const cepCell* cell) {
+    if (!cell || !cep_cell_is_normal(cell)) {
+        return NULL;
+    }
+
+    if (cell->store && cell->store->bindings) {
+        return cell->store->bindings;
+    }
+
+    if (cell->data) {
+        return cell->data->bindings;
+    }
+
+    return NULL;
+}
+
+
+static cepDT cep_enzyme_query_head(const cepPath* path) {
+    if (!path || path->length == 0u) {
+        return (cepDT){ .domain = 0, .tag = 0 };
+    }
+
+    return path->past[0].dt;
+}
+
+static int cep_enzyme_compare_name_index(const void* lhs, const void* rhs) {
+    const cepEnzymeRegistry* registry = CEP_ENZYME_SORT_REGISTRY;
+    const size_t ia = *(const size_t*)lhs;
+    const size_t ib = *(const size_t*)rhs;
+    const cepEnzymeEntry* ea = &registry->entries[ia];
+    const cepEnzymeEntry* eb = &registry->entries[ib];
+
+    int cmp = cep_dt_compare(&ea->descriptor.name, &eb->descriptor.name);
+    if (cmp != 0) {
+        return cmp;
+    }
+
+    if (ea->registration_order < eb->registration_order) {
+        return -1;
+    }
+    if (ea->registration_order > eb->registration_order) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int cep_enzyme_compare_signal_index(const void* lhs, const void* rhs) {
+    const cepEnzymeRegistry* registry = CEP_ENZYME_SORT_REGISTRY;
+    const size_t ia = *(const size_t*)lhs;
+    const size_t ib = *(const size_t*)rhs;
+    const cepEnzymeEntry* ea = &registry->entries[ia];
+    const cepEnzymeEntry* eb = &registry->entries[ib];
+
+    cepDT head_a = cep_enzyme_query_head(ea->query);
+    cepDT head_b = cep_enzyme_query_head(eb->query);
+
+    int cmp = cep_dt_compare(&head_a, &head_b);
+    if (cmp != 0) {
+        return cmp;
+    }
+
+    if (ea->registration_order < eb->registration_order) {
+        return -1;
+    }
+    if (ea->registration_order > eb->registration_order) {
+        return 1;
+    }
+
+    return 0;
+}
+
+static const cepEnzymeIndexBucket* cep_enzyme_find_bucket(const cepEnzymeIndexBucket* buckets, size_t bucket_count, const cepDT* key) {
+    size_t lo = 0u;
+    size_t hi = bucket_count;
+
+    while (lo < hi) {
+        size_t mid = lo + ((hi - lo) >> 1u);
+        int cmp = cep_dt_compare(&buckets[mid].key, key);
+        if (cmp < 0) {
+            lo = mid + 1u;
+        } else if (cmp > 0) {
+            hi = mid;
+        } else {
+            return &buckets[mid];
+        }
+    }
+
+    return NULL;
+}
+
+static bool cep_enzyme_binding_name_equals(const cepDT* a, const cepDT* b) {
+    return a && b && a->domain == b->domain && a->tag == b->tag;
+}
+
+static bool cep_enzyme_binding_contains(const cepEffectiveBinding* list, size_t count, const cepDT* name, size_t* index_out) {
+    if (!list || !name) {
+        return false;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        if (cep_enzyme_binding_name_equals(&list[i].name, name)) {
+            if (index_out) {
+                *index_out = i;
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool cep_enzyme_registry_rebuild_indexes(cepEnzymeRegistry* registry) {
+    CEP_FREE(registry->index_by_name);
+    CEP_FREE(registry->name_buckets);
+    CEP_FREE(registry->index_by_signal);
+    CEP_FREE(registry->signal_buckets);
+
+    registry->index_by_name = NULL;
+    registry->index_by_name_count = 0;
+    registry->name_buckets = NULL;
+    registry->name_bucket_count = 0;
+    registry->index_by_signal = NULL;
+    registry->index_by_signal_count = 0;
+    registry->signal_buckets = NULL;
+    registry->signal_bucket_count = 0;
+
+    size_t n = registry->entry_count;
+    if (n == 0u) {
+        return true;
+    }
+
+    size_t* by_name = cep_malloc(n * sizeof(*by_name));
+    size_t* by_signal = cep_malloc(n * sizeof(*by_signal));
+    if (!by_name || !by_signal) {
+        CEP_FREE(by_name);
+        CEP_FREE(by_signal);
+        return false;
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        by_name[i] = i;
+        by_signal[i] = i;
+    }
+
+    CEP_ENZYME_SORT_REGISTRY = registry;
+    qsort(by_name, n, sizeof(*by_name), cep_enzyme_compare_name_index);
+    qsort(by_signal, n, sizeof(*by_signal), cep_enzyme_compare_signal_index);
+    CEP_ENZYME_SORT_REGISTRY = NULL;
+
+    cepEnzymeIndexBucket* name_buckets = cep_malloc(n * sizeof(*name_buckets));
+    cepEnzymeIndexBucket* signal_buckets = cep_malloc(n * sizeof(*signal_buckets));
+    if ((!name_buckets && n > 0u) || (!signal_buckets && n > 0u)) {
+        CEP_FREE(by_name);
+        CEP_FREE(by_signal);
+        CEP_FREE(name_buckets);
+        CEP_FREE(signal_buckets);
+        return false;
+    }
+
+    size_t name_bucket_count = 0u;
+    for (size_t i = 0; i < n; ) {
+        size_t start = i;
+        const cepEnzymeEntry* entry = &registry->entries[by_name[i]];
+        cepDT key = entry->descriptor.name;
+        ++i;
+        while (i < n) {
+            const cepEnzymeEntry* next_entry = &registry->entries[by_name[i]];
+            if (cep_dt_compare(&key, &next_entry->descriptor.name) != 0) {
+                break;
+            }
+            ++i;
+        }
+
+        name_buckets[name_bucket_count++] = (cepEnzymeIndexBucket) {
+            .key    = key,
+            .offset = start,
+            .count  = i - start,
+        };
+    }
+
+    size_t signal_bucket_count = 0u;
+    for (size_t i = 0; i < n; ) {
+        size_t start = i;
+        const cepEnzymeEntry* entry = &registry->entries[by_signal[i]];
+        cepDT key = cep_enzyme_query_head(entry->query);
+        ++i;
+        while (i < n) {
+            const cepEnzymeEntry* next_entry = &registry->entries[by_signal[i]];
+            cepDT next_key = cep_enzyme_query_head(next_entry->query);
+            if (cep_dt_compare(&key, &next_key) != 0) {
+                break;
+            }
+            ++i;
+        }
+
+        signal_buckets[signal_bucket_count++] = (cepEnzymeIndexBucket) {
+            .key    = key,
+            .offset = start,
+            .count  = i - start,
+        };
+    }
+
+    registry->index_by_name = by_name;
+    registry->index_by_name_count = n;
+    registry->name_buckets = name_buckets;
+    registry->name_bucket_count = name_bucket_count;
+    registry->index_by_signal = by_signal;
+    registry->index_by_signal_count = n;
+    registry->signal_buckets = signal_buckets;
+    registry->signal_bucket_count = signal_bucket_count;
+
+    return true;
+}
+
+static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target, size_t* out_count) {
+    if (out_count) {
+        *out_count = 0u;
+    }
+    if (!target) {
+        return NULL;
+    }
+
+    cepEffectiveBinding* active = NULL;
+    size_t active_count = 0u;
+    size_t active_capacity = 0u;
+
+    cepEffectiveBinding* blocked = NULL;
+    size_t blocked_count = 0u;
+    size_t blocked_capacity = 0u;
+
+    for (const cepCell* cell = target; cell; cell = cep_cell_parent(cell)) {
+        bool is_target = (cell == target);
+        const cepEnzymeBinding* binding = cep_cell_enzyme_bindings(cell);
+        if (!binding) {
+            continue;
+        }
+
+        cepEffectiveBinding* local_seen = NULL;
+        size_t local_count = 0u;
+        size_t local_capacity = 0u;
+
+        for (const cepEnzymeBinding* node = binding; node; node = node->next) {
+            if (cep_enzyme_binding_contains(local_seen, local_count, &node->name, NULL)) {
+                continue;
+            }
+
+            if (local_count == local_capacity) {
+                size_t new_capacity = local_capacity ? (local_capacity << 1u) : 4u;
+                cepEffectiveBinding* resized = cep_realloc(local_seen, new_capacity * sizeof(*resized));
+                if (!resized) {
+                    CEP_FREE(local_seen);
+                    CEP_FREE(blocked);
+                    CEP_FREE(active);
+                    if (out_count) {
+                        *out_count = SIZE_MAX;
+                    }
+                    return NULL;
+                }
+                local_seen = resized;
+                local_capacity = new_capacity;
+            }
+            local_seen[local_count++].name = node->name;
+
+            if (node->flags & CEP_ENZYME_BIND_TOMBSTONE) {
+                size_t idx;
+                if (cep_enzyme_binding_contains(active, active_count, &node->name, &idx)) {
+                    if (idx + 1u < active_count) {
+                        memmove(&active[idx], &active[idx + 1u], (active_count - (idx + 1u)) * sizeof(*active));
+                    }
+                    active_count--;
+                }
+                if (!cep_enzyme_binding_contains(blocked, blocked_count, &node->name, NULL)) {
+                    if (blocked_count == blocked_capacity) {
+                        size_t new_capacity = blocked_capacity ? (blocked_capacity << 1u) : 8u;
+                        cepEffectiveBinding* resized = cep_realloc(blocked, new_capacity * sizeof(*resized));
+                        if (!resized) {
+                            CEP_FREE(local_seen);
+                        CEP_FREE(blocked);
+                        CEP_FREE(active);
+                        if (out_count) {
+                            *out_count = SIZE_MAX;
+                        }
+                        return NULL;
+                    }
+                    blocked = resized;
+                    blocked_capacity = new_capacity;
+                }
+                    blocked[blocked_count++].name = node->name;
+                }
+                continue;
+            }
+
+            if (!is_target && !(node->flags & CEP_ENZYME_BIND_PROPAGATE)) {
+                continue;
+            }
+
+            if (cep_enzyme_binding_contains(blocked, blocked_count, &node->name, NULL)) {
+                continue;
+            }
+
+            if (!cep_enzyme_binding_contains(active, active_count, &node->name, NULL)) {
+                if (active_count == active_capacity) {
+                    size_t new_capacity = active_capacity ? (active_capacity << 1u) : 8u;
+                    cepEffectiveBinding* resized = cep_realloc(active, new_capacity * sizeof(*resized));
+                    if (!resized) {
+                        CEP_FREE(local_seen);
+                        CEP_FREE(blocked);
+                        CEP_FREE(active);
+                        if (out_count) {
+                            *out_count = SIZE_MAX;
+                        }
+                        return NULL;
+                    }
+                    active = resized;
+                    active_capacity = new_capacity;
+                }
+                active[active_count++].name = node->name;
+            }
+        }
+
+        CEP_FREE(local_seen);
+    }
+
+    CEP_FREE(blocked);
+
+    if (out_count) {
+        *out_count = active_count;
+    }
+    return active;
+}
+
+static bool cep_enzyme_matches_signal(const cepEnzymeEntry* entry, const cepPath* signal, size_t* specificity_out) {
+    if (specificity_out) {
+        *specificity_out = 0u;
+    }
+
+    if (!entry || !signal) {
+        return false;
+    }
+
+    if (!entry->query || entry->query->length == 0u) {
+        if (specificity_out) {
+            *specificity_out = 0u;
+        }
+        return true;
+    }
+
+    size_t specificity = entry->query->length;
+
+    switch (entry->descriptor.match) {
+      case CEP_ENZYME_MATCH_EXACT:
+        if (entry->query->length == signal->length && cep_enzyme_paths_equal(entry->query, signal)) {
+            if (specificity_out) {
+                *specificity_out = specificity;
+            }
+            return true;
+        }
+        return false;
+
+      case CEP_ENZYME_MATCH_PREFIX:
+        if (cep_enzyme_path_is_prefix(entry->query, signal)) {
+            if (specificity_out) {
+                *specificity_out = specificity;
+            }
+            return true;
+        }
+        return false;
+
+      default:
+        break;
+    }
+
+    return false;
+}
 
 static size_t cep_enzyme_registry_hint_capacity(void) {
     static size_t cached_hint;
@@ -120,6 +596,11 @@ static void cep_enzyme_registry_free_all(cepEnzymeRegistry* registry) {
         CEP_FREE(registry->pending_entries);
     }
 
+    CEP_FREE(registry->index_by_name);
+    CEP_FREE(registry->name_buckets);
+    CEP_FREE(registry->index_by_signal);
+    CEP_FREE(registry->signal_buckets);
+
     registry->entries                 = NULL;
     registry->entry_count             = 0;
     registry->entry_capacity          = 0;
@@ -127,6 +608,14 @@ static void cep_enzyme_registry_free_all(cepEnzymeRegistry* registry) {
     registry->pending_count           = 0;
     registry->pending_capacity        = 0;
     registry->next_registration_order = 0;
+    registry->index_by_name           = NULL;
+    registry->index_by_name_count     = 0;
+    registry->name_buckets            = NULL;
+    registry->name_bucket_count       = 0;
+    registry->index_by_signal         = NULL;
+    registry->index_by_signal_count   = 0;
+    registry->signal_buckets          = NULL;
+    registry->signal_bucket_count     = 0;
 }
 
 
@@ -255,6 +744,18 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
         registry->pending_count           = 0;
         registry->pending_capacity        = 0;
         registry->next_registration_order = 0;
+        CEP_FREE(registry->index_by_name);
+        CEP_FREE(registry->name_buckets);
+        CEP_FREE(registry->index_by_signal);
+        CEP_FREE(registry->signal_buckets);
+        registry->index_by_name         = NULL;
+        registry->index_by_name_count   = 0;
+        registry->name_buckets          = NULL;
+        registry->name_bucket_count     = 0;
+        registry->index_by_signal       = NULL;
+        registry->index_by_signal_count = 0;
+        registry->signal_buckets        = NULL;
+        registry->signal_bucket_count   = 0;
         return;
     }
 
@@ -273,6 +774,18 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
     registry->entry_count             = 0;
     registry->pending_count           = 0;
     registry->next_registration_order = 0;
+    CEP_FREE(registry->index_by_name);
+    registry->index_by_name = NULL;
+    registry->index_by_name_count = 0;
+    CEP_FREE(registry->name_buckets);
+    registry->name_buckets = NULL;
+    registry->name_bucket_count = 0;
+    CEP_FREE(registry->index_by_signal);
+    registry->index_by_signal = NULL;
+    registry->index_by_signal_count = 0;
+    CEP_FREE(registry->signal_buckets);
+    registry->signal_buckets = NULL;
+    registry->signal_bucket_count = 0;
 }
 
 
@@ -314,6 +827,8 @@ void cep_enzyme_registry_activate_pending(cepEnzymeRegistry* registry) {
     }
 
     registry->pending_count = 0u;
+
+    (void)cep_enzyme_registry_rebuild_indexes(registry);
 }
 
 
@@ -426,6 +941,8 @@ int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const
     entry->descriptor         = *descriptor;
     entry->registration_order = registry->next_registration_order++;
 
+    (void)cep_enzyme_registry_rebuild_indexes(registry);
+
     return CEP_ENZYME_SUCCESS;
 }
 
@@ -458,6 +975,7 @@ int cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, con
         }
 
         registry->entry_count--;
+        (void)cep_enzyme_registry_rebuild_indexes(registry);
         return CEP_ENZYME_SUCCESS;
     }
 
@@ -477,6 +995,7 @@ int cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, con
         }
 
         registry->pending_count--;
+        (void)cep_enzyme_registry_rebuild_indexes(registry);
         return CEP_ENZYME_SUCCESS;
     }
 
@@ -484,14 +1003,14 @@ int cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, con
 }
 
 
-typedef struct {
+struct cepEnzymeMatch {
     const cepEnzymeDescriptor* descriptor;
     size_t                     specificity_signal;
     size_t                     specificity_target;
     size_t                     specificity_total;
     size_t                     registration_order;
     uint8_t                    match_type;
-} cepEnzymeMatch;
+};
 
 
 typedef struct {
@@ -581,6 +1100,23 @@ static bool cep_enzyme_match_prefer(const cepEnzymeMatch* lhs, const cepEnzymeMa
     return lhs->registration_order < rhs->registration_order;
 }
 
+static void cep_enzyme_match_merge(cepEnzymeMatch* matches, size_t* match_count, const cepEnzymeMatch* candidate) {
+    if (!matches || !match_count || !candidate || !candidate->descriptor) {
+        return;
+    }
+
+    for (size_t i = 0; i < *match_count; ++i) {
+        if (matches[i].descriptor == candidate->descriptor) {
+            if (cep_enzyme_match_prefer(candidate, &matches[i])) {
+                matches[i] = *candidate;
+            }
+            return;
+        }
+    }
+
+    matches[(*match_count)++] = *candidate;
+}
+
 
 static void cep_enzyme_ready_push(size_t* heap, size_t* heap_size, size_t value, const cepEnzymeMatch* matches) {
     size_t child = (*heap_size)++;
@@ -630,125 +1166,146 @@ static size_t cep_enzyme_ready_pop(size_t* heap, size_t* heap_size, const cepEnz
 }
 
 
-static uint8_t cep_enzyme_match_flags(const cepEnzymeEntry* entry, const cepImpulse* impulse, size_t* signal_specificity, size_t* target_specificity) {
-    if (signal_specificity) {
-        *signal_specificity = 0u;
-    }
-    if (target_specificity) {
-        *target_specificity = 0u;
-    }
-    if (!entry || !impulse) {
-        return 0u;
-    }
-
-    const cepPath* query = entry->query;
-    if (!query || query->length == 0u) {
-        return 0u;
-    }
-
-    const cepPath* signal = impulse->signal_path;
-    const cepPath* target = impulse->target_path;
-
-    const size_t specificity = query->length;
-    uint8_t flags = 0u;
-
-    switch (entry->descriptor.match) {
-      case CEP_ENZYME_MATCH_EXACT:
-        if (signal && cep_enzyme_paths_equal(query, signal)) {
-            flags |= CEP_ENZYME_MATCH_FLAG_SIGNAL;
-            if (signal_specificity) {
-                *signal_specificity = specificity;
-            }
-        }
-        if (target && cep_enzyme_paths_equal(query, target)) {
-            flags |= CEP_ENZYME_MATCH_FLAG_TARGET;
-            if (target_specificity) {
-                *target_specificity = specificity;
-            }
-        }
-        break;
-
-      case CEP_ENZYME_MATCH_PREFIX:
-        if (signal && cep_enzyme_path_is_prefix(query, signal)) {
-            flags |= CEP_ENZYME_MATCH_FLAG_SIGNAL;
-            if (signal_specificity) {
-                *signal_specificity = specificity;
-            }
-        }
-        if (target && cep_enzyme_path_is_prefix(query, target)) {
-            flags |= CEP_ENZYME_MATCH_FLAG_TARGET;
-            if (target_specificity) {
-                *target_specificity = specificity;
-            }
-        }
-        break;
-
-      default:
-        break;
-    }
-
-    return flags;
-}
-
-
 /*
- * Impulse agenda construction follows a fixed pipeline to keep dispatch deterministic
- * and to avoid quadratic hot paths when many enzymes collide on the same impulse.
- * 
- *   1. Scan the registry once, capturing every enzyme whose query path matches either
- *      the impulse signal or target. For each match we record whether the hit came
- *      from the signal, the target, or both, and we cache the per-path specificity
- *      (currently the query length) so dual-path hits naturally outrank single-side
- *      matches. The scan stays linear in the registry size, so idle enzymes cost only
- *      a cheap mismatch check.
- *   2. Build a name-indexed adjacency table on the fly from the collected matches,
- *      translating descriptor before/after constraints into edges inside the active
- *      set. Duplicate edges are skipped, and dependencies on enzymes that did not
- *      match the impulse are ignored. Because the graph is scoped to the active set,
- *      edge wiring grows with the square of the match count at worst, not the entire
- *      registry, while each individual lookup is logarithmic thanks to the sorted
- *      name cache built earlier.
- *   3. Run Kahn's algorithm with a small binary heap rather than a linear scan for
- *      zero-indegree nodes. The heap uses a deterministic priority tuple:
- *         - match strength (both-path matches ahead of single-path ones)
- *         - combined specificity (longer query beats shorter)
- *         - descriptor name (lexicographic order)
- *         - registration order (first registered wins)
- *      This guarantees replayable agendas while keeping the ready-set selection at
- *      O(log M) per placement instead of repeatedly scanning all matches.
- *   4. Emit descriptors in the order they are popped. If a cycle is detected the
- *      agenda is abandoned and the caller observes an empty resolution. The total
- *      per-impulse cost is roughly O(M log M + E) (matches M, dependency edges E),
- *      which scales cleanly even as the registry grows.
+ * Impulse resolution combines cell-bound bindings with signal-indexed filters.
+ *
+ *   1. Gather bindings along the target path (respecting propagate flags and
+ *      tombstones). For each bound enzyme name pick the most specific descriptor
+ *      that also matches the signal when one is present.
+ *   2. If no bindings apply (or no target was provided), fall back to the
+ *      signal index and collect signal-only matches.
+ *   3. Assemble dependency edges between the resulting descriptors and perform
+ *      a deterministic topological sort with the existing priority tuple.
  */
 size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* impulse, const cepEnzymeDescriptor** ordered, size_t capacity) {
     if (!registry || !impulse || registry->entry_count == 0u) {
         return 0u;
     }
 
-    cepEnzymeMatch* matches = cep_malloc(registry->entry_count * sizeof(*matches));
+    size_t registry_count = registry->entry_count;
+    cepEnzymeMatch* matches = cep_malloc(registry_count * sizeof(*matches));
+    if (!matches) {
+        return 0u;
+    }
     size_t match_count = 0u;
 
-    for (size_t i = 0; i < registry->entry_count; ++i) {
-        const cepEnzymeEntry* entry = &registry->entries[i];
-        size_t signal_specificity = 0u;
-        size_t target_specificity = 0u;
-        uint8_t flags = cep_enzyme_match_flags(entry, impulse, &signal_specificity, &target_specificity);
-        if (!flags) {
-            continue;
+    if (registry_count > 0u &&
+        (!registry->index_by_name || !registry->name_buckets ||
+         !registry->index_by_signal || !registry->signal_buckets)) {
+        (void)cep_enzyme_registry_rebuild_indexes((cepEnzymeRegistry*)registry);
+    }
+
+    const cepPath* signal = impulse->signal_path;
+    const cepPath* target_path = impulse->target_path;
+
+    cepEffectiveBinding* bindings = NULL;
+    size_t binding_count = 0u;
+
+    if (target_path) {
+        const cepHeartbeatTopology* topology = cep_heartbeat_topology();
+        const cepCell* root = topology ? topology->root : NULL;
+        cepCell* target_cell = root ? cep_cell_find_by_path(root, target_path) : NULL;
+        if (target_cell) {
+            bindings = cep_enzyme_collect_bindings(target_cell, &binding_count);
+            if (binding_count == SIZE_MAX) {
+                CEP_FREE(matches);
+                return 0u;
+            }
+        }
+    }
+
+    if (binding_count > 0u) {
+        for (size_t i = 0; i < binding_count; ++i) {
+            const cepEnzymeIndexBucket* bucket = cep_enzyme_find_bucket(registry->name_buckets, registry->name_bucket_count, &bindings[i].name);
+            if (!bucket) {
+                continue;
+            }
+
+            cepEnzymeMatch best = {0};
+            bool best_valid = false;
+
+            for (size_t offset = 0; offset < bucket->count; ++offset) {
+                size_t entry_index = registry->index_by_name[bucket->offset + offset];
+                if (entry_index >= registry_count) {
+                    continue;
+                }
+
+                const cepEnzymeEntry* entry = &registry->entries[entry_index];
+
+                cepEnzymeMatch candidate = {
+                    .descriptor = &entry->descriptor,
+                    .specificity_signal = 0u,
+                    .specificity_target = entry->query ? entry->query->length : 0u,
+                    .specificity_total = entry->query ? entry->query->length : 0u,
+                    .registration_order = entry->registration_order,
+                    .match_type = CEP_ENZYME_MATCH_FLAG_TARGET,
+                };
+
+                if (signal) {
+                    size_t signal_specificity = 0u;
+                    if (!cep_enzyme_matches_signal(entry, signal, &signal_specificity)) {
+                        continue;
+                    }
+                    candidate.match_type |= CEP_ENZYME_MATCH_FLAG_SIGNAL;
+                    candidate.specificity_signal = signal_specificity;
+                    candidate.specificity_total += signal_specificity;
+                }
+
+                if (candidate.specificity_total == 0u) {
+                    candidate.specificity_total = candidate.specificity_target ? candidate.specificity_target : candidate.specificity_signal;
+                }
+
+                if (!best_valid || cep_enzyme_match_prefer(&candidate, &best)) {
+                    best = candidate;
+                    best_valid = true;
+                }
+            }
+
+            if (best_valid) {
+                cep_enzyme_match_merge(matches, &match_count, &best);
+            }
+        }
+    }
+
+    if ((!target_path || binding_count == 0u) && signal) {
+        cepDT head = cep_enzyme_query_head(signal);
+        size_t begin = 0u;
+        size_t end = registry_count;
+
+        if (registry->signal_bucket_count > 0u) {
+            const cepEnzymeIndexBucket* bucket = cep_enzyme_find_bucket(registry->signal_buckets, registry->signal_bucket_count, &head);
+            if (bucket) {
+                begin = bucket->offset;
+                end = bucket->offset + bucket->count;
+            }
         }
 
-        matches[match_count].descriptor          = &entry->descriptor;
-        matches[match_count].match_type          = flags;
-        matches[match_count].specificity_signal  = signal_specificity;
-        matches[match_count].specificity_target  = target_specificity;
-        matches[match_count].specificity_total   = signal_specificity + target_specificity;
-        if (matches[match_count].specificity_total == 0u) {
-            matches[match_count].specificity_total = signal_specificity ? signal_specificity : target_specificity;
+        for (size_t offset = begin; offset < end; ++offset) {
+            size_t entry_index = registry->index_by_signal ? registry->index_by_signal[offset] : offset;
+            if (entry_index >= registry_count) {
+                continue;
+            }
+
+            const cepEnzymeEntry* entry = &registry->entries[entry_index];
+            size_t signal_specificity = 0u;
+            if (!cep_enzyme_matches_signal(entry, signal, &signal_specificity)) {
+                continue;
+            }
+
+            cepEnzymeMatch candidate = {
+                .descriptor = &entry->descriptor,
+                .specificity_signal = signal_specificity,
+                .specificity_target = 0u,
+                .specificity_total = signal_specificity ? signal_specificity : (entry->query ? entry->query->length : 0u),
+                .registration_order = entry->registration_order,
+                .match_type = CEP_ENZYME_MATCH_FLAG_SIGNAL,
+            };
+
+            cep_enzyme_match_merge(matches, &match_count, &candidate);
         }
-        matches[match_count].registration_order  = entry->registration_order;
-        match_count++;
     }
+
+    CEP_FREE(bindings);
 
     if (match_count == 0u) {
         CEP_FREE(matches);
