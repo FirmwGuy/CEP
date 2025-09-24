@@ -678,6 +678,8 @@ static void cep_shadow_attach(cepCell* target, cepCell* link)
         break;
       }
     }
+
+    link->metacell.targetDead = cep_cell_is_deleted(target);
 }
 
 static void cep_shadow_detach(cepCell* target, const cepCell* link)
@@ -695,6 +697,7 @@ static void cep_shadow_detach(cepCell* target, const cepCell* link)
       case CEP_SHADOW_SINGLE: {
         assert(singleSlot);
         assert(*singleSlot == link);
+        ((cepCell*)link)->metacell.targetDead = 0;
         *singleSlot = NULL;
         target->metacell.shadowing = CEP_SHADOW_NONE;
         break;
@@ -713,6 +716,8 @@ static void cep_shadow_detach(cepCell* target, const cepCell* link)
         }
 
         assert(index < shadow->count);
+
+        ((cepCell*)link)->metacell.targetDead = 0;
 
         unsigned last = shadow->count - 1U;
         if (index != last)
@@ -735,6 +740,43 @@ static void cep_shadow_detach(cepCell* target, const cepCell* link)
         }
         break;
       }
+    }
+}
+
+void cep_cell_shadow_mark_target_dead(cepCell* target, bool dead) {
+    if (!target || cep_cell_is_void(target))
+        return;
+
+    if (!cep_cell_is_normal(target) || !cep_cell_is_shadowed(target))
+        return;
+
+    switch (target->metacell.shadowing) {
+      case CEP_SHADOW_SINGLE: {
+        cepCell** slot = cep_shadow_single_slot(target);
+        cepCell* link = slot ? *slot : NULL;
+        if (link) {
+            assert(cep_cell_is_link(link));
+            link->metacell.targetDead = dead;
+        }
+        break;
+      }
+
+      case CEP_SHADOW_MULTIPLE: {
+        cepShadow* shadow = cep_shadow_multi_bucket(target);
+        if (!shadow)
+            break;
+        for (unsigned i = 0; i < shadow->count; ++i) {
+            cepCell* link = shadow->cell[i];
+            if (link) {
+                assert(cep_cell_is_link(link));
+                link->metacell.targetDead = dead;
+            }
+        }
+        break;
+      }
+
+      case CEP_SHADOW_NONE:
+        break;
     }
 }
 
@@ -781,6 +823,7 @@ static void cep_shadow_rebind_links(cepCell* target)
         cepCell* link = slot? *slot: NULL;
         assert(link);
         link->link = target;
+        link->metacell.targetDead = cep_cell_is_deleted(target);
         break;
       }
 
@@ -791,6 +834,7 @@ static void cep_shadow_rebind_links(cepCell* target)
             cepCell* link = shadow->cell[i];
             assert(link);
             link->link = target;
+            link->metacell.targetDead = cep_cell_is_deleted(target);
         }
         break;
       }
@@ -821,6 +865,12 @@ void cep_link_set(cepCell* link, cepCell* target)
 
     if (current)
         cep_shadow_detach(current, link);
+
+    if (resolved) {
+        link->metacell.targetDead = cep_cell_is_deleted(resolved);
+    } else {
+        link->metacell.targetDead = 0;
+    }
 
     link->link = resolved;
 

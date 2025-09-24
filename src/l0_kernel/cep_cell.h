@@ -169,7 +169,7 @@ typedef struct {
         cepID   type:       2,    // Type of cell (dictionary, link, etc).
                 hidden:     1,    // Cell won't appear on listings (it can only be accessed directly).
                 shadowing:  2,    // If cell has shadowing cells (links pointing to it).
-                _unused:    1,
+                targetDead: 1,    // Set (1) if this cell is a link and the target died.
 
                 domain:     CEP_NAME_BITS;
       };
@@ -601,6 +601,7 @@ typedef bool (*cepTraverse)(cepEntry*, void*);
 void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* data, cepStore* store);
 void cep_cell_initialize_clone(cepCell* newClone, cepDT* name, cepCell* cell);
 void cep_cell_finalize(cepCell* cell);
+void cep_cell_shadow_mark_target_dead(cepCell* cell, bool dead);
 
 #define cep_cell_initialize_empty(r, name)                                                            cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, NULL)
 #define cep_cell_initialize_value(r, name, dt, value, size, capacity)                cep_cell_initialize(r, CEP_TYPE_NORMAL, name, cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)
@@ -640,8 +641,17 @@ static inline bool cep_cell_is_deleted(const cepCell* cell) {
     return dataDeleted && storeDeleted;
 }
 
-static inline void cep_cell_set_data(cepCell* cell, cepData* data)      {assert(!cep_cell_has_data(cell) && cep_data_valid(data));   cell->data = data;}
-static inline void cep_cell_set_store(cepCell* cell, cepStore* store)   {assert(!cep_cell_has_store(cell) && cep_store_valid(store));  store->owner = cell; cell->store = store;}
+static inline void cep_cell_set_data(cepCell* cell, cepData* data) {
+    assert(!cep_cell_has_data(cell) && cep_data_valid(data));
+    cell->data = data;
+    cep_cell_shadow_mark_target_dead(cell, cep_cell_is_deleted(cell));
+}
+static inline void cep_cell_set_store(cepCell* cell, cepStore* store) {
+    assert(!cep_cell_has_store(cell) && cep_store_valid(store));
+    store->owner = cell;
+    cell->store = store;
+    cep_cell_shadow_mark_target_dead(cell, cep_cell_is_deleted(cell));
+}
 
 static inline cepCell*   cep_cell_parent  (const cepCell* cell)   {assert(cell);  return CEP_EXPECT_PTR(cell->parent)? cell->parent->owner: NULL;}
 static inline size_t     cep_cell_siblings(const cepCell* cell)   {assert(cell);  return CEP_EXPECT_PTR(cell->parent)? cell->parent->chdCount: 0;}
@@ -806,6 +816,8 @@ static inline void cep_cell_delete_data(cepCell* cell) {
         cell->data->deleted = cep_cell_timestamp();
 
     cell->data->writable = false;
+
+    cep_cell_shadow_mark_target_dead(cell, cep_cell_is_deleted(cell));
 }
 
 static inline void cep_cell_delete_data_hard(cepCell* cell) {
@@ -815,6 +827,8 @@ static inline void cep_cell_delete_data_hard(cepCell* cell) {
     cep_cell_delete_data(cell);
     cep_data_del(cell->data);
     cell->data = NULL;
+
+    cep_cell_shadow_mark_target_dead(cell, cep_cell_is_deleted(cell));
 }
 
 static inline void cep_cell_delete_store(cepCell* cell) {
@@ -825,6 +839,8 @@ static inline void cep_cell_delete_store(cepCell* cell) {
         cell->store->deleted = cep_cell_timestamp();
 
     cell->store->writable = false;
+
+    cep_cell_shadow_mark_target_dead(cell, cep_cell_is_deleted(cell));
 }
 
 static inline void cep_cell_delete_store_hard(cepCell* cell) {
@@ -834,6 +850,8 @@ static inline void cep_cell_delete_store_hard(cepCell* cell) {
     cep_cell_delete_store(cell);
     cep_store_del(cell->store);
     cell->store = NULL;
+
+    cep_cell_shadow_mark_target_dead(cell, cep_cell_is_deleted(cell));
 }
 
 static inline void cep_cell_delete(cepCell* cell);
@@ -868,6 +886,8 @@ static inline void cep_cell_delete(cepCell* cell) {
         cep_cell_delete_children(cell);
         cep_cell_delete_store(cell);
     }
+
+    cep_cell_shadow_mark_target_dead(cell, cep_cell_is_deleted(cell));
 }
 
 static inline void cep_cell_delete_hard(cepCell* cell) {
