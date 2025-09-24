@@ -140,6 +140,8 @@ static void test_wordacron_coding(void) {
 
 
 MunitResult test_wordacron(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)user_data_or_fixture;
+
     const char* param_value = munit_parameters_get(params, "text");
     if (param_value) {
         return test_wordacron_text(param_value);
@@ -149,4 +151,3 @@ MunitResult test_wordacron(const MunitParameter params[], void* user_data_or_fix
 
     return MUNIT_OK;
 }
-

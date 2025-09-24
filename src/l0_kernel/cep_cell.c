@@ -45,6 +45,16 @@ struct _cepStoreHistory {
 };
 
 
+
+
+
+static inline int cell_compare_by_name(const cepCell* restrict key, const cepCell* restrict rec, void* unused) {
+    (void)unused;
+
+    return cep_dt_compare(CEP_DT(key), CEP_DT(rec));
+}
+
+
 static cepStoreHistory*     cep_store_history_snapshot(const cepStore* store, const cepStoreHistory* previous);
 static void                 cep_store_history_free(cepStoreHistory* history);
 static void                 cep_store_history_push(cepStore* store);
@@ -162,34 +172,6 @@ unsigned MAX_DEPTH = CEP_MAX_FAST_STACK_DEPTH;     // FixMe: (used by path/trave
 
 
 
-static inline int cell_compare_by_name(const cepCell* restrict key, const cepCell* restrict rec, void* unused) {
-    return cep_dt_compare(CEP_DT(key), CEP_DT(rec));
-}
-
-
-
-
-cepOpCount  CEP_OP_COUNT;
-
-
-/*
- * Advances the global cell operation timestamp, incrementing CEP_OP_COUNT while
- * skipping zero so history tracking always remains unambiguous.
- */
-cepOpCount cep_cell_timestamp_next(void) {
-    cepOpCount next = ++CEP_OP_COUNT;
-    if (!next)
-        next = ++CEP_OP_COUNT;   // Avoid 0 as a valid timestamp.
-    return next;
-}
-
-/*
- * Resets the global cell operation counter so the next operation count sequence
- * can restart cleanly.
- */
-void cep_cell_timestamp_reset(void) {
-    CEP_OP_COUNT = 0;
-}
 
 
 static void cep_data_history_push(cepData* data) {
@@ -236,43 +218,6 @@ static void cep_data_history_clear(cepData* data) {
  * CEP Layer 0: Cells                          *
  *                                             *
  ***********************************************/
-
-
-cepCell CEP_ROOT;   // The root cell.
-
-
-/* Bootstrap the root cell hierarchy. Ensure every CEP run starts from a 
-   consistent canonical root container.
-*/
-void cep_cell_system_initiate(void) {
-    cep_cell_timestamp_reset();
-
-    cep_cell_initialize_dictionary(   &CEP_ROOT,                      // Cell.
-                                      CEP_DTAA("CEP", "/"),           // Name.
-                                      CEP_DTAW("CEP", "dictionary"),  // Type.
-                                      CEP_STORAGE_RED_BLACK_T );      // The root dictionary is the same as "/" in text paths.
-}
-
-
-/* Leave the kernel in a clean state when applications terminate.
-*/
-void cep_cell_system_shutdown(void) {
-    cep_cell_finalize(&CEP_ROOT);
-    CEP_0(&CEP_ROOT);
-}
-
-
-bool cep_cell_system_initialized(void) {
-    return !cep_cell_is_void(&CEP_ROOT);
-}
-
-
-void cep_cell_system_ensure(void) {
-    if (!cep_cell_system_initialized()) {
-        cep_cell_system_initiate();
-    }
-}
-
 
 
 /* Allocate and initialise a cepData payload for a cell. Select the proper 
@@ -2284,6 +2229,7 @@ void cep_cell_transfer(cepCell* src, cepCell* dst)
 */
 void cep_cell_initialize_clone(cepCell* clone, cepDT* name, cepCell* cell) {
     assert(clone && cep_cell_is_normal(cell));
+    (void)name;
 
     assert(!cep_cell_has_data(cell) && !cep_cell_has_store(cell));
 

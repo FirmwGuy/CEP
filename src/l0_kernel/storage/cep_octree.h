@@ -297,6 +297,8 @@ static inline cepCell* octree_find_by_name(cepOctree* octree, const cepDT* name)
 
 
 static inline cepCell* octree_find_by_key(cepOctree* octree, cepCell* key, cepCompare compare, void* context) {
+    (void)context;
+
     cepEntry entry = {0};
     if (!octree_traverse(octree, (cepFunc) compare, key, &entry))
         return entry.cell;
@@ -497,4 +499,3 @@ static inline void octree_del_all_children(cepOctree* octree) {
 
     octree->depth = 1;
 }
-

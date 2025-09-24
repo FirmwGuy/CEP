@@ -51,6 +51,9 @@ endif
 # Core library sources (heartbeat/enzymes are stubs for now but compiled in)
 l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
+  'src/l0_kernel/cep_cell_system.c',
+  'src/l0_kernel/cep_enzyme_bindings.c',
+  'src/l0_kernel/cep_heartbeat_queue.c',
   'src/l0_kernel/cep_enzyme.c',
   'src/l0_kernel/cep_heartbeat.c',
 )

@@ -48,6 +48,8 @@ static void test_cell_print(cepCell* cell, char *sval) {
 }
 
 static bool print_values(cepEntry* entry, void* unused) {
+    (void)unused;
+
     assert_not_null(entry->cell);
     char this[16], prev[16], next[16];
     test_cell_print(entry->cell, this);
@@ -402,6 +404,8 @@ cepCell* tech_catalog_create_structure(cepID name, int32_t value) {
 }
 
 int tech_catalog_compare(const cepCell* key, const cepCell* cell, void* unused) {
+    (void)unused;
+
     cepCell* itemK = cep_cell_find_by_name(key, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
     cepCell* itemB = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
     assert(itemK && itemB);
@@ -694,6 +698,8 @@ static void test_cell_tech_sequencing_catalog(void) {
 
 
 MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+
     TestWatchdog* watchdog = user_data_or_fixture;
     (void)watchdog;
 
