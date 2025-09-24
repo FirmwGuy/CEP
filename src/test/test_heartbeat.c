@@ -322,6 +322,252 @@ static MunitResult test_heartbeat_binding_tombstone(void) {
 }
 
 
+static MunitResult test_heartbeat_binding_no_propagation(void) {
+    cep_heartbeat_shutdown();
+    heartbeat_runtime_start();
+
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
+    const cepDT seg_root = *CEP_DTAA("TST", "NOP");
+    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT path_segments[] = { seg_root, seg_leaf };
+
+    CepHeartbeatPathBuf target_buf = {0};
+    cepCell* leaf_cell = NULL;
+    const cepPath* target_path = create_binding_path(path_segments, cep_lengthof(path_segments), &target_buf, &type_dictionary, &leaf_cell);
+    munit_assert_not_null(leaf_cell);
+
+    const cepDT enzyme_name = *CEP_DTAA("EZ", "NOP");
+    cepEnzymeDescriptor descriptor = {
+        .name   = enzyme_name,
+        .label  = "binding-no-propagate",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = heartbeat_binding_enzyme,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    const cepDT seg_sig_root = *CEP_DTAA("SIG", "NOP");
+    const cepDT signal_segments[] = { seg_sig_root };
+    CepHeartbeatPathBuf signal_buf = {0};
+    const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
+
+    heartbeat_binding_calls = 0;
+
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &descriptor), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+
+    cepCell* root_cell = cep_cell_parent(leaf_cell);
+    munit_assert_not_null(root_cell);
+    munit_assert_int(cep_cell_bind_enzyme(root_cell, &enzyme_name, false), ==, CEP_ENZYME_SUCCESS);
+
+    cepImpulse impulse = {
+        .signal_path = signal_path,
+        .target_path = target_path,
+    };
+
+    munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_true(cep_heartbeat_stage_commit());
+    munit_assert_true(cep_heartbeat_process_impulses());
+    munit_assert_int(heartbeat_binding_calls, ==, 0);
+
+    cep_heartbeat_shutdown();
+    return MUNIT_OK;
+}
+
+static MunitResult test_heartbeat_binding_union_chain(void) {
+    cep_heartbeat_shutdown();
+    heartbeat_runtime_start();
+
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
+    const cepDT seg_root = *CEP_DTAA("TST", "TREE");
+    const cepDT seg_mid  = *CEP_DTAA("TST", "BRANCH");
+    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT path_segments[] = { seg_root, seg_mid, seg_leaf };
+
+    CepHeartbeatPathBuf target_buf = {0};
+    cepCell* leaf_cell = NULL;
+    const cepPath* target_path = create_binding_path(path_segments, cep_lengthof(path_segments), &target_buf, &type_dictionary, &leaf_cell);
+    munit_assert_not_null(leaf_cell);
+
+    cepCell* mid_cell = cep_cell_parent(leaf_cell);
+    munit_assert_not_null(mid_cell);
+    cepCell* root_cell = cep_cell_parent(mid_cell);
+    munit_assert_not_null(root_cell);
+
+    const cepDT enzyme_root = *CEP_DTAA("EZ", "ROOT");
+    const cepDT enzyme_mid  = *CEP_DTAA("EZ", "MID");
+    const cepDT enzyme_leaf = *CEP_DTAA("EZ", "LEAF");
+
+    const cepDT seg_sig_root = *CEP_DTAA("SIG", "TREE");
+    const cepDT signal_segments[] = { seg_sig_root };
+    CepHeartbeatPathBuf signal_buf = {0};
+    const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
+
+    heartbeat_binding_calls = 0;
+
+    cepEnzymeDescriptor desc_root = {
+        .name   = enzyme_root,
+        .label  = "binding-union-root",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = heartbeat_binding_enzyme,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+    cepEnzymeDescriptor desc_mid = desc_root;
+    desc_mid.name = enzyme_mid;
+    desc_mid.label = "binding-union-mid";
+    cepEnzymeDescriptor desc_leaf = desc_root;
+    desc_leaf.name = enzyme_leaf;
+    desc_leaf.label = "binding-union-leaf";
+
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &desc_root), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &desc_mid), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &desc_leaf), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+
+    munit_assert_int(cep_cell_bind_enzyme(root_cell, &enzyme_root, true), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_cell_bind_enzyme(mid_cell,  &enzyme_mid,  true), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_cell_bind_enzyme(leaf_cell, &enzyme_leaf, false), ==, CEP_ENZYME_SUCCESS);
+
+    cepImpulse impulse = {
+        .signal_path = signal_path,
+        .target_path = target_path,
+    };
+
+    munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_true(cep_heartbeat_stage_commit());
+    munit_assert_true(cep_heartbeat_process_impulses());
+    munit_assert_int(heartbeat_binding_calls, ==, 3);
+
+    cep_heartbeat_shutdown();
+    return MUNIT_OK;
+}
+
+static MunitResult test_heartbeat_binding_duplicate_mask(void) {
+    cep_heartbeat_shutdown();
+    heartbeat_runtime_start();
+
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
+    const cepDT seg_root = *CEP_DTAA("TST", "DEDUP");
+    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT path_segments[] = { seg_root, seg_leaf };
+
+    CepHeartbeatPathBuf target_buf = {0};
+    cepCell* leaf_cell = NULL;
+    const cepPath* target_path = create_binding_path(path_segments, cep_lengthof(path_segments), &target_buf, &type_dictionary, &leaf_cell);
+    munit_assert_not_null(leaf_cell);
+
+    const cepDT enzyme_name = *CEP_DTAA("EZ", "DUPE");
+    cepEnzymeDescriptor descriptor = {
+        .name   = enzyme_name,
+        .label  = "binding-duplicate",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = heartbeat_binding_enzyme,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    const cepDT seg_sig_root = *CEP_DTAA("SIG", "DEDUP");
+    const cepDT signal_segments[] = { seg_sig_root };
+    CepHeartbeatPathBuf signal_buf = {0};
+    const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
+
+    heartbeat_binding_calls = 0;
+
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &descriptor), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+
+    cepCell* root_cell = cep_cell_parent(leaf_cell);
+    munit_assert_not_null(root_cell);
+    munit_assert_int(cep_cell_bind_enzyme(root_cell, &enzyme_name, true), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_cell_bind_enzyme(leaf_cell, &enzyme_name, false), ==, CEP_ENZYME_SUCCESS);
+
+    cepImpulse impulse = {
+        .signal_path = signal_path,
+        .target_path = target_path,
+    };
+
+    munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_true(cep_heartbeat_stage_commit());
+    munit_assert_true(cep_heartbeat_process_impulses());
+    munit_assert_int(heartbeat_binding_calls, ==, 1);
+
+    cep_heartbeat_shutdown();
+    return MUNIT_OK;
+}
+
+static MunitResult test_heartbeat_target_requires_binding(void) {
+    cep_heartbeat_shutdown();
+    heartbeat_runtime_start();
+
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
+    const cepDT seg_root = *CEP_DTAA("TST", "EMPTY");
+    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT path_segments[] = { seg_root, seg_leaf };
+
+    CepHeartbeatPathBuf target_buf = {0};
+    cepCell* leaf_cell = NULL;
+    const cepPath* target_path = create_binding_path(path_segments, cep_lengthof(path_segments), &target_buf, &type_dictionary, &leaf_cell);
+    munit_assert_not_null(leaf_cell);
+
+    const cepDT enzyme_name = *CEP_DTAA("EZ", "SILENT");
+    cepEnzymeDescriptor descriptor = {
+        .name   = enzyme_name,
+        .label  = "binding-silent",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = heartbeat_binding_enzyme,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    const cepDT seg_sig_root = *CEP_DTAA("SIG", "EMPTY");
+    const cepDT signal_segments[] = { seg_sig_root };
+    CepHeartbeatPathBuf signal_buf = {0};
+    const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
+
+    heartbeat_binding_calls = 0;
+
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &descriptor), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+
+    cepImpulse impulse = {
+        .signal_path = signal_path,
+        .target_path = target_path,
+    };
+
+    munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_true(cep_heartbeat_stage_commit());
+    munit_assert_true(cep_heartbeat_process_impulses());
+    munit_assert_int(heartbeat_binding_calls, ==, 0);
+
+    cep_heartbeat_shutdown();
+    return MUNIT_OK;
+}
+
 static MunitResult test_heartbeat_binding_signal_filter(void) {
     cep_heartbeat_shutdown();
     heartbeat_runtime_start();
@@ -455,6 +701,26 @@ MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fix
     }
 
     result = test_heartbeat_binding_tombstone();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_heartbeat_binding_no_propagation();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_heartbeat_binding_union_chain();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_heartbeat_binding_duplicate_mask();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_heartbeat_target_requires_binding();
     if (result != MUNIT_OK) {
         return result;
     }

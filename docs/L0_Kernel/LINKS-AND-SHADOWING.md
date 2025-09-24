@@ -29,6 +29,10 @@ Technical Overview
   - Update: changing a link’s target first removes its backlink from the previous target (if any), then adds it to the new target.
   - Remove: deleting a link removes its backlink from the target. Deleting a still‑shadowed target is prevented by invariant checks.
 
+
+- Tombstones and `targetDead`
+  - When a target cell transitions to a tombstone state (soft delete), every shadow entry updates the linking cell’s `targetDead` flag so callers can see that their shortcut points at deleted content.
+  - Clearing a tombstone (or retargeting a link) clears the flag. Hard deletes remain forbidden while backlinks exist—the flag is only advisory; the invariant that a finalised cell has no shadows still holds.
 - Graph semantics
   - The base hierarchy remains tree‑like by parent/child relations. Links introduce additional edges from link cells to their targets, forming a directed acyclic graph in normal use (cycles are disallowed by policy).
   - Policy notes:

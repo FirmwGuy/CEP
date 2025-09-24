@@ -90,6 +90,14 @@ Expected relative throughput
   - Hybrid (defaulting to Target‑First): ≈ Current.
   - Cell‑Bound + Signal Index: 2–5× faster resolve path than Current at the stated scale, especially when impulses cluster by subtree. Gains compound with resolve‑buffer reuse (1.5–3×) for an overall 3–10× improvement on resolve cost.
 
+Verification
+- Automated coverage: the heartbeat suite exercises each binding rule (tests in `src/test/test_heartbeat.c` such as `test_heartbeat_binding_propagation`, `_no_propagation`, `_union_chain`, `_duplicate_mask`, `_binding_signal_filter`, and `_target_requires_binding`).
+- Propagation scope: parent bindings marked propagate apply to descendants; bindings without propagate stay local.
+- Tombstones mask inheritance: tombstoning a child binding hides the ancestor binding of the same name.
+- Union and deduplication: the resolver unions ancestor and child bindings, running each unique enzyme at most once per impulse.
+- Target + signal intersection: impulses with both target and signal fire only the leaf intersection—no fallback to signal-only when the target set is empty.
+- Broadcast-only impulses remain supported by omitting a target; they still flow through the signal index.
+
 Notes and safeguards
 - Memory: per‑cell bindings add small overhead; inheritance and de‑dup keep it modest. Consider interning small fixed vectors to share common binding sets.
 - Unbind/inheritance: support a tombstone to cancel a parent binding at a child when needed.

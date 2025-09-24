@@ -49,7 +49,7 @@ extern cepCell* tech_catalog_create_structure(cepID name, int32_t value);
 extern int      tech_catalog_compare(const cepCell* key, const cepCell* cell, void* unused);
 
 
-#define TEST_TIMEOUT_SECONDS  60u
+#define TEST_TIMEOUT_SECONDS  20u
 
 static unsigned resolve_timeout_seconds(const MunitParameter params[], unsigned fallback);
 
