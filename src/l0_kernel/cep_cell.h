@@ -437,6 +437,102 @@ enum _cepDataType {
     CEP_DATATYPE_COUNT
 };
 
+static inline uint64_t cep_hash_bytes(const void* data, size_t size) {
+    if (!data || !size)
+        return 0;
+
+    const uint8_t* bytes = data;
+    uint64_t hash = 1469598103934665603ULL;  // FNV-1a offset basis.
+    for (size_t i = 0; i < size; i++) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;            // FNV-1a prime.
+    }
+    return hash;
+}
+
+static inline const void* cep_data_payload(const cepData* data) {
+    assert(data);
+
+    switch (data->datatype) {
+      case CEP_DATATYPE_VALUE:
+        return data->value;
+
+      case CEP_DATATYPE_DATA:
+        return data->data;
+
+      case CEP_DATATYPE_HANDLE:
+      case CEP_DATATYPE_STREAM:
+        break;
+    }
+
+    return NULL;
+}
+
+static inline bool cep_data_equals_bytes(const cepData* data, const void* bytes, size_t size) {
+    assert(data);
+
+    if (data->size != size)
+        return false;
+
+    if (!size)
+        return true;
+
+    const void* payload = cep_data_payload(data);
+    if (!payload || !bytes)
+        return false;
+
+    return memcmp(payload, bytes, size) == 0;
+}
+
+static inline uint64_t cep_data_compute_hash(const cepData* data) {
+    assert(data);
+
+    switch (data->datatype) {
+      case CEP_DATATYPE_VALUE:
+      case CEP_DATATYPE_DATA:
+        return cep_hash_bytes(cep_data_payload(data), data->size);
+
+      case CEP_DATATYPE_HANDLE:
+      case CEP_DATATYPE_STREAM: {
+        uint64_t hash = 0;
+        hash ^= cep_hash_bytes(&data->handle, sizeof data->handle);
+        hash ^= cep_hash_bytes(&data->library, sizeof data->library);
+        return hash;
+      }
+    }
+
+    return 0;
+}
+
+typedef struct {
+    void*       address;        // Backing memory exposed to the caller.
+    size_t      length;         // Span length mapped into the caller's address space.
+    uint64_t    offset;         // Stream offset associated with the view.
+    unsigned    access;         // Access flags requested for the view.
+    void*       token;          // Library or kernel specific handle to release resources.
+} cepStreamView;
+
+enum {
+    CEP_STREAM_ACCESS_READ   = 1u << 0,
+    CEP_STREAM_ACCESS_WRITE  = 1u << 1,
+};
+
+typedef struct cepLibraryBinding cepLibraryBinding;
+
+typedef struct {
+    bool (*handle_retain)(const cepLibraryBinding* binding, cepCell* handle);
+    void (*handle_release)(const cepLibraryBinding* binding, cepCell* handle);
+    bool (*stream_read)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, void* dst, size_t size, size_t* out_read);
+    bool (*stream_write)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, const void* src, size_t size, size_t* out_written);
+    bool (*stream_map)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, size_t size, unsigned access, cepStreamView* view);
+    bool (*stream_unmap)(const cepLibraryBinding* binding, cepCell* stream, cepStreamView* view, bool commit);
+} cepLibraryOps;
+
+struct cepLibraryBinding {
+    const cepLibraryOps* ops;   // Adapter vtable registered by the foreign library.
+    void*                ctx;   // Library defined context passed back on every invocation.
+};
+
 
 cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
                         void** dataloc, void* value, ...  );
@@ -444,6 +540,18 @@ void     cep_data_del(cepData* data);
 void*    cep_data(const cepData* data);
 #define  cep_data_valid(d)                             ((d) && (d)->capacity && cep_dt_valid(&(d)->_dt))
 #define  cep_data_new_value(dt, value, z)              ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, _z, _z);})
+void  cep_data_history_push(cepData* data);
+void  cep_data_history_clear(cepData* data);
+
+void  cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* ops, void* context);
+const cepLibraryBinding* cep_library_binding(const cepCell* library);
+void* cep_library_context(const cepCell* library);
+void  cep_library_set_context(cepCell* library, void* context);
+
+bool  cep_cell_stream_read(cepCell* cell, uint64_t offset, void* dst, size_t size, size_t* out_read);
+bool  cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size_t size, size_t* out_written);
+bool  cep_cell_stream_map(cepCell* cell, uint64_t offset, size_t size, unsigned access, cepStreamView* view);
+bool  cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit);
 
 
 /*

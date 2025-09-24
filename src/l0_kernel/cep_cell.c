@@ -90,79 +90,6 @@ static void cep_enzyme_binding_list_destroy(cepEnzymeBinding* bindings) {
 static void cep_shadow_break_all(cepCell* target);
 static void cep_shadow_rebind_links(cepCell* target);
 
-static inline uint64_t cep_hash_bytes(const void* data, size_t size) {
-    if (!data || !size)
-        return 0;
-
-    const uint8_t* bytes = data;
-    uint64_t hash = 1469598103934665603ULL;          // FNV-1a offset basis.
-    for (size_t i = 0; i < size; i++) {
-        hash ^= bytes[i];
-        hash *= 1099511628211ULL;                    // FNV-1a prime.
-    }
-    return hash;
-}
-
-
-static inline const void* cep_data_payload(const cepData* data) {
-    assert(data);
-
-    switch (data->datatype) {
-      case CEP_DATATYPE_VALUE:
-        return data->value;
-
-      case CEP_DATATYPE_DATA:
-        return data->data;
-
-      case CEP_DATATYPE_HANDLE:
-      case CEP_DATATYPE_STREAM:
-        break;
-    }
-
-    return NULL;
-}
-
-
-static inline bool cep_data_equals_bytes(const cepData* data, const void* bytes, size_t size) {
-    assert(data);
-
-    if (data->size != size)
-        return false;
-
-    if (!size)
-        return true;
-
-    const void* payload = cep_data_payload(data);
-    if (!payload || !bytes)
-        return false;
-
-    return memcmp(payload, bytes, size) == 0;
-}
-
-
-static inline uint64_t cep_data_compute_hash(const cepData* data) {
-    assert(data);
-
-    switch (data->datatype) {
-      case CEP_DATATYPE_VALUE:
-      case CEP_DATATYPE_DATA:
-        return cep_hash_bytes(cep_data_payload(data), data->size);
-
-      case CEP_DATATYPE_HANDLE:
-      case CEP_DATATYPE_STREAM: {
-        uint64_t hash = 0;
-        hash ^= cep_hash_bytes(&data->handle, sizeof data->handle);
-        hash ^= cep_hash_bytes(&data->library, sizeof data->library);
-        return hash;
-      }
-    }
-
-    return 0;
-}
-
-
-
-
 #define CEP_MAX_FAST_STACK_DEPTH  16
 
 unsigned MAX_DEPTH = CEP_MAX_FAST_STACK_DEPTH;     // FixMe: (used by path/traverse) better policy than a global for this.
@@ -174,7 +101,7 @@ unsigned MAX_DEPTH = CEP_MAX_FAST_STACK_DEPTH;     // FixMe: (used by path/trave
 
 
 
-static void cep_data_history_push(cepData* data) {
+void cep_data_history_push(cepData* data) {
     assert(data);
 
     if (!data->modified)
@@ -187,7 +114,7 @@ static void cep_data_history_push(cepData* data) {
     data->past = past;
 }
 
-static void cep_data_history_clear(cepData* data) {
+void cep_data_history_clear(cepData* data) {
     if (!data)
         return;
 
@@ -299,6 +226,10 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
         data->handle  = handle;
         data->library = library;
 
+        const cepLibraryBinding* binding = cep_library_binding(library);
+        if (binding && binding->ops && binding->ops->handle_retain)
+            binding->ops->handle_retain(binding, handle);
+
         address = cep_cell_data(handle);
         break;
       }
@@ -312,6 +243,10 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
 
         data->stream  = stream;
         data->library = library;
+
+        const cepLibraryBinding* binding = cep_library_binding(library);
+        if (binding && binding->ops && binding->ops->handle_retain)
+            binding->ops->handle_retain(binding, stream);
 
         address = cep_cell_data(stream);
         break;
@@ -352,7 +287,14 @@ void cep_data_del(cepData* data) {
       }
       case CEP_DATATYPE_HANDLE:
       case CEP_DATATYPE_STREAM: {
-        // ToDo: unref handle?
+        if (data->library) {
+            const cepLibraryBinding* binding = cep_library_binding(data->library);
+            if (binding && binding->ops && binding->ops->handle_release) {
+                cepCell* resource = (data->datatype == CEP_DATATYPE_HANDLE)? data->handle: data->stream;
+                if (resource)
+                    binding->ops->handle_release(binding, resource);
+            }
+        }
         break;
       }
     }
@@ -2464,6 +2406,8 @@ void* cep_cell_update_hard(cepCell* cell, size_t size, size_t capacity, void* va
 
     return cep_data_update(data, size, capacity, value, swap);
 }
+
+
 
 
 

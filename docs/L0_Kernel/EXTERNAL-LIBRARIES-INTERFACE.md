@@ -26,10 +26,11 @@ In short: use a handle when you mean “that external thing,” use a snapshot w
 ### Core Principles
 
 - Opaqueness at the boundary: CEP never dereferences foreign struct fields directly. It calls adapter functions owned by the library integration.
-- Replay first: Decisions depend on bytes CEP can hash. If you read from a foreign structure, either provide a stable view (zero‑copy) or take a snapshot into CEP data.
+- Replay first: Decisions depend on bytes CEP can hash. If you read from a foreign structure, either provide a stable view (zero-copy) or take a snapshot into CEP data.
 - Identity vs content: A handle identifies a resource; a snapshot represents its content. Equality of handles is identity; equality of snapshots is bytewise.
 - Heartbeat discipline: Reads/writes stage within a beat and become visible at N+1. Borrowed views must not outlive their beat.
 - Preconditions: Mutations against foreign resources require version checks (hash/ETag/sequence). Mismatch records a divergence instead of silently merging.
+- Binding lifecycle: use `cep_library_initialize(...)` to register the adapter vtable and opaque context. L0 will invoke `handle_retain/release` around HANDLE/STREAM payload lifetime so adapters can refcount or pin resources.
 
 ### Representations at L0
 
@@ -51,15 +52,17 @@ Each integrated library provides an adapter with a small, explicit vtable. Typic
 - Lifetime and ownership
   - Create/destroy handles; pin/unpin external memory; reference counting if available.
   - Guarantee that borrowed views remain valid at least for the current heartbeat.
+  - Provide `handle_retain/release` hooks in the vtable so L0 can respect adapter ownership rules when HANDLE/STREAM cells are created or destroyed.
 
 - Tagged accessors (by cepDT; no raw field peeking)
-  - Read‑only getters that return CEP snapshots (VALUE/DATA) or stream windows.
+  - Read-only getters that return CEP snapshots (VALUE/DATA) or stream windows.
   - Enumerators that yield items as snapshots or handles with their own accessors.
   - Optional debug serializers that expose a safe, stable description for logs.
 
 - Mutations with preconditions
   - Methods accept expected version/ETag/hash; adapter checks and applies, returning outcomes for journaling.
   - Expose idempotency keys where the foreign system supports them.
+  - Implement `stream_read/write/map/unmap` callbacks so `cep_cell_stream_*` can journal I/O while the adapter enforces foreign invariants.
 
 - Threading and scheduling
   - Document thread safety. If the library is not thread‑safe, serialize through the adapter.
