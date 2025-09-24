@@ -20,7 +20,6 @@ typedef struct {
 
 static const cepLibraryBinding* cep_library_binding_const(const cepCell* library);
 static cepLibraryBinding*       cep_library_binding_mut(cepCell* library);
-void                             cep_stream_journal(cepCell* owner, unsigned flags, uint64_t offset, size_t requested, size_t actual, uint64_t hash);
 
 
 /* Seed a library cell with an adapter binding so HANDLE/STREAM payloads can
@@ -285,17 +284,17 @@ bool cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size
 
       case CEP_DATATYPE_HANDLE:
       case CEP_DATATYPE_STREAM: {
-        const cepLibraryBinding* binding = data->library? cep_library_binding(data->library): NULL;
-        if (!binding || !binding->ops || !binding->ops->stream_write)
-            break;
-
         cepCell* resource = (data->datatype == CEP_DATATYPE_HANDLE)? data->handle: data->stream;
         if (!resource)
             break;
 
-        ok = binding->ops->stream_write(binding, resource, offset, src, size, &actual);
-        hash = (ok && actual)? cep_hash_bytes(src, actual): 0;
-        break;
+        uint64_t expected_hash = 0; /* Placeholder: adapters may supply divergence preconditions. */
+        if (!cep_stream_stage_write(cell, data->library, resource, offset, src, size, expected_hash))
+            break;
+
+        if (out_written)
+            *out_written = size;
+        return true;
       }
 
       default:

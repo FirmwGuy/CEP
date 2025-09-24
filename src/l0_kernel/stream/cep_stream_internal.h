@@ -14,7 +14,51 @@ enum {
     CEP_STREAM_JOURNAL_COMMIT = 1u << 3,
 };
 
+typedef struct cepStreamWriteIntent cepStreamWriteIntent;
+
+typedef struct {
+    uint64_t offset;
+    uint64_t requested;
+    uint64_t actual;
+    uint64_t payload_hash;
+    uint64_t expected_hash;
+    uint64_t idempotency_key;
+    uint64_t staged_at;
+    uint32_t flags;
+    uint32_t reserved;
+} cepStreamIntentEntry;
+
+typedef struct {
+    uint64_t offset;
+    uint64_t length;
+    uint64_t payload_hash;
+    uint64_t expected_hash;
+    uint64_t resulting_hash;
+    uint64_t idempotency_key;
+    uint64_t committed_at;
+    uint32_t flags;
+    uint32_t reserved;
+} cepStreamOutcomeEntry;
+
+enum {
+    CEP_STREAM_INTENT_PENDING   = 1u << 0,
+    CEP_STREAM_INTENT_COMMITTED = 1u << 1,
+    CEP_STREAM_INTENT_DIVERGED  = 1u << 2,
+};
+
 void cep_stream_journal(cepCell* owner, unsigned flags, uint64_t offset, size_t requested, size_t actual, uint64_t hash);
+
+bool cep_stream_stage_write(cepCell* owner,
+                            cepCell* library,
+                            cepCell* resource,
+                            uint64_t offset,
+                            const void* payload,
+                            size_t size,
+                            uint64_t expected_hash);
+
+bool cep_stream_commit_pending(void);
+void cep_stream_clear_pending(void);
+size_t cep_stream_pending_count(void);
 
 #ifdef __cplusplus
 }

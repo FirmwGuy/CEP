@@ -6,6 +6,7 @@
 
 #include "test.h"
 #include "stream/cep_stream_stdio.h"
+#include "stream/cep_stream_internal.h"
 
 #include <stdio.h>
 
@@ -45,6 +46,8 @@ MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_
     written = 0;
     assert_true(cep_cell_stream_write(&stream, strlen(greeting), noun, strlen(noun), &written));
     assert_size(written, ==, strlen(noun));
+
+    assert_true(cep_stream_commit_pending());
 
     char buffer[32] = {0};
     size_t read = 0;

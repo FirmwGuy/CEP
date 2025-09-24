@@ -25,6 +25,7 @@
 
 #include "cep_heartbeat.h"
 #include "cep_heartbeat_internal.h"
+#include "stream/cep_stream_internal.h"
 
 #include <string.h>
 #include <stdint.h>
@@ -539,6 +540,9 @@ bool cep_heartbeat_stage_commit(void) {
     if (!CEP_RUNTIME.running) {
         return false;
     }
+
+    if (!cep_stream_commit_pending())
+        return false;
 
     cep_heartbeat_impulse_queue_swap(&CEP_RUNTIME.inbox_current, &CEP_RUNTIME.inbox_next);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
