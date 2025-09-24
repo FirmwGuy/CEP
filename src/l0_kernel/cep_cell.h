@@ -540,8 +540,8 @@ void     cep_data_del(cepData* data);
 void*    cep_data(const cepData* data);
 #define  cep_data_valid(d)                             ((d) && (d)->capacity && cep_dt_valid(&(d)->_dt))
 #define  cep_data_new_value(dt, value, z)              ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, _z, _z);})
-void  cep_data_history_push(cepData* data);
-void  cep_data_history_clear(cepData* data);
+void     cep_data_history_push(cepData* data);
+void     cep_data_history_clear(cepData* data);
 
 void  cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* ops, void* context);
 const cepLibraryBinding* cep_library_binding(const cepCell* library);

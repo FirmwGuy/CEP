@@ -81,6 +81,14 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         timeout_params
     },
+    {
+        "/stream/stdio",
+        test_stream_stdio,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
 
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL}  // EOL
 };

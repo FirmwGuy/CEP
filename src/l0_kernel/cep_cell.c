@@ -225,6 +225,8 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
 
         data->handle  = handle;
         data->library = library;
+        data->capacity = 1;
+        data->size = 0;
 
         const cepLibraryBinding* binding = cep_library_binding(library);
         if (binding && binding->ops && binding->ops->handle_retain)
@@ -243,6 +245,8 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
 
         data->stream  = stream;
         data->library = library;
+        data->capacity = 1;
+        data->size = 0;
 
         const cepLibraryBinding* binding = cep_library_binding(library);
         if (binding && binding->ops && binding->ops->handle_retain)

@@ -53,6 +53,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
   'src/l0_kernel/cep_cell_stream.c',
   'src/l0_kernel/cep_cell_system.c',
+  'src/l0_kernel/stream/cep_stream_stdio.c',
   'src/l0_kernel/cep_enzyme_bindings.c',
   'src/l0_kernel/cep_heartbeat_queue.c',
   'src/l0_kernel/cep_enzyme.c',
@@ -88,6 +89,7 @@ if get_option('tests').enabled()
     'src/test/test_wordacron.c',
     'src/test/test_enzyme.c',
     'src/test/test_heartbeat.c',
+    'src/test/test_stream.c',
   )
   exe = executable('cep_tests', test_srcs,
     c_args: exe_cargs,

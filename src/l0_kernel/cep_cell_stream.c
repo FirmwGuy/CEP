@@ -5,6 +5,9 @@
  */
 
 #include "cep_cell.h"
+#include "stream/cep_stream_internal.h"
+
+
 
 typedef struct {
     uint64_t    offset;
@@ -15,16 +18,9 @@ typedef struct {
     uint32_t    reserved;
 } cepStreamJournalEntry;
 
-enum {
-    CEP_STREAM_JOURNAL_READ   = 1u << 0,
-    CEP_STREAM_JOURNAL_WRITE  = 1u << 1,
-    CEP_STREAM_JOURNAL_ERROR  = 1u << 2,
-    CEP_STREAM_JOURNAL_COMMIT = 1u << 3,
-};
-
 static const cepLibraryBinding* cep_library_binding_const(const cepCell* library);
 static cepLibraryBinding*       cep_library_binding_mut(cepCell* library);
-static void                     cep_stream_journal(cepCell* owner, unsigned flags, uint64_t offset, size_t requested, size_t actual, uint64_t hash);
+void                             cep_stream_journal(cepCell* owner, unsigned flags, uint64_t offset, size_t requested, size_t actual, uint64_t hash);
 
 
 /* Seed a library cell with an adapter binding so HANDLE/STREAM payloads can
@@ -97,7 +93,7 @@ static cepLibraryBinding* cep_library_binding_mut(cepCell* library) {
 }
 
 
-static void cep_stream_journal(cepCell* owner, unsigned flags, uint64_t offset, size_t requested, size_t actual, uint64_t hash) {
+void cep_stream_journal(cepCell* owner, unsigned flags, uint64_t offset, size_t requested, size_t actual, uint64_t hash) {
     assert(owner);
 
     owner = cep_link_pull(owner);
@@ -496,4 +492,3 @@ bool cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit) {
 
     return ok;
 }
-
