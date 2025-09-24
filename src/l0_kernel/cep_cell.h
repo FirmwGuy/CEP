@@ -469,7 +469,7 @@ struct _cepStoreNode {
     cepStoreNode*   past;       // Points to the previous store index in history (only used if catalog is re-sorted/indexed with different sorting function).
 
     cepEnzymeBinding* bindings; // List of enzyme bindings.
-    
+
     size_t          chdCount;   // Number of child cells.
     size_t          totCount;   // Number of all cells included dead ones.
     cepCompare      compare;    // Compare function for indexing children.
@@ -657,20 +657,11 @@ static inline cepID cep_cell_get_autoid(const cepCell* cell)            {assert(
 
 static inline void cep_cell_relink_storage(cepCell* cell)     {assert(cep_cell_has_store(cell));  cell->store->owner = cell;}     // Re-links cell with its own children storage.
 
-static inline void cep_cell_transfer(cepCell* src, cepCell* dst) {
-    assert(!cep_cell_is_void(src) && dst);
-
-    *dst = *src;
-
-    if (!cep_cell_is_link(dst) && dst->store) {
-        dst->store->owner = dst;
-
-        if (dst->store->chdCount)
-            cep_cell_relink_storage(dst);
-    }
-
-    // ToDo: relink self list.
-}
+/* Move the state from one cell into another, preserving store ownership and
+   link shadow bookkeeping so references continue to point at the relocated
+   cell without breaking backlink invariants. The transfer keeps parent and
+   shadow metadata coherent so callers can treat the move as an atomic swap. */
+void cep_cell_transfer(cepCell* src, cepCell* dst);
 
 static inline void cep_cell_replace(cepCell* oldr, cepCell* newr) {
     cep_cell_finalize(oldr);
@@ -686,27 +677,24 @@ static inline cepOpCount cep_cell_timestamp(void)  {extern cepOpCount CEP_OP_COU
 
 
 // Links
-static inline void cep_link_set(cepCell* link, cepCell* target) {
-    assert(link && cep_cell_is_link(link));
-    assert(target && !cep_cell_is_void(target) && cep_cell_parent(target));     // Links to "root" aren't allowed for now.
-    link->link = target;
-    // ToDo: remove link from target's shadows.
-}
+/* Redirect a link so it targets the resolved destination while updating the
+   target's shadow metadata, ensuring backlink state remains consistent and the
+   final cell always reflects who references it. This normalises any intermediate
+   links so the target observes only concrete linkers and can enforce lifecycle
+   invariants. */
+void cep_link_set(cepCell* link, cepCell* target);
 
-static inline void cep_link_initialize(cepCell* link, cepDT* name, cepCell* target) {
-    assert(link);
-    cep_cell_initialize(link, CEP_TYPE_LINK, name, NULL, NULL);
-    if (target)
-        cep_link_set(link, target);
-}
+/* Initialise a link cell with the provided name and optional target, relying on
+   the shared constructor while immediately normalising and recording backlink
+   information when a target is supplied. This keeps freshly minted links fully
+   integrated with the shadow tracking model from the moment they exist. */
+void cep_link_initialize(cepCell* link, cepDT* name, cepCell* target);
 
-static inline cepCell* cep_link_pull(cepCell* link) {
-    assert(link);
-    while (cep_cell_is_link(link)) {
-        link = link->link;
-    }
-    return link;
-}
+/* Follow a chain of links until the first non-link cell is found so callers act
+   on the canonical target while asserting the chain has no breaks or cycles.
+   The helper hides the aliasing layer so higher APIs always touch the base cell.
+ */
+cepCell* cep_link_pull(cepCell* link);
 
 static inline bool cep_cell_is_insertable(cepCell* cell)  {assert(cep_cell_has_store(cell));  return cell->store? cep_store_is_insertable(cell->store): false;}
 static inline bool cep_cell_is_dictionary(cepCell* cell)  {assert(cep_cell_is_normal(cell));  return cell->store? cep_store_is_dictionary(cell->store): false;}
@@ -947,7 +935,6 @@ void cep_cell_system_ensure(void);
     - Add cep_cell_update_nested_links(old, new).
     - If a cell is added with its name explicitly above "auto_id", then that must be updated.
 */
-
 
 #ifdef __cplusplus
 }

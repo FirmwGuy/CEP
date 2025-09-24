@@ -1214,6 +1214,7 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
         }
     }
 
+
     if (binding_count > 0u) {
         for (size_t i = 0; i < binding_count; ++i) {
             const cepEnzymeIndexBucket* bucket = cep_enzyme_find_bucket(registry->name_buckets, registry->name_bucket_count, &bindings[i].name);
@@ -1267,7 +1268,7 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
         }
     }
 
-    if ((!target_path || binding_count == 0u) && signal) {
+    if (!target_path && signal) {
         cepDT head = cep_enzyme_query_head(signal);
         size_t begin = 0u;
         size_t end = registry_count;

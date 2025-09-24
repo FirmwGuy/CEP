@@ -89,6 +89,8 @@ static inline void array_grow(cepArray* array) {
       CEP_REALLOC(array->cell, array->capacity * sizeof(cepCell));
       memset(&array->cell[array->store.chdCount], 0, array->store.chdCount * sizeof(cepCell));
       array_update_children_parent_ptr(array->cell, &array->cell[array->store.chdCount - 1]);
+      for (size_t i = 0; i < array->store.chdCount; i++)
+          cep_shadow_rebind_links(&array->cell[i]);
 }
 
 
@@ -101,7 +103,12 @@ static inline cepCell* array_sorted_insert_cell(cepArray* array, const cepCell* 
     }
     cepCell* child = &array->cell[index];
     if (index < array->store.chdCount) {
-        memmove(child + 1, child, array->store.chdCount * sizeof(cepCell));
+        cepCell* last = &array->cell[array->store.chdCount - 1];
+        for (cepCell* src = last; src >= child; src--) {
+            cep_cell_transfer(src, src + 1);
+            if (src == child)
+                break;
+        }
         array_update_children_parent_ptr(child + 1, &array->cell[array->store.chdCount]);
         CEP_0(child);
     }
@@ -119,7 +126,12 @@ static inline cepCell* array_insert(cepArray* array, cepCell* cell, size_t posit
         child = &array->cell[position];
         size_t tomove = array->store.chdCount - position;
         if (tomove) {
-            memmove(child + 1, child, tomove * sizeof(cepCell));
+            cepCell* last = &array->cell[array->store.chdCount - 1];
+            for (cepCell* src = last; src >= child; src--) {
+                cep_cell_transfer(src, src + 1);
+                if (src == child)
+                    break;
+            }
             array_update_children_parent_ptr(child + 1,  &array->cell[array->store.chdCount]);
         }
         CEP_0(child);
@@ -177,7 +189,12 @@ static inline cepCell* array_append(cepArray* array, cepCell* cell, bool prepend
     if (array->store.chdCount) {
         if (prepend) {
             child = array->cell;
-            memmove(child + 1, child, array->store.chdCount * sizeof(cepCell));
+            cepCell* last = &array->cell[array->store.chdCount - 1];
+            for (cepCell* src = last; src >= child; src--) {
+                cep_cell_transfer(src, src + 1);
+                if (src == child)
+                    break;
+            }
             array_update_children_parent_ptr(child + 1, &array->cell[array->store.chdCount]);
             CEP_0(child);
         } else {
@@ -280,6 +297,8 @@ static inline void array_sort(cepArray* array, cepCompare compare, void* context
         (array->cell, array->store.chdCount, sizeof(cepCell), (cepFunc) compare, context);
 
     array_update_children_parent_ptr(array->cell, &array->cell[array->store.chdCount - 1]);
+    for (size_t i = 0; i < array->store.chdCount; i++)
+        cep_shadow_rebind_links(&array->cell[i]);
 }
 
 
@@ -297,7 +316,9 @@ static inline void array_pop(cepArray* array, cepCell* target) {
     cepCell* last = &array->cell[array->store.chdCount - 1];
     cep_cell_transfer(first, target);
     if (first < last) {
-        memmove(first, first + 1, (size_t) cep_ptr_dif(last, first));
+        for (cepCell* src = first + 1; src <= last; src++) {
+            cep_cell_transfer(src, src - 1);
+        }
         array_update_children_parent_ptr(first, last - 1);
     }
     CEP_0(last);
@@ -308,7 +329,9 @@ static inline void array_remove_cell(cepArray* array, cepCell* cell) {
     assert(array && array->capacity >= array->store.chdCount);
     cepCell* last = &array->cell[array->store.chdCount - 1];
     if (cell < last) {
-        memmove(cell, cell + 1, (size_t) cep_ptr_dif(last, cell));
+        for (cepCell* src = cell + 1; src <= last; src++) {
+            cep_cell_transfer(src, src - 1);
+        }
         array_update_children_parent_ptr(cell, last - 1);
     }
     CEP_0(last);

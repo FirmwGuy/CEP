@@ -132,6 +132,63 @@ static void test_cell_nested_one_item_ops(cepCell* cat, cepID name, cepCell* ite
 
 
 
+/* Exercise link shadow bookkeeping across creation, retargeting, and teardown
+   so a single backlink transitions cleanly between targets and leaves no stale
+   references once removed. */
+static void test_cell_links_shadowing(void) {
+    cepCell* list = cep_cell_add_list(cep_root(),
+                                      CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 4000),
+                                      0,
+                                      CEP_DTAW("CEP", "list"),
+                                      CEP_STORAGE_LINKED_LIST,
+                                      8);
+
+    cepCell* payloadA = cep_cell_append_list(list,
+                                             CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 4001),
+                                             CEP_DTAW("CEP", "list"),
+                                             CEP_STORAGE_LINKED_LIST,
+                                             4);
+
+    cepCell* linkA = cep_cell_append_link(list,
+                                          CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 4010),
+                                          payloadA);
+
+    assert_int(payloadA->metacell.shadowing, ==, CEP_SHADOW_SINGLE);
+    assert_ptr_equal(payloadA->store->linked, linkA);
+    assert_ptr_equal(cep_link_pull(linkA), payloadA);
+
+    cepCell* payloadB = cep_cell_append_list(list,
+                                             CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 4002),
+                                             CEP_DTAW("CEP", "list"),
+                                             CEP_STORAGE_LINKED_LIST,
+                                             4);
+
+    cep_link_set(linkA, payloadB);
+
+    assert_int(payloadA->metacell.shadowing, ==, CEP_SHADOW_NONE);
+    assert_null(payloadA->store->linked);
+    assert_ptr_equal(linkA->link, payloadB);
+    assert_ptr_equal(cep_link_pull(linkA), payloadB);
+    assert_int(payloadB->metacell.shadowing, ==, CEP_SHADOW_SINGLE);
+    assert_ptr_equal(payloadB->store->linked, linkA);
+
+    cep_cell_delete_hard(linkA);
+
+    assert_int(payloadB->metacell.shadowing, ==, CEP_SHADOW_NONE);
+    assert_null(payloadB->store->linked);
+    assert_null(payloadB->store->shadow);
+
+    assert_int(payloadA->metacell.shadowing, ==, CEP_SHADOW_NONE);
+    assert_null(payloadA->store->linked);
+    assert_null(payloadA->store->shadow);
+
+    cep_cell_delete_hard(payloadB);
+    cep_cell_delete_hard(payloadA);
+    assert_false(cep_cell_children(list));
+    cep_cell_delete_hard(list);
+}
+
+
 
 /*
  * List verification block: stresses append/prepend/delete paths to prove that
@@ -656,6 +713,8 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
     test_cell_tech_catalog(CEP_STORAGE_ARRAY);
     test_cell_tech_catalog(CEP_STORAGE_RED_BLACK_T);
     test_cell_tech_sequencing_catalog();
+
+    test_cell_links_shadowing();
 
 
     if (watchdog)
