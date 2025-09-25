@@ -23,6 +23,8 @@
  */
 
 
+#include <stdbool.h>
+
 typedef struct _cepOctreeList   cepOctreeList;
 typedef struct _cepOctreeNode   cepOctreeNode;
 
@@ -46,13 +48,24 @@ struct _cepOctreeNode {
     cepOctreeList*  list;           // List of cells in this node.
     cepOctreeBound  bound;          // Bounding space covered by this node.
     unsigned        index;          // Child index of this node in parent.
+    unsigned        count;          // Number of cells stored directly in this node.
 };
+
+enum {
+    CEP_OCTREE_MAX_DEPTH_DEFAULT     = 8,
+    CEP_OCTREE_MAX_PER_NODE_DEFAULT  = 16,
+};
+
+#define CEP_OCTREE_MIN_SUBWIDE_DEFAULT   (1e-5f)
 
 typedef struct {
     cepStore        store;          // Storage info.
     //
     cepOctreeNode   root;           // The root node.
     unsigned        depth;          // Maximum tree depth (ever used).
+    unsigned        maxDepth;       // Policy: deepest subdivision allowed.
+    unsigned        maxPerNode;     // Policy: split nodes after this many cells.
+    float           minSubwide;     // Policy: stop subdividing when subwide below this.
 } cepOctree;
 
 
@@ -63,6 +76,33 @@ typedef struct {
 
 /*
     Octree implementation
+    ---------------------
+
+    CEP's octree acts as a spatial directory for child cells. Callers provide a
+    comparator that receives the candidate cell, an optional user context, and
+    the bounding box of a quadrant; it must return >0 when the cell fits fully
+    inside that bound. Inserting a cell walks the tree, creating child nodes
+    where the comparator reports a fit. If no child accepts the cell (because it
+    straddles multiple quadrants or the box reached the minimum size), the cell
+    stays in the current node's bucket list.
+
+    Policy knobs:
+      * `maxDepth`    – cap recursive subdivision; defaults to 8 levels.
+      * `maxPerNode`  – maximum cells stored in a node before attempting to
+                         subdivide; defaults to 16.
+      * `minSubwide`  – lower bound on half-width for new quadrants to avoid
+                         degenerate floating-point subdivisions; defaults to 1e-5f.
+
+    Call `octree_set_policy` after construction to override the defaults. The
+    restructuring logic is adaptive: once a node exceeds `maxPerNode` and the
+    depth/minSubwide constraints allow it, the node redistributes its residents
+    into freshly created children. Removal prunes empty branches so the tree does
+    not balloon during GC.
+
+    Iteration helpers (`octree_first`, `octree_next`, etc.) give deterministic
+    orderings by walking the tree front-to-back. These functions expect the
+    caller to maintain a separate traversal state (`cepEntry`) when interacting
+    with the generic store APIs.
 */
 
 static inline cepOctreeNode* octree_node_new(cepOctreeNode* parent, cepOctreeBound* bound, unsigned index) {
@@ -71,6 +111,7 @@ static inline cepOctreeNode* octree_node_new(cepOctreeNode* parent, cepOctreeBou
     onode->parent = parent;
     onode->bound  = *bound;
     onode->index  = index;
+    onode->count  = 0;
     return onode;
 }
 
@@ -89,6 +130,8 @@ static inline void octree_node_clean(cepOctreeNode* onode) {
         cep_free(list);
         list = next;
     }
+    onode->list = NULL;
+    onode->count = 0;
 }
 
 
@@ -103,7 +146,20 @@ static inline cepOctree* octree_new(cepOctreeBound* bound) {
     CEP_NEW(cepOctree, octree);
     octree->root.bound = *bound;
     octree->depth = 1;
+    octree->maxDepth = CEP_OCTREE_MAX_DEPTH_DEFAULT;
+    octree->maxPerNode = CEP_OCTREE_MAX_PER_NODE_DEFAULT;
+    octree->minSubwide = CEP_OCTREE_MIN_SUBWIDE_DEFAULT;
     return octree;
+}
+
+static inline void octree_set_policy(cepOctree* octree, unsigned maxDepth, unsigned maxPerNode, float minSubwide) {
+    assert(octree);
+    if (maxDepth)
+        octree->maxDepth = maxDepth;
+    if (maxPerNode)
+        octree->maxPerNode = maxPerNode;
+    if (minSubwide > 0.0f)
+        octree->minSubwide = minSubwide;
 }
 
 
@@ -128,58 +184,143 @@ static inline cepOctreeList* octree_list_from_cell(cepCell* cell) {
     } while(0)
 
 
+static inline int octree_choose_child(cepOctreeNode* onode, unsigned index, const cepOctreeBound* bound, cepOctreeList* entry, cepCompare compare, void* context) {
+    (void)onode;
+    (void)index;
+    // Comparator contract: positive value means the cell fits inside the bound.
+    return compare(&entry->cell, (const cepCell*)(const void*)bound, context);
+}
+
+static inline cepOctreeNode* octree_ensure_child(cepOctreeNode* onode, unsigned index, const cepOctreeBound* bound) {
+    if (!onode->children[index])
+        onode->children[index] = octree_node_new(onode, (cepOctreeBound*)bound, index);
+    return onode->children[index];
+}
+
+static inline cepCell* octree_descend_entry(cepOctree* octree,
+                                            cepOctreeNode* onode,
+                                            unsigned depth,
+                                            cepOctreeList* entry,
+                                            cepCompare compare,
+                                            void* context,
+                                            bool allowSplit);
+
+static inline void octree_try_split(cepOctree* octree,
+                                    cepOctreeNode* onode,
+                                    unsigned depth,
+                                    cepCompare compare,
+                                    void* context) {
+    if (onode->count <= octree->maxPerNode)
+        return;
+    if (depth >= octree->maxDepth)
+        return;
+
+    float nextSubwide = onode->bound.subwide * 0.5f;
+    if (nextSubwide <= octree->minSubwide)
+        return;
+
+    cepOctreeList* list = onode->list;
+    onode->list = NULL;
+    onode->count = 0;
+
+    bool moved = false;
+    while (list) {
+        cepOctreeList* next = list->next;
+        list->next = list->prev = NULL;
+        cepOctreeNode* original = list->onode;
+        cepCell* placed = octree_descend_entry(octree, onode, depth, list, compare, context, false);
+        (void)placed;
+        if (list->onode != original)
+            moved = true;
+        list = next;
+    }
+
+    if (!moved) {
+        // Rebuild original ordering if nothing could be moved out; ensure count is recomputed.
+        cepOctreeList* iter = onode->list;
+        onode->count = 0;
+        while (iter) {
+            onode->count++;
+            iter = iter->next;
+        }
+        return;
+    }
+
+    for (unsigned idx = 0; idx < 8; ++idx) {
+        if (onode->children[idx])
+            octree_try_split(octree, onode->children[idx], depth + 1, compare, context);
+    }
+}
+
+static inline cepCell* octree_descend_entry(cepOctree* octree,
+                                            cepOctreeNode* onode,
+                                            unsigned depth,
+                                            cepOctreeList* entry,
+                                            cepCompare compare,
+                                            void* context,
+                                            bool allowSplit) {
+    // Attempt to descend into a fitting child.
+    for (unsigned idx = 0; idx < 8; ++idx) {
+        const cepOctreeNode* child = onode->children[idx];
+        cepOctreeBound bound;
+
+        if (child) {
+            if (octree_choose_child(onode, idx, &child->bound, entry, compare, context) > 0) {
+                cepCell* result = octree_descend_entry(octree, onode->children[idx], depth + 1, entry, compare, context, allowSplit);
+                if (octree->depth < depth + 1)
+                    octree->depth = depth + 1;
+                if (allowSplit)
+                    octree_try_split(octree, onode->children[idx], depth + 1, compare, context);
+                return result;
+            }
+            continue;
+        }
+
+        bound.subwide = onode->bound.subwide * 0.5f;
+        if (bound.subwide <= octree->minSubwide)
+            continue;
+
+        switch (idx) {
+          case 0: BOUND_CENTER_QUADRANT(bound, onode, +, +, +); break;
+          case 1: BOUND_CENTER_QUADRANT(bound, onode, +, -, +); break;
+          case 2: BOUND_CENTER_QUADRANT(bound, onode, -, -, +); break;
+          case 3: BOUND_CENTER_QUADRANT(bound, onode, -, +, +); break;
+          case 4: BOUND_CENTER_QUADRANT(bound, onode, +, +, -); break;
+          case 5: BOUND_CENTER_QUADRANT(bound, onode, +, -, -); break;
+          case 6: BOUND_CENTER_QUADRANT(bound, onode, -, -, -); break;
+          case 7: BOUND_CENTER_QUADRANT(bound, onode, -, +, -); break;
+        }
+
+        if (octree_choose_child(onode, idx, &bound, entry, compare, context) > 0) {
+            cepOctreeNode* childNode = octree_ensure_child(onode, idx, &bound);
+            cepCell* result = octree_descend_entry(octree, childNode, depth + 1, entry, compare, context, allowSplit);
+            if (octree->depth < depth + 1)
+                octree->depth = depth + 1;
+            if (allowSplit)
+                octree_try_split(octree, childNode, depth + 1, compare, context);
+            return result;
+        }
+    }
+
+    // Place entry in current node.
+    entry->onode = onode;
+    entry->prev = NULL;
+    entry->next = onode->list;
+    if (entry->next)
+        entry->next->prev = entry;
+    onode->list = entry;
+    onode->count++;
+
+    if (allowSplit)
+        octree_try_split(octree, onode, depth, compare, context);
+    return &entry->cell;
+}
+
 static inline cepCell* octree_sorted_insert(cepOctree* octree, cepCell* cell, cepCompare compare, void* context) {
     CEP_NEW(cepOctreeList, list);
     cep_cell_transfer(cell, &list->cell);
-
-    cepOctreeNode* onode = &octree->root;
-    unsigned depth = 1;
-    unsigned n;
-    do {
-        for (n = 0;  n < 8;  n++) {
-            if (onode->children[n]) {
-                if (0 < compare(&list->cell, context, &onode->children[n]->bound)) {
-                    onode = onode->children[n];
-                    depth++;
-                    break;
-                }
-            } else {
-                cepOctreeBound bound;
-                bound.subwide = onode->bound.subwide / 2.0f;
-                assert(bound.subwide > EPSILON);
-
-                switch (n) {
-                  case 0:   BOUND_CENTER_QUADRANT(bound, onode, +, +, +);   break;
-                  case 1:   BOUND_CENTER_QUADRANT(bound, onode, +, -, +);   break;
-                  case 2:   BOUND_CENTER_QUADRANT(bound, onode, -, -, +);   break;
-                  case 3:   BOUND_CENTER_QUADRANT(bound, onode, -, +, +);   break;
-                  case 4:   BOUND_CENTER_QUADRANT(bound, onode, +, +, -);   break;
-                  case 5:   BOUND_CENTER_QUADRANT(bound, onode, +, -, -);   break;
-                  case 6:   BOUND_CENTER_QUADRANT(bound, onode, -, -, -);   break;
-                  case 7:   BOUND_CENTER_QUADRANT(bound, onode, -, +, -);   break;
-                }
-
-                if (0 < compare(&list->cell, context, &bound)) {
-                    onode->children[n] = octree_node_new(onode, &bound, n);
-                    onode = onode->children[n];
-                    depth++;
-                    break;
-                }
-            }
-        }
-    } while (n < 8);
-
-    // Insert list item
-    list->onode = onode;
-    list->next  = onode->list;
-    if (list->next)
-        list->next->prev = list;
-    onode->list = list;
-
-    if (octree->depth < depth)
-        octree->depth = depth;
-
-    return &list->cell;
+    list->next = list->prev = NULL;
+    return octree_descend_entry(octree, &octree->root, 1u, list, compare, context, true);
 }
 
 
@@ -411,6 +552,8 @@ static inline void octree_remove_cell(cepOctree* octree, cepCell* cell) {
     }
 
     cep_free(list);
+    if (onode->count)
+        onode->count--;
 
     // Remove empty nodes
     for(;;) {
