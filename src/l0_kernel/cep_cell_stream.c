@@ -244,6 +244,9 @@ bool cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size
     if (!data || !data->writable)
         return false;
 
+    if (cep_cell_data_locked_hierarchy(cell))
+        return false;
+
     size_t actual = 0;
     uint64_t hash = 0;
     bool ok = false;
@@ -339,6 +342,9 @@ bool cep_cell_stream_map(cepCell* cell, uint64_t offset, size_t size, unsigned a
     if (!data)
         return false;
 
+    if ((access & CEP_STREAM_ACCESS_WRITE) && cep_cell_data_locked_hierarchy(cell))
+        return false;
+
     memset(view, 0, sizeof *view);
     view->offset = offset;
     view->access = access;
@@ -413,6 +419,10 @@ bool cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit) {
     if (!data)
         return false;
 
+    bool locked = cep_cell_data_locked_hierarchy(cell);
+    bool commit_allowed = commit && !locked;
+    bool forced_abort = commit && locked;
+
     bool ok = false;
 
     switch (data->datatype) {
@@ -430,7 +440,7 @@ bool cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit) {
             memcpy(base + voffset, token->backup, length);
         }
 
-        if ((view->access & CEP_STREAM_ACCESS_WRITE) && commit) {
+        if ((view->access & CEP_STREAM_ACCESS_WRITE) && commit_allowed) {
             size_t end = (size_t)voffset + length;
             if (end > data->capacity) {
                 memcpy(base + voffset, token->backup, length);
@@ -450,7 +460,7 @@ bool cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit) {
                                length,
                                length,
                                hash);
-        } else if ((view->access & CEP_STREAM_ACCESS_WRITE) && !commit) {
+        } else if ((view->access & CEP_STREAM_ACCESS_WRITE) && !commit_allowed) {
             uint64_t hash = (token->backup && length)? cep_hash_bytes(token->backup, length): 0;
             cep_stream_journal(cell,
                                CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_ERROR,
@@ -488,7 +498,7 @@ bool cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit) {
         if (!resource)
             break;
 
-        ok = binding->ops->stream_unmap(binding, resource, view, commit);
+        ok = binding->ops->stream_unmap(binding, resource, view, commit_allowed);
         break;
       }
 
@@ -500,5 +510,5 @@ bool cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit) {
     view->token   = NULL;
     view->length  = 0;
 
-    return ok;
+    return ok && !forced_abort;
 }

@@ -65,6 +65,8 @@ static void                 cep_store_history_free(cepStoreHistory* history);
 static void                 cep_store_history_push(cepStore* store);
 static void                 cep_store_history_clear(cepStore* store);
 static void                 cep_enzyme_binding_list_destroy(cepEnzymeBinding* bindings);
+static bool                 cep_store_hierarchy_locked(const cepCell* cell);
+static bool                 cep_data_hierarchy_locked(const cepCell* cell);
 
 static inline cepStoreHistory* cep_store_history_from_node(cepStoreNode* node) {
     return node? (cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
@@ -528,6 +530,8 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
     data->tag       = type->tag;
     data->datatype  = datatype;
     data->writable  = writable;
+    data->lock      = 0u;
+    data->lockOwner = NULL;
     
     cepOpCount timestamp = cep_cell_timestamp_next();
     data->created   = timestamp;
@@ -547,6 +551,9 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
 */
 void cep_data_del(cepData* data) {
     assert(data);
+
+    data->lock = 0u;
+    data->lockOwner = NULL;
 
     switch (data->datatype) {
       case CEP_DATATYPE_DATA: {
@@ -609,6 +616,9 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
     assert(cep_data_valid(data) && size && capacity);
 
     if (!data->writable)
+        return NULL;
+
+    if (data->lock)
         return NULL;
 
     if (!swap) {
@@ -1185,6 +1195,8 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
     store->autoid   = 1;
     store->chdCount = 0;
     store->totCount = 0;
+    store->lock     = 0u;
+    store->lockOwner = NULL;
 
     cepOpCount timestamp = cep_cell_timestamp_next();
     store->created  = timestamp;
@@ -1204,6 +1216,9 @@ void cep_store_del(cepStore* store) {
     assert(cep_store_valid(store));
 
     // ToDo: cleanup shadows.
+
+    store->lock = 0u;
+    store->lockOwner = NULL;
 
     cep_store_history_clear(store);
     cep_enzyme_binding_list_destroy(store->bindings);
@@ -1250,6 +1265,9 @@ void cep_store_delete_children_hard(cepStore* store) {
     assert(cep_store_valid(store));
 
     bool had_children = store->chdCount;
+
+    if (!had_children || cep_store_hierarchy_locked(store->owner))
+        return;
 
     switch (store->storage) {
       case CEP_STORAGE_LINKED_LIST: {
@@ -1304,7 +1322,7 @@ static inline void store_check_auto_id(cepStore* store, cepCell* child) {
 cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child) {
     assert(cep_store_valid(store) && !cep_cell_is_void(child));
 
-    if (!store->writable)
+    if (!store->writable || cep_store_hierarchy_locked(store->owner))
         return NULL;
 
     if (store->indexing == CEP_INDEX_BY_NAME) {
@@ -1423,7 +1441,7 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
     assert(cep_store_valid(store) && !cep_cell_is_void(child));
 
-    if (!store->writable)
+    if (!store->writable || cep_store_hierarchy_locked(store->owner))
         return NULL;
 
     if (store->indexing == CEP_INDEX_BY_INSERTION && store->chdCount) {
@@ -2171,6 +2189,9 @@ static inline void store_to_dictionary(cepStore* store) {
     if (store->indexing == CEP_INDEX_BY_NAME)
         return;
 
+    if (cep_store_hierarchy_locked(store->owner))
+        return;
+
     cep_store_history_push(store);   // Only snapshot when the indexing scheme changes (re-sorts rewrite sibling order).
 
     store->indexing = CEP_INDEX_BY_NAME;
@@ -2211,6 +2232,9 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
     assert(cep_store_valid(store) && compare);
 
     if (store->indexing == CEP_INDEX_BY_FUNCTION)
+        return;
+
+    if (cep_store_hierarchy_locked(store->owner))
         return;
 
     cep_store_history_push(store);   // Snapshot current layout before re-sorting by custom comparator.
@@ -2258,7 +2282,7 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
 static inline bool store_take_cell(cepStore* store, cepCell* target) {
     assert(cep_store_valid(store) && target);
 
-    if (!store->chdCount || !store->writable)
+    if (!store->chdCount || !store->writable || cep_store_hierarchy_locked(store->owner))
         return false;
 
     switch (store->storage) {
@@ -2298,7 +2322,7 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
 static inline bool store_pop_child(cepStore* store, cepCell* target) {
     assert(cep_store_valid(store) && target);
 
-    if (!store->chdCount || !store->writable)
+    if (!store->chdCount || !store->writable || cep_store_hierarchy_locked(store->owner))
         return false;
 
     switch (store->storage) {
@@ -2338,6 +2362,9 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
 */
 static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* target) {
     assert(cep_store_valid(store) && store->chdCount);
+
+    if (cep_store_hierarchy_locked(store->owner))
+        return;
 
     if (target)
         cep_cell_transfer(cell, target);  // Save cell.
@@ -2428,10 +2455,15 @@ void cep_cell_transfer(cepCell* src, cepCell* dst)
 
     if (!cep_cell_is_link(dst) && dst->store) {
         dst->store->owner = dst;
+        if (dst->store->lockOwner == src)
+            dst->store->lockOwner = dst;
 
         if (dst->store->chdCount)
             cep_cell_relink_storage(dst);
     }
+
+    if (!cep_cell_is_link(dst) && dst->data && dst->data->lockOwner == src)
+        dst->data->lockOwner = dst;
 
     // ToDo: relink self list.
 }
@@ -2600,6 +2632,9 @@ void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, 
     if CEP_NOT_ASSERT(data)
         return NULL;
 
+    if (cep_data_hierarchy_locked(cell))
+        return NULL;
+
     if (!data->writable)
         return NULL;
 
@@ -2681,6 +2716,9 @@ void* cep_cell_update_hard(cepCell* cell, size_t size, size_t capacity, void* va
 
     cepData* data = cell->data;
     if CEP_NOT_ASSERT(data)
+        return NULL;
+
+    if (cep_data_hierarchy_locked(cell))
         return NULL;
 
     return cep_data_update(data, size, capacity, value, swap);
@@ -3213,7 +3251,7 @@ bool cep_cell_child_take(cepCell* cell, cepCell* target) {
 
     CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
 
-    if (!store->writable || !store->chdCount)
+    if (!store->writable || !store->chdCount || cep_store_hierarchy_locked(store->owner))
         return false;
 
     cepCell* child = store_last_child(store);
@@ -3247,7 +3285,7 @@ bool cep_cell_child_pop(cepCell* cell, cepCell* target) {
 
     CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
 
-    if (!store->writable || !store->chdCount)
+    if (!store->writable || !store->chdCount || cep_store_hierarchy_locked(store->owner))
         return false;
 
     cepCell* child = store_first_child(store);
@@ -3366,4 +3404,73 @@ size_t cep_word_to_text(cepID word, char s[12]) {
     }
 
     return length;
+}
+static bool cep_store_hierarchy_locked(const cepCell* cell) {
+    return cep_cell_store_locked_hierarchy(cell);
+}
+
+static bool cep_data_hierarchy_locked(const cepCell* cell) {
+    return cep_cell_data_locked_hierarchy(cell);
+}
+
+bool cep_store_lock(cepCell* cell, cepLockToken* token) {
+    assert(cell && token);
+    token->owner = NULL;
+    cell = cep_link_pull(cell);
+    if (!cep_cell_is_normal(cell) || !cell->store)
+        return false;
+
+    if (cep_store_hierarchy_locked(cell))
+        return false;
+
+    cell->store->lock = 1u;
+    cell->store->lockOwner = cell;
+    token->owner = cell;
+    return true;
+}
+
+void cep_store_unlock(cepCell* cell, cepLockToken* token) {
+    if (!cell || !token)
+        return;
+
+    cell = cep_link_pull(cell);
+    if (!cep_cell_is_normal(cell) || !cell->store)
+        return;
+
+    if (cell->store->lock && cell->store->lockOwner == cell) {
+        cell->store->lock = 0u;
+        cell->store->lockOwner = NULL;
+        token->owner = NULL;
+    }
+}
+
+bool cep_data_lock(cepCell* cell, cepLockToken* token) {
+    assert(cell && token);
+    token->owner = NULL;
+    cell = cep_link_pull(cell);
+    if (!cep_cell_is_normal(cell) || !cell->data)
+        return false;
+
+    if (cep_data_hierarchy_locked(cell))
+        return false;
+
+    cell->data->lock = 1u;
+    cell->data->lockOwner = cell;
+    token->owner = cell;
+    return true;
+}
+
+void cep_data_unlock(cepCell* cell, cepLockToken* token) {
+    if (!cell || !token)
+        return;
+
+    cell = cep_link_pull(cell);
+    if (!cep_cell_is_normal(cell) || !cell->data)
+        return;
+
+    if (cell->data->lock && cell->data->lockOwner == cell) {
+        cell->data->lock = 0u;
+        cell->data->lockOwner = NULL;
+        token->owner = NULL;
+    }
 }

@@ -427,6 +427,7 @@ struct _cepData {
     cepOpCount          deleted;        // Data content deletion time (if any).
 
     cepDataNode;
+    cepCell*            lockOwner;      // Cell that currently holds the payload lock (if any).
 };
 
 enum _cepDataType {
@@ -601,6 +602,16 @@ typedef struct {
     cepCell*        cell[];     // Array of cells shadowing this one.
 } cepShadow;
 
+typedef struct {
+    cepCell* owner;
+} cepLockToken;
+
+
+bool cep_store_lock(cepCell* cell, cepLockToken* token);
+void cep_store_unlock(cepCell* cell, cepLockToken* token);
+bool cep_data_lock(cepCell* cell, cepLockToken* token);
+void cep_data_unlock(cepCell* cell, cepLockToken* token);
+
 typedef struct _cepStoreNode  cepStoreNode;
 
 struct _cepStoreNode {
@@ -618,6 +629,7 @@ struct _cepStoreNode {
     size_t              chdCount;   // Number of child cells.
     size_t              totCount;   // Number of all cells included dead ones.
     cepCompare          compare;    // Compare function for indexing children.
+    cepCell*            lockOwner;  // Cell that currently holds the structural lock (if any).
 
     // The specific storage structure will follow after this...
 };
@@ -804,6 +816,28 @@ static inline cepCell*   cep_cell_parent  (const cepCell* cell)   {assert(cell);
 static inline size_t     cep_cell_siblings(const cepCell* cell)   {assert(cell);  return CEP_EXPECT_PTR(cell->parent)? cell->parent->chdCount: 0;}
 static inline size_t     cep_cell_children(const cepCell* cell)   {assert(cell);  return cep_cell_has_store(cell)? cell->store->chdCount: 0;}
 
+static inline bool cep_cell_store_locked_hierarchy(const cepCell* cell) {
+    for (const cepCell* current = cell; current; current = cep_cell_parent(current)) {
+        if (!cep_cell_is_normal(current))
+            continue;
+        const cepStore* store = current->store;
+        if (store && store->lock)
+            return true;
+    }
+    return false;
+}
+
+static inline bool cep_cell_data_locked_hierarchy(const cepCell* cell) {
+    for (const cepCell* current = cell; current; current = cep_cell_parent(current)) {
+        if (!cep_cell_is_normal(current))
+            continue;
+        const cepData* data = current->data;
+        if (data && data->lock)
+            return true;
+    }
+    return false;
+}
+
 #define cep_cell_id_is_pending(r)   cep_id_is_auto((r)->metacell.tag)
 static inline void  cep_cell_set_autoid(const cepCell* cell, cepID id)  {assert(cep_cell_has_store(cell) && (cell->store->autoid < id)  &&  (id <= CEP_AUTOID_MAX)); cell->store->autoid = id;}
 static inline cepID cep_cell_get_autoid(const cepCell* cell)            {assert(cep_cell_has_store(cell));  return cell->store->autoid;}
@@ -959,6 +993,9 @@ static inline void cep_cell_delete_data(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->data)
         return;
 
+    if (cep_cell_data_locked_hierarchy(cell))
+        return;
+
     if (!cell->data->deleted)
         cell->data->deleted = cep_cell_timestamp();
 
@@ -971,6 +1008,9 @@ static inline void cep_cell_delete_data_hard(cepCell* cell) {
     if (!cep_cell_has_data(cell))
         return;
 
+    if (cep_cell_data_locked_hierarchy(cell))
+        return;
+
     cep_cell_delete_data(cell);
     cep_data_del(cell->data);
     cell->data = NULL;
@@ -980,6 +1020,9 @@ static inline void cep_cell_delete_data_hard(cepCell* cell) {
 
 static inline void cep_cell_delete_store(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->store)
+        return;
+
+    if (cep_cell_store_locked_hierarchy(cell))
         return;
 
     if (!cell->store->deleted)
@@ -994,6 +1037,9 @@ static inline void cep_cell_delete_store_hard(cepCell* cell) {
     if (!cep_cell_has_store(cell))
         return;
 
+    if (cep_cell_store_locked_hierarchy(cell))
+        return;
+
     cep_cell_delete_store(cell);
     cep_store_del(cell->store);
     cell->store = NULL;
@@ -1005,6 +1051,9 @@ static inline void cep_cell_delete(cepCell* cell);
 
 static inline void cep_cell_delete_children(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->store)
+        return;
+
+    if (cep_cell_store_locked_hierarchy(cell))
         return;
 
     for (cepCell* child = cep_cell_first(cell); child; child = cep_cell_next(cell, child)) {
@@ -1024,6 +1073,9 @@ static inline void cep_cell_delete(cepCell* cell) {
         return;
 
     if (!cep_cell_is_normal(cell))
+        return;
+
+    if (cep_cell_data_locked_hierarchy(cell) || cep_cell_store_locked_hierarchy(cell))
         return;
 
     if (cep_cell_has_data(cell))

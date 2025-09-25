@@ -123,7 +123,7 @@ MunitTest tests[] = {
 const MunitSuite testSuite = {
     "/CEP",
     tests,
-    NULL,                     // Suites.
+    lock_suites,
     1,                        // Iterations.
     MUNIT_SUITE_OPTION_NONE
 };
