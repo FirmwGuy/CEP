@@ -79,7 +79,7 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
                                                   &capture,
                                                   0));
 
-    munit_assert_size(capture.count, ==, 3);
+    munit_assert_size(capture.count, ==, 4);
 
     const SerializationChunk* header_chunk = &capture.chunks[0];
     cepSerializationHeader parsed = {0};
@@ -113,6 +113,7 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     munit_assert_uint64(tag, ==, expected_tag);
 
     const SerializationChunk* data_chunk = &capture.chunks[2];
+    const SerializationChunk* control_chunk = &capture.chunks[3];
     uint64_t data_payload = read_be64(data_chunk->data);
     munit_assert_size(data_chunk->size, ==, data_payload + CEP_SERIALIZATION_CHUNK_OVERHEAD);
     uint64_t data_id = read_be64(data_chunk->data + sizeof(uint64_t));
@@ -120,20 +121,68 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     munit_assert_uint32(cep_serialization_chunk_transaction(data_id), ==, 1);
     munit_assert_uint16(cep_serialization_chunk_sequence(data_id), ==, 2);
 
+    uint64_t control_payload = read_be64(control_chunk->data);
+    munit_assert_size(control_chunk->size, ==, control_payload + CEP_SERIALIZATION_CHUNK_OVERHEAD);
+    uint64_t control_id = read_be64(control_chunk->data + sizeof(uint64_t));
+    munit_assert_uint16(cep_serialization_chunk_class(control_id), ==, CEP_CHUNK_CLASS_CONTROL);
+    munit_assert_uint32(cep_serialization_chunk_transaction(control_id), ==, 1);
+    munit_assert_uint16(cep_serialization_chunk_sequence(control_id), ==, 3);
+
     const uint8_t* descriptor = data_chunk->data + CEP_SERIALIZATION_CHUNK_OVERHEAD;
     uint16_t datatype = read_be16(descriptor);
     uint16_t flags = read_be16(descriptor + 2);
     uint32_t inline_len = read_be32(descriptor + 4);
     uint64_t total_len = read_be64(descriptor + 8);
     uint64_t hash = read_be64(descriptor + 16);
-    const uint8_t* inline_data = descriptor + 24;
+    uint64_t dt_domain = read_be64(descriptor + 24);
+    uint64_t dt_tag = read_be64(descriptor + 32);
+    const uint8_t* inline_data = descriptor + 40;
 
     munit_assert_uint16(datatype, ==, CEP_DATATYPE_VALUE);
     munit_assert_uint16(flags, ==, 0);
     munit_assert_uint32(inline_len, ==, sizeof payload - 1u);
     munit_assert_uint64(total_len, ==, sizeof payload - 1u);
     munit_assert_uint64(hash, ==, cep_hash_bytes(payload, sizeof payload - 1u));
+    munit_assert_uint64(dt_domain, ==, CEP_DTAW("CEP", "value")->domain);
+    munit_assert_uint64(dt_tag, ==, CEP_DTAW("CEP", "value")->tag);
     munit_assert_int(memcmp(inline_data, payload, sizeof payload - 1u), ==, 0);
+
+    cep_cell_system_initiate();
+
+    cepSerializationReader* reader = cep_serialization_reader_create(cep_root());
+    munit_assert_not_null(reader);
+
+    munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[0].data, capture.chunks[0].size));
+    munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[1].data, capture.chunks[1].size));
+    munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[2].data, capture.chunks[2].size));
+    munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[3].data, capture.chunks[3].size));
+
+    cepDT expected_name = {.domain = expected_domain, .tag = expected_tag};
+    munit_assert_null(cep_cell_find_by_name(cep_root(), &expected_name));
+    munit_assert_true(cep_serialization_reader_pending(reader));
+    munit_assert_true(cep_serialization_reader_commit(reader));
+
+    cepCell* recovered = cep_cell_find_by_name(cep_root(), &expected_name);
+    munit_assert_not_null(recovered);
+    cepData* recovered_data = recovered->data;
+    munit_assert_not_null(recovered_data);
+    munit_assert_uint64(recovered_data->_dt.domain, ==, CEP_DTAW("CEP", "value")->domain);
+    munit_assert_uint64(recovered_data->_dt.tag, ==, CEP_DTAW("CEP", "value")->tag);
+    munit_assert_uint64(recovered_data->size, ==, sizeof payload - 1u);
+    munit_assert_int(memcmp(recovered_data->value, payload, sizeof payload - 1u), ==, 0);
+
+    cep_serialization_reader_reset(reader);
+    munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[0].data, capture.chunks[0].size));
+    munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[1].data, capture.chunks[1].size));
+    munit_assert_false(cep_serialization_reader_ingest(reader, capture.chunks[1].data, capture.chunks[1].size));
+    munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[0].data, capture.chunks[0].size));
+    for (size_t i = 1; i < capture.count; ++i)
+        munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[i].data, capture.chunks[i].size));
+    munit_assert_true(cep_serialization_reader_commit(reader));
+
+    cep_serialization_reader_reset(reader);
+    cep_serialization_reader_destroy(reader);
+    cep_cell_system_shutdown();
 
     for (size_t i = 0; i < capture.count; ++i)
         cep_free(capture.chunks[i].data);

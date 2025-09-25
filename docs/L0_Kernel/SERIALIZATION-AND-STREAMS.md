@@ -31,7 +31,7 @@ This document explains the moving parts in plain language first, then dives into
 - **Serialization header (`class 0x0000`, sequence 0)**: the first chunk in every stream. Contains a fixed magic value, serialization version, byte order indicator, and optional TLV metadata (compression flags, feature bits). Recovery tools scan for this header to realign after a corruption event.
 - **Cell manifest (`class 0x0001`)**: payload carries a serialized full cell path plus flags describing the cell type (normal, list head, library, etc.). When replayed, it creates or locates the target cell.
 - **Key/value (`class 0x0001`)**: payload encodes a tag ID, key bytes, and value bytes. Use this for scalar `cepData` values and metadata.
-- **Binary segment (`class 0x0002`)**: payload contains an offset and byte slice. Combine multiple segments (same transaction ID) to rebuild large buffers.
+- **Binary segment (`class 0x0002`)**: payload contains an offset and byte slice. Combine multiple segments (same transaction ID) to rebuild large buffers; inline descriptors also carry the data type hash/ID so the reconstructed `cepData` regains its original domain/tag.
 - **Child list pointer (`class 0x0001`)**: describes nested stores so receivers can push/pop traversal state.
 - **Library capsule (`class 0x0003`)**: wraps the result of invoking a library-specific serializer (see next section). If the library reports no payload, the chunk is still emitted to mark the dependency.
 - Additional classes may be added; maintain forward compatibility by ignoring unknown classes after reading their payload bytes.
@@ -58,13 +58,20 @@ Receivers rebuild the structure by applying the manifest and child pointer chunk
 
 ### Transaction boundaries and heartbeats
 
-Each serialization pass piggybacks on the effect journal's heartbeat discipline. Emit a fresh transaction ID whenever you finish committing a heartbeat worth of writes (after `cep_stream_commit_pending` returns true) or when you switch to a new logical subtree. This mirrors replay semantics: replayers read chunks heartbeat by heartbeat, applying intents only when the preceding heartbeat has been fully acknowledged. Control chunks (class 0x0000) provide optional hard barriers if you need to pause between heartbeats or denote checkpoints.
+Each serialization pass piggybacks on the effect journal's heartbeat discipline. Emit a fresh transaction ID whenever you finish committing a heartbeat worth of writes (after `cep_stream_commit_pending` returns true) or when you switch to a new logical subtree. This mirrors replay semantics: replayers read chunks heartbeat by heartbeat, applying intents only when the preceding heartbeat has been fully acknowledged. Control chunks (class 0x0000) provide optional hard barriers if you need to pause between heartbeats or denote checkpoints; the reader waits for these markers before splicing staged cells back into the tree, so recovered state only appears on heartbeat boundaries.
 
 ### Streams and serialization
 
 - Stream reads feed the serializer: `cep_cell_stream_read` yields deterministic byte windows whose hashes match what the effect journal recorded. Each window becomes one or more binary segment chunks.
 - When deserializing, the stream adapter receives its chunks through `cep_stream_write` calls. The adapter reconstructs the pending write queue and applies `cep_stream_commit_pending` after all segments for a transaction arrive.
 - Interleaving is expected. Emit structural chunks before the data chunks that rely on them (e.g., cell manifest before binary segments). Between multi-part payloads you may serialize additional cells, and receivers handle them by maintaining per-transaction buffers.
+
+### Deserialization workflow
+
+- Use `cep_serialization_reader_create`/`destroy` to manage a streaming reader bound to a root cell. The reader keeps transactions in a staging area until a control chunk (class `0x0000`) marks the end of a heartbeat.
+- Feed each chunk to `cep_serialization_reader_ingest`. The reader verifies chunk IDs, enforces monotonically increasing sequences per transaction, and checks hashes on completed payloads.
+- Nothing moves into the live tree until `cep_serialization_reader_commit` is invoked. Call it once per heartbeat; it materialises staged cells under the root while honouring manifest flags (hidden bits, data presence).
+- `cep_serialization_reader_pending` reports whether a barrier was observed since the last commit, so ingest loops can avoid accidental double commits.
 
 ### Library participation
 

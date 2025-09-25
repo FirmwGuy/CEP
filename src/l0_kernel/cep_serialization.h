@@ -7,6 +7,8 @@
 extern "C" {
 #endif
 
+typedef struct cepSerializationReader cepSerializationReader;
+
 typedef struct _cepCell cepCell;
 
 #define CEP_SERIALIZATION_MAGIC   UINT64_C(0x4345503000000000)
@@ -72,6 +74,13 @@ bool cep_serialization_emit_cell(const cepCell* cell,
                                    cepSerializationWriteFn write,
                                    void* context,
                                    size_t blob_payload_bytes);
+
+cepSerializationReader* cep_serialization_reader_create(cepCell* root);
+void cep_serialization_reader_destroy(cepSerializationReader* reader);
+void cep_serialization_reader_reset(cepSerializationReader* reader);
+bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8_t* chunk, size_t size);
+bool cep_serialization_reader_commit(cepSerializationReader* reader);
+bool cep_serialization_reader_pending(const cepSerializationReader* reader);
 
 #ifdef __cplusplus
 }

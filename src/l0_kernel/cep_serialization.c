@@ -190,7 +190,9 @@ static inline bool cep_serialization_emitter_emit(cepSerializationEmitter* emitt
                                                   uint16_t chunk_class,
                                                   const uint8_t* payload,
                                                   size_t payload_size) {
-    assert(emitter && emitter->write && payload);
+    assert(emitter && emitter->write);
+    if (payload_size && !payload)
+        return false;
 
     if (payload_size > UINT64_MAX - CEP_SERIALIZATION_CHUNK_OVERHEAD)
         return false;
@@ -212,7 +214,8 @@ static inline bool cep_serialization_emitter_emit(cepSerializationEmitter* emitt
     uint64_t id_be = cep_serial_to_be64(chunk_id);
     memcpy(buffer + sizeof size_be, &id_be, sizeof id_be);
 
-    memcpy(buffer + CEP_SERIALIZATION_CHUNK_OVERHEAD, payload, payload_size);
+    if (payload_size)
+        memcpy(buffer + CEP_SERIALIZATION_CHUNK_OVERHEAD, payload, payload_size);
 
     bool ok = emitter->write(emitter->context, buffer, total);
     cep_free(buffer);
@@ -302,7 +305,7 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     bool chunked = total_size > blob_limit;
 
     size_t header_payload = sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint32_t)
-                           + sizeof(uint64_t) + sizeof(uint64_t);
+                           + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t);
     size_t inline_size = chunked ? 0u : total_size;
     if (!chunked)
         header_payload += inline_size;
@@ -333,6 +336,14 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     uint64_t hash_be = cep_serial_to_be64(data->hash);
     memcpy(p, &hash_be, sizeof hash_be);
     p += sizeof hash_be;
+
+    uint64_t dt_domain_be = cep_serial_to_be64(data->_dt.domain);
+    memcpy(p, &dt_domain_be, sizeof dt_domain_be);
+    p += sizeof dt_domain_be;
+
+    uint64_t dt_tag_be = cep_serial_to_be64(data->_dt.tag);
+    memcpy(p, &dt_tag_be, sizeof dt_tag_be);
+    p += sizeof dt_tag_be;
 
     if (!chunked && inline_size) {
         memcpy(p, bytes, inline_size);
@@ -440,11 +451,666 @@ bool cep_serialization_emit_cell(const cepCell* cell,
     if (!cep_serialization_emit_data(&emitter, cell))
         goto cleanup;
 
+    if (!cep_serialization_emitter_emit(&emitter, CEP_CHUNK_CLASS_CONTROL, NULL, 0u))
+        goto cleanup;
+
     success = true;
 
 cleanup:
     if (path)
         cep_free(path);
     return success;
+}
+
+
+typedef struct {
+    bool        needed;
+    bool        header_received;
+    bool        chunked;
+    bool        complete;
+    uint16_t    datatype;
+    uint16_t    flags;
+    cepDT       dt;
+    uint64_t    total_size;
+    uint64_t    hash;
+    uint8_t*    buffer;
+    size_t      size;
+    uint64_t    next_offset;
+} cepSerializationStageData;
+
+typedef struct {
+    cepPath*                     path;
+    uint8_t                      cell_type;
+    uint8_t                      manifest_flags;
+    uint32_t                     transaction;
+    cepSerializationStageData    data;
+} cepSerializationStage;
+
+typedef struct {
+    uint32_t                 id;
+    uint16_t                 last_sequence;
+    bool                     active;
+    cepSerializationStage*   pending_stage;
+} cepSerializationTxState;
+
+struct cepSerializationReader {
+    cepCell*                    root;
+    bool                        header_seen;
+    bool                        pending_commit;
+    bool                        error;
+    cepSerializationHeader      header;
+
+    cepSerializationTxState*    transactions;
+    size_t                      transaction_count;
+    size_t                      transaction_capacity;
+
+    cepSerializationStage*      stages;
+    size_t                      stage_count;
+    size_t                      stage_capacity;
+};
+
+static uint16_t cep_serial_read_be16_buf(const uint8_t* src) {
+    uint16_t temp;
+    memcpy(&temp, src, sizeof temp);
+    return cep_serial_from_be16(temp);
+}
+
+static uint32_t cep_serial_read_be32_buf(const uint8_t* src) {
+    uint32_t temp;
+    memcpy(&temp, src, sizeof temp);
+    return cep_serial_from_be32(temp);
+}
+
+static uint64_t cep_serial_read_be64_buf(const uint8_t* src) {
+    uint64_t temp;
+    memcpy(&temp, src, sizeof temp);
+    return cep_serial_from_be64(temp);
+}
+
+static void cep_serialization_stage_data_dispose(cepSerializationStageData* data) {
+    if (!data)
+        return;
+
+    if (data->buffer) {
+        cep_free(data->buffer);
+        data->buffer = NULL;
+    }
+
+    memset(data, 0, sizeof(*data));
+}
+
+static void cep_serialization_stage_dispose(cepSerializationStage* stage) {
+    if (!stage)
+        return;
+
+    if (stage->path) {
+        cep_free(stage->path);
+        stage->path = NULL;
+    }
+
+    cep_serialization_stage_data_dispose(&stage->data);
+    memset(stage, 0, sizeof(*stage));
+}
+
+static void cep_serialization_reader_clear_transactions(cepSerializationReader* reader) {
+    if (!reader)
+        return;
+
+    if (reader->transactions) {
+        memset(reader->transactions, 0, reader->transaction_capacity * sizeof(*reader->transactions));
+    }
+    reader->transaction_count = 0;
+}
+
+static void cep_serialization_reader_clear_stages(cepSerializationReader* reader) {
+    if (!reader)
+        return;
+
+    if (reader->stages) {
+        for (size_t i = 0; i < reader->stage_count; ++i)
+            cep_serialization_stage_dispose(&reader->stages[i]);
+    }
+    reader->stage_count = 0;
+}
+
+static void cep_serialization_reader_init(cepSerializationReader* reader, cepCell* root) {
+    assert(reader);
+    memset(reader, 0, sizeof(*reader));
+    reader->root = root ? cep_link_pull(root) : NULL;
+}
+
+cepSerializationReader* cep_serialization_reader_create(cepCell* root) {
+    cepSerializationReader* reader = cep_malloc0(sizeof *reader);
+    if (!reader)
+        return NULL;
+    cep_serialization_reader_init(reader, root);
+    return reader;
+}
+
+void cep_serialization_reader_destroy(cepSerializationReader* reader) {
+    if (!reader)
+        return;
+
+    cep_serialization_reader_reset(reader);
+
+    if (reader->transactions) {
+        cep_free(reader->transactions);
+        reader->transactions = NULL;
+        reader->transaction_capacity = 0;
+    }
+
+    if (reader->stages) {
+        cep_free(reader->stages);
+        reader->stages = NULL;
+        reader->stage_capacity = 0;
+    }
+
+    cep_free(reader);
+}
+
+
+void cep_serialization_reader_reset(cepSerializationReader* reader) {
+    if (!reader)
+        return;
+
+    cep_serialization_reader_clear_stages(reader);
+    cep_serialization_reader_clear_transactions(reader);
+
+    reader->header_seen = false;
+    reader->pending_commit = false;
+    reader->error = false;
+    memset(&reader->header, 0, sizeof(reader->header));
+}
+
+static bool cep_serialization_reader_ensure_stage_capacity(cepSerializationReader* reader, size_t needed) {
+    if (reader->stage_capacity >= needed)
+        return true;
+
+    size_t capacity = reader->stage_capacity ? reader->stage_capacity : 4u;
+    while (capacity < needed && capacity < (SIZE_MAX >> 1))
+        capacity <<= 1u;
+    if (capacity < needed)
+        capacity = needed;
+
+    size_t bytes = capacity * sizeof(*reader->stages);
+    cepSerializationStage* stages = reader->stages ? cep_realloc(reader->stages, bytes) : cep_malloc(bytes);
+    if (!stages)
+        return false;
+
+    if (capacity > reader->stage_capacity) {
+        size_t old_bytes = reader->stage_capacity * sizeof(*reader->stages);
+        memset((uint8_t*)stages + old_bytes, 0, bytes - old_bytes);
+    }
+
+    reader->stages = stages;
+    reader->stage_capacity = capacity;
+    return true;
+}
+
+static bool cep_serialization_reader_ensure_tx_capacity(cepSerializationReader* reader, size_t needed) {
+    if (reader->transaction_capacity >= needed)
+        return true;
+
+    size_t capacity = reader->transaction_capacity ? reader->transaction_capacity : 4u;
+    while (capacity < needed && capacity < (SIZE_MAX >> 1))
+        capacity <<= 1u;
+    if (capacity < needed)
+        capacity = needed;
+
+    size_t bytes = capacity * sizeof(*reader->transactions);
+    cepSerializationTxState* txs = reader->transactions ? cep_realloc(reader->transactions, bytes) : cep_malloc(bytes);
+    if (!txs)
+        return false;
+
+    if (capacity > reader->transaction_capacity) {
+        size_t old_bytes = reader->transaction_capacity * sizeof(*reader->transactions);
+        memset((uint8_t*)txs + old_bytes, 0, bytes - old_bytes);
+    }
+
+    reader->transactions = txs;
+    reader->transaction_capacity = capacity;
+    return true;
+}
+
+static cepSerializationTxState* cep_serialization_reader_find_tx(cepSerializationReader* reader, uint32_t id) {
+    for (size_t i = 0; i < reader->transaction_count; ++i) {
+        if (reader->transactions[i].id == id)
+            return &reader->transactions[i];
+    }
+    return NULL;
+}
+
+static cepSerializationTxState* cep_serialization_reader_get_tx(cepSerializationReader* reader, uint32_t id) {
+    cepSerializationTxState* state = cep_serialization_reader_find_tx(reader, id);
+    if (state)
+        return state;
+
+    if (!cep_serialization_reader_ensure_tx_capacity(reader, reader->transaction_count + 1u))
+        return NULL;
+
+    state = &reader->transactions[reader->transaction_count++];
+    memset(state, 0, sizeof(*state));
+    state->id = id;
+    state->active = true;
+    state->last_sequence = 0;
+    state->pending_stage = NULL;
+    return state;
+}
+
+static bool cep_serialization_reader_record_manifest(cepSerializationReader* reader,
+                                                     cepSerializationTxState* tx,
+                                                     uint32_t transaction,
+                                                     const uint8_t* payload,
+                                                     size_t payload_size) {
+    if (payload_size < 6u)
+        return false;
+
+    uint16_t segments = cep_serial_read_be16_buf(payload);
+    uint8_t cell_type = payload[2];
+    uint8_t manifest_flags = payload[3];
+    uint16_t reserved = cep_serial_read_be16_buf(payload + 4);
+    (void)reserved;
+
+    size_t expected_bytes = (size_t)segments * (sizeof(uint64_t) * 2u);
+    if ((size_t)6u + expected_bytes > payload_size)
+        return false;
+
+    if (!segments)
+        return false;
+
+    if (!cep_serialization_reader_ensure_stage_capacity(reader, reader->stage_count + 1u))
+        return false;
+
+    cepSerializationStage* stage = &reader->stages[reader->stage_count++];
+    memset(stage, 0, sizeof(*stage));
+    stage->cell_type = cell_type;
+    stage->manifest_flags = manifest_flags;
+    stage->transaction = transaction;
+
+    size_t path_bytes = sizeof(cepPath) + (size_t)segments * sizeof(cepPast);
+    cepPath* path = cep_malloc(path_bytes);
+    if (!path)
+        return false;
+    path->length = segments;
+    path->capacity = segments;
+
+    const uint8_t* cursor = payload + 6u;
+    for (uint16_t i = 0; i < segments; ++i) {
+        cepPast* segment = &path->past[i];
+        segment->dt.domain = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        segment->dt.tag = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        segment->timestamp = 0;
+    }
+    stage->path = path;
+
+    if (manifest_flags & 0x08u) {
+        stage->data.needed = true;
+        stage->data.dt.domain = 0;
+        stage->data.dt.tag = 0;
+        stage->data.total_size = 0;
+        stage->data.hash = 0;
+        stage->data.buffer = NULL;
+        stage->data.size = 0;
+        stage->data.next_offset = 0;
+        stage->data.header_received = false;
+        stage->data.chunked = false;
+        stage->data.complete = false;
+        tx->pending_stage = stage;
+    } else {
+        stage->data.needed = false;
+        stage->data.complete = true;
+        tx->pending_stage = NULL;
+    }
+
+    return true;
+}
+
+static bool cep_serialization_stage_allocate_buffer(cepSerializationStageData* data, size_t size) {
+    if (!data)
+        return false;
+
+    if (!size) {
+        data->buffer = NULL;
+        data->size = 0;
+        data->next_offset = 0;
+        return true;
+    }
+
+    data->buffer = cep_malloc(size);
+    if (!data->buffer)
+        return false;
+
+    data->size = 0;
+    data->next_offset = 0;
+    return true;
+}
+
+static bool cep_serialization_reader_record_data_header(cepSerializationStageData* data,
+                                                        const uint8_t* payload,
+                                                        size_t payload_size,
+                                                        const uint8_t* inline_bytes,
+                                                        size_t inline_size) {
+    if (!data || !payload)
+        return false;
+
+    if (payload_size < (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u))
+        return false;
+
+    data->datatype = cep_serial_read_be16_buf(payload);
+    data->flags = cep_serial_read_be16_buf(payload + 2u);
+    data->chunked = (data->flags & UINT16_C(0x0001)) != 0;
+    uint32_t inline_len = cep_serial_read_be32_buf(payload + 4u);
+    data->total_size = cep_serial_read_be64_buf(payload + 8u);
+    data->hash = cep_serial_read_be64_buf(payload + 16u);
+    data->dt.domain = cep_serial_read_be64_buf(payload + 24u);
+    data->dt.tag = cep_serial_read_be64_buf(payload + 32u);
+
+    size_t header_bytes = (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u);
+    size_t expected_inline = payload_size - header_bytes;
+
+    if (!data->chunked) {
+        if ((size_t)inline_len != inline_size || inline_size != expected_inline)
+            return false;
+        if ((uint64_t)inline_size != data->total_size)
+            return false;
+        if (!cep_serialization_stage_allocate_buffer(data, inline_size ? inline_size : 1u))
+            return false;
+        if (inline_size)
+            memcpy(data->buffer, inline_bytes, inline_size);
+        data->size = inline_size;
+        data->complete = true;
+    } else {
+        if (inline_len != 0u || expected_inline != 0u)
+            return false;
+        if (!cep_serialization_stage_allocate_buffer(data, (size_t)data->total_size))
+            return false;
+        data->complete = (data->total_size == 0u);
+    }
+
+    data->header_received = true;
+    return true;
+}
+
+static bool cep_serialization_reader_record_data_chunk(cepSerializationStageData* data,
+                                                       const uint8_t* payload,
+                                                       size_t payload_size) {
+    if (!data || !payload)
+        return false;
+    if (!data->header_received || !data->chunked)
+        return false;
+
+    if (payload_size < sizeof(uint64_t) + sizeof(uint32_t) + sizeof(uint32_t))
+        return false;
+
+    uint64_t offset = cep_serial_read_be64_buf(payload);
+    uint32_t length = cep_serial_read_be32_buf(payload + sizeof(uint64_t));
+    (void)cep_serial_read_be32_buf(payload + sizeof(uint64_t) + sizeof(uint32_t));
+
+    size_t slice = (size_t)length;
+    size_t expected = sizeof(uint64_t) + sizeof(uint32_t) + sizeof(uint32_t) + slice;
+    if (expected != payload_size)
+        return false;
+
+    if (offset != data->next_offset)
+        return false;
+
+    if (slice && data->buffer)
+        memcpy(data->buffer + data->next_offset, payload + expected - slice, slice);
+
+    data->next_offset += slice;
+    data->size += slice;
+
+    if (data->next_offset == data->total_size)
+        data->complete = true;
+
+    return true;
+}
+
+static bool cep_serialization_reader_check_hash(const cepSerializationStageData* data) {
+    if (!data)
+        return false;
+    if (!data->hash)
+        return true;
+    if (data->total_size && !data->buffer)
+        return false;
+
+    uint64_t computed = cep_hash_bytes(data->buffer, (size_t)data->total_size);
+    return computed == data->hash;
+}
+
+static bool cep_serialization_reader_apply_stage(const cepSerializationReader* reader,
+                                                 cepSerializationStage* stage) {
+    if (!reader || !stage || !reader->root)
+        return false;
+
+    cepCell* current = reader->root;
+    for (unsigned idx = 0; idx < stage->path->length; ++idx) {
+        const cepPast* segment = &stage->path->past[idx];
+        cepDT name = {.domain = segment->dt.domain, .tag = segment->dt.tag};
+        cepCell* child = cep_cell_find_by_name(current, &name);
+        if (!child) {
+            if (idx + 1u < stage->path->length) {
+                child = cep_cell_add_dictionary(current,
+                                                &name,
+                                                0,
+                                                CEP_DTAW("CEP", "dictionary"),
+                                                CEP_STORAGE_RED_BLACK_T);
+            } else {
+                child = cep_cell_add_empty(current, &name, 0);
+            }
+        }
+        if (!child)
+            return false;
+        current = cep_link_pull(child);
+    }
+
+    if (!current)
+        return false;
+
+    current->metacell.hidden = (stage->manifest_flags & 0x01u) ? 1u : 0u;
+
+    if (stage->data.needed) {
+        if (!stage->data.complete)
+            return false;
+        if (!cep_serialization_reader_check_hash(&stage->data))
+            return false;
+
+        if (current->data) {
+            cep_data_del(current->data);
+            current->data = NULL;
+        }
+
+        size_t size = (size_t)stage->data.total_size;
+        size_t capacity = size ? size : 1u;
+        cepData* payload = NULL;
+        if (stage->data.datatype == CEP_DATATYPE_VALUE) {
+            payload = cep_data_new(&stage->data.dt,
+                                   CEP_DATATYPE_VALUE,
+                                   true,
+                                   NULL,
+                                   stage->data.buffer,
+                                   size,
+                                   capacity);
+            if (!payload)
+                return false;
+        } else if (stage->data.datatype == CEP_DATATYPE_DATA) {
+            uint8_t* owned = NULL;
+            if (size) {
+                owned = cep_malloc(size);
+                memcpy(owned, stage->data.buffer, size);
+            }
+            payload = cep_data_new(&stage->data.dt,
+                                   CEP_DATATYPE_DATA,
+                                   true,
+                                   NULL,
+                                   owned,
+                                   size,
+                                   capacity,
+                                   size ? cep_free : NULL);
+            if (!payload) {
+                if (owned)
+                    cep_free(owned);
+                return false;
+            }
+            stage->data.buffer = NULL;
+        } else {
+            return false;
+        }
+
+        current->data = payload;
+    }
+
+    return true;
+}
+
+static void cep_serialization_reader_fail(cepSerializationReader* reader) {
+    if (!reader)
+        return;
+
+    reader->error = true;
+    reader->pending_commit = false;
+    cep_serialization_reader_clear_stages(reader);
+    cep_serialization_reader_clear_transactions(reader);
+}
+
+bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8_t* chunk, size_t chunk_size) {
+    if (!reader || !chunk || chunk_size < CEP_SERIALIZATION_CHUNK_OVERHEAD)
+        return false;
+
+    uint64_t payload_be = 0;
+    memcpy(&payload_be, chunk, sizeof payload_be);
+    size_t payload_size = (size_t)cep_serial_from_be64(payload_be);
+    if (payload_size + CEP_SERIALIZATION_CHUNK_OVERHEAD != chunk_size)
+        return false;
+
+    uint64_t id_be = 0;
+    memcpy(&id_be, chunk + sizeof(uint64_t), sizeof(uint64_t));
+    uint64_t chunk_id = cep_serial_from_be64(id_be);
+    uint16_t chunk_class = cep_serialization_chunk_class(chunk_id);
+    uint32_t transaction = cep_serialization_chunk_transaction(chunk_id);
+    uint16_t sequence = cep_serialization_chunk_sequence(chunk_id);
+
+    const uint8_t* payload = chunk + CEP_SERIALIZATION_CHUNK_OVERHEAD;
+
+    if (chunk_class == CEP_CHUNK_CLASS_CONTROL && transaction == 0u && sequence == 0u) {
+        if (!cep_serialization_header_read(chunk, chunk_size, &reader->header)) {
+            cep_serialization_reader_fail(reader);
+            return false;
+        }
+        cep_serialization_reader_clear_stages(reader);
+        cep_serialization_reader_clear_transactions(reader);
+        reader->header_seen = true;
+        reader->pending_commit = false;
+        reader->error = false;
+        return true;
+    }
+
+    if (reader->error)
+        return false;
+
+    if (!reader->header_seen)
+        return false;
+
+    if (!sequence) {
+        cep_serialization_reader_fail(reader);
+        return false;
+    }
+
+    cepSerializationTxState* tx = cep_serialization_reader_get_tx(reader, transaction);
+    if (!tx) {
+        cep_serialization_reader_fail(reader);
+        return false;
+    }
+
+    if ((uint16_t)(tx->last_sequence + 1u) != sequence) {
+        cep_serialization_reader_fail(reader);
+        return false;
+    }
+    tx->last_sequence = sequence;
+
+    switch (chunk_class) {
+      case CEP_CHUNK_CLASS_STRUCTURE: {
+        if (!tx->pending_stage || tx->pending_stage->data.header_received) {
+            if (!cep_serialization_reader_record_manifest(reader, tx, transaction, payload, payload_size)) {
+                cep_serialization_reader_fail(reader);
+                return false;
+            }
+        } else {
+            size_t header_bytes = (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u);
+            if (payload_size < header_bytes) {
+                cep_serialization_reader_fail(reader);
+                return false;
+            }
+            size_t inline_size = payload_size - header_bytes;
+            const uint8_t* inline_bytes = payload + header_bytes;
+            if (!cep_serialization_reader_record_data_header(&tx->pending_stage->data,
+                                                             payload,
+                                                             payload_size,
+                                                             inline_bytes,
+                                                             inline_size)) {
+                cep_serialization_reader_fail(reader);
+                return false;
+            }
+            if (tx->pending_stage->data.complete)
+                tx->pending_stage = NULL;
+        }
+        break;
+      }
+      case CEP_CHUNK_CLASS_BLOB: {
+        if (!tx->pending_stage || !tx->pending_stage->data.header_received) {
+            cep_serialization_reader_fail(reader);
+            return false;
+        }
+        if (!cep_serialization_reader_record_data_chunk(&tx->pending_stage->data, payload, payload_size)) {
+            cep_serialization_reader_fail(reader);
+            return false;
+        }
+        if (tx->pending_stage->data.complete)
+            tx->pending_stage = NULL;
+        break;
+      }
+      case CEP_CHUNK_CLASS_CONTROL: {
+        reader->pending_commit = true;
+        break;
+      }
+      default:
+        cep_serialization_reader_fail(reader);
+        return false;
+    }
+
+    return true;
+}
+
+bool cep_serialization_reader_commit(cepSerializationReader* reader) {
+    if (!reader)
+        return false;
+    if (reader->error)
+        return false;
+    if (!reader->pending_commit)
+        return false;
+
+    for (size_t i = 0; i < reader->stage_count; ++i) {
+        cepSerializationStage* stage = &reader->stages[i];
+        if (!cep_serialization_reader_apply_stage(reader, stage)) {
+            cep_serialization_reader_fail(reader);
+            return false;
+        }
+        cep_serialization_stage_dispose(stage);
+    }
+
+    reader->stage_count = 0;
+    reader->pending_commit = false;
+    reader->transaction_count = 0;
+    if (reader->transactions)
+        memset(reader->transactions, 0, reader->transaction_capacity * sizeof(*reader->transactions));
+    return true;
+}
+
+bool cep_serialization_reader_pending(const cepSerializationReader* reader) {
+    if (!reader)
+        return false;
+    return reader->pending_commit;
 }
 
