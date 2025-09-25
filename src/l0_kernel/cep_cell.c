@@ -402,6 +402,7 @@ void cep_data_history_clear(cepData* data) {
 #include "storage/cep_dynamic_array.h"
 #include "storage/cep_packed_queue.h"
 #include "storage/cep_red_black_tree.h"
+#include "storage/cep_hash_table.h"
 #include "storage/cep_octree.h"
 
 
@@ -1166,6 +1167,12 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
         store = (cepStore*) rb_tree_new();
         break;
       }
+      case CEP_STORAGE_HASH_TABLE: {
+        size_t capacity = va_arg(args, size_t);
+        assert(capacity && indexing == CEP_INDEX_BY_HASH);
+        store = (cepStore*) hash_table_new(capacity);
+        break;
+      }
       case CEP_STORAGE_OCTREE: {
         float* center  = va_arg(args, float*);
         float  subwide = va_arg(args, double);
@@ -1247,6 +1254,11 @@ void cep_store_del(cepStore* store) {
         rb_tree_del((cepRbTree*) store);
         break;
       }
+      case CEP_STORAGE_HASH_TABLE: {
+        hash_table_del_all_children((cepHashTable*) store);
+        hash_table_del((cepHashTable*) store);
+        break;
+      }
       case CEP_STORAGE_OCTREE: {
         octree_del_all_children((cepOctree*) store);
         octree_del((cepOctree*) store);
@@ -1284,6 +1296,10 @@ void cep_store_delete_children_hard(cepStore* store) {
       }
       case CEP_STORAGE_RED_BLACK_T: {
         rb_tree_del_all_children((cepRbTree*) store);
+        break;
+      }
+      case CEP_STORAGE_HASH_TABLE: {
+        hash_table_del_all_children((cepHashTable*) store);
         break;
       }
       case CEP_STORAGE_OCTREE: {
@@ -1410,6 +1426,10 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
             cell = rb_tree_sorted_insert((cepRbTree*) store, child, store->compare, (void*)context);
             break;
           }
+          case CEP_STORAGE_HASH_TABLE: {
+            cell = hash_table_sorted_insert((cepHashTable*) store, child, store->compare, (void*)context);
+            break;
+          }
           case CEP_STORAGE_OCTREE: {
             cell = octree_sorted_insert((cepOctree*) store, child, store->compare, (void*)context);
             break;
@@ -1514,6 +1534,9 @@ static inline cepCell* store_first_child(const cepStore* store) {
       case CEP_STORAGE_RED_BLACK_T: {
         return rb_tree_first((cepRbTree*) store);
       }
+      case CEP_STORAGE_HASH_TABLE: {
+        return hash_table_first((cepHashTable*) store);
+      }
       case CEP_STORAGE_OCTREE: {
         return octree_first((cepOctree*) store);
       }
@@ -1544,6 +1567,9 @@ static inline cepCell* store_last_child(const cepStore* store) {
       case CEP_STORAGE_RED_BLACK_T: {
         return rb_tree_last((cepRbTree*) store);
       }
+      case CEP_STORAGE_HASH_TABLE: {
+        return hash_table_last((cepHashTable*) store);
+      }
       case CEP_STORAGE_OCTREE: {
         return octree_last((cepOctree*) store);
       }
@@ -1573,6 +1599,9 @@ static inline cepCell* store_find_child_by_name(const cepStore* store, const cep
       }
       case CEP_STORAGE_RED_BLACK_T: {
         return rb_tree_find_by_name((cepRbTree*) store, name);
+      }
+      case CEP_STORAGE_HASH_TABLE: {
+        return hash_table_find_by_name((cepHashTable*) store, name);
       }
       case CEP_STORAGE_OCTREE: {
         return octree_find_by_name((cepOctree*) store, name);
@@ -1607,6 +1636,9 @@ static inline cepCell* store_find_child_by_key(const cepStore* store, cepCell* k
       case CEP_STORAGE_RED_BLACK_T: {
         return rb_tree_find_by_key((cepRbTree*) store, key, compare, context);
       }
+      case CEP_STORAGE_HASH_TABLE: {
+        return hash_table_find_by_key((cepHashTable*) store, key, compare, context);
+      }
       case CEP_STORAGE_OCTREE: {
         return octree_find_by_key((cepOctree*) store, key, compare, context);
       }
@@ -1637,6 +1669,9 @@ static inline cepCell* store_find_child_by_position(const cepStore* store, size_
       case CEP_STORAGE_RED_BLACK_T: {
         return rb_tree_find_by_position((cepRbTree*) store, position);
       }
+      case CEP_STORAGE_HASH_TABLE: {
+        return hash_table_find_by_position((cepHashTable*) store, position);
+      }
       case CEP_STORAGE_OCTREE: {
         return octree_find_by_position((cepOctree*) store, position);
       }
@@ -1666,6 +1701,9 @@ static inline cepCell* store_prev_child(const cepStore* store, cepCell* child) {
       case CEP_STORAGE_RED_BLACK_T: {
         return rb_tree_prev(child);
       }
+      case CEP_STORAGE_HASH_TABLE: {
+        return hash_table_prev((cepHashTable*) store, child);
+      }
       case CEP_STORAGE_OCTREE: {
         return octree_prev(child);
       }
@@ -1694,6 +1732,9 @@ static inline cepCell* store_next_child(const cepStore* store, cepCell* child) {
       }
       case CEP_STORAGE_RED_BLACK_T: {
         return rb_tree_next(child);
+      }
+      case CEP_STORAGE_HASH_TABLE: {
+        return hash_table_next((cepHashTable*) store, child);
       }
       case CEP_STORAGE_OCTREE: {
         return octree_next(child);
@@ -1730,6 +1771,9 @@ static inline cepCell* store_find_next_child_by_name(const cepStore* store, cepD
       }
       case CEP_STORAGE_PACKED_QUEUE: {
         return packed_q_next_by_name((cepPackedQ*) store, name, (cepPackedQNode**)childIdx);
+      }
+      case CEP_STORAGE_HASH_TABLE: {
+        return hash_table_next_by_name((cepHashTable*) store, name, childIdx);
       }
       case CEP_STORAGE_RED_BLACK_T: {    // Unused.
         break;
@@ -1769,6 +1813,9 @@ static inline bool store_traverse(cepStore* store, cepTraverse func, void* conte
       }
       case CEP_STORAGE_RED_BLACK_T: {
         return rb_tree_traverse((cepRbTree*) store, cep_bitson(children) + 2, func, context, entry);
+      }
+      case CEP_STORAGE_HASH_TABLE: {
+        return hash_table_traverse((cepHashTable*) store, func, context, entry);
       }
       case CEP_STORAGE_OCTREE: {
         return octree_traverse((cepOctree*) store, func, context, entry);
@@ -2214,6 +2261,10 @@ static inline void store_to_dictionary(cepStore* store) {
         assert(store->storage != CEP_STORAGE_PACKED_QUEUE);    // Unsupported.
         break;
       }
+      case CEP_STORAGE_HASH_TABLE: {
+        assert(store->storage != CEP_STORAGE_HASH_TABLE);    // Unsupported.
+        break;
+      }
       case CEP_STORAGE_RED_BLACK_T: {    // Unneeded.
         break;
       }
@@ -2260,6 +2311,10 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
         assert(store->storage == CEP_STORAGE_PACKED_QUEUE);    // Unsupported.
         break;
       }
+      case CEP_STORAGE_HASH_TABLE: {
+        assert(store->storage != CEP_STORAGE_HASH_TABLE);    // Unsupported.
+        break;
+      }
       case CEP_STORAGE_RED_BLACK_T: {
         // ToDo: re-sort RB-tree.
         assert(store->storage != CEP_STORAGE_RED_BLACK_T);
@@ -2302,6 +2357,10 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
         rb_tree_take((cepRbTree*) store, target);
         break;
       }
+      case CEP_STORAGE_HASH_TABLE: {
+        hash_table_take((cepHashTable*) store, target);
+        break;
+      }
       case CEP_STORAGE_OCTREE: {
         octree_take((cepOctree*) store, target);
         break;
@@ -2340,6 +2399,10 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
       }
       case CEP_STORAGE_RED_BLACK_T: {
         rb_tree_pop((cepRbTree*) store, target);
+        break;
+      }
+      case CEP_STORAGE_HASH_TABLE: {
+        hash_table_pop((cepHashTable*) store, target);
         break;
       }
       case CEP_STORAGE_OCTREE: {
@@ -2387,6 +2450,10 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
       }
       case CEP_STORAGE_RED_BLACK_T: {
         rb_tree_remove_cell((cepRbTree*) store, cell);
+        break;
+      }
+      case CEP_STORAGE_HASH_TABLE: {
+        hash_table_remove_cell((cepHashTable*) store, cell);
         break;
       }
       case CEP_STORAGE_OCTREE: {

@@ -61,6 +61,51 @@ static bool print_values(cepEntry* entry, void* unused) {
 
 
 
+static int hash_value_compare(const cepCell* first, const cepCell* second, void* context) {
+    (void)context;
+
+    assert(first && second);
+
+    const uint32_t left  = *(const uint32_t*)cep_cell_data(first);
+    const uint32_t right = *(const uint32_t*)cep_cell_data(second);
+    if (left < right)
+        return -1;
+    if (left > right)
+        return 1;
+    return 0;
+}
+
+
+static cepCell* hash_index_add_value(cepCell* table, cepID name, uint32_t value) {
+    cepCell child = {0};
+    cep_cell_initialize_value(&child,
+                              CEP_DTS(CEP_ACRO("CEP"), name),
+                              CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION),
+                              &value,
+                              sizeof value,
+                              sizeof value);
+    cepCell* inserted = cep_cell_add(table, 0, &child);
+    assert_not_null(inserted);
+    return inserted;
+}
+
+
+typedef struct {
+    uint64_t    sum;
+    size_t      count;
+} HashVisit;
+
+static bool hash_table_visit_sum(cepEntry* entry, void* context) {
+    if (!entry->cell)
+        return true;
+
+    HashVisit* visit = context;
+    visit->sum += *(uint32_t*)cep_cell_data(entry->cell);
+    visit->count++;
+    return true;
+}
+
+
 
 static void test_cell_value(cepCell* rec, uint32_t trueval) {
     cepData* data = rec->data;
@@ -385,6 +430,118 @@ static void test_cell_tech_dictionary(unsigned storage) {
     cep_cell_delete_hard(dict);
 }
 
+
+
+
+/* Hash-table backend coverage: confirm hash-indexed stores honour structural
+ * deduplication, keyed lookups, and traversal bookkeeping while rehashing under
+ * load. Focuses on collision handling via comparator equality and verifies that
+ * the ordered walk stays consistent with the items committed.
+ */
+static cepStore* hash_index_store_new(unsigned storage, size_t capacity) {
+    switch (storage) {
+      case CEP_STORAGE_LINKED_LIST:
+      case CEP_STORAGE_RED_BLACK_T:
+        return cep_store_new(CEP_DTAW("CEP", "hash"), storage, CEP_INDEX_BY_HASH, hash_value_compare);
+
+      case CEP_STORAGE_ARRAY:
+        assert(capacity);
+        return cep_store_new(CEP_DTAW("CEP", "hash"), storage, CEP_INDEX_BY_HASH, capacity, hash_value_compare);
+
+      case CEP_STORAGE_HASH_TABLE:
+        assert(capacity);
+        return cep_store_new(CEP_DTAW("CEP", "hash"), storage, CEP_INDEX_BY_HASH, capacity, hash_value_compare);
+    }
+
+    // Unsupported storage for hash indexing in tests.
+    return NULL;
+}
+
+
+static void test_cell_tech_hash(unsigned storage, size_t capacity) {
+    cepStore* store = hash_index_store_new(storage, capacity);
+    assert_not_null(store);
+
+    cepCell* hash = cep_cell_add_child(cep_root(),
+                                       CEP_TYPE_NORMAL,
+                                       CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 3000 + storage),
+                                       0,
+                                       NULL,
+                                       store);
+
+    test_cell_zero_item_ops(hash);
+
+    uint32_t value = 1;
+    cepCell* item = hash_index_add_value(hash, CEP_NAME_ENUMERATION, value);
+    test_cell_value(item, value);
+    test_cell_one_item_ops(hash, item);
+
+    cepCell* duplicate = hash_index_add_value(hash, CEP_NAME_ENUMERATION, value);
+    assert_ptr_equal(duplicate, item);
+    assert_size(cep_cell_children(hash), ==, 1);
+
+    cepPath* path = cep_alloca(sizeof(cepPath) + (1 * sizeof(cepPast)));
+    path->length = 1;
+    path->capacity = 1;
+    path->past[0].timestamp = 0;
+
+    uint64_t expectedSum = value;
+    size_t   expectedCount = 1;
+
+    for (unsigned n = 1; n <= 16; n++) {
+        value = (uint32_t)(n * 7u + 3u);
+        cepID name = CEP_NAME_Z_COUNT + n;
+
+        item = hash_index_add_value(hash, name, value);
+        test_cell_value(item, value);
+
+        cepCell* found = cep_cell_find_by_name(hash, CEP_DTS(CEP_ACRO("CEP"), name));
+        assert_ptr_equal(found, item);
+
+        cepCell key = {0};
+        cep_cell_initialize_value(&key,
+                                  CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 6000),
+                                  CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION),
+                                  &value,
+                                  sizeof value,
+                                  sizeof value);
+        found = cep_cell_find_by_key(hash, &key, hash_value_compare, NULL);
+        assert_ptr_equal(found, item);
+        cep_cell_finalize(&key);
+
+        path->past[0].dt = *CEP_DTS(CEP_ACRO("CEP"), name);
+        found = cep_cell_find_by_path(hash, path);
+        assert_ptr_equal(found, item);
+
+        expectedSum += value;
+        expectedCount++;
+        assert_size(cep_cell_children(hash), ==, expectedCount);
+    }
+
+    HashVisit visit = {0};
+    assert_true(cep_cell_traverse(hash, hash_table_visit_sum, &visit, NULL));
+    assert_size(visit.count, ==, expectedCount);
+    assert_uint64(visit.sum, ==, expectedSum);
+
+    cepCell* first = cep_cell_first(hash);
+    assert_not_null(first);
+    expectedSum -= *(uint32_t*)cep_cell_data(first);
+    expectedCount--;
+    cep_cell_delete_hard(first);
+
+    cepCell* last = cep_cell_last(hash);
+    assert_not_null(last);
+    expectedSum -= *(uint32_t*)cep_cell_data(last);
+    expectedCount--;
+    cep_cell_delete_hard(last);
+
+    visit = (HashVisit){0};
+    assert_true(cep_cell_traverse(hash, hash_table_visit_sum, &visit, NULL));
+    assert_size(visit.count, ==, expectedCount);
+    assert_uint64(visit.sum, ==, expectedSum);
+
+    cep_cell_delete_hard(hash);
+}
 
 
 
@@ -713,6 +870,10 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
     test_cell_tech_dictionary(CEP_STORAGE_LINKED_LIST);
     test_cell_tech_dictionary(CEP_STORAGE_ARRAY);
     test_cell_tech_dictionary(CEP_STORAGE_RED_BLACK_T);
+    test_cell_tech_hash(CEP_STORAGE_LINKED_LIST, 0);
+    test_cell_tech_hash(CEP_STORAGE_ARRAY, 24);
+    test_cell_tech_hash(CEP_STORAGE_RED_BLACK_T, 0);
+    test_cell_tech_hash(CEP_STORAGE_HASH_TABLE, 16);
     test_cell_tech_sequencing_dictionary();
 
     test_cell_tech_catalog(CEP_STORAGE_LINKED_LIST);

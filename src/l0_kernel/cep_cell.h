@@ -671,6 +671,7 @@ enum _cepCellStorage {
     CEP_STORAGE_ARRAY,          // Children stored in an array.
     CEP_STORAGE_PACKED_QUEUE,   // Children stored in a packed queue.
     CEP_STORAGE_RED_BLACK_T,    // Children stored in a red-black tree.
+    CEP_STORAGE_HASH_TABLE,     // Children stored in a hash table with ordered buckets.
     CEP_STORAGE_OCTREE,         // Children stored in an octree spatial index.
     //
     CEP_STORAGE_COUNT

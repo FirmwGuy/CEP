@@ -14,14 +14,16 @@ TARGET := $(BIN_DIR)/cep_tests
 # Tools and flags
 CC ?= gcc
 CFLAGS ?= -g -Wall -D_GNU_SOURCE -fplan9-extensions \
-          -I$(SRCDIR)/l0_kernel -I$(SRCDIR)/test
+          -I$(SRCDIR)/l0_kernel -I$(SRCDIR)/l0_kernel/storage \
+          -I$(SRCDIR)/test
 LDFLAGS :=
 
 # Sources and objects (core kernel plus tests)
 SRC := $(SRCDIR)/l0_kernel/cep_cell.c \
        $(SRCDIR)/l0_kernel/cep_enzyme.c \
        $(SRCDIR)/l0_kernel/cep_heartbeat.c \
-       $(wildcard $(SRCDIR)/test/*.c)
+       $(wildcard $(SRCDIR)/test/*.c) \
+       $(wildcard $(SRCDIR)/test/*/*.c)
 OBJ := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRC))
 
 .PHONY: all run debug clean help

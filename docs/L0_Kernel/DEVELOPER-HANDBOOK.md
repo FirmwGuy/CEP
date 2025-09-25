@@ -98,6 +98,22 @@ Child Storage Strategies
   - Strengths: spatial indexing with user comparator.
   - Precondition: requires center/subwide bound and comparator.
 
+Hash-Indexed Stores
+-------------------
+Hash-indexed stores make it easy to drop new children into a collection and still find them instantly. Instead of scanning every sibling, the store groups candidates by a precomputed hash and then applies a tie-breaker, so insertions stay quick even as the set grows.
+
+Technical Details
+- Supported backends: linked lists, dynamic arrays, red-black trees, and the dedicated hash-table backend all accept `CEP_INDEX_BY_HASH`. Each backend keeps its native strengths—lists remain rotation-friendly, arrays keep positional access, trees stay balanced, and the hash-table resizes buckets as needed.
+- Creation contract: call `cep_store_new(..., CEP_INDEX_BY_HASH, compare)` and provide a comparator that first checks the stored hash and then compares a secondary field to resolve collisions. Callers constructing children manually can follow the `hash_index_add_value` pattern from the kernel tests: initialise a temporary cell, then pass it to `cep_cell_add`.
+- Operations: use `cep_cell_add` or `cep_store_add_child` for inserts. The deduplication logic treats two children with equal structure and hash/compare results as the same record. Append/prepend helpers are restricted to insertion-ordered stores and will assert if used with hash indexing.
+- Traversal: `cep_cell_traverse` and `store_traverse` iterate in hash/secondary order with no sentinel callback at the end, matching the behaviour of the other sorted backends.
+- Testing: `test_cell_tech_hash` in `src/test/l0_kernel/test_cell.c` seeds each supported backend, verifies comparator lookups, forces rehashing or tree rotations, and checks aggregate sums to confirm bookkeeping stays consistent.
+
+Q&A
+- **When should I choose the hash-table storage over a red-black tree?** Pick the hash-table when you need predictable O(1) inserts and primarily fetch by key. Reach for the tree when ordered neighbour queries or range scans matter more than raw insertion speed.
+- **Do I need to recompute hashes after mutating payload data?** Yes. Update the stored hash (for example via `cep_data_compute_hash`) before reinserting or replacing the child so bucket placement stays correct.
+- **Can I mix `CEP_INDEX_BY_HASH` with append/prepend helpers?** No. Hash-indexed stores expect comparator-driven inserts. Use `cep_cell_add` with a prepared child; append/prepend remain reserved for insertion-order storage.
+
 Coding Conventions
 - Assertions everywhere: validate pointers, modes, and index ranges. Fail fast in debug.
 - Avoid hidden side effects: functions that mutate also document store/indexing prerequisites (e.g., insertion-only vs. dictionary vs. sorted modes).
