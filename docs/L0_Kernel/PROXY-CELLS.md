@@ -15,3 +15,4 @@ Teams can wrap an existing datastore, a derived calculation, or a streaming wind
 - **Do proxies replace normal cells?** No. Use a proxy when the payload lives outside CEP or is too large to clone. Normal cells remain the default for in-memory values and structured children.
 - **What happens if a proxy cannot snapshot?** `cep_proxy_snapshot` returns `false`, and serialization fails fast. Adapters should always produce either inline bytes or an external ticket the replay side can resolve.
 - **Can a proxy own children?** Not yet. Proxies are read-only façades today; expose structured views by materialising them into normal cells or by teaching the proxy to hand back a composite payload.
+- **What if the importer lacks the adapter?** The deserializer stops as soon as a proxy manifest arrives without a matching proxy cell, keeping replays honest. Pre-seed the tree with the right proxy (or add a materialisation fallback) before ingesting archives.

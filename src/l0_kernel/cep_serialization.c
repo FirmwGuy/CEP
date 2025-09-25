@@ -972,7 +972,11 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
         cepDT name = {.domain = segment->dt.domain, .tag = segment->dt.tag};
         cepCell* child = cep_cell_find_by_name(current, &name);
         if (!child) {
-            if (idx + 1u < stage->path->length) {
+            bool final_segment = (idx + 1u == stage->path->length);
+            if (final_segment && stage->cell_type == CEP_TYPE_PROXY)
+                return false;
+
+            if (!final_segment) {
                 child = cep_cell_add_dictionary(current,
                                                 &name,
                                                 0,
@@ -988,6 +992,9 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
     }
 
     if (!current)
+        return false;
+
+    if ((uint8_t)current->metacell.type != stage->cell_type)
         return false;
 
     current->metacell.hidden = (stage->manifest_flags & 0x01u) ? 1u : 0u;

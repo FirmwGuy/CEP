@@ -50,6 +50,143 @@ static uint64_t read_be64(const uint8_t* buffer) {
     return (hi << 32) | lo;
 }
 
+static void serialization_capture_clear(SerializationCapture* capture) {
+    if (!capture)
+        return;
+
+    for (size_t i = 0; i < capture->count; ++i) {
+        cep_free(capture->chunks[i].data);
+        capture->chunks[i].data = NULL;
+        capture->chunks[i].size = 0;
+    }
+    capture->count = 0;
+}
+
+typedef struct {
+    unsigned    handle_retains;
+    unsigned    handle_releases;
+    unsigned    stream_retains;
+    unsigned    stream_releases;
+    cepCell*    last_restored_handle;
+    cepCell*    last_restored_stream;
+} ProxyTestLibraryContext;
+
+static cepCell* proxy_test_make_resource(const uint8_t* bytes, size_t size) {
+    cepCell* cell = cep_malloc0(sizeof *cell);
+    CEP_0(cell);
+    cep_cell_initialize_value(cell,
+                              CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("resource")),
+                              CEP_DTAW("LIB", "payload"),
+                              (void*)bytes,
+                              size,
+                              size? size: 1u);
+    return cell;
+}
+
+static bool proxy_test_snapshot_common(cepCell* resource, cepProxySnapshot* snapshot) {
+    resource = cep_link_pull(resource);
+    if (!resource || !cep_cell_is_normal(resource) || !resource->data)
+        return false;
+
+    size_t size = resource->data->size;
+    uint8_t* copy = NULL;
+    if (size) {
+        copy = cep_malloc(size);
+        memcpy(copy, resource->data->value, size);
+    }
+
+    snapshot->payload = copy;
+    snapshot->size = size;
+    snapshot->flags = copy? CEP_PROXY_SNAPSHOT_INLINE: 0u;
+    snapshot->ticket = NULL;
+    return true;
+}
+
+static bool proxy_test_handle_snapshot(const cepLibraryBinding* binding, cepCell* handle, cepProxySnapshot* snapshot) {
+    (void)binding;
+    return proxy_test_snapshot_common(handle, snapshot);
+}
+
+static bool proxy_test_stream_snapshot(const cepLibraryBinding* binding, cepCell* stream, cepProxySnapshot* snapshot) {
+    (void)binding;
+    return proxy_test_snapshot_common(stream, snapshot);
+}
+
+static bool proxy_test_restore_common(const cepProxySnapshot* snapshot,
+                                      cepCell** out_cell,
+                                      ProxyTestLibraryContext* ctx,
+                                      bool is_stream) {
+    if (!out_cell)
+        return false;
+
+    cepCell* cell = cep_malloc0(sizeof *cell);
+    CEP_0(cell);
+    cep_cell_initialize_value(cell,
+                              is_stream? CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("stream"))
+                                        : CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("handle")),
+                              CEP_DTAW("LIB", "payload"),
+                              (void*)snapshot->payload,
+                              snapshot->size,
+                              snapshot->size? snapshot->size: 1u);
+
+    if (ctx) {
+        if (is_stream)
+            ctx->last_restored_stream = cell;
+        else
+            ctx->last_restored_handle = cell;
+    }
+
+    *out_cell = cell;
+    return true;
+}
+
+static bool proxy_test_handle_restore(const cepLibraryBinding* binding,
+                                      const cepProxySnapshot* snapshot,
+                                      cepCell** out_handle) {
+    ProxyTestLibraryContext* ctx = binding? (ProxyTestLibraryContext*)binding->ctx: NULL;
+    return proxy_test_restore_common(snapshot, out_handle, ctx, false);
+}
+
+static bool proxy_test_stream_restore(const cepLibraryBinding* binding,
+                                      const cepProxySnapshot* snapshot,
+                                      cepCell** out_stream) {
+    ProxyTestLibraryContext* ctx = binding? (ProxyTestLibraryContext*)binding->ctx: NULL;
+    return proxy_test_restore_common(snapshot, out_stream, ctx, true);
+}
+
+static bool proxy_test_handle_retain(const cepLibraryBinding* binding, cepCell* handle) {
+    (void)handle;
+    ProxyTestLibraryContext* ctx = binding? (ProxyTestLibraryContext*)binding->ctx: NULL;
+    if (ctx)
+        ctx->handle_retains++;
+    return true;
+}
+
+static void proxy_test_handle_release(const cepLibraryBinding* binding, cepCell* handle) {
+    ProxyTestLibraryContext* ctx = binding? (ProxyTestLibraryContext*)binding->ctx: NULL;
+    if (ctx)
+        ctx->handle_releases++;
+
+    if (handle) {
+        cep_cell_finalize(handle);
+        cep_free(handle);
+    }
+}
+
+static const cepLibraryOps proxy_test_library_ops = {
+    .handle_retain      = proxy_test_handle_retain,
+    .handle_release     = proxy_test_handle_release,
+    .stream_read        = NULL,
+    .stream_write       = NULL,
+    .stream_expected_hash = NULL,
+    .stream_map         = NULL,
+    .stream_unmap       = NULL,
+    .handle_snapshot    = proxy_test_handle_snapshot,
+    .handle_restore     = proxy_test_handle_restore,
+    .stream_snapshot    = proxy_test_stream_snapshot,
+    .stream_restore     = proxy_test_stream_restore,
+};
+
 /* Validate that a single normal cell turns into the expected trio of chunks:
    the control/header frame with the CEP magic, the structural manifest with the
    cell path, and the inline data descriptor that carries both metadata and the
@@ -191,3 +328,194 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     return MUNIT_OK;
 }
 
+
+MunitResult test_serialization_proxy(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+    (void)user_data_or_fixture;
+
+    cepDT handle_name = *CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("proxy_hdl"));
+    cepDT stream_name = *CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("proxy_str"));
+
+    /* Handle proxy emit */
+    ProxyTestLibraryContext handle_emit_ctx = {0};
+    cepCell handle_library;
+    CEP_0(&handle_library);
+    cep_library_initialize(&handle_library,
+                           CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("library")),
+                           &proxy_test_library_ops,
+                           &handle_emit_ctx);
+
+    static const uint8_t handle_bytes[] = {0xBA, 0xAD, 0xF0, 0x0D};
+    cepCell* handle_resource = proxy_test_make_resource(handle_bytes, sizeof handle_bytes);
+
+    cepCell proxy_handle;
+    CEP_0(&proxy_handle);
+    cep_proxy_initialize_handle(&proxy_handle, &handle_name, handle_resource, &handle_library);
+
+    SerializationCapture capture = {0};
+    munit_assert_true(cep_serialization_emit_cell(&proxy_handle,
+                                                  NULL,
+                                                  serialization_capture_sink,
+                                                  &capture,
+                                                  0));
+    munit_assert_size(capture.count, ==, 4);
+
+    const SerializationChunk* manifest_chunk = &capture.chunks[1];
+    const uint8_t* manifest_payload = manifest_chunk->data + CEP_SERIALIZATION_CHUNK_OVERHEAD;
+    munit_assert_uint8(manifest_payload[2], ==, CEP_TYPE_PROXY);
+    munit_assert_true((manifest_payload[3] & 0x20u) != 0);
+
+    /* Successful ingest with matching adapter */
+    cep_cell_system_initiate();
+    ProxyTestLibraryContext handle_import_ctx = {0};
+    cepCell handle_import_library;
+    CEP_0(&handle_import_library);
+    cep_library_initialize(&handle_import_library,
+                           CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("library")),
+                           &proxy_test_library_ops,
+                           &handle_import_ctx);
+
+    cepCell placeholder_handle;
+    CEP_0(&placeholder_handle);
+    cep_proxy_initialize_handle(&placeholder_handle, &handle_name, NULL, &handle_import_library);
+    munit_assert_not_null(cep_cell_add(cep_root(), 0, &placeholder_handle));
+
+    cepSerializationReader* reader = cep_serialization_reader_create(cep_root());
+    munit_assert_not_null(reader);
+    for (size_t i = 0; i < capture.count; ++i)
+        munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[i].data, capture.chunks[i].size));
+    munit_assert_true(cep_serialization_reader_commit(reader));
+
+    cepCell* recovered_handle = cep_cell_find_by_name(cep_root(), &handle_name);
+    munit_assert_not_null(recovered_handle);
+    munit_assert_true(cep_cell_is_proxy(recovered_handle));
+    munit_assert_not_null(handle_import_ctx.last_restored_handle);
+    munit_assert_size(handle_import_ctx.handle_retains, ==, 1);
+    munit_assert_size(handle_import_ctx.handle_releases, ==, 0);
+
+    cepCell* restored_handle = cep_link_pull(handle_import_ctx.last_restored_handle);
+    munit_assert_not_null(restored_handle);
+    munit_assert_true(cep_cell_is_normal(restored_handle));
+    munit_assert_not_null(restored_handle->data);
+    munit_assert_size(restored_handle->data->size, ==, sizeof handle_bytes);
+    munit_assert_memory_equal(sizeof handle_bytes, restored_handle->data->value, handle_bytes);
+
+    cep_serialization_reader_destroy(reader);
+    cep_cell_system_shutdown();
+    cep_cell_finalize(&handle_import_library);
+
+    /* Fails when proxy placeholder is missing */
+    cep_cell_system_initiate();
+    ProxyTestLibraryContext handle_fail_ctx = {0};
+    cepCell handle_fail_library;
+    CEP_0(&handle_fail_library);
+    cep_library_initialize(&handle_fail_library,
+                           CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("library")),
+                           &proxy_test_library_ops,
+                           &handle_fail_ctx);
+
+    cepSerializationReader* reader_fail = cep_serialization_reader_create(cep_root());
+    munit_assert_not_null(reader_fail);
+    for (size_t i = 0; i < capture.count; ++i)
+        munit_assert_true(cep_serialization_reader_ingest(reader_fail, capture.chunks[i].data, capture.chunks[i].size));
+    munit_assert_true(cep_serialization_reader_pending(reader_fail));
+    munit_assert_false(cep_serialization_reader_commit(reader_fail));
+    cep_serialization_reader_destroy(reader_fail);
+    cep_cell_system_shutdown();
+    cep_cell_finalize(&handle_fail_library);
+
+    serialization_capture_clear(&capture);
+    cep_cell_finalize(&proxy_handle);
+    cep_cell_finalize(&handle_library);
+
+    /* Stream proxy emit */
+    ProxyTestLibraryContext stream_emit_ctx = {0};
+    cepCell stream_library;
+    CEP_0(&stream_library);
+    cep_library_initialize(&stream_library,
+                           CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("library")),
+                           &proxy_test_library_ops,
+                           &stream_emit_ctx);
+
+    static const uint8_t stream_bytes[] = {0x10, 0x20, 0x30, 0x40, 0x50};
+    cepCell* stream_resource = proxy_test_make_resource(stream_bytes, sizeof stream_bytes);
+
+    cepCell proxy_stream;
+    CEP_0(&proxy_stream);
+    cep_proxy_initialize_stream(&proxy_stream, &stream_name, stream_resource, &stream_library);
+
+    SerializationCapture stream_capture = {0};
+    munit_assert_true(cep_serialization_emit_cell(&proxy_stream,
+                                                  NULL,
+                                                  serialization_capture_sink,
+                                                  &stream_capture,
+                                                  0));
+    munit_assert_size(stream_capture.count, ==, 4);
+
+    const uint8_t* stream_manifest = stream_capture.chunks[1].data + CEP_SERIALIZATION_CHUNK_OVERHEAD;
+    munit_assert_uint8(stream_manifest[2], ==, CEP_TYPE_PROXY);
+    munit_assert_true((stream_manifest[3] & 0x20u) != 0);
+
+    /* Successful ingest for stream proxy */
+    cep_cell_system_initiate();
+    ProxyTestLibraryContext stream_import_ctx = {0};
+    cepCell stream_import_library;
+    CEP_0(&stream_import_library);
+    cep_library_initialize(&stream_import_library,
+                           CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("library")),
+                           &proxy_test_library_ops,
+                           &stream_import_ctx);
+
+    cepCell placeholder_stream;
+    CEP_0(&placeholder_stream);
+    cep_proxy_initialize_stream(&placeholder_stream, &stream_name, NULL, &stream_import_library);
+    munit_assert_not_null(cep_cell_add(cep_root(), 0, &placeholder_stream));
+
+    cepSerializationReader* stream_reader = cep_serialization_reader_create(cep_root());
+    munit_assert_not_null(stream_reader);
+    for (size_t i = 0; i < stream_capture.count; ++i)
+        munit_assert_true(cep_serialization_reader_ingest(stream_reader, stream_capture.chunks[i].data, stream_capture.chunks[i].size));
+    munit_assert_true(cep_serialization_reader_commit(stream_reader));
+
+    cepCell* recovered_stream = cep_cell_find_by_name(cep_root(), &stream_name);
+    munit_assert_not_null(recovered_stream);
+    munit_assert_true(cep_cell_is_proxy(recovered_stream));
+    munit_assert_not_null(stream_import_ctx.last_restored_stream);
+
+    cepCell* restored_stream = cep_link_pull(stream_import_ctx.last_restored_stream);
+    munit_assert_not_null(restored_stream);
+    munit_assert_true(cep_cell_is_normal(restored_stream));
+    munit_assert_not_null(restored_stream->data);
+    munit_assert_size(restored_stream->data->size, ==, sizeof stream_bytes);
+    munit_assert_memory_equal(sizeof stream_bytes, restored_stream->data->value, stream_bytes);
+
+    cep_serialization_reader_destroy(stream_reader);
+    cep_cell_system_shutdown();
+    cep_cell_finalize(&stream_import_library);
+
+    /* Failure path for stream proxies without placeholders */
+    cep_cell_system_initiate();
+    ProxyTestLibraryContext stream_fail_ctx = {0};
+    cepCell stream_fail_library;
+    CEP_0(&stream_fail_library);
+    cep_library_initialize(&stream_fail_library,
+                           CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("library")),
+                           &proxy_test_library_ops,
+                           &stream_fail_ctx);
+
+    cepSerializationReader* stream_fail_reader = cep_serialization_reader_create(cep_root());
+    munit_assert_not_null(stream_fail_reader);
+    for (size_t i = 0; i < stream_capture.count; ++i)
+        munit_assert_true(cep_serialization_reader_ingest(stream_fail_reader, stream_capture.chunks[i].data, stream_capture.chunks[i].size));
+    munit_assert_true(cep_serialization_reader_pending(stream_fail_reader));
+    munit_assert_false(cep_serialization_reader_commit(stream_fail_reader));
+    cep_serialization_reader_destroy(stream_fail_reader);
+    cep_cell_system_shutdown();
+    cep_cell_finalize(&stream_fail_library);
+
+    serialization_capture_clear(&stream_capture);
+    cep_cell_finalize(&proxy_stream);
+    cep_cell_finalize(&stream_library);
+
+    return MUNIT_OK;
+}

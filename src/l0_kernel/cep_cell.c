@@ -180,9 +180,15 @@ void cep_proxy_release_snapshot(cepCell* cell, cepProxySnapshot* snapshot) {
     assert(cell && cep_cell_is_proxy(cell));
     assert(snapshot);
 
+    bool handled = false;
     cepProxy* proxy = cell->proxy;
-    if (proxy && proxy->ops && proxy->ops->release)
+    if (proxy && proxy->ops && proxy->ops->release) {
         proxy->ops->release(cell, snapshot);
+        handled = true;
+    }
+
+    if (!handled && (snapshot->flags & CEP_PROXY_SNAPSHOT_INLINE) && snapshot->payload)
+        cep_free((void*)snapshot->payload);
 
     memset(snapshot, 0, sizeof *snapshot);
 }
@@ -202,8 +208,162 @@ bool cep_proxy_restore(cepCell* cell, const cepProxySnapshot* snapshot) {
     return proxy->ops->restore(cell, snapshot);
 }
 
+typedef struct {
+    cepCell*    library;
+    cepCell*    resource;
+    bool        isStream;
+} cepProxyLibraryCtx;
 
+static cepProxyLibraryCtx* cep_proxy_library_ctx(cepCell* cell) {
+    if (!cell)
+        return NULL;
 
+    cepProxy* proxy = cell->proxy;
+    return proxy? (cepProxyLibraryCtx*)proxy->context: NULL;
+}
+
+static const cepLibraryBinding* cep_proxy_library_binding(const cepProxyLibraryCtx* ctx) {
+    if (!ctx || !ctx->library)
+        return NULL;
+
+    return cep_library_binding(ctx->library);
+}
+
+static bool cep_proxy_library_set_resource(cepCell* cell, cepProxyLibraryCtx* ctx, cepCell* resource) {
+    (void)cell;
+
+    if (!ctx)
+        return false;
+
+    const cepLibraryBinding* binding = cep_proxy_library_binding(ctx);
+    cepCell* canonical = resource? cep_link_pull(resource): NULL;
+
+    if (ctx->resource == canonical)
+        return true;
+
+    if (ctx->resource && binding && binding->ops && binding->ops->handle_release)
+        binding->ops->handle_release(binding, ctx->resource);
+
+    ctx->resource = canonical;
+
+    if (ctx->resource && binding && binding->ops && binding->ops->handle_retain)
+        binding->ops->handle_retain(binding, ctx->resource);
+
+    return true;
+}
+
+static bool cep_proxy_library_snapshot(cepCell* cell, cepProxySnapshot* snapshot) {
+    cepProxyLibraryCtx* ctx = cep_proxy_library_ctx(cell);
+    if (!ctx)
+        return false;
+
+    const cepLibraryBinding* binding = cep_proxy_library_binding(ctx);
+    if (!binding || !binding->ops)
+        return false;
+
+    if (!ctx->resource)
+        return false;
+
+    if (ctx->isStream) {
+        if (!binding->ops->stream_snapshot)
+            return false;
+        return binding->ops->stream_snapshot(binding, ctx->resource, snapshot);
+    }
+
+    if (!binding->ops->handle_snapshot)
+        return false;
+
+    return binding->ops->handle_snapshot(binding, ctx->resource, snapshot);
+}
+
+static void cep_proxy_library_release(cepCell* cell, cepProxySnapshot* snapshot) {
+    (void)cell;
+
+    if ((snapshot->flags & CEP_PROXY_SNAPSHOT_INLINE) && snapshot->payload)
+        cep_free((void*)snapshot->payload);
+}
+
+static bool cep_proxy_library_restore(cepCell* cell, const cepProxySnapshot* snapshot) {
+    cepProxyLibraryCtx* ctx = cep_proxy_library_ctx(cell);
+    if (!ctx)
+        return false;
+
+    const cepLibraryBinding* binding = cep_proxy_library_binding(ctx);
+    if (!binding || !binding->ops)
+        return false;
+
+    cepCell* restored = NULL;
+    bool ok;
+
+    if (ctx->isStream) {
+        if (!binding->ops->stream_restore)
+            return false;
+        ok = binding->ops->stream_restore(binding, snapshot, &restored);
+    } else {
+        if (!binding->ops->handle_restore)
+            return false;
+        ok = binding->ops->handle_restore(binding, snapshot, &restored);
+    }
+
+    if (!ok)
+        return false;
+
+    return cep_proxy_library_set_resource(cell, ctx, restored);
+}
+
+static void cep_proxy_library_finalize(cepCell* cell) {
+    if (!cell || !cep_cell_is_proxy(cell))
+        return;
+
+    cepProxy* proxy = cell->proxy;
+    if (!proxy)
+        return;
+
+    cepProxyLibraryCtx* ctx = (cepProxyLibraryCtx*)proxy->context;
+    if (!ctx)
+        return;
+
+    cep_proxy_library_set_resource(cell, ctx, NULL);
+    proxy->context = NULL;
+    cep_free(ctx);
+}
+
+static const cepProxyOps cep_proxy_library_ops = {
+    .snapshot = cep_proxy_library_snapshot,
+    .release  = cep_proxy_library_release,
+    .restore  = cep_proxy_library_restore,
+    .finalize = cep_proxy_library_finalize,
+};
+
+void cep_proxy_initialize_handle(cepCell* cell, cepDT* name, cepCell* handle, cepCell* library) {
+    assert(cell && name && cep_dt_valid(name));
+    assert(library);
+
+    cepProxyLibraryCtx* ctx = cep_malloc0(sizeof *ctx);
+    ctx->library = library? cep_link_pull(library): NULL;
+    ctx->resource = NULL;
+    ctx->isStream = false;
+
+    cep_proxy_initialize(cell, name, &cep_proxy_library_ops, ctx);
+
+    if (handle)
+        cep_proxy_library_set_resource(cell, ctx, handle);
+}
+
+void cep_proxy_initialize_stream(cepCell* cell, cepDT* name, cepCell* stream, cepCell* library) {
+    assert(cell && name && cep_dt_valid(name));
+    assert(library);
+
+    cepProxyLibraryCtx* ctx = cep_malloc0(sizeof *ctx);
+    ctx->library = library? cep_link_pull(library): NULL;
+    ctx->resource = NULL;
+    ctx->isStream = true;
+
+    cep_proxy_initialize(cell, name, &cep_proxy_library_ops, ctx);
+
+    if (stream)
+        cep_proxy_library_set_resource(cell, ctx, stream);
+}
 
 
 void cep_data_history_push(cepData* data) {

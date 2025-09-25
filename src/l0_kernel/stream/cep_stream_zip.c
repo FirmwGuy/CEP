@@ -68,6 +68,10 @@ static const cepLibraryOps cep_zip_ops = {
     .stream_expected_hash = cep_zip_stream_expected_hash,
     .stream_map = NULL,
     .stream_unmap = NULL,
+    .handle_snapshot = NULL,
+    .handle_restore = NULL,
+    .stream_snapshot = NULL,
+    .stream_restore = NULL,
 };
 
 bool cep_zip_library_open(cepCell* library, cepDT* name, const char* archive_path, int flags) {

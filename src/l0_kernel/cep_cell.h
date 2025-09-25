@@ -518,24 +518,6 @@ enum {
     CEP_STREAM_ACCESS_WRITE  = 1u << 1,
 };
 
-typedef struct cepLibraryBinding cepLibraryBinding;
-
-typedef struct {
-    bool (*handle_retain)(const cepLibraryBinding* binding, cepCell* handle);
-    void (*handle_release)(const cepLibraryBinding* binding, cepCell* handle);
-    bool (*stream_read)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, void* dst, size_t size, size_t* out_read);
-    bool (*stream_write)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, const void* src, size_t size, size_t* out_written);
-    bool (*stream_expected_hash)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, size_t size, uint64_t* out_hash);
-    bool (*stream_map)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, size_t size, unsigned access, cepStreamView* view);
-    bool (*stream_unmap)(const cepLibraryBinding* binding, cepCell* stream, cepStreamView* view, bool commit);
-} cepLibraryOps;
-
-struct cepLibraryBinding {
-    const cepLibraryOps* ops;   // Adapter vtable registered by the foreign library.
-    void*                ctx;   // Library defined context passed back on every invocation.
-};
-
-
 typedef struct {
     const void* payload;        // Snapshot payload bytes (may point to an external buffer).
     size_t      size;           // Size of the payload bytes.
@@ -547,6 +529,28 @@ enum {
     CEP_PROXY_SNAPSHOT_INLINE   = 1u << 0,   // Payload is in-memory and owned by the proxy module.
     CEP_PROXY_SNAPSHOT_EXTERNAL = 1u << 1,   // Payload references external state that must be refetched.
 };
+
+typedef struct cepLibraryBinding cepLibraryBinding;
+
+typedef struct {
+    bool (*handle_retain)(const cepLibraryBinding* binding, cepCell* handle);
+    void (*handle_release)(const cepLibraryBinding* binding, cepCell* handle);
+    bool (*stream_read)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, void* dst, size_t size, size_t* out_read);
+    bool (*stream_write)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, const void* src, size_t size, size_t* out_written);
+    bool (*stream_expected_hash)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, size_t size, uint64_t* out_hash);
+    bool (*stream_map)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, size_t size, unsigned access, cepStreamView* view);
+    bool (*stream_unmap)(const cepLibraryBinding* binding, cepCell* stream, cepStreamView* view, bool commit);
+    bool (*handle_snapshot)(const cepLibraryBinding* binding, cepCell* handle, cepProxySnapshot* snapshot);
+    bool (*handle_restore)(const cepLibraryBinding* binding, const cepProxySnapshot* snapshot, cepCell** out_handle);
+    bool (*stream_snapshot)(const cepLibraryBinding* binding, cepCell* stream, cepProxySnapshot* snapshot);
+    bool (*stream_restore)(const cepLibraryBinding* binding, const cepProxySnapshot* snapshot, cepCell** out_stream);
+} cepLibraryOps;
+
+struct cepLibraryBinding {
+    const cepLibraryOps* ops;   // Adapter vtable registered by the foreign library.
+    void*                ctx;   // Library defined context passed back on every invocation.
+};
+
 
 typedef struct cepProxyOps {
     bool (*snapshot)(cepCell* proxy, cepProxySnapshot* snapshot);
@@ -583,6 +587,8 @@ const cepProxyOps* cep_proxy_ops(const cepCell* cell);
 bool  cep_proxy_snapshot(cepCell* cell, cepProxySnapshot* snapshot);
 void  cep_proxy_release_snapshot(cepCell* cell, cepProxySnapshot* snapshot);
 bool  cep_proxy_restore(cepCell* cell, const cepProxySnapshot* snapshot);
+void  cep_proxy_initialize_handle(cepCell* cell, cepDT* name, cepCell* handle, cepCell* library);
+void  cep_proxy_initialize_stream(cepCell* cell, cepDT* name, cepCell* stream, cepCell* library);
 
 
 /*

@@ -90,6 +90,14 @@ MunitTest tests[] = {
         NULL
     },
     {
+        "/serialization/proxy",
+        test_serialization_proxy,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/stream/stdio",
         test_stream_stdio,
         NULL,
