@@ -44,6 +44,11 @@ struct _cepStoreHistory {
     cepStoreHistoryEntry*   entries;
 };
 
+struct _cepProxy {
+    const cepProxyOps*  ops;
+    void*               context;
+};
+
 
 
 
@@ -96,6 +101,106 @@ unsigned MAX_DEPTH = CEP_MAX_FAST_STACK_DEPTH;     // FixMe: (used by path/trave
 
 #define cepFunc     void*
 
+
+/* Construct a proxy cell by wiring a proxy vtable to the generic cell
+   initializer so callers can expose virtual payloads without touching the
+   regular data/store fields. We allocate the lightweight proxy descriptor,
+   stash the user context, and keep the cell free from accidental normal-type
+   invariants so other helpers can recognise the proxy flavour. */
+void cep_proxy_initialize(cepCell* cell, cepDT* name, const cepProxyOps* ops, void* context) {
+    assert(cell && name && cep_dt_valid(name));
+    assert(ops);
+
+    cep_cell_initialize(cell, CEP_TYPE_PROXY, name, NULL, NULL);
+
+    cepProxy* proxy = cep_malloc0(sizeof *proxy);
+    proxy->ops = ops;
+    proxy->context = context;
+    cell->proxy = proxy;
+}
+
+/* Update or seed the opaque context stored with a proxy cell so adapters can
+   keep per-instance state (like handles or configuration) without reaching past
+   the public API. Context assignment lazily allocates the proxy wrapper if the
+   cell was promoted from a raw initializer. */
+void cep_proxy_set_context(cepCell* cell, void* context) {
+    assert(cell && cep_cell_is_proxy(cell));
+
+    cepProxy* proxy = cell->proxy;
+    if (!proxy) {
+        proxy = cep_malloc0(sizeof *proxy);
+        cell->proxy = proxy;
+    }
+
+    proxy->context = context;
+}
+
+/* Return the adapter-defined context associated with a proxy cell so callers
+   can retrieve live bindings without poking at the proxy internals. The helper
+   shields users from NULL checks when a proxy was initialised without context. */
+void* cep_proxy_context(const cepCell* cell) {
+    assert(cell && cep_cell_is_proxy(cell));
+
+    const cepProxy* proxy = cell->proxy;
+    return proxy ? proxy->context : NULL;
+}
+
+/* Surface the proxy operations table configured for a cell so subsystems such
+   as serialization and streaming can dispatch through the appropriate callback
+   set. Returning NULL signals a placeholder proxy that cannot yet serve calls. */
+const cepProxyOps* cep_proxy_ops(const cepCell* cell) {
+    assert(cell && cep_cell_is_proxy(cell));
+
+    const cepProxy* proxy = cell->proxy;
+    return proxy ? proxy->ops : NULL;
+}
+
+/* Ask the proxy to materialise a snapshot of its payload, which may be an
+   inline buffer or an external ticket depending on the adapter flags. The
+   output structure is zeroed before delegation so callers always see a fully
+   initialised snapshot even when the adapter declines to produce one. */
+bool cep_proxy_snapshot(cepCell* cell, cepProxySnapshot* snapshot) {
+    assert(cell && cep_cell_is_proxy(cell));
+    assert(snapshot);
+
+    memset(snapshot, 0, sizeof *snapshot);
+
+    cepProxy* proxy = cell->proxy;
+    if (!proxy || !proxy->ops || !proxy->ops->snapshot)
+        return false;
+
+    return proxy->ops->snapshot(cell, snapshot);
+}
+
+/* Allow adapters to tear down resources associated with a previously emitted
+   snapshot, ensuring ephemeral buffers or handles do not leak once the caller
+   (e.g., serializer) is done using them. The helper tolerates missing release
+   callbacks so simple proxies can rely on stack-allocated data. */
+void cep_proxy_release_snapshot(cepCell* cell, cepProxySnapshot* snapshot) {
+    assert(cell && cep_cell_is_proxy(cell));
+    assert(snapshot);
+
+    cepProxy* proxy = cell->proxy;
+    if (proxy && proxy->ops && proxy->ops->release)
+        proxy->ops->release(cell, snapshot);
+
+    memset(snapshot, 0, sizeof *snapshot);
+}
+
+/* Restore a proxy cell from a serialized snapshot so deserialisation can bring
+   virtual payloads back online. Adapters decide how to interpret the bytes or
+   tickets; a missing restore hook means the proxy cannot be reconstructed and
+   signals failure to the caller. */
+bool cep_proxy_restore(cepCell* cell, const cepProxySnapshot* snapshot) {
+    assert(cell && cep_cell_is_proxy(cell));
+    assert(snapshot);
+
+    cepProxy* proxy = cell->proxy;
+    if (!proxy || !proxy->ops || !proxy->ops->restore)
+        return false;
+
+    return proxy->ops->restore(cell, snapshot);
+}
 
 
 
@@ -2217,8 +2322,14 @@ void cep_cell_finalize(cepCell* cell) {
         break;
       }
 
-      case CEP_TYPE_FLEX: {
-        // ToDo: pending.
+      case CEP_TYPE_PROXY: {
+        cepProxy* proxy = cell->proxy;
+        if (proxy) {
+            if (proxy->ops && proxy->ops->finalize)
+                proxy->ops->finalize(cell);
+            cep_free(proxy);
+            cell->proxy = NULL;
+        }
         break;
       }
 

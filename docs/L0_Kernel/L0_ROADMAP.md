@@ -13,7 +13,7 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
 | Child store engines | ⚙️ Partial | Linked list, array, packed queue, RB-tree, and octree back-ends wired through `cep_store_new`; comparator/hash indexes now dedupe through `store_find_child_by_key` | ⚙️ Add shared hash lookups and re-sort helpers for large catalog back-ends |
 | Historical queries | ⚙️ Partial | `cep_cell_find_by_*_past`, `cep_cell_traverse_past`, and deep traversal replay timelines without mutating live data | ⚙️ Provide snapshot payloads for HANDLE/STREAM; replace the global `MAX_DEPTH` guard |
 | Link handling & shadowing | ⚙️ Partial | Link macros resolve references; soft take/pop expose archived children as links; link shadows now track `targetDead` status for tombstones | 📎 Finish shadow lifecycle hooks (refcounts/GC) and snapshot provenance |
-| Lifecycle & GC | ⚙️ Partial | `cep_cell_finalize`, `cep_store_del`, and hard delete helpers reclaim stores and payloads | ⚙️ Implement FLEX semantics, clone support, and shadow-aware teardown |
+| Lifecycle & GC | ⚙️ Partial | `cep_cell_finalize`, `cep_store_del`, and hard delete helpers reclaim stores and payloads | ⚙️ Wire proxy lifecycle, clone support, and shadow-aware teardown |
 | Tooling & safety nets | ⚙️ Partial | Assertions wrap public APIs; Meson builds + unit tests guard regressions | ⚙️ Add adaptive traversal stacks, locks, persistence hooks, and broader coverage |
 | Heartbeat dispatcher | ⚙️ Partial | `cep_heartbeat_*` stages beats, memoises per-impulse resolver output, and honours dependency/name ordering | ⚙️ Wire agency execution, agenda persistence, and telemetry hooks before parallelism |
 
@@ -45,10 +45,10 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
   - 📎 Link archiving metadata remains planned so historic trees stay replayable.
 - **Milestone 2 - Structural resilience**: 📎 Planned — deliver traversal depth management, shadow cleanup, packed queue recycling, and re-sort helpers for RB-tree/octree back-ends to keep large collections stable.
 - **Milestone 3 - Runtime baseline**: ⚙️ Partial — heartbeat bootstrap/start/step/shutdown loops now run with memoised agenda resolution and deterministic enzyme ordering; still pending are agency executors, channel wiring, and runtime telemetry.
-- **Milestone 4 - Extended feature set**: 📎 Planned — add HANDLE/STREAM lifetimes, FLEX semantics, deep cloning, persistence hooks, and expanded tests once the core runtime is proven.
+- **Milestone 4 - Extended feature set**: 📎 Planned — add HANDLE/STREAM lifetimes, proxy lifecycle polish, deep cloning, persistence hooks, and expanded tests once the core runtime is proven.
 
 ## Q&A
 - **Why does Milestone 1 stop at VALUE/DATA payloads?** Locking down history and idempotence proves the timeline model; HANDLE/STREAM work can land once the replay story is airtight.
 - **Do link shadows matter before the runtime ships?** Yes. Without cleanup the archive helpers leak state, so shadow hygiene is part of structural resilience.
 - **Can we expose child hashes before Milestone 2?** Only after comparator/hash dedupe is complete; otherwise repeated inserts risk drifting snapshots.
-- **What happens to FLEX cells?** They graduate in the extended feature milestone once historicity, traversal, and runtime loops are stable.
+- **What happens to proxy-backed cells?** They graduate in the extended feature milestone once historicity, traversal, and runtime loops are stable.

@@ -107,6 +107,7 @@ extern "C" {
 typedef struct _cepData       cepData;
 typedef struct _cepStore      cepStore;
 typedef struct _cepCell       cepCell;
+typedef struct _cepProxy      cepProxy;
 
 typedef int (*cepCompare)(const cepCell* restrict, const cepCell* restrict, void*);
 
@@ -187,7 +188,7 @@ static_assert(sizeof(cepMetacell) == sizeof(cepDT), "System bits can't exceed 2 
 enum _cepCellType {
     CEP_TYPE_VOID,              // A void (uninitialized) cell.
     CEP_TYPE_NORMAL,            // Regular cell.
-    CEP_TYPE_FLEX,              // A single cell that can automatically expand to a list.
+    CEP_TYPE_PROXY,             // Virtual cell whose payload is mediated through proxy callbacks.
     CEP_TYPE_LINK,              // Link to another cell.
     //
     CEP_TYPE_COUNT
@@ -535,6 +536,26 @@ struct cepLibraryBinding {
 };
 
 
+typedef struct {
+    const void* payload;        // Snapshot payload bytes (may point to an external buffer).
+    size_t      size;           // Size of the payload bytes.
+    uint32_t    flags;          // Snapshot flags describing the payload semantics.
+    void*       ticket;         // Opaque handle passed back to the proxy when releasing the snapshot.
+} cepProxySnapshot;
+
+enum {
+    CEP_PROXY_SNAPSHOT_INLINE   = 1u << 0,   // Payload is in-memory and owned by the proxy module.
+    CEP_PROXY_SNAPSHOT_EXTERNAL = 1u << 1,   // Payload references external state that must be refetched.
+};
+
+typedef struct cepProxyOps {
+    bool (*snapshot)(cepCell* proxy, cepProxySnapshot* snapshot);
+    void (*release)(cepCell* proxy, cepProxySnapshot* snapshot);
+    bool (*restore)(cepCell* proxy, const cepProxySnapshot* snapshot);
+    void (*finalize)(cepCell* proxy);
+} cepProxyOps;
+
+
 cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
                         void** dataloc, void* value, ...  );
 void     cep_data_del(cepData* data);
@@ -555,6 +576,15 @@ bool  cep_cell_stream_map(cepCell* cell, uint64_t offset, size_t size, unsigned 
 bool  cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit);
 
 
+void  cep_proxy_initialize(cepCell* cell, cepDT* name, const cepProxyOps* ops, void* context);
+void  cep_proxy_set_context(cepCell* cell, void* context);
+void* cep_proxy_context(const cepCell* cell);
+const cepProxyOps* cep_proxy_ops(const cepCell* cell);
+bool  cep_proxy_snapshot(cepCell* cell, cepProxySnapshot* snapshot);
+void  cep_proxy_release_snapshot(cepCell* cell, cepProxySnapshot* snapshot);
+bool  cep_proxy_restore(cepCell* cell, const cepProxySnapshot* snapshot);
+
+
 /*
     Cell Storage (for children)
 */
@@ -569,19 +599,19 @@ typedef struct _cepStoreNode  cepStoreNode;
 
 struct _cepStoreNode {
     union {
-        cepCell*    linked;     // A linked shadow cell (when children, see in cepCell otherwise).
-        cepShadow*  shadow;     // Shadow structure (if cell has children).
+        cepCell*        linked;     // A linked shadow cell (when children, see in cepCell otherwise).
+        cepShadow*      shadow;     // Shadow structure (if cell has children).
     };
 
-    cepOpCount      modified;   // CEP heartbeat in which store was modified (including creation/deletion). 
+    cepOpCount          modified;   // CEP heartbeat in which store was modified (including creation/deletion). 
     
-    cepStoreNode*   past;       // Points to the previous store index in history (only used if catalog is re-sorted/indexed with different sorting function).
+    cepStoreNode*       past;       // Points to the previous store index in history (only used if catalog is re-sorted/indexed with different sorting function).
 
-    cepEnzymeBinding* bindings; // List of enzyme bindings.
+    cepEnzymeBinding*   bindings; // List of enzyme bindings.
 
-    size_t          chdCount;   // Number of child cells.
-    size_t          totCount;   // Number of all cells included dead ones.
-    cepCompare      compare;    // Compare function for indexing children.
+    size_t              chdCount;   // Number of child cells.
+    size_t              totCount;   // Number of all cells included dead ones.
+    cepCompare          compare;    // Compare function for indexing children.
 
     // The specific storage structure will follow after this...
 };
@@ -677,6 +707,8 @@ struct _cepCell {
         cepData*    data;       // Address of cepData structure.
 
         cepCell*    link;       // Link to another cell.
+
+        cepProxy*   proxy;      // Proxy definition mediating externalised payloads.
     };
 
     union {
@@ -728,7 +760,7 @@ static inline void  cep_cell_set_name(cepCell* cell, cepDT* name)     {assert(ce
 
 #define cep_cell_is_void(r)       (((r)->metacell.type == CEP_TYPE_VOID) || !cep_dt_valid(&(r)->metacell._dt))
 #define cep_cell_is_normal(r)     ((r)->metacell.type == CEP_TYPE_NORMAL)
-#define cep_cell_is_flex(r)       ((r)->metacell.type == CEP_TYPE_FLEX)
+#define cep_cell_is_proxy(r)      ((r)->metacell.type == CEP_TYPE_PROXY)
 #define cep_cell_is_link(r)       ((r)->metacell.type == CEP_TYPE_LINK)
 
 #define cep_cell_is_shadowed(r)   ((r)->metacell.shadowing)
