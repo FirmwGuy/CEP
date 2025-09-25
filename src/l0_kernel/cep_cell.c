@@ -1183,7 +1183,9 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
     store->indexing = indexing;
     store->writable = true;
     store->autoid   = 1;
-    
+    store->chdCount = 0;
+    store->totCount = 0;
+
     cepOpCount timestamp = cep_cell_timestamp_next();
     store->created  = timestamp;
     store->modified = timestamp;
@@ -1406,6 +1408,7 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 
     cell->parent = store;
     store->chdCount++;
+    store->totCount++;
     store->modified = cep_cell_timestamp_next();   // Append-only trail lives in timestamps.
 
     return cell;
@@ -1462,6 +1465,7 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
 
     cell->parent = store;
     store->chdCount++;
+    store->totCount++;
     store->modified = cep_cell_timestamp_next();   // Append-only trail lives in timestamps.
 
     return cell;

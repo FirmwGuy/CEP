@@ -1097,9 +1097,8 @@ void cep_cell_system_ensure(void);
     - Implement range queries (between a minimum and a maximum key) for cells.
     - Implement clone (deep copy) cells.
     - Traverse book in internal (stoTech) order.
-    - Add indexof for cells.
+    - Add indexof() for cells.
     - Update MAX_DEPTH based on path/traverse operations.
-    - Add cep_cell_update_nested_links(old, new).
     - If a cell is added with its name explicitly above "auto_id", then that must be updated.
 */
 

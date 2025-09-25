@@ -100,17 +100,17 @@ if get_option('tests').enabled()
   test_srcs = files(
     'src/test/munit.c',
     'src/test/test.c',
-    'src/test/test_cell.c',
-    'src/test/test_traverse.c',
-    'src/test/test_wordacron.c',
-    'src/test/test_enzyme.c',
-    'src/test/test_heartbeat.c',
-    'src/test/test_stream.c',
-    'src/test/test_serialization.c',
+    'src/test/l0_kernel/test_cell.c',
+    'src/test/l0_kernel/test_traverse.c',
+    'src/test/l0_kernel/test_wordacron.c',
+    'src/test/l0_kernel/test_enzyme.c',
+    'src/test/l0_kernel/test_heartbeat.c',
+    'src/test/l0_kernel/test_stream.c',
+    'src/test/l0_kernel/test_serialization.c',
   )
   test_dependencies = []
   if zip_dep.found()
-    test_srcs += files('src/test/test_stream_zip.c')
+    test_srcs += files('src/test/l0_kernel/test_stream_zip.c')
     test_dependencies += [zip_dep]
   endif
   exe = executable('cep_tests', test_srcs,
