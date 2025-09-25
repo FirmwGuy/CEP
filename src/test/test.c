@@ -82,6 +82,14 @@ MunitTest tests[] = {
         timeout_params
     },
     {
+        "/serialization/cell",
+        test_serialization,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/stream/stdio",
         test_stream_stdio,
         NULL,

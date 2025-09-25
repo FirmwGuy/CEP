@@ -62,6 +62,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_heartbeat_queue.c',
   'src/l0_kernel/cep_enzyme.c',
   'src/l0_kernel/cep_heartbeat.c',
+  'src/l0_kernel/cep_serialization.c',
 )
 
 lib_dependencies = []
@@ -105,6 +106,7 @@ if get_option('tests').enabled()
     'src/test/test_enzyme.c',
     'src/test/test_heartbeat.c',
     'src/test/test_stream.c',
+    'src/test/test_serialization.c',
   )
   test_dependencies = []
   if zip_dep.found()
