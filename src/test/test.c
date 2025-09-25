@@ -89,6 +89,16 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         NULL
     },
+#ifdef CEP_HAS_LIBZIP
+    {
+        "/stream/zip",
+        test_stream_zip,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+#endif
 
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL}  // EOL
 };

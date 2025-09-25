@@ -24,6 +24,7 @@ static const cepLibraryOps cep_stdio_ops = {
     .handle_release = cep_stdio_handle_release,
     .stream_read = cep_stdio_stream_read,
     .stream_write = cep_stdio_stream_write,
+    .stream_expected_hash = NULL,
     .stream_map = cep_stdio_stream_map,
     .stream_unmap = cep_stdio_stream_unmap,
 };

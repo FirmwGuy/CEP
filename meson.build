@@ -49,6 +49,9 @@ if asan_opt and cc.has_argument('-fsanitize=address')
 endif
 
 # Core library sources (heartbeat/enzymes are stubs for now but compiled in)
+zip_opt = get_option('zip')
+zip_dep = dependency('libzip', required: zip_opt.enabled(), method: 'pkg-config', allow_fallback: true)
+
 l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
   'src/l0_kernel/cep_cell_stream.c',
@@ -60,6 +63,14 @@ l0_srcs = files(
   'src/l0_kernel/cep_enzyme.c',
   'src/l0_kernel/cep_heartbeat.c',
 )
+
+lib_dependencies = []
+
+if zip_dep.found()
+  l0_srcs += files('src/l0_kernel/stream/cep_stream_zip.c')
+  add_project_arguments('-DCEP_HAS_LIBZIP=1', language: 'c')
+  lib_dependencies += [zip_dep]
+endif
 
 exe_cargs = []
 host_sys = host_machine.system()
@@ -77,6 +88,9 @@ lib_kw = {
 if both_libs
   lib_kw += {'both_libraries': true}
 endif
+if lib_dependencies.length() > 0
+  lib_kw += {'dependencies': lib_dependencies}
+endif
 cep_lib = library('cep', l0_srcs,
   kwargs: lib_kw,
 )
@@ -92,10 +106,16 @@ if get_option('tests').enabled()
     'src/test/test_heartbeat.c',
     'src/test/test_stream.c',
   )
+  test_dependencies = []
+  if zip_dep.found()
+    test_srcs += files('src/test/test_stream_zip.c')
+    test_dependencies += [zip_dep]
+  endif
   exe = executable('cep_tests', test_srcs,
     c_args: exe_cargs,
     include_directories: inc,
     link_with: cep_lib,
+    dependencies: test_dependencies,
     install: false,
   )
   test('cep_unit_tests', exe)

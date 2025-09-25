@@ -524,6 +524,7 @@ typedef struct {
     void (*handle_release)(const cepLibraryBinding* binding, cepCell* handle);
     bool (*stream_read)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, void* dst, size_t size, size_t* out_read);
     bool (*stream_write)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, const void* src, size_t size, size_t* out_written);
+    bool (*stream_expected_hash)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, size_t size, uint64_t* out_hash);
     bool (*stream_map)(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, size_t size, unsigned access, cepStreamView* view);
     bool (*stream_unmap)(const cepLibraryBinding* binding, cepCell* stream, cepStreamView* view, bool commit);
 } cepLibraryOps;

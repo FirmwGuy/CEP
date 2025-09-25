@@ -248,6 +248,8 @@ bool cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size
     uint64_t hash = 0;
     bool ok = false;
 
+    const cepLibraryBinding* binding = data->library? cep_library_binding(data->library): NULL;
+
     switch (data->datatype) {
       case CEP_DATATYPE_VALUE:
       case CEP_DATATYPE_DATA: {
@@ -288,9 +290,18 @@ bool cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size
         if (!resource)
             break;
 
-        uint64_t expected_hash = 0; /* Placeholder: adapters may supply divergence preconditions. */
-        if (!cep_stream_stage_write(cell, data->library, resource, offset, src, size, expected_hash))
+        uint64_t expected_hash = 0;
+        if (binding && binding->ops && binding->ops->stream_expected_hash) {
+            binding->ops->stream_expected_hash(binding, resource, offset, size, &expected_hash);
+        }
+
+        if (!cep_stream_stage_write(cell, data->library, resource, offset, src, size, expected_hash)) {
+            if (binding && binding->ops && binding->ops->stream_write) {
+                ok = binding->ops->stream_write(binding, resource, offset, src, size, &actual);
+                hash = (ok && actual)? cep_hash_bytes(src, actual): 0;
+            }
             break;
+        }
 
         if (out_written)
             *out_written = size;

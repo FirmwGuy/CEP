@@ -134,6 +134,10 @@ bool cep_stream_stage_write(cepCell* owner,
     };
 
     intent.intent_cell = cep_stream_append_intent(owner, &entry);
+    if (!intent.intent_cell) {
+        cep_free(copy);
+        return false;
+    }
 
     g_stream_intents[g_stream_intent_count++] = intent;
     return true;
@@ -171,7 +175,16 @@ bool cep_stream_commit_pending(void) {
         bool ok = false;
         uint64_t resulting_hash = intent->payload_hash;
 
-        if (binding && binding->ops && binding->ops->stream_write) {
+        bool diverged = false;
+        if (binding && binding->ops && binding->ops->stream_expected_hash && intent->expected_hash) {
+            uint64_t current_hash = 0;
+            if (!binding->ops->stream_expected_hash(binding, intent->resource, intent->offset, intent->size, &current_hash) ||
+                current_hash != intent->expected_hash) {
+                diverged = true;
+            }
+        }
+
+        if (!diverged && binding && binding->ops && binding->ops->stream_write) {
             ok = binding->ops->stream_write(binding,
                                             intent->resource,
                                             intent->offset,
@@ -180,9 +193,10 @@ bool cep_stream_commit_pending(void) {
                                             &written);
         }
 
-        if (!ok || written != intent->size) {
+        if (diverged || !ok || written != intent->size) {
             all_ok = false;
             resulting_hash = 0;
+            ok = false;
         }
 
         cep_stream_journal(intent->stream,
