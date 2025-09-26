@@ -30,6 +30,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <inttypes.h>
 #include <limits.h>
 
 
@@ -104,6 +106,438 @@ static uint64_t cep_heartbeat_impulse_hash(const cepHeartbeatImpulseRecord* reco
     hash = cep_heartbeat_hash_mix(hash, cep_heartbeat_path_hash(record->signal_path));
     hash = cep_heartbeat_hash_mix(hash, cep_heartbeat_path_hash(record->target_path));
     return hash;
+}
+
+
+static bool cep_heartbeat_policy_use_dirs(void) {
+    return CEP_RUNTIME.policy.ensure_directories;
+}
+
+
+static bool cep_heartbeat_id_to_string(cepID id, char* buffer, size_t capacity, size_t* out_len) {
+    if (!buffer || capacity == 0u) {
+        return false;
+    }
+
+    size_t len = 0u;
+
+    if (cep_id_is_word(id)) {
+        len = cep_word_to_text(id, buffer);
+    } else if (cep_id_is_acronym(id)) {
+        len = cep_acronym_to_text(id, buffer);
+    } else if (cep_id_is_numeric(id)) {
+        uint64_t value = (uint64_t)cep_id(id);
+        int written = snprintf(buffer, capacity, "%" PRIu64, (unsigned long long)value);
+        if (written < 0) {
+            return false;
+        }
+        len = (size_t)written;
+    } else {
+        if (capacity < 2u) {
+            return false;
+        }
+        buffer[0] = '?';
+        buffer[1] = '\0';
+        len = 1u;
+    }
+
+    if (len + 1u > capacity) {
+        return false;
+    }
+
+    if (out_len) {
+        *out_len = len;
+    }
+
+    return true;
+}
+
+
+static bool cep_heartbeat_dt_to_string(const cepDT* dt, char* buffer, size_t capacity) {
+    if (!dt) {
+        return false;
+    }
+
+    char domain_buf[32];
+    char tag_buf[32];
+    size_t domain_len = 0u;
+    size_t tag_len = 0u;
+
+    if (!cep_heartbeat_id_to_string(dt->domain, domain_buf, sizeof(domain_buf), &domain_len)) {
+        return false;
+    }
+
+    if (!cep_heartbeat_id_to_string(dt->tag, tag_buf, sizeof(tag_buf), &tag_len)) {
+        return false;
+    }
+
+    size_t needed = domain_len + 1u + tag_len;
+    if (needed + 1u > capacity) {
+        return false;
+    }
+
+    memcpy(buffer, domain_buf, domain_len);
+    buffer[domain_len] = ':';
+    memcpy(buffer + domain_len + 1u, tag_buf, tag_len);
+    buffer[needed] = '\0';
+    return true;
+}
+
+
+static char* cep_heartbeat_path_to_string(const cepPath* path) {
+    if (!path || path->length == 0u) {
+        char* empty = cep_malloc(2u);
+        if (!empty) {
+            return NULL;
+        }
+        empty[0] = '-';
+        empty[1] = '\0';
+        return empty;
+    }
+
+    size_t capacity = (size_t)path->length * 80u + 2u;
+    char* text = cep_malloc(capacity);
+    if (!text) {
+        return NULL;
+    }
+
+    size_t pos = 0u;
+    for (unsigned i = 0; i < path->length; ++i) {
+        const cepPast* segment = &path->past[i];
+
+        if (pos + 1u >= capacity) {
+            cep_free(text);
+            return NULL;
+        }
+        text[pos++] = '/';
+
+        char domain_buf[32];
+        size_t domain_len = 0u;
+        if (!cep_heartbeat_id_to_string(segment->dt.domain, domain_buf, sizeof(domain_buf), &domain_len)) {
+            cep_free(text);
+            return NULL;
+        }
+        if (pos + domain_len >= capacity) {
+            cep_free(text);
+            return NULL;
+        }
+        memcpy(text + pos, domain_buf, domain_len);
+        pos += domain_len;
+
+        if (pos + 1u >= capacity) {
+            cep_free(text);
+            return NULL;
+        }
+        text[pos++] = ':';
+
+        char tag_buf[32];
+        size_t tag_len = 0u;
+        if (!cep_heartbeat_id_to_string(segment->dt.tag, tag_buf, sizeof(tag_buf), &tag_len)) {
+            cep_free(text);
+            return NULL;
+        }
+        if (pos + tag_len >= capacity) {
+            cep_free(text);
+            return NULL;
+        }
+        memcpy(text + pos, tag_buf, tag_len);
+        pos += tag_len;
+
+        if (segment->timestamp) {
+            int written = snprintf(text + pos, capacity - pos, "@%" PRIu64, (unsigned long long)segment->timestamp);
+            if (written < 0) {
+                cep_free(text);
+                return NULL;
+            }
+            size_t w = (size_t)written;
+            if (pos + w >= capacity) {
+                cep_free(text);
+                return NULL;
+            }
+            pos += w;
+        }
+    }
+
+    if (pos == 0u) {
+        text[pos++] = '/';
+    }
+
+    if (pos >= capacity) {
+        cep_free(text);
+        return NULL;
+    }
+
+    text[pos] = '\0';
+    return text;
+}
+
+
+static bool cep_heartbeat_append_list_message(cepCell* list, const char* message) {
+    if (!list || !message) {
+        return false;
+    }
+
+    size_t len = strlen(message);
+    size_t size = len + 1u;
+    char* buffer = cep_malloc(size);
+    if (!buffer) {
+        return false;
+    }
+
+    memcpy(buffer, message, len);
+    buffer[len] = '\0';
+
+    cepDT name = {
+        .domain = CEP_ACRO("HB"),
+        .tag    = CEP_AUTOID,
+    };
+
+    cepCell* entry = cep_cell_append_value(list, &name, CEP_DTAW("CEP", "log"), buffer, size, size);
+    cep_free(buffer);
+    return entry != NULL;
+}
+
+
+static cepCell* cep_heartbeat_ensure_dictionary_child(cepCell* parent, const cepDT* name, bool* created) {
+    if (!parent || !name) {
+        return NULL;
+    }
+
+    cepCell* child = cep_cell_find_by_name(parent, name);
+    if (!child) {
+        child = cep_cell_add_dictionary(parent, (cepDT*)name, 0, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_RED_BLACK_T);
+        if (created) {
+            *created = true;
+        }
+    } else if (created) {
+        *created = false;
+    }
+
+    return child;
+}
+
+
+static cepCell* cep_heartbeat_ensure_list_child(cepCell* parent, const cepDT* name) {
+    if (!parent || !name) {
+        return NULL;
+    }
+
+    cepCell* child = cep_cell_find_by_name(parent, name);
+    if (!child) {
+        child = cep_cell_add_list(parent, (cepDT*)name, 0, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
+    }
+    return child;
+}
+
+
+static bool cep_heartbeat_set_numeric_name(cepDT* name, cepBeatNumber beat) {
+    if (!name || beat == CEP_BEAT_INVALID) {
+        return false;
+    }
+
+    if (beat >= CEP_AUTOID_MAX) {
+        return false;
+    }
+
+    name->domain = CEP_ACRO("HB");
+    name->tag = cep_id_to_numeric((cepID)(beat + 1u));
+    return true;
+}
+
+
+static cepCell* cep_heartbeat_ensure_beat_node(cepBeatNumber beat) {
+    if (!cep_heartbeat_policy_use_dirs() || beat == CEP_BEAT_INVALID) {
+        return NULL;
+    }
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (!rt_root) {
+        return NULL;
+    }
+
+    cepCell* beat_root = cep_heartbeat_ensure_dictionary_child(rt_root, CEP_DTAW("CEP", "beat"), NULL);
+    if (!beat_root) {
+        return NULL;
+    }
+
+    cepDT beat_name;
+    if (!cep_heartbeat_set_numeric_name(&beat_name, beat)) {
+        return NULL;
+    }
+
+    cepCell* beat_cell = cep_heartbeat_ensure_dictionary_child(beat_root, &beat_name, NULL);
+    if (!beat_cell) {
+        return NULL;
+    }
+
+    if (!cep_heartbeat_ensure_list_child(beat_cell, CEP_DTAW("CEP", "inbox"))) {
+        return NULL;
+    }
+
+    if (!cep_heartbeat_ensure_list_child(beat_cell, CEP_DTAW("CEP", "agenda"))) {
+        return NULL;
+    }
+
+    if (!cep_heartbeat_ensure_list_child(beat_cell, CEP_DTAW("CEP", "stage"))) {
+        return NULL;
+    }
+
+    return beat_cell;
+}
+
+
+static bool cep_heartbeat_record_inbox_entry(cepBeatNumber beat, const cepImpulse* impulse) {
+    if (!cep_heartbeat_policy_use_dirs() || beat == CEP_BEAT_INVALID || !impulse) {
+        return true;
+    }
+
+    cepCell* beat_cell = cep_heartbeat_ensure_beat_node(beat);
+    if (!beat_cell) {
+        return false;
+    }
+
+    cepCell* inbox = cep_cell_find_by_name(beat_cell, CEP_DTAW("CEP", "inbox"));
+    if (!inbox) {
+        inbox = cep_heartbeat_ensure_list_child(beat_cell, CEP_DTAW("CEP", "inbox"));
+        if (!inbox) {
+            return false;
+        }
+    }
+
+    char* signal = cep_heartbeat_path_to_string(impulse->signal_path);
+    char* target = cep_heartbeat_path_to_string(impulse->target_path);
+    if (!signal || !target) {
+        cep_free(signal);
+        cep_free(target);
+        return false;
+    }
+
+    int written = snprintf(NULL, 0, "signal=%s target=%s", signal, target);
+    if (written < 0) {
+        cep_free(signal);
+        cep_free(target);
+        return false;
+    }
+
+    size_t size = (size_t)written + 1u;
+    char* message = cep_malloc(size);
+    if (!message) {
+        cep_free(signal);
+        cep_free(target);
+        return false;
+    }
+
+    snprintf(message, size, "signal=%s target=%s", signal, target);
+    bool ok = cep_heartbeat_append_list_message(inbox, message);
+
+    cep_free(message);
+    cep_free(signal);
+    cep_free(target);
+    return ok;
+}
+
+
+static const char* cep_heartbeat_descriptor_label(const cepEnzymeDescriptor* descriptor, char* buffer, size_t capacity) {
+    if (!descriptor) {
+        return "no-match";
+    }
+
+    if (descriptor->label && descriptor->label[0]) {
+        return descriptor->label;
+    }
+
+    if (cep_heartbeat_dt_to_string(&descriptor->name, buffer, capacity)) {
+        return buffer;
+    }
+
+    return "(unnamed)";
+}
+
+
+static bool cep_heartbeat_record_agenda_entry(cepBeatNumber beat, const cepEnzymeDescriptor* descriptor, int rc, const cepImpulse* impulse) {
+    if (!cep_heartbeat_policy_use_dirs()) {
+        return true;
+    }
+
+    cepCell* beat_cell = cep_heartbeat_ensure_beat_node(beat);
+    if (!beat_cell) {
+        return false;
+    }
+
+    cepCell* agenda = cep_cell_find_by_name(beat_cell, CEP_DTAW("CEP", "agenda"));
+    if (!agenda) {
+        agenda = cep_heartbeat_ensure_list_child(beat_cell, CEP_DTAW("CEP", "agenda"));
+        if (!agenda) {
+            return false;
+        }
+    }
+
+    char* signal = cep_heartbeat_path_to_string(impulse ? impulse->signal_path : NULL);
+    char* target = cep_heartbeat_path_to_string(impulse ? impulse->target_path : NULL);
+    if (!signal || !target) {
+        cep_free(signal);
+        cep_free(target);
+        return false;
+    }
+
+    char name_buf[64];
+    const char* name = cep_heartbeat_descriptor_label(descriptor, name_buf, sizeof(name_buf));
+
+    int written;
+    if (descriptor) {
+        written = snprintf(NULL, 0, "enzyme=%s rc=%d signal=%s target=%s", name, rc, signal, target);
+    } else {
+        written = snprintf(NULL, 0, "no-match signal=%s target=%s", signal, target);
+    }
+
+    if (written < 0) {
+        cep_free(signal);
+        cep_free(target);
+        return false;
+    }
+
+    size_t size = (size_t)written + 1u;
+    char* message = cep_malloc(size);
+    if (!message) {
+        cep_free(signal);
+        cep_free(target);
+        return false;
+    }
+
+    if (descriptor) {
+        snprintf(message, size, "enzyme=%s rc=%d signal=%s target=%s", name, rc, signal, target);
+    } else {
+        snprintf(message, size, "no-match signal=%s target=%s", signal, target);
+    }
+
+    bool ok = cep_heartbeat_append_list_message(agenda, message);
+
+    cep_free(message);
+    cep_free(signal);
+    cep_free(target);
+    return ok;
+}
+
+
+static bool cep_heartbeat_record_stage_entry(cepBeatNumber beat, const char* message) {
+    if (!cep_heartbeat_policy_use_dirs() || !message) {
+        return true;
+    }
+
+    cepCell* beat_cell = cep_heartbeat_ensure_beat_node(beat);
+    if (!beat_cell) {
+        return false;
+    }
+
+    cepCell* stage = cep_cell_find_by_name(beat_cell, CEP_DTAW("CEP", "stage"));
+    if (!stage) {
+        stage = cep_heartbeat_ensure_list_child(beat_cell, CEP_DTAW("CEP", "stage"));
+        if (!stage) {
+            return false;
+        }
+    }
+
+    return cep_heartbeat_append_list_message(stage, message);
 }
 
 
@@ -289,6 +723,7 @@ static void cep_runtime_reset_state(bool destroy_registry) {
 
     memset(&CEP_RUNTIME.topology, 0, sizeof(CEP_RUNTIME.topology));
     memset(&CEP_RUNTIME.policy, 0, sizeof(CEP_RUNTIME.policy));
+    CEP_RUNTIME.policy.ensure_directories = true;
 }
 
 
@@ -544,6 +979,33 @@ bool cep_heartbeat_stage_commit(void) {
     if (!cep_stream_commit_pending())
         return false;
 
+    if (cep_heartbeat_policy_use_dirs()) {
+        size_t promoted = CEP_RUNTIME.inbox_next.count;
+        const char* plural = (promoted == 1u) ? "" : "s";
+        cepBeatNumber current = (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current;
+        cepBeatNumber next = (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current + 1u;
+        int written = snprintf(NULL, 0, "commit: promoted %zu impulse%s -> beat %" PRIu64,
+                                promoted, plural, (unsigned long long)next);
+        if (written < 0) {
+            return false;
+        }
+
+        size_t size = (size_t)written + 1u;
+        char* message = cep_malloc(size);
+        if (!message) {
+            return false;
+        }
+
+        snprintf(message, size, "commit: promoted %zu impulse%s -> beat %" PRIu64,
+                 promoted, plural, (unsigned long long)next);
+
+        bool recorded = cep_heartbeat_record_stage_entry(current, message);
+        cep_free(message);
+        if (!recorded) {
+            return false;
+        }
+    }
+
     cep_heartbeat_impulse_queue_swap(&CEP_RUNTIME.inbox_current, &CEP_RUNTIME.inbox_next);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
 
@@ -663,6 +1125,10 @@ bool cep_heartbeat_process_impulses(void) {
             entry->descriptor_count = resolved;
         }
 
+        if (entry->descriptor_count == 0u && cep_heartbeat_policy_use_dirs()) {
+            ok = cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, NULL, CEP_ENZYME_SUCCESS, &impulse);
+        }
+
         if (entry->descriptor_count > 0u && entry->descriptors) {
             for (size_t j = 0; j < entry->descriptor_count && ok; ++j) {
                 const cepEnzymeDescriptor* descriptor = entry->descriptors[j];
@@ -671,6 +1137,12 @@ bool cep_heartbeat_process_impulses(void) {
                 }
 
                 int rc = descriptor->callback(impulse.signal_path, impulse.target_path);
+                if (cep_heartbeat_policy_use_dirs()) {
+                    if (!cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, descriptor, rc, &impulse)) {
+                        ok = false;
+                        break;
+                    }
+                }
                 if (rc == CEP_ENZYME_FATAL) {
                     ok = false;
                     break;
@@ -770,14 +1242,32 @@ int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse)
         return CEP_ENZYME_FATAL;
     }
 
-    (void)beat;
-
     if (!impulse || (!impulse->signal_path && !impulse->target_path)) {
         return CEP_ENZYME_FATAL;
     }
 
+    cepBeatNumber record_beat = beat;
+    if (record_beat == CEP_BEAT_INVALID) {
+        record_beat = cep_heartbeat_next();
+        if (record_beat == CEP_BEAT_INVALID) {
+            record_beat = 0u;
+        }
+    }
+
+    if (cep_heartbeat_policy_use_dirs() && record_beat != CEP_BEAT_INVALID) {
+        if (!cep_heartbeat_ensure_beat_node(record_beat)) {
+            return CEP_ENZYME_FATAL;
+        }
+    }
+
     if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.inbox_next, impulse)) {
         return CEP_ENZYME_FATAL;
+    }
+
+    if (cep_heartbeat_policy_use_dirs() && record_beat != CEP_BEAT_INVALID) {
+        if (!cep_heartbeat_record_inbox_entry(record_beat, impulse)) {
+            return CEP_ENZYME_FATAL;
+        }
     }
 
     return CEP_ENZYME_SUCCESS;

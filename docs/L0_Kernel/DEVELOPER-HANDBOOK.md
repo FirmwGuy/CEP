@@ -100,10 +100,10 @@ Child Storage Strategies
 
 Hash-Indexed Stores
 -------------------
-Hash-indexed stores make it easy to drop new children into a collection and still find them instantly. Instead of scanning every sibling, the store groups candidates by a precomputed hash and then applies a tie-breaker, so insertions stay quick even as the set grows.
+Hash-indexed stores keep duplicate detection consistent without changing the public API. Linked lists, dynamic arrays, and red-black trees accept `CEP_INDEX_BY_HASH`, but they still rely on their comparator to walk the full collection (hashes are used only for equality checks). The dedicated hash-table backend is the only one that actually buckets by hash and resizes to keep lookups near O(1).
 
 Technical Details
-- Supported backends: linked lists, dynamic arrays, red-black trees, and the dedicated hash-table backend all accept `CEP_INDEX_BY_HASH`. Each backend keeps its native strengths—lists remain rotation-friendly, arrays keep positional access, trees stay balanced, and the hash-table resizes buckets as needed.
+- Supported backends: linked lists, dynamic arrays, and red-black trees reuse the sorted-insert path while consulting the hash to deduplicate entries; the hash-table backend stores children in real buckets and grows/shrinks as needed.
 - Creation contract: call `cep_store_new(..., CEP_INDEX_BY_HASH, compare)` and provide a comparator that first checks the stored hash and then compares a secondary field to resolve collisions. Callers constructing children manually can follow the `hash_index_add_value` pattern from the kernel tests: initialise a temporary cell, then pass it to `cep_cell_add`.
 - Operations: use `cep_cell_add` or `cep_store_add_child` for inserts. The deduplication logic treats two children with equal structure and hash/compare results as the same record. Append/prepend helpers are restricted to insertion-ordered stores and will assert if used with hash indexing.
 - Traversal: `cep_cell_traverse` and `store_traverse` iterate in hash/secondary order with no sentinel callback at the end, matching the behaviour of the other sorted backends.

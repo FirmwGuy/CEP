@@ -18,9 +18,9 @@ Scope and naming
 - Registry: a dictionary of “query” paths → lists of enzyme functions. An enzyme becomes available for processing only after registration under a query path.
 
 Filesystem layout (runtime)
-- `rt/beat/<N>/inbox` — list of queued signals for beat N.
-- `rt/beat/<N>/agenda` — list of runnable items resolved from the inbox.
-- `rt/beat/<N>/stage` — outputs prepared during N (only committed at N+1).
+- `rt/beat/<N>/inbox` — when `cepHeartbeatPolicy.ensure_directories` is true (enabled by default), each appended signal is logged here as a text value (`signal=/… target=/…`).
+- `rt/beat/<N>/agenda` — enzymes that executed during beat N, recorded with their name, return code, and the impulse that triggered them.
+- `rt/beat/<N>/stage` — commit notes for beat N (for example, how many impulses were promoted to beat N+1).
 - Other runtime folders (tokens, locks, budgets, metrics) integrate with scheduling but are optional to the core mechanism.
 
 Signal structure
@@ -34,6 +34,8 @@ Registering enzymes
   - `typedef int (*cepEnzyme)(const cepPath *signal, const cepPath *target);`
   - `int cep_enzyme_register(const cepPath *query, const cepEnzymeDescriptor *descriptor);`
   - `int cep_cell_bind_enzyme(cepCell *cell, const cepDT *name, bool propagate);`
+  - `int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath *signal, const cepPath *target);`
+  - `bool cep_heartbeat_step(void);`
 - Semantics
   - Registration publishes descriptor metadata (callback, name, before/after dependencies, match policy) under a query path.
   - Binding attaches the descriptor name to a cell. Bindings can propagate to descendants; tombstones cancel inherited bindings at or below a node.
@@ -58,9 +60,7 @@ Heartbeat cycle
 5) Commit boundary (N → N+1): staged outputs become visible; newly emitted signals are now eligible for processing in the next beat.
 
 Emitting new work
-- Within an enzyme body, to produce follow-on work:
-  - Append `(signal_path, target_path)` to `rt/beat/<N+1>/inbox`.
-  - Large payloads should be written to a content store (e.g., under `cas/…`) and referenced by hash in staged outputs or journals.
+- Within an enzyme body, call `cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, signal, target)`; the runtime targets the next beat, records the textual entry under `rt/beat/<N+1>/inbox`, and queues the impulse in memory. Large payloads should be written to a content store (e.g., under `cas/…`) and referenced by hash in staged outputs or journals.
 
 Error handling and idempotency
 - Return values: enzymes return a status code (e.g., 0 = success; negative for retryable or permanent failures).
@@ -83,36 +83,32 @@ typedef struct {
   cepEnzymeFlags       flags;
 } cepEnzymeDescriptor;
 
-int cep_enzyme_register(const cepPath *query, const cepEnzymeDescriptor *descriptor);
-int cep_cell_bind_enzyme(cepCell *cell, const cepDT *name, bool propagate);
-int cep_enqueue_signal(size_t beatN, const cepPath *signal, const cepPath *target);
+int  cep_enzyme_register(const cepPath *query, const cepEnzymeDescriptor *descriptor);
+int  cep_cell_bind_enzyme(cepCell *cell, const cepDT *name, bool propagate);
+int  cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath *signal, const cepPath *target);
+bool cep_heartbeat_resolve_agenda(void);
+bool cep_heartbeat_execute_agenda(void);
+bool cep_heartbeat_stage_commit(void);
 
-void cep_heartbeat_tick(size_t beatN) {
-  for (item in rt.beat[beatN].inbox) {
-    const cepEnzymeDescriptor* ordered[CAP];
-    size_t count = cep_enzyme_resolve(registry, &item, ordered, CAP);
-    for (size_t i = 0; i < count; ++i) {
-      const cepEnzymeDescriptor* ez = ordered[i];
-      int rc = ez->callback(&item.signal_path, &item.target_path);
-      // enzyme body may stage outputs and enqueue N+1 signals
-      // rc policy determines retries or metrics
-    }
-  }
-  // commit staged outputs at boundary N -> N+1
+bool cep_heartbeat_step(void) {
+  bool ok = cep_heartbeat_resolve_agenda();
+  ok = ok && cep_heartbeat_execute_agenda();
+  ok = ok && cep_heartbeat_stage_commit();
+  return ok;
 }
 ```
 
 During setup, register descriptors first and then call `cep_cell_bind_enzyme` on the cells that should emit the work. Bindings are append-only at runtime; apply them before starting the heartbeat loop to keep the beat boundary deterministic.
 
 Example flow
-1) Beat 1, inbox receives `(signal=/signals/image/thumbnail, target=/env/fs/projects/p1/img123.jpg)`.
+1) Beat 1, `cep_heartbeat_enqueue_signal` records `(signal=/signals/image/thumbnail, target=/env/fs/projects/p1/img123.jpg)` under `rt/beat/1/inbox` and queues it for the next beat.
 2) Registry has descriptors:
    - `resize_image` registered under `/signals/image/thumbnail`.
    - `image_metadata` registered under `/env/fs/projects/*`.
    The `/env/fs/projects/` cell binds `image_metadata` with propagation enabled.
 3) Bindings gathered along the target path yield `image_metadata`; the signal adds `resize_image`. Signal filtering keeps both; `resize_image` wins the first slot thanks to the dual match.
-4) `resize_image` stages thumbnail bytes and enqueues `(signal=/signals/db/write, target=/data/assets/img123/thumbnail)` for beat 2.
-5) Beat 2 repeats the process, using bindings under `/data/assets/` to drive follow-up work.
+4) `resize_image` stages thumbnail bytes and calls `cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, /signals/db/write, /data/assets/img123/thumbnail)` to record the follow-up impulse.
+5) Beat 2 repeats the process, using bindings under `/data/assets/` to drive follow-up work, while `rt/beat/2` accumulates the agenda and stage logs for auditing.
 
 Design invariants
 - Deterministic order at every step (inbox insertion, match ordering,
