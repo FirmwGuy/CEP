@@ -957,7 +957,20 @@ static bool cep_serialization_reader_check_hash(const cepSerializationStageData*
     if (data->total_size && !data->buffer)
         return false;
 
-    uint64_t computed = cep_hash_bytes(data->buffer, (size_t)data->total_size);
+    uint64_t payload_hash = cep_hash_bytes(data->buffer, (size_t)data->total_size);
+    struct {
+        uint64_t domain;
+        uint64_t tag;
+        uint64_t size;
+        uint64_t payload;
+    } fingerprint = {
+        .domain  = data->dt.domain,
+        .tag     = data->dt.tag,
+        .size    = data->total_size,
+        .payload = payload_hash,
+    };
+
+    uint64_t computed = cep_hash_bytes(&fingerprint, sizeof fingerprint);
     return computed == data->hash;
 }
 

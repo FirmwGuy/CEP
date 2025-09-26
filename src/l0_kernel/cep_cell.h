@@ -494,21 +494,38 @@ static inline bool cep_data_equals_bytes(const cepData* data, const void* bytes,
 static inline uint64_t cep_data_compute_hash(const cepData* data) {
     assert(data);
 
+    uint64_t payloadHash = 0;
+
     switch (data->datatype) {
       case CEP_DATATYPE_VALUE:
       case CEP_DATATYPE_DATA:
-        return cep_hash_bytes(cep_data_payload(data), data->size);
+        payloadHash = cep_hash_bytes(cep_data_payload(data), data->size);
+        break;
 
       case CEP_DATATYPE_HANDLE:
       case CEP_DATATYPE_STREAM: {
-        uint64_t hash = 0;
-        hash ^= cep_hash_bytes(&data->handle, sizeof data->handle);
-        hash ^= cep_hash_bytes(&data->library, sizeof data->library);
-        return hash;
+        uintptr_t refs[2] = {
+            (uintptr_t)data->handle,
+            (uintptr_t)data->library,
+        };
+        payloadHash = cep_hash_bytes(refs, sizeof refs);
+        break;
       }
     }
 
-    return 0;
+    struct {
+        uint64_t domain;
+        uint64_t tag;
+        uint64_t size;
+        uint64_t payload;
+    } key = {
+        .domain  = data->_dt.domain,
+        .tag     = data->_dt.tag,
+        .size    = data->size,
+        .payload = payloadHash,
+    };
+
+    return cep_hash_bytes(&key, sizeof key);
 }
 
 typedef struct {

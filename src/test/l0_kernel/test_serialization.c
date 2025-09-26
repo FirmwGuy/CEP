@@ -208,6 +208,7 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
 
     cepID expected_domain = cell.metacell.domain;
     cepID expected_tag = cell.metacell.tag;
+    uint64_t expected_hash = cep_data_compute_hash(data);
 
     SerializationCapture capture = {0};
     munit_assert_true(cep_serialization_emit_cell(&cell,
@@ -279,7 +280,7 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     munit_assert_uint16(flags, ==, 0);
     munit_assert_uint32(inline_len, ==, sizeof payload - 1u);
     munit_assert_uint64(total_len, ==, sizeof payload - 1u);
-    munit_assert_uint64(hash, ==, cep_hash_bytes(payload, sizeof payload - 1u));
+    munit_assert_uint64(hash, ==, expected_hash);
     munit_assert_uint64(dt_domain, ==, CEP_DTAW("CEP", "value")->domain);
     munit_assert_uint64(dt_tag, ==, CEP_DTAW("CEP", "value")->tag);
     munit_assert_int(memcmp(inline_data, payload, sizeof payload - 1u), ==, 0);
