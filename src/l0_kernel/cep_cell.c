@@ -3138,6 +3138,18 @@ void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, 
     if (!data->writable)
         return NULL;
 
+    if (!swap && (data->datatype == CEP_DATATYPE_VALUE || data->datatype == CEP_DATATYPE_DATA)) {
+        if (cep_data_equals_bytes(data, value, size)) {
+            const void* payload = cep_data_payload(data);
+            return payload ? (void*)payload : NULL;
+        }
+    }
+
+    if (data->datatype == CEP_DATATYPE_DATA && swap) {
+        if (data->data == value && data->size == size && data->capacity == capacity)
+            return data->data;
+    }
+
     cepDataNode* snapshot = cep_malloc0(sizeof *snapshot);
     memcpy(snapshot, (const cepDataNode*) &data->modified, sizeof *snapshot);
     snapshot->past = data->past;
