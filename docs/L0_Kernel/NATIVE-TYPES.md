@@ -34,11 +34,10 @@ Goal: make L0 deterministic and simple by treating payloads as opaque bytes and 
 
 ### 2.3 Deterministic Ordering and Hashing
 
-To index and sort cells deterministically, L0 defines a stable total order and content hash without inspecting semantics:
-- Order: compare `(cepDT.domain, cepDT.tag)` lexicographically; if equal, compare `payload.size`; if equal, compare `payload.bytes` lexicographically.
-- Hash: combine `cepDT` and `payload.bytes` (implementation detail), e.g. `H = Hash(cepDT || size || bytes)`.
+To index and sort payloads deterministically, L0 defines a stable hash without inspecting semantics:
+- Hash: combine `cepDT` metadata with the payload bytes (`H = Hash(domain || tag || size || bytes)`). This keeps VALUE vs DATA/handles deterministic even when several indexes coexist.
 
-This guarantees stable behavior across platforms with zero knowledge of the byte meaning.
+Note that the user-facing cell ordering helpers honour the storage/indexing strategy in effect. For example, name-indexed stores use `cep_dt_compare` (domain/tag), while historical traversal relies on timestamps plus tombstone status to preserve append-only sequencing. Treat hashes as payload fingerprints, not a global cell ordering rule.
 
 ### 2.4 Endianness, Encoding, and Canonicalization
 
