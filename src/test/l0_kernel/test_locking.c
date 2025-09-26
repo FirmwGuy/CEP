@@ -30,7 +30,7 @@ static MunitResult test_lock_store_blocks_append(const MunitParameter params[], 
 
     cep_store_unlock(&parent, &token);
 
-    cep_cell_finalize(&child);
+    cep_cell_finalize_hard(&child);
     CEP_0(&child);
 
     cep_cell_initialize_value(&child,
@@ -43,7 +43,7 @@ static MunitResult test_lock_store_blocks_append(const MunitParameter params[], 
     inserted = cep_store_add_child(parent.store, 0, &child);
     munit_assert_not_null(inserted);
     munit_assert_ptr_equal(inserted->parent, parent.store);
-    cep_cell_finalize(&parent);
+    cep_cell_finalize_hard(&parent);
     return MUNIT_OK;
 }
 
@@ -68,7 +68,7 @@ static MunitResult test_lock_data_blocks_update(const MunitParameter params[], v
     cep_data_unlock(&cell, &token);
     munit_assert_not_null(cep_cell_update(&cell, (size_t)1, (size_t)1, "b", false));
 
-    cep_cell_finalize(&cell);
+    cep_cell_finalize_hard(&cell);
     return MUNIT_OK;
 }
 

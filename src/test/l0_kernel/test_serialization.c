@@ -168,7 +168,7 @@ static void proxy_test_handle_release(const cepLibraryBinding* binding, cepCell*
         ctx->handle_releases++;
 
     if (handle) {
-        cep_cell_finalize(handle);
+        cep_cell_finalize_hard(handle);
         cep_free(handle);
     }
 }
@@ -323,7 +323,7 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
 
     for (size_t i = 0; i < capture.count; ++i)
         cep_free(capture.chunks[i].data);
-    cep_cell_finalize(&cell);
+    cep_cell_finalize_hard(&cell);
 
     return MUNIT_OK;
 }
@@ -402,7 +402,7 @@ MunitResult test_serialization_proxy(const MunitParameter params[], void* user_d
 
     cep_serialization_reader_destroy(reader);
     cep_cell_system_shutdown();
-    cep_cell_finalize(&handle_import_library);
+    cep_cell_finalize_hard(&handle_import_library);
 
     /* Fails when proxy placeholder is missing */
     cep_cell_system_initiate();
@@ -422,11 +422,11 @@ MunitResult test_serialization_proxy(const MunitParameter params[], void* user_d
     munit_assert_false(cep_serialization_reader_commit(reader_fail));
     cep_serialization_reader_destroy(reader_fail);
     cep_cell_system_shutdown();
-    cep_cell_finalize(&handle_fail_library);
+    cep_cell_finalize_hard(&handle_fail_library);
 
     serialization_capture_clear(&capture);
-    cep_cell_finalize(&proxy_handle);
-    cep_cell_finalize(&handle_library);
+    cep_cell_finalize_hard(&proxy_handle);
+    cep_cell_finalize_hard(&handle_library);
 
     /* Stream proxy emit */
     ProxyTestLibraryContext stream_emit_ctx = {0};
@@ -491,7 +491,7 @@ MunitResult test_serialization_proxy(const MunitParameter params[], void* user_d
 
     cep_serialization_reader_destroy(stream_reader);
     cep_cell_system_shutdown();
-    cep_cell_finalize(&stream_import_library);
+    cep_cell_finalize_hard(&stream_import_library);
 
     /* Failure path for stream proxies without placeholders */
     cep_cell_system_initiate();
@@ -511,11 +511,11 @@ MunitResult test_serialization_proxy(const MunitParameter params[], void* user_d
     munit_assert_false(cep_serialization_reader_commit(stream_fail_reader));
     cep_serialization_reader_destroy(stream_fail_reader);
     cep_cell_system_shutdown();
-    cep_cell_finalize(&stream_fail_library);
+    cep_cell_finalize_hard(&stream_fail_library);
 
     serialization_capture_clear(&stream_capture);
-    cep_cell_finalize(&proxy_stream);
-    cep_cell_finalize(&stream_library);
+    cep_cell_finalize_hard(&proxy_stream);
+    cep_cell_finalize_hard(&stream_library);
 
     return MUNIT_OK;
 }

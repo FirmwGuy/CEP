@@ -768,7 +768,8 @@ typedef bool (*cepTraverse)(cepEntry*, void*);
 // Initiate cells
 void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* data, cepStore* store);
 void cep_cell_initialize_clone(cepCell* newClone, cepDT* name, cepCell* cell);
-void cep_cell_finalize(cepCell* cell);
+void cep_cell_finalize(cepCell* cell);          // Internal: asserts no backlinks remain.
+void cep_cell_finalize_hard(cepCell* cell);     // Public hard teardown for aborted cells.
 void cep_cell_shadow_mark_target_dead(cepCell* cell, bool dead);
 cepCell* cep_cell_clone(const cepCell* cell);
 cepCell* cep_cell_clone_deep(const cepCell* cell);
@@ -1212,7 +1213,7 @@ static inline void cep_cell_dispose_hard(cepCell* cell) {
     if (cep_cell_parent(cell))
         cep_cell_remove_hard(cell, NULL);
     else
-        cep_cell_finalize(cell);
+        cep_cell_finalize_hard(cell);
 }
 
 

@@ -507,7 +507,7 @@ static void test_cell_tech_hash(unsigned storage, size_t capacity) {
                                   sizeof value);
         found = cep_cell_find_by_key(hash, &key, hash_value_compare, NULL);
         assert_ptr_equal(found, item);
-        cep_cell_finalize(&key);
+        cep_cell_finalize_hard(&key);
 
         path->past[0].dt = *CEP_DTS(CEP_ACRO("CEP"), name);
         found = cep_cell_find_by_path(hash, path);
@@ -844,7 +844,7 @@ static void test_cell_tech_sequencing_catalog(void) {
         } while (bookL);
     }
 
-    cep_cell_finalize(&key);
+    cep_cell_finalize_hard(&key);
 
     cep_cell_delete_hard(catT);
     cep_cell_delete_hard(catA);

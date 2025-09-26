@@ -804,7 +804,7 @@ static bool cep_cell_clone_children(const cepCell* src, cepCell* dst) {
         cepCell temp = {0};
         if (!cep_cell_clone_into(child, &temp, true)) {
             store->writable = originalWritable;
-            cep_cell_finalize(&temp);
+            cep_cell_finalize_hard(&temp);
             return false;
         }
 
@@ -816,7 +816,7 @@ static bool cep_cell_clone_children(const cepCell* src, cepCell* dst) {
 
         if (!inserted) {
             store->writable = originalWritable;
-            cep_cell_finalize(&temp);
+            cep_cell_finalize_hard(&temp);
             return false;
         }
     }
@@ -2988,29 +2988,17 @@ cepCell* cep_cell_clone_deep(const cepCell* cell) {
 }
 
 
-/* Finalise a cell and reclaim any owned storage. Inspect the cell type, delete 
-   child stores and data where applicable, and release resources. Prevent resource 
-   leaks when cells are removed or the system shuts down.
-*/
-void cep_cell_finalize(cepCell* cell) {
-    assert(!cep_cell_is_void(cell));
-
-    if (cep_cell_is_shadowed(cell))
-        cep_shadow_break_all(cell);
-
-    assert(!cep_cell_is_shadowed(cell));
+static void cep_cell_release_contents(cepCell* cell) {
+    assert(cell);
 
     switch (cell->metacell.type) {
       case CEP_TYPE_NORMAL: {
-        // Delete storage (and children)
         cepStore* store = cell->store;
         if (store) {
             // ToDo: clean shadow.
-
             cep_store_del(store);
         }
 
-        // Delete value
         cepData* data = cell->data;
         if (data) {
             cep_data_del(data);
@@ -3035,6 +3023,32 @@ void cep_cell_finalize(cepCell* cell) {
         break;
       }
     }
+}
+
+
+/* Finalise a cell that is guaranteed to have no backlinks. Callers must ensure
+   shadow invariants hold before invoking this helper; it will assert if any
+   links still reference the cell. */
+void cep_cell_finalize(cepCell* cell) {
+    assert(!cep_cell_is_void(cell));
+
+    if (CEP_NOT_ASSERT(!cep_cell_is_shadowed(cell)))
+        return;
+
+    cep_cell_release_contents(cell);
+}
+
+
+/* Forcefully finalise a cell, breaking backlinks when necessary. Intended for
+   aborting in-flight construction or reclaiming detached cells before they are
+   made visible to the hierarchy. */
+void cep_cell_finalize_hard(cepCell* cell) {
+    assert(!cep_cell_is_void(cell));
+
+    if (cep_cell_is_shadowed(cell))
+        cep_shadow_break_all(cell);
+
+    cep_cell_release_contents(cell);
 }
 
 

@@ -61,9 +61,9 @@ MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_
     tail[read] = '\0';
     assert_string_equal(tail, "world");
 
-    cep_cell_finalize(&stream);
-    cep_cell_finalize(&resource);
-    cep_cell_finalize(&library);
+    cep_cell_finalize_hard(&stream);
+    cep_cell_finalize_hard(&resource);
+    cep_cell_finalize_hard(&library);
     cep_cell_system_shutdown();
 
     return MUNIT_OK;

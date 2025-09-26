@@ -13,7 +13,7 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
 | Child store engines | ⚙️ Partial | Linked list, array, packed queue, RB-tree, and octree back-ends wired through `cep_store_new`; comparator/hash indexes now dedupe through `store_find_child_by_key` | ⚙️ Add shared hash lookups and re-sort helpers for large catalog back-ends |
 | Historical queries | ⚙️ Partial | `cep_cell_find_by_*_past`, `cep_cell_traverse_past`, and deep traversal replay timelines without mutating live data | ⚙️ Provide snapshot payloads for HANDLE/STREAM; replace the global `MAX_DEPTH` guard |
 | Link handling & shadowing | ⚙️ Partial | Link macros resolve references; soft take/pop expose archived children as links; link shadows now track `targetDead` status for tombstones | 📎 Finish shadow lifecycle hooks (refcounts/GC) and snapshot provenance |
-| Lifecycle & GC | ⚙️ Partial | `cep_cell_finalize`, `cep_store_del`, and hard delete helpers reclaim stores and payloads | ⚙️ Wire proxy lifecycle, clone support, and shadow-aware teardown |
+| Lifecycle & GC | ⚙️ Partial | `cep_cell_finalize` (invariant-safe), `cep_cell_finalize_hard`, `cep_store_del`, and hard delete helpers reclaim stores and payloads | ⚙️ Wire proxy lifecycle, clone support, and shadow-aware teardown |
 | Tooling & safety nets | ⚙️ Partial | Assertions wrap public APIs; Meson builds + unit tests guard regressions | ⚙️ Add adaptive traversal stacks, locks, persistence hooks, and broader coverage |
 | Heartbeat dispatcher | ⚙️ Partial | `cep_heartbeat_*` stages beats, memoises per-impulse resolver output, and honours dependency/name ordering | ⚙️ Wire agency execution, agenda persistence, and telemetry hooks before parallelism |
 

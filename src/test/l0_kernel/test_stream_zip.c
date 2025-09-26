@@ -80,13 +80,13 @@ MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fi
     buffer[read] = '\0';
     munit_assert_string_equal(buffer, payload);
 
-    cep_cell_finalize(&verify_stream);
-    cep_cell_finalize(&verify_resource);
-    cep_cell_finalize(&stream);
-    cep_cell_finalize(&entry);
+    cep_cell_finalize_hard(&verify_stream);
+    cep_cell_finalize_hard(&verify_resource);
+    cep_cell_finalize_hard(&stream);
+    cep_cell_finalize_hard(&entry);
 
     cep_zip_library_close(&library);
-    cep_cell_finalize(&library);
+    cep_cell_finalize_hard(&library);
     cep_cell_system_shutdown();
 
     remove(archive_path);
