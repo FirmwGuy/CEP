@@ -1643,7 +1643,7 @@ static cepCell* cep_store_replace_child(cepStore* store, cepCell* existing, cepC
 
     cepOpCount timestamp = cep_cell_timestamp_next();
 
-    cep_cell_finalize(existing);
+    cep_cell_finalize_hard(existing);
     CEP_0(existing);
 
     cep_cell_transfer(incoming, existing);
@@ -1780,6 +1780,7 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
     cell->parent = store;
     store->chdCount++;
     store->totCount++;
+
     store->modified = cep_cell_timestamp_next();   // Append-only trail lives in timestamps.
 
     return cell;
@@ -1837,6 +1838,7 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
     cell->parent = store;
     store->chdCount++;
     store->totCount++;
+
     store->modified = cep_cell_timestamp_next();   // Append-only trail lives in timestamps.
 
     return cell;
@@ -2809,7 +2811,7 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
     if (target)
         cep_cell_transfer(cell, target);  // Save cell.
     else
-        cep_cell_finalize(cell);          // Delete cell (along children, if any).
+        cep_cell_finalize_hard(cell);          // Delete cell (along children, if any).
 
     // Remove this cell from its parent (re-organizing siblings).
     switch (store->storage) {
@@ -3032,7 +3034,9 @@ static void cep_cell_release_contents(cepCell* cell) {
 void cep_cell_finalize(cepCell* cell) {
     assert(!cep_cell_is_void(cell));
 
-    if (CEP_NOT_ASSERT(!cep_cell_is_shadowed(cell)))
+    bool shadowed = cep_cell_is_shadowed(cell);
+    CEP_ASSERT(!shadowed);
+    if (shadowed)
         return;
 
     cep_cell_release_contents(cell);
@@ -3069,7 +3073,13 @@ void cep_cell_finalize_hard(cepCell* cell) {
 */
 cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    return cep_store_add_child(store, context, child);
+    cepCell* inserted = cep_store_add_child(store, context, child);
+    if (inserted && !inserted->created) {
+        cepCell* parentCell = store->owner;
+        if (parentCell && !cep_cell_is_floating(parentCell))
+            inserted->created = store->modified;
+    }
+    return inserted;
 }
 
 
@@ -3079,7 +3089,13 @@ cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
 */
 cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    return cep_store_append_child(store, prepend, child);
+    cepCell* inserted = cep_store_append_child(store, prepend, child);
+    if (inserted && !inserted->created) {
+        cepCell* parentCell = store->owner;
+        if (parentCell && !cep_cell_is_floating(parentCell))
+            inserted->created = store->modified;
+    }
+    return inserted;
 }
 
 

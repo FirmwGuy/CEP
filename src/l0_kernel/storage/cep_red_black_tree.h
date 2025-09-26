@@ -543,7 +543,7 @@ static inline void rb_tree_del_all_children_recursively(cepRbTreeNode* tnode) {
     if (tnode->left)
         rb_tree_del_all_children_recursively(tnode->left);
 
-    cep_cell_finalize(&tnode->cell);
+    cep_cell_finalize_hard(&tnode->cell);
 
     if (tnode->right)
         rb_tree_del_all_children_recursively(tnode->right);

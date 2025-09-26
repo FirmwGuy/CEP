@@ -233,7 +233,7 @@ static inline void hash_table_del_all_children(cepHashTable* table) {
     cepHashNode* node = table->head;
     while (node) {
         cepHashNode* next = node->orderNext;
-        cep_cell_finalize(&node->cell);
+        cep_cell_finalize_hard(&node->cell);
         cep_free(node);
         node = next;
     }

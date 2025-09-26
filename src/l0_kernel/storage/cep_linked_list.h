@@ -344,7 +344,7 @@ static inline void list_del_all_children(cepList* list) {
     cepListNode* node = list->head, *toDel;
     if (node) {
         do {
-            cep_cell_finalize(&node->cell);
+            cep_cell_finalize_hard(&node->cell);
             toDel = node;
             node = node->next;
             list_node_del(toDel);

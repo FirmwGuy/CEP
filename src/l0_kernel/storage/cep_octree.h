@@ -621,7 +621,7 @@ static inline void octree_del_all_children(cepOctree* octree) {
         cepOctreeList* list = onode->list;
         while (list) {
             cepOctreeList* next = list->next;
-            cep_cell_finalize(&list->cell);
+            cep_cell_finalize_hard(&list->cell);
             cep_free(list);
             list = next;
         }
