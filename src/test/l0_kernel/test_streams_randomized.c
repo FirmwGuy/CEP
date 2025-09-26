@@ -98,6 +98,7 @@ MunitResult test_streams_stdio_randomized(const MunitParameter params[], void* f
                                                 &written));
         munit_assert_size(written, ==, chunk);
         offset += chunk;
+        test_watchdog_signal(fix->watchdog);
     }
 
     munit_assert_true(cep_stream_commit_pending());
@@ -137,12 +138,110 @@ MunitResult test_streams_stdio_randomized(const MunitParameter params[], void* f
 #ifdef CEP_HAS_LIBZIP
 MunitResult test_streams_zip_randomized(const MunitParameter params[], void* fixture) {
     (void)params;
-    (void)fixture;
+    StreamFixture* fix = fixture;
+    munit_assert_not_null(fix);
 
-    char* scratch = make_temp_path();
-    if (scratch)
-        cep_free(scratch);
+    char* archive_path = make_temp_path();
+    munit_assert_not_null(archive_path);
 
-    return MUNIT_SKIP;
+    cep_cell_system_initiate();
+
+    cepCell library;
+    CEP_0(&library);
+    munit_assert_true(cep_zip_library_open(&library,
+                                           CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("zip_lib")),
+                                           archive_path,
+                                           ZIP_CREATE | ZIP_TRUNCATE));
+
+    enum { MAX_ENTRIES = 5, MAX_ENTRY_SIZE = 256 };
+    size_t entry_count = (size_t)munit_rand_int_range(1, MAX_ENTRIES + 1);
+    uint8_t payloads[MAX_ENTRIES][MAX_ENTRY_SIZE];
+    size_t lengths[MAX_ENTRIES];
+
+    for (size_t i = 0; i < entry_count; ++i) {
+        lengths[i] = (size_t)munit_rand_int_range(32, MAX_ENTRY_SIZE);
+        munit_rand_memory(lengths[i], payloads[i]);
+
+        char name[32];
+        snprintf(name, sizeof name, "entry-%zu.bin", i);
+
+        cepCell entry;
+        CEP_0(&entry);
+        munit_assert_true(cep_zip_entry_init(&entry,
+                                             CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("zip_entry")),
+                                             &library,
+                                             name,
+                                             true));
+
+        cepCell stream;
+        CEP_0(&stream);
+        cep_zip_stream_init(&stream,
+                            CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("zip_stream")),
+                            &library,
+                            &entry);
+
+        size_t offset = 0;
+        while (offset < lengths[i]) {
+            size_t chunk = (size_t)munit_rand_int_range(8, 48);
+            if (offset + chunk > lengths[i])
+                chunk = lengths[i] - offset;
+            size_t written = 0;
+            munit_assert_true(cep_cell_stream_write(&stream,
+                                                    offset,
+                                                    payloads[i] + offset,
+                                                    chunk,
+                                                    &written));
+            munit_assert_size(written, ==, chunk);
+            offset += chunk;
+            test_watchdog_signal(fix->watchdog);
+        }
+
+        munit_assert_true(cep_stream_commit_pending());
+        cep_cell_finalize_hard(&stream);
+        cep_cell_finalize_hard(&entry);
+    }
+
+    for (size_t i = 0; i < entry_count; ++i) {
+        char name[32];
+        snprintf(name, sizeof name, "entry-%zu.bin", i);
+
+        cepCell resource;
+        CEP_0(&resource);
+        munit_assert_true(cep_zip_entry_init(&resource,
+                                             CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("zip_vfy")),
+                                             &library,
+                                             name,
+                                             false));
+
+        cepCell stream;
+        CEP_0(&stream);
+        cep_zip_stream_init(&stream,
+                            CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("zip_vfys")),
+                            &library,
+                            &resource);
+
+        uint8_t buffer[MAX_ENTRY_SIZE];
+        size_t read = 0;
+        munit_assert_true(cep_cell_stream_read(&stream,
+                                               0,
+                                               buffer,
+                                               lengths[i],
+                                               &read));
+        munit_assert_size(read, ==, lengths[i]);
+        munit_assert_memory_equal(lengths[i], payloads[i], buffer);
+
+        cep_cell_finalize_hard(&stream);
+        cep_cell_finalize_hard(&resource);
+        test_watchdog_signal(fix->watchdog);
+    }
+
+    cep_zip_library_close(&library);
+    cep_cell_finalize_hard(&library);
+    cep_cell_system_shutdown();
+
+    remove(archive_path);
+    cep_free(archive_path);
+    test_watchdog_signal(fix->watchdog);
+    return MUNIT_OK;
 }
 #endif
