@@ -9,6 +9,7 @@ project('CEP', 'c',
 
 cc = meson.get_compiler('c')
 fs = import('fs')
+python_mod = import('python')
 
 # Includes
 inc = include_directories('src/l0_kernel', 'src/test')
@@ -144,4 +145,35 @@ if get_option('server').enabled()
       install: true,
     )
   endif
+endif
+
+code_map_opt = get_option('code_map')
+python3 = python_mod.find_installation('python3', required: code_map_opt)
+if python3.found()
+  code_map_script = files('tools/generate_code_map.py')
+  code_map_outputs = [
+    'code_map_ctags.json',
+    'code_map_cscope_callees.tsv',
+    'code_map_cscope_callers.tsv',
+  ]
+  code_map_command = [
+    python3,
+    code_map_script,
+    '--source-root', meson.project_source_root(),
+    '--ctags-output', '@OUTPUT0@',
+    '--callees-output', '@OUTPUT1@',
+    '--callers-output', '@OUTPUT2@',
+    '--cscope-database', join_paths(meson.current_build_dir(), 'code_map_cscope.out'),
+    '--cscope-listing', join_paths(meson.current_build_dir(), 'code_map_cscope.files'),
+    '--include', 'src',
+  ]
+  custom_target('code_map',
+    output: code_map_outputs,
+    command: code_map_command,
+    depend_files: [code_map_script],
+    build_by_default: code_map_opt,
+    build_always_stale: code_map_opt,
+  )
+elif code_map_opt
+  warning('code_map option requested but python3 was not found; skipping code map target.')
 endif

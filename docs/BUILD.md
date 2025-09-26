@@ -91,6 +91,10 @@ Build Variants and Options
 - Optional CEP server (standalone)
   - Enable: `meson setup build -Dserver=enabled`.
   - Meson expects a `src/server/main.c` entry point; if it’s missing, the build prints a warning and skips the server.
+- Code map generation (ctags + cscope)
+  - Enable during configuration: `meson setup build -Dcode_map=true`.
+  - Or trigger later: `meson compile -C build code_map`.
+  - Outputs land in the build tree (e.g., `build/code_map_ctags.json`, `build/code_map_cscope_callers.tsv`, `build/code_map_cscope_callees.tsv`).
 
 Offline Fallback (No Meson/Ninja)
 
