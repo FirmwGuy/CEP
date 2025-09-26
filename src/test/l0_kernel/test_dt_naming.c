@@ -184,6 +184,24 @@ static void test_reference_interning(void) {
 
     assert_true(cep_namepool_release(static_id));
     assert_not_null(cep_namepool_lookup(static_id, NULL));
+
+    static const char word_text[] = "lowercase";
+    cepID word_id = cep_namepool_intern(word_text, strlen(word_text));
+    assert_true(cep_id_is_word(word_id));
+    assert_uint64(word_id, ==, cep_text_to_word(word_text));
+    assert_true(cep_namepool_release(word_id));
+
+    static const char acro_text[] = "UPPER";
+    cepID acro_id = cep_namepool_intern(acro_text, strlen(acro_text));
+    assert_true(cep_id_is_acronym(acro_id));
+    assert_uint64(acro_id, ==, cep_text_to_acronym(acro_text));
+    assert_true(cep_namepool_release(acro_id));
+
+    static const char numeric_text[] = "123456";
+    cepID numeric_id = cep_namepool_intern(numeric_text, strlen(numeric_text));
+    assert_true(cep_id_is_numeric(numeric_id));
+    assert_uint64(numeric_id, ==, cep_id_to_numeric((cepID)123456));
+    assert_true(cep_namepool_release(numeric_id));
 }
 
 

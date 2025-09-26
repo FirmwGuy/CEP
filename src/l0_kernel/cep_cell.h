@@ -268,16 +268,21 @@ enum _cepCellNaming {
             return 0;       /* Limit to max allowed characters. */             \
                                                                                \
         cepID coded = 0;                                                       \
+        int allDigits = 1;                                                     \
         for (size_t n = 0; n < len; n++) {                                     \
             char c = s[n];                                                     \
-                                                                               \
+                                                                              \
             if (c < 0x20  ||  c > 0x5F)                                        \
                 return 0;   /* Uncodable characters. */                        \
-                                                                               \
+                                                                              \
             /* Shift and encode each character: */                             \
             coded |= (cepID)(c - 0x20) << (6 * ((CEP_ACRON_MAX_CHARS-1) - n)); \
+            if (c < '0' || c > '9')                                           \
+                allDigits = 0;                                                \
         }                                                                      \
-                                                                               \
+        if (allDigits)                                                         \
+            return 0;                                                          \
+                                                                              \
         return cep_id_to_acronym(coded);                                       \
     }
 

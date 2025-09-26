@@ -51,6 +51,21 @@ Kernel Concepts (L0)
   - Indexing: insertion order, by name, by user compare, by hash+compare.
 - cepCell: The unit node. Holds metacell, optional data or link, and optional store for children.
 
+Name Interning
+--------------
+Short nicknames stay on the label; long nicknames get filed once and every cell just keeps a reference number. You still talk to the cell the same way, but the kernel decides the cheapest way to store the name.
+
+Technical Details
+- Fast paths: decimal strings that fit 56 bits become `CEP_NAMING_NUMERIC`. Lowercase/punctuated text (≤11 chars) uses word IDs, uppercase/punctuated text (≤9 chars) uses acronym IDs. These never touch the intern pool.
+- Reference IDs: anything longer or mixed (UTF-8) goes through `cep_namepool_intern[_static]`, which stores the bytes under `/CEP/sys/namepool` and returns a `CEP_NAMING_REFERENCE` (page,slot) ID. Static entries reuse the caller’s buffer; dynamic ones copy into the CAS-backed value.
+- Refcounts: dynamic interns bump a refcount and can be released via `cep_namepool_release(id)` when modules unload. Static interns are permanent. Lookup returns the canonical byte pointer for logging or API use.
+- Validation: `cep_id_text_valid` and `cep_dt_valid` now treat reference IDs as first-class, so downstream code doesn’t need special cases.
+
+Q&A
+- **Do I have to call the pool for every name?** No. Only call it if you need a reference ID explicitly; helpers such as `cep_cell_set_name` already fall back to word/acronym/numeric.
+- **What happens during replay?** The `/CEP/sys/namepool` cells are part of the append-only history. Replaying rebuilds the same table so `(page,slot)` IDs are stable.
+- **How do I remove dynamic names?** Keep the ID and call `cep_namepool_release(id)` once you no longer use it (e.g., when unloading a shared library). The pool clears the slot when the refcount drops to zero.
+
 Core Invariants
 - Deterministic operations: no nondeterministic iteration over children; ordering is defined by storage/indexing.
 - Valid names only: `cep_dt_valid()` for any DT used; ID/naming helpers gate correctness.

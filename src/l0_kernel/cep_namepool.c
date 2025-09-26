@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <limits.h>
+#include <ctype.h>
 
 #define CEP_NAMEPOOL_MAX_LENGTH          256u
 #define CEP_NAMEPOOL_SLOT_BITS           12u
@@ -46,6 +47,54 @@ static size_t               name_bucket_count = 0u;
 static size_t               name_bucket_threshold = 0u;
 
 static cepCell*             namepool_root     = NULL;
+
+static cepID cep_namepool_try_compact(const char* text, size_t length) {
+    if (!text || length == 0u) {
+        return 0;
+    }
+
+    uint64_t value = 0u;
+    bool is_numeric = true;
+    for (size_t i = 0; i < length; ++i) {
+        char c = text[i];
+        if (c < '0' || c > '9') {
+            is_numeric = false;
+            break;
+        }
+        uint64_t digit = (uint64_t)(c - '0');
+        if (value > (CEP_AUTOID_MAX - digit) / 10u) {
+            is_numeric = false;
+            break;
+        }
+        value = value * 10u + digit;
+    }
+
+    if (is_numeric && value <= CEP_AUTOID_MAX && value != cep_id(CEP_AUTOID)) {
+        return cep_id_to_numeric((cepID)value);
+    }
+
+    if (length <= CEP_WORD_MAX_CHARS) {
+        char buffer[CEP_WORD_MAX_CHARS + 1u];
+        memcpy(buffer, text, length);
+        buffer[length] = '\0';
+        cepID word = cep_text_to_word(buffer);
+        if (word) {
+            return word;
+        }
+    }
+
+    if (length <= 9u) {
+        char buffer[10u];
+        memcpy(buffer, text, length);
+        buffer[length] = '\0';
+        cepID acro = cep_text_to_acronym(buffer);
+        if (acro) {
+            return acro;
+        }
+    }
+
+    return 0;
+}
 
 static inline cepID cep_namepool_make_id(uint64_t page, uint32_t slot) {
     uint64_t payload = ((page + 1ull) << CEP_NAMEPOOL_SLOT_BITS) | ((uint64_t)slot + 1ull);
@@ -396,6 +445,11 @@ cepID cep_namepool_intern(const char* text, size_t length) {
         return 0;
     }
 
+    cepID compact = cep_namepool_try_compact(text, length);
+    if (compact) {
+        return compact;
+    }
+
     if (!cep_namepool_bootstrap()) {
         return 0;
     }
@@ -456,6 +510,11 @@ cepID cep_namepool_intern_static(const char* text, size_t length) {
         return 0;
     }
 
+    cepID compact = cep_namepool_try_compact(text, length);
+    if (compact) {
+        return compact;
+    }
+
     if (!cep_namepool_bootstrap()) {
         return 0;
     }
@@ -513,6 +572,10 @@ const char* cep_namepool_lookup(cepID id, size_t* length) {
 }
 
 bool cep_namepool_release(cepID id) {
+    if (!cep_id_is_reference(id)) {
+        return true;
+    }
+
     cepNamePoolEntry* entry = cep_namepool_lookup_entry(id);
     if (!entry) {
         return false;
