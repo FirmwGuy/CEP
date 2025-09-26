@@ -5,7 +5,9 @@
 #include "cep_namepool.h"
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
+#include <limits.h>
 
 #define CEP_NAMEPOOL_MAX_LENGTH          256u
 #define CEP_NAMEPOOL_SLOT_BITS           12u
@@ -21,6 +23,8 @@ typedef struct {
     size_t      length;
     const char* bytes;
     cepCell*    cell;
+    uint32_t    refcount;
+    bool        is_static;
 } cepNamePoolEntry;
 
 typedef struct {
@@ -39,6 +43,7 @@ static size_t               name_page_cap     = 0u;
 static cepNamePoolBucket*   name_buckets      = NULL;
 static size_t               name_bucket_cap   = 0u;
 static size_t               name_bucket_count = 0u;
+static size_t               name_bucket_threshold = 0u;
 
 static cepCell*             namepool_root     = NULL;
 
@@ -154,7 +159,65 @@ static bool cep_namepool_reserve_buckets(size_t capacity) {
     name_buckets = buckets;
     name_bucket_cap = new_cap;
     name_bucket_count = migrated;
+    name_bucket_threshold = (new_cap * 3u) / 4u;
+    if (name_bucket_threshold == 0u) {
+        name_bucket_threshold = new_cap - 1u;
+    }
     return true;
+}
+
+static void cep_namepool_clear_entry(cepNamePoolEntry* entry) {
+    if (!entry) {
+        return;
+    }
+    entry->id = 0;
+    entry->page = 0;
+    entry->slot = 0;
+    entry->hash = 0;
+    entry->length = 0;
+    entry->bytes = NULL;
+    entry->cell = NULL;
+    entry->refcount = 0;
+    entry->is_static = false;
+}
+
+static void cep_namepool_remove_bucket(size_t index) {
+    if (!name_buckets || name_bucket_cap == 0u) {
+        return;
+    }
+
+    size_t mask = name_bucket_cap - 1u;
+    cepNamePoolBucket* bucket = &name_buckets[index];
+    if (!bucket->entry) {
+        return;
+    }
+
+    bucket->entry = NULL;
+    bucket->hash = 0u;
+    if (name_bucket_count) {
+        name_bucket_count -= 1u;
+    }
+
+    size_t next = (index + 1u) & mask;
+    while (name_buckets[next].entry) {
+        cepNamePoolEntry* entry = name_buckets[next].entry;
+        uint64_t hash = name_buckets[next].hash;
+        name_buckets[next].entry = NULL;
+        name_buckets[next].hash = 0u;
+        if (name_bucket_count) {
+            name_bucket_count -= 1u;
+        }
+
+        size_t dest = (size_t)hash & mask;
+        while (name_buckets[dest].entry) {
+            dest = (dest + 1u) & mask;
+        }
+        name_buckets[dest].entry = entry;
+        name_buckets[dest].hash = hash;
+        name_bucket_count += 1u;
+
+        next = (next + 1u) & mask;
+    }
 }
 
 static cepCell* cep_namepool_ensure_dictionary(cepCell* parent, const cepDT* name) {
@@ -208,10 +271,12 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
     entry->cell = value_cell;
     entry->bytes = cep_cell_data(value_cell);
     entry->length = value_cell->data->size;
+    entry->refcount = 1u;
+    entry->is_static = false;
     return entry->bytes != NULL;
 }
 
-static cepNamePoolEntry* cep_namepool_new_entry(uint64_t hash, const char* text, size_t length) {
+static cepNamePoolEntry* cep_namepool_new_entry(uint64_t hash, const char* text, size_t length, bool is_static) {
     size_t page_index = 0u;
     uint32_t slot_index = 0u;
 
@@ -247,9 +312,16 @@ SLOT_FOUND:
     entry->hash = hash;
     entry->length = length;
 
-    if (!cep_namepool_store_entry(entry, text, length)) {
-        memset(entry, 0, sizeof(*entry));
-        return NULL;
+    if (is_static) {
+        entry->bytes = text;
+        entry->cell = NULL;
+        entry->refcount = UINT32_MAX;
+        entry->is_static = true;
+    } else {
+        if (!cep_namepool_store_entry(entry, text, length)) {
+            memset(entry, 0, sizeof(*entry));
+            return NULL;
+        }
     }
 
     entry->id = cep_namepool_make_id(page_index, slot_index);
@@ -335,8 +407,8 @@ cepID cep_namepool_intern(const char* text, size_t length) {
 
     uint64_t hash = cep_hash_bytes(text, length);
 
-    if ((name_bucket_count * 2u) >= name_bucket_cap) {
-        if (!cep_namepool_reserve_buckets(name_bucket_cap << 1u)) {
+    if (name_bucket_count >= name_bucket_threshold) {
+        if (!cep_namepool_reserve_buckets(name_bucket_cap ? (name_bucket_cap << 1u) : CEP_NAMEPOOL_INITIAL_BUCKETS)) {
             return 0;
         }
     }
@@ -347,7 +419,67 @@ cepID cep_namepool_intern(const char* text, size_t length) {
     while (true) {
         cepNamePoolBucket* bucket = &name_buckets[index];
         if (!bucket->entry) {
-            cepNamePoolEntry* entry = cep_namepool_new_entry(hash, text, length);
+            cepNamePoolEntry* entry = cep_namepool_new_entry(hash, text, length, false);
+            if (!entry) {
+                return 0;
+            }
+            bucket->hash = hash;
+            bucket->entry = entry;
+            name_bucket_count += 1u;
+            return entry->id;
+        }
+
+        if (bucket->hash == hash) {
+            cepNamePoolEntry* entry = bucket->entry;
+            if (entry && entry->length == length && memcmp(entry->bytes, text, length) == 0) {
+                if (!entry->is_static && entry->refcount < UINT32_MAX) {
+                    entry->refcount += 1u;
+                }
+                return entry->id;
+            }
+        }
+
+        index = (index + 1u) & mask;
+    }
+}
+
+cepID cep_namepool_intern_cstr(const char* text) {
+    if (!text) {
+        return 0;
+    }
+    return cep_namepool_intern(text, strlen(text));
+}
+
+cepID cep_namepool_intern_static(const char* text, size_t length) {
+    if (!text || length == 0u || length > CEP_NAMEPOOL_MAX_LENGTH) {
+        return 0;
+    }
+
+    if (!cep_namepool_bootstrap()) {
+        return 0;
+    }
+
+    if (name_bucket_cap == 0u) {
+        if (!cep_namepool_reserve_buckets(CEP_NAMEPOOL_INITIAL_BUCKETS)) {
+            return 0;
+        }
+    }
+
+    uint64_t hash = cep_hash_bytes(text, length);
+
+    if (name_bucket_count >= name_bucket_threshold) {
+        if (!cep_namepool_reserve_buckets(name_bucket_cap ? (name_bucket_cap << 1u) : CEP_NAMEPOOL_INITIAL_BUCKETS)) {
+            return 0;
+        }
+    }
+
+    size_t mask = name_bucket_cap - 1u;
+    size_t index = (size_t)hash & mask;
+
+    while (true) {
+        cepNamePoolBucket* bucket = &name_buckets[index];
+        if (!bucket->entry) {
+            cepNamePoolEntry* entry = cep_namepool_new_entry(hash, text, length, true);
             if (!entry) {
                 return 0;
             }
@@ -368,13 +500,6 @@ cepID cep_namepool_intern(const char* text, size_t length) {
     }
 }
 
-cepID cep_namepool_intern_cstr(const char* text) {
-    if (!text) {
-        return 0;
-    }
-    return cep_namepool_intern(text, strlen(text));
-}
-
 const char* cep_namepool_lookup(cepID id, size_t* length) {
     cepNamePoolEntry* entry = cep_namepool_lookup_entry(id);
     if (!entry) {
@@ -384,4 +509,51 @@ const char* cep_namepool_lookup(cepID id, size_t* length) {
         *length = entry->length;
     }
     return entry->bytes;
+}
+
+bool cep_namepool_release(cepID id) {
+    cepNamePoolEntry* entry = cep_namepool_lookup_entry(id);
+    if (!entry) {
+        return false;
+    }
+
+    if (entry->is_static) {
+        return true;
+    }
+
+    if (entry->refcount > 1u) {
+        entry->refcount -= 1u;
+        return true;
+    }
+
+    if (entry->cell) {
+        cep_cell_remove_hard(entry->cell, NULL);
+    }
+
+    uint64_t page = 0u;
+    uint32_t slot = 0u;
+    if (!cep_namepool_decode(id, &page, &slot)) {
+        return false;
+    }
+
+    if (name_buckets && name_bucket_cap) {
+        size_t mask = name_bucket_cap - 1u;
+        size_t index = (size_t)entry->hash & mask;
+        while (name_buckets[index].entry) {
+            if (name_buckets[index].entry == entry) {
+                cep_namepool_remove_bucket(index);
+                break;
+            }
+            index = (index + 1u) & mask;
+        }
+    }
+
+    if (page < name_page_count && name_pages[page]) {
+        cepNamePoolEntry* slot_entry = &name_pages[page]->entries[slot];
+        if (slot_entry == entry) {
+            cep_namepool_clear_entry(slot_entry);
+        }
+    }
+
+    return true;
 }
