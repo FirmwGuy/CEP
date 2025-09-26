@@ -21,6 +21,8 @@
  *  SOFTWARE.
  *
  */
+/* Test harness entry points for CEP core suites. */
+
 
 
 #include "test.h"

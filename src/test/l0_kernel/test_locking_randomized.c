@@ -3,6 +3,8 @@
  *  write helpers refuse to mutate while a subtree is frozen, then resume
  *  without leaking state once the locks drop.
  */
+/* Exercises locking under randomized schedules and nested scopes. */
+
 
 #include "test.h"
 #include "watchdog.h"

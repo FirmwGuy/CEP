@@ -21,6 +21,8 @@
  *  SOFTWARE.
  *
  */
+/* Validates domain/tag naming conversions and reference handling. */
+
 
 
 #include "test.h"

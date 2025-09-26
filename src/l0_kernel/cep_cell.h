@@ -33,6 +33,11 @@
 extern "C" {
 #endif
 
+/**
+ * @file
+ * @brief Core Layer-0 data structures and utilities for CEP cells.
+ */
+
 
 /*
     CEP - Layer 0 - Cell implementation
@@ -129,6 +134,15 @@ typedef uint64_t  cepID;
 #define CEP_AUTOID_MAXVAL       (~(((cepID)(-1)) << CEP_AUTOID_BITS))
 #define CEP_AUTOID_MAX          (CEP_AUTOID_MAXVAL - 1)
 
+/**
+ * @struct cepDT
+ * @brief Packed domain/tag identifier used to name cells within a store.
+ *
+ * The structure uses two 58-bit fields to encode the human visible domain and
+ * tag while reserving 6 bits on each side for system metadata. Helper macros
+ * expose conversion helpers for common naming schemes (word, acronym,
+ * references, numeric IDs).
+ */
 typedef struct {
     struct {
         cepID           _sysbits1:  6,  // Used by other parts of CEP system.
@@ -161,6 +175,10 @@ static inline int cep_dt_compare(const cepDT* restrict key, const cepDT* restric
  *  Cell Meta
  */
 
+/**
+ * @struct cepMetacell
+ * @brief Lightweight metadata that summarises a cell's type and naming bits.
+ */
 typedef struct {
   union {
     cepDT       _dt;
@@ -185,6 +203,9 @@ typedef struct {
 static_assert(sizeof(cepMetacell) == sizeof(cepDT), "System bits can't exceed 2 pairs of 6 bits!");
 
 
+/**
+ * @brief Runtime types a cell instance can assume.
+ */
 enum _cepCellType {
     CEP_TYPE_VOID,              // A void (uninitialized) cell.
     CEP_TYPE_NORMAL,            // Regular cell.
@@ -194,12 +215,18 @@ enum _cepCellType {
     CEP_TYPE_COUNT
 };
 
+/**
+ * @brief State of the backlink list that records link shadows.
+ */
 enum _cepCellShadowing {
     CEP_SHADOW_NONE,            // No shadow cells.
     CEP_SHADOW_SINGLE,          // Single shadow cell.
     CEP_SHADOW_MULTIPLE,        // Multiple shadows.
 };
 
+/**
+ * @brief Encodings supported by the Domain-Tag naming system.
+ */
 enum _cepCellNaming {
     CEP_NAMING_WORD,            // Lowercase text value, 11 chars max (it must be the first in this enum!).
     CEP_NAMING_ACRONYM,         // Uppercase/numeric text, 9 characters maximum.
@@ -368,16 +395,23 @@ size_t cep_word_to_text(cepID coded, char s[12]);
 
 typedef struct _cepEnzymeBinding cepEnzymeBinding;
 
+/**
+ * @brief Bit flags tagged onto enzyme bindings stored on cells.
+ */
 enum {
-    CEP_ENZYME_BIND_PROPAGATE = 1u << 0,
-    CEP_ENZYME_BIND_TOMBSTONE = 1u << 1,
+    CEP_ENZYME_BIND_PROPAGATE = 1u << 0, /**< Inherit binding to descendants. */
+    CEP_ENZYME_BIND_TOMBSTONE = 1u << 1, /**< Marks an unbound/tombstoned entry. */
 };
 
+/**
+ * @struct _cepEnzymeBinding
+ * @brief Node describing a single enzyme binding appended to a cell timeline.
+ */
 struct _cepEnzymeBinding {
-    cepEnzymeBinding*   next;
-    cepDT               name;
-    uint32_t            flags;
-    cepOpCount          modified;
+    cepEnzymeBinding*   next;       /**< Next binding in the append-only list. */
+    cepDT               name;       /**< Enzyme identity. */
+    uint32_t            flags;      /**< Binding behaviour flags. */
+    cepOpCount          modified;   /**< Heartbeat when this binding became visible. */
 };
 
 typedef struct _cepDataNode  cepDataNode;
@@ -592,25 +626,79 @@ void*    cep_data(const cepData* data);
 void     cep_data_history_push(cepData* data);
 void     cep_data_history_clear(cepData* data);
 
+/**
+ * @brief Bootstrap a HANDLE/STREAM library adapter under the given cell.
+ */
 void  cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* ops, void* context);
+
+/**
+ * @brief Retrieve metadata describing the library adapter bound to @p library.
+ */
 const cepLibraryBinding* cep_library_binding(const cepCell* library);
+
+/**
+ * @brief Access the opaque adapter context associated with @p library.
+ */
 void* cep_library_context(const cepCell* library);
+
+/**
+ * @brief Update the opaque adapter context managed by @p library.
+ */
 void  cep_library_set_context(cepCell* library, void* context);
 
+/**
+ * @brief Read a portion of a STREAM payload into a caller-provided buffer.
+ */
 bool  cep_cell_stream_read(cepCell* cell, uint64_t offset, void* dst, size_t size, size_t* out_read);
+
+/**
+ * @brief Write bytes into a STREAM payload while honouring adapter preconditions.
+ */
 bool  cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size_t size, size_t* out_written);
+
+/**
+ * @brief Acquire a mapped view into a STREAM payload for direct access.
+ */
 bool  cep_cell_stream_map(cepCell* cell, uint64_t offset, size_t size, unsigned access, cepStreamView* view);
+
+/**
+ * @brief Release a mapped view, optionally committing staged writes.
+ */
 bool  cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit);
 
 
+/**
+ * @brief Initialise a proxy cell whose storage is mediated through adapter callbacks.
+ */
 void  cep_proxy_initialize(cepCell* cell, cepDT* name, const cepProxyOps* ops, void* context);
+
+/**
+ * @brief Replace the opaque context pointer owned by a proxy cell.
+ */
 void  cep_proxy_set_context(cepCell* cell, void* context);
+
+/**
+ * @brief Read the opaque context pointer owned by a proxy cell.
+ */
 void* cep_proxy_context(const cepCell* cell);
+
+/**
+ * @brief Retrieve the adapter vtable used by a proxy cell.
+ */
 const cepProxyOps* cep_proxy_ops(const cepCell* cell);
+
 bool  cep_proxy_snapshot(cepCell* cell, cepProxySnapshot* snapshot);
 void  cep_proxy_release_snapshot(cepCell* cell, cepProxySnapshot* snapshot);
 bool  cep_proxy_restore(cepCell* cell, const cepProxySnapshot* snapshot);
+
+/**
+ * @brief Initialise a proxy around an existing HANDLE cell using @p library.
+ */
 void  cep_proxy_initialize_handle(cepCell* cell, cepDT* name, cepCell* handle, cepCell* library);
+
+/**
+ * @brief Initialise a proxy around an existing STREAM cell using @p library.
+ */
 void  cep_proxy_initialize_stream(cepCell* cell, cepDT* name, cepCell* stream, cepCell* library);
 
 
@@ -783,12 +871,46 @@ typedef bool (*cepTraverse)(cepEntry*, void*);
  */
 
 // Initiate cells
+/**
+ * @brief Initialise a cell with the provided metadata, payload and store.
+ *
+ * @param cell  Destination cell to initialise.
+ * @param type  One of the #_cepCellType values describing the runtime flavour.
+ * @param name  Domain/tag assigned to the cell; must satisfy cep_dt_valid().
+ * @param data  Optional payload instance owned by the cell after the call.
+ * @param store Optional child store instance owned by the cell after the call.
+ */
 void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* data, cepStore* store);
+
+/**
+ * @brief Initialise @p newClone so it mirrors the structure of @p cell.
+ *
+ * @param newClone Destination cell receiving the cloned view.
+ * @param name     New domain/tag identifier for the clone.
+ * @param cell     Source cell to replicate.
+ */
 void cep_cell_initialize_clone(cepCell* newClone, cepDT* name, cepCell* cell);
+/**
+ * @brief Release resources held by @p cell. The caller must ensure no backlinks remain.
+ */
 void cep_cell_finalize(cepCell* cell);          // Internal: asserts no backlinks remain.
+
+/**
+ * @brief Forcefully tear down @p cell regardless of backlinks (used for aborted builds).
+ */
 void cep_cell_finalize_hard(cepCell* cell);     // Public hard teardown for aborted cells.
+/**
+ * @brief Update the tombstone flag so shadowing links reflect the target status.
+ */
 void cep_cell_shadow_mark_target_dead(cepCell* cell, bool dead);
+/**
+ * @brief Create a shallow clone of @p cell sharing payload/store history.
+ */
 cepCell* cep_cell_clone(const cepCell* cell);
+
+/**
+ * @brief Create a deep clone duplicating the entire subtree rooted at @p cell.
+ */
 cepCell* cep_cell_clone_deep(const cepCell* cell);
 
 #define cep_cell_initialize_empty(r, name)                                                            cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, NULL)
@@ -1088,9 +1210,17 @@ cepCell* cep_cell_find_next_by_name_past(const cepCell* cell, cepDT* name, uintp
 cepCell* cep_cell_find_next_by_path_past(const cepCell* start, cepPath* path, uintptr_t* prev, cepOpCount snapshot);
 #define  cep_cell_find_next_by_path(start, path, prev)      cep_cell_find_next_by_path_past((start), (path), (prev), 0)
 
+/**
+ * @brief Iterate over direct children using the provided callback.
+ */
 bool cep_cell_traverse      (cepCell* cell, cepTraverse func, void* context, cepEntry* entry);
 bool cep_cell_traverse_internal(cepCell* cell, cepTraverse func, void* context, cepEntry* entry);
+
+/**
+ * @brief Traverse historical snapshots of the child list at @p timestamp.
+ */
 bool cep_cell_traverse_past (cepCell* cell, cepOpCount timestamp, cepTraverse func, void* context, cepEntry* entry);
+
 bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 bool cep_cell_deep_traverse (cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 bool cep_cell_deep_traverse_internal(cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);

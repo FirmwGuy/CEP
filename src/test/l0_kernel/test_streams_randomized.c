@@ -3,6 +3,8 @@
  *  zip backends to ensure windowing, effect logs, and commit paths stay
  *  replay-safe across transports.
  */
+/* Randomized STREAM tests combining reads, writes and commits. */
+
 
 #include "test.h"
 #include "watchdog.h"

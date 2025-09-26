@@ -3,6 +3,8 @@
  *  the Layer 0 serializer, and rehydrates the snapshots to prove structure and
  *  payload fidelity survive arbitrary layout and proxy mixes.
  */
+/* Randomized serialization fuzz that stresses chunk assembly. */
+
 
 #include "test.h"
 #include "watchdog.h"

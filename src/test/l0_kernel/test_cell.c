@@ -21,6 +21,8 @@
  *  SOFTWARE.
  *
  */
+/* Exercises fundamental cell creation, storage and traversal semantics. */
+
 
 
 

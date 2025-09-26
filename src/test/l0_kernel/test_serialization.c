@@ -191,6 +191,8 @@ static const cepLibraryOps proxy_test_library_ops = {
    the control/header frame with the CEP magic, the structural manifest with the
    cell path, and the inline data descriptor that carries both metadata and the
    payload bytes. */
+/* Covers serialization framing and payload replay semantics. */
+
 MunitResult test_serialization(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;
     (void)user_data_or_fixture;

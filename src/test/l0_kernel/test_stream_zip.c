@@ -96,3 +96,5 @@ MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fi
 }
 
 #endif /* CEP_HAS_LIBZIP */
+/* Validates ZIP-backed stream adapter over real archives. */
+

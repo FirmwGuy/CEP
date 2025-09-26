@@ -3,6 +3,8 @@
  *  drive stdio-backed files through the new library vtable while journaling
  *  reads and writes.
  */
+/* STREAM adapter unit tests for basic read/write contract. */
+
 
 #include "test.h"
 #include "stream/cep_stream_stdio.h"

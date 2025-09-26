@@ -4,6 +4,8 @@
  *  mutation. The fixture keeps a watchdog alive so fuzzier sequences never
  *  stall the suite.
  */
+/* Randomized stress tests that mutate cells under varied operations. */
+
 
 #include "test.h"
 #include "watchdog.h"

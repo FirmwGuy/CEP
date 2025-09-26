@@ -21,6 +21,8 @@
  *  SOFTWARE.
  *
  */
+/* Checks enzyme registry behaviour and runtime matching rules. */
+
 
 
 #include "test.h"

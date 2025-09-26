@@ -1,3 +1,5 @@
+/* Verifies lock primitives prevent unsafe mutations under contention. */
+
 #include "test.h"
 
 #include "cep_cell.h"

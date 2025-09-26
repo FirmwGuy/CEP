@@ -5,6 +5,8 @@
  *  Callers create a watchdog per test, poke it once they are done, and destroy
  *  it alongside their fixtures.
  */
+/* Watchdog helpers that abort tests when progress stalls. */
+
 
 #include "watchdog.h"
 

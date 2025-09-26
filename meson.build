@@ -185,12 +185,13 @@ if docs_html_opt
   dot = find_program('dot', required: true)
   dot_path = fs.parent(dot.full_path())
   doc_output_dir = join_paths(meson.current_build_dir(), 'docs')
-  main_page = join_paths(meson.project_source_root(), 'docs/README.md')
-  if not fs.exists('docs/README.md')
+  main_page = ''
+  if fs.exists('docs/CEP.md')
+    main_page = join_paths(meson.project_source_root(), 'docs/CEP.md')
+  elif fs.exists('docs/README.md')
+    main_page = join_paths(meson.project_source_root(), 'docs/README.md')
+  elif fs.exists('docs/BUILD.md')
     main_page = join_paths(meson.project_source_root(), 'docs/BUILD.md')
-  endif
-  if not fs.exists('docs/BUILD.md')
-    main_page = ''
   endif
 
   doxy_config = configuration_data()

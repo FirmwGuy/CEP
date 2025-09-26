@@ -3,6 +3,8 @@
  *  to ensure topological resolution and retry semantics remain stable while
  *  enzymes load and requeue under pressure.
  */
+/* Randomized scheduler tests for agenda ordering and fairness. */
+
 
 #include "test.h"
 #include "watchdog.h"

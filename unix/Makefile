@@ -40,7 +40,7 @@ SRC := $(SRCDIR)/l0_kernel/cep_cell.c \
        $(wildcard $(SRCDIR)/test/*/*.c)
 OBJ := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRC))
 
-DOCS_MAIN_MD := $(firstword $(foreach f,../docs/README.md ../docs/BUILD.md,$(if $(wildcard $(f)),$(abspath $(f)))))
+DOCS_MAIN_MD := $(firstword $(foreach f,../docs/CEP.md ../docs/README.md ../docs/BUILD.md,$(if $(wildcard $(f)),$(abspath $(f)))))
 DOCS_MD := $(shell find ../docs -type f -name '*.md' 2>/dev/null)
 DOCS_DOT_BIN := $(shell which dot 2>/dev/null)
 DOCS_DOT_PATH := $(dir $(DOCS_DOT_BIN))

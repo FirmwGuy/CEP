@@ -20,6 +20,8 @@
  *  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  *  SOFTWARE.
  */
+/* Ensures heartbeat sequencing, agenda resolve and commit staging. */
+
 
 
 #include "test.h"

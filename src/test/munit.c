@@ -20,6 +20,8 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+/* Local copy of the minimal munit runner used by CEP tests. */
+
 
 /*** Configuration ***/
 

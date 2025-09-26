@@ -2,21 +2,21 @@
 
 ---
 
-## 1. Introduction
+## Introduction
 
 CEP is a way to build systems that behave like living communities, not just machines. At the very bottom, it handles simple, certain steps (like a clock). In the middle, it allows many approaches to coexist and learn which work best (like a small ecosystem). At the top, it helps people understand, agree, and remember what the system is doing and why (like shared rules and stories in a group).
 
-**How those pieces fit.**
+### How Those Pieces Fit
 
 * **Cells and enzymes** are the nuts and bolts: small pieces of information and tiny workers that transform them.
 * **Organisms and species** describe how work unfolds: many flows can try different tactics and "the best tactic wins in its own context."
 * **Councils and laws** help groups agree on safe practices and change them responsibly.
 * **Stories and myths** are how knowledge sticks: we keep detailed logs for accuracy, short summaries for speed, and human-friendly stories so people can actually use the lessons.
 
-**Why passes and loops.**
+### Why Passes and Loops
 CEP advances in small steps called **passes** so it's predictable and debuggable. But it **evolves** through **loops**--what happens at one layer influences the next, and, over time, the top can reshape the bottom.
 
-**Q\&A**
+### Q&A
 
 * *Is CEP a programming language?*
   No. Think of it as the stage where many languages can perform.
@@ -25,7 +25,7 @@ CEP advances in small steps called **passes** so it's predictable and debuggable
 
 ---
 
-## 2. Design Goals
+## Design Goals
 
 CEP aims to be both **trustworthy** (you can always replay what happened) and **creative** (it can try different approaches and improve).
 
@@ -36,7 +36,7 @@ CEP aims to be both **trustworthy** (you can always replay what happened) and **
 * **Governable:** changes are versioned and can be rolled back safely.
 * **Meaningful:** the system's behavior is understandable as rules and stories, not just logs.
 
-**Q\&A**
+### Q&A
 
 * *Isn't determinism vs. exploration a contradiction?*
   We record every choice; that's how we replay exactly, even when choices were open.
@@ -45,7 +45,7 @@ CEP aims to be both **trustworthy** (you can always replay what happened) and **
 
 ---
 
-## 3. Layered Architecture
+## Layered Architecture
 
 ### Layer 0 - Kernel (Physiology of Computing)
 
@@ -53,13 +53,13 @@ This is the reliable **metabolism** of CEP. **Cells** are the nutrients of infor
 
 Everything runs in **heartbeats**: the system's vital rhythm. Output from step N only becomes visible in step N+1. This steady beat is like a circulatory cycle --it keeps the organism healthy, predictable, and easy to debug.
 
-**Everyday analogy.**
+#### Everyday Analogy
 Imagine a kitchen line as a living metabolism: orders (cells) arrive as nutrients, cooks (enzymes) metabolize them into dishes, and the pass window releases food only at a steady interval (heartbeat). No plate jumps the line; everything flows in rhythm.
 
-**Why this matters.**
+#### Why This Matters
 Deterministic steps make problems fixable and audits honest. If a bug happens, you can replay and see it again.
 
-**Q\&A**
+#### Q&A
 
 * *Why immutability?*
   You can't argue with a timestamped fact; you can only add new facts that supersede it.
@@ -72,13 +72,13 @@ Deterministic steps make problems fixable and audits honest. If a bug happens, y
 
 Facts don't live alone. **Beings** are the named things in your world (a document, a button, a user). **Bonds** are their relationships ("this button triggers that action"). Every new fact creates an **impulse** ("something changed"). **Contexts** capture situations involving several things at once (user+button+document). **Facets** ensure the small truths implied by a big truth are also recorded (closure).
 
-**Everyday analogy.**
+#### Everyday Analogy
 If you add "Alice clicked Save on Doc1" (big truth), it implies smaller truths--Alice is a user, Save is an action, Doc1 is a document. CEP writes those implied pieces so the world stays consistent.
 
-**Why this matters.**
+#### Why This Matters
 You don't end up with dangling facts or half-truths that cause confusion later.
 
-**Q\&A**
+#### Q&A
 
 * *What if two facts conflict?*
   Both are kept. Later, a safety/decision layer chooses which one leads.
@@ -91,13 +91,13 @@ You don't end up with dangling facts or half-truths that cause confusion later.
 
 This is where the system "comes alive." **Organisms** (flows) wake up when impulses arrive. A single **individual** (token) walks through the steps of a flow. At **decision points**, it can branch. Different **species** (variants) try different tactics. **Habitats** (niches) map which tactic works best in which situation. **Eco-roles** keep balance: predators remove bad variants, symbionts collect metrics, mutators introduce safe novelty, guardians enforce rules.
 
-**Everyday analogy.**
+#### Everyday Analogy
 Think of multiple customer-support scripts being tried in parallel; each script is better for certain types of customers. Over time, you keep the best script for each scenario.
 
-**Why this matters.**
+#### Why This Matters
 The system adapts without chaos; it learns which playbook fits which case.
 
-**Q\&A**
+#### Q&A
 
 * *Won't variants explode?*
   CEP uses budgets and pruning; weak variants die off.
@@ -110,13 +110,13 @@ The system adapts without chaos; it learns which playbook fits which case.
 
 Now the system starts to "notice." **Perspectives** reorganize facts into useful views (tables, graphs). **Interpretations** tag or score things (e.g., "risks" or "quality"). Repeated structures are elevated into **conventions** (patterns the system recognizes). **Summaries** compress long histories while keeping the important signal.
 
-**Everyday analogy.**
+#### Everyday Analogy
 Like a coach watching game footage: creating spreadsheets (perspectives), giving players ratings (interpretations), and recognizing plays that work (conventions). The season recap (summary) remembers the shape of the story, not every second.
 
-**Why this matters.**
+#### Why This Matters
 Without awareness, you just react; with awareness, you learn.
 
-**Q\&A**
+#### Q&A
 
 * *Is this ML?*
   It can include ML, but doesn't depend on it. Patterns are explicit, readable facts.
@@ -129,13 +129,13 @@ Without awareness, you just react; with awareness, you learn.
 
 Good patterns become **laws** (named, versioned rules). Changing rules happens via **reforms** (safe, step-by-step upgrades), overseen by **councils** (review and approval flows). Risky ideas can be tried in **provinces** (sandboxes). In larger settings, **federation** allows multiple councils to govern their domains without blocking each other.
 
-**Everyday analogy.**
+#### Everyday Analogy
 Like promoting a good internal policy to the company handbook, reviewing changes, testing in a pilot office, and keeping regional differences when needed.
 
-**Why this matters.**
+#### Why This Matters
 You evolve safely, explain changes, and can undo them if needed.
 
-**Q\&A**
+#### Q&A
 
 * *Who decides laws?*
   Councils can be automated, human-in-the-loop, or split across teams.
@@ -148,13 +148,13 @@ You evolve safely, explain changes, and can undo them if needed.
 
 Humans remember stories better than logs. CEP turns important sequences into **stories** with **archetypes** (roles such as Keeper or Guardian). Detailed **chronicles** preserve everything; **chants** carry the repeating motifs; **icons** represent archetypes. **Legends and myths** are the distilled wisdom--what we keep telling because it works. **Dreams** are "maybe" stories we haven't proven yet.
 
-**Everyday analogy.**
+#### Everyday Analogy
 Within a company, "We always back up before deploy" is a myth--short, memorable, guiding behavior even if the system's details change.
 
-**Why this matters.**
+#### Why This Matters
 Shared understanding helps people align faster than raw data or long specs.
 
-**Q\&A**
+#### Q&A
 
 * *Why myths in computing?*
   Because memory and agreement work better through stories.
@@ -163,9 +163,9 @@ Shared understanding helps people align faster than raw data or long specs.
 
 ---
 
-## 4. Implementation Phases
+## Implementation Phases
 
-**How to adopt CEP gradually.**
+### How to Adopt CEP Gradually
 
 1. **Kernel:** basic facts, impulses, heartbeats--get determinism first.
 2. **Flows as data:** express processes as organisms; add contexts/facets.
@@ -174,10 +174,10 @@ Shared understanding helps people align faster than raw data or long specs.
 5. **Awareness:** pattern mining and summaries at scale.
 6. **Culture:** stories, archetypes, and federated councils for long-lived knowledge.
 
-**Why this matters.**
+#### Why This Matters
 You don't need everything on day one. Start small and grow.
 
-**Q\&A**
+#### Q&A
 
 * *Can I stop at phase 2?*
   Yes--use only what helps today.
@@ -186,9 +186,9 @@ You don't need everything on day one. Start small and grow.
 
 ---
 
-## 5. Execution Model
+## Execution Model
 
-**The rhythm of work.**
+### The Rhythm of Work
 
 1. **Heartbeat:** process inputs, schedule outputs (predictable steps).
 2. **Impulse dispatch:** new facts wake relevant organisms (flows).
@@ -199,7 +199,7 @@ You don't need everything on day one. Start small and grow.
 7. **Governance:** councils turn good conventions into laws.
 8. **Culture:** we remember and teach what works.
 
-**Q\&A**
+#### Q&A
 
 * *What ensures the system halts?*
   Many flows naturally settle; others are limited by budgets or time windows.
@@ -259,7 +259,7 @@ CEP is designed so that **every layer echoes the same life-cycle**, making the s
 * **Social loop:** laws <-> myths (practice informs story; story reinforces practice).
 * **Civilizational loop:** myths <-> substrate (big lessons reshape the base rules).
 
-**Why this matters.**
+#### Why This Matters
 Short cycles fix today; long cycles improve tomorrow.
 
 ---
@@ -278,7 +278,7 @@ Real systems face limits (storage, compute, attention, time). CEP is designed to
 
 CEP anticipates that no system is immune to failure. Provenance trails might be incomplete, councils might apply inconsistent reforms, or summaries might accidentally omit a critical detail. To mitigate this, CEP emphasizes redundancy (e.g., multiple logs across layers), safe rollback of reforms, and configurable thresholds for summarization. By treating these failure cases as expected rather than exceptional, CEP ensures that errors are both detectable and recoverable without undermining trust in the system.
 
-**Q\&A**
+#### Q&A
 
 * *Are compromises flaws?*
   No--they make the system resilient and affordable.
@@ -301,7 +301,7 @@ Event#click1 { widget=saveBtn, user=alice }
 
 It's an immutable fact. Nothing fancy--just the truth of what happened.
 
-**Q\&A**
+#### Q&A
 
 * *Why store clicks as facts?*
   So we can always replay, audit, and explain.
@@ -317,7 +317,7 @@ Rel/on(saveBtn, editor1)
 Rel/causes(click1, saveDoc)
 ```
 
-**Q\&A**
+#### Q&A
 
 * *What if it contradicts something?*
   Both are kept; higher layers decide outcomes.
@@ -334,7 +334,7 @@ Exec#saveDoc { doc=doc1, cause=click1 }
 
 Meanwhile, autosave variants (30s, 60s) compete, while a too-frequent 5s variant gets pruned.
 
-**Q\&A**
+#### Q&A
 
 * *Why keep many autosaves?*
   Different contexts benefit from different timings.
@@ -349,7 +349,7 @@ We build a save log and flag risks (e.g., multiple editors). A recognizable conv
 Pattern/ShortcutConvention = "Ctrl+S usually assigned to Save"
 ```
 
-**Q\&A**
+#### Q&A
 
 * *Is this ML?*
   It can be, but here it's explicit patterns anyone can read.
@@ -374,7 +374,7 @@ Law/ShortcutConvention v2:
 
 A reform safely updates older data.
 
-**Q\&A**
+#### Q&A
 
 * *Different teams, different shortcuts?*
   Federation supports local differences.
@@ -385,7 +385,7 @@ A reform safely updates older data.
 
 The practice becomes a story ("We use Ctrl+S to save"), an icon, and eventually a myth--easy to remember, easy to follow. A dream proposes "What if saving were continuous and invisible?" That dream may later shape a new law.
 
-**Q\&A**
+#### Q&A
 
 * *Why bother with stories?*
   It's how teams remember and align--faster than reading logs.
