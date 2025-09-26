@@ -767,6 +767,8 @@ void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* dat
 void cep_cell_initialize_clone(cepCell* newClone, cepDT* name, cepCell* cell);
 void cep_cell_finalize(cepCell* cell);
 void cep_cell_shadow_mark_target_dead(cepCell* cell, bool dead);
+cepCell* cep_cell_clone(const cepCell* cell);
+cepCell* cep_cell_clone_deep(const cepCell* cell);
 
 #define cep_cell_initialize_empty(r, name)                                                            cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, NULL)
 #define cep_cell_initialize_value(r, name, dt, value, size, capacity)                cep_cell_initialize(r, CEP_TYPE_NORMAL, name, cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)

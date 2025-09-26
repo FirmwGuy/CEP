@@ -67,6 +67,11 @@ static void                 cep_store_history_clear(cepStore* store);
 static void                 cep_enzyme_binding_list_destroy(cepEnzymeBinding* bindings);
 static bool                 cep_store_hierarchy_locked(const cepCell* cell);
 static bool                 cep_data_hierarchy_locked(const cepCell* cell);
+static cepData*             cep_data_clone_payload(const cepData* data);
+static cepStore*            cep_store_clone_structure(const cepStore* store);
+static bool                 cep_cell_clone_children(const cepCell* src, cepCell* dst);
+static void                 cep_cell_clone_cleanup(cepCell* cell);
+static bool                 cep_cell_clone_into(const cepCell* src, cepCell* dst, bool deep);
 
 static inline cepStoreHistory* cep_store_history_from_node(cepStoreNode* node) {
     return node? (cepStoreHistory*)cep_ptr_dif(node, offsetof(cepStoreHistory, node)): NULL;
@@ -607,6 +612,276 @@ void* cep_data(const cepData* data) {
     }
 
     return NULL;
+}
+
+
+
+static cepData* cep_data_clone_payload(const cepData* data) {
+    if (!data)
+        return NULL;
+
+    cepDT dt = data->_dt;
+    cepData* clone = NULL;
+
+    switch (data->datatype) {
+      case CEP_DATATYPE_VALUE: {
+        clone = cep_data_new(&dt, CEP_DATATYPE_VALUE, data->writable, NULL, CEP_P(data->value), data->size, data->capacity);
+        break;
+      }
+
+      case CEP_DATATYPE_DATA: {
+        if (data->destructor && data->destructor != cep_free)
+            return NULL;
+        clone = cep_data_new(&dt, CEP_DATATYPE_DATA, data->writable, NULL, data->data, data->size, data->capacity, NULL);
+        break;
+      }
+
+      case CEP_DATATYPE_HANDLE:
+      case CEP_DATATYPE_STREAM: {
+        return NULL;
+      }
+
+      default:
+        return NULL;
+    }
+
+    if (!clone)
+        return NULL;
+
+    clone->hash      = data->hash;
+    clone->modified  = data->modified;
+    clone->created   = data->created;
+    clone->deleted   = data->deleted;
+    clone->bindings  = NULL;
+    clone->past      = NULL;
+    clone->lock      = 0u;
+    clone->lockOwner = NULL;
+    clone->writable  = data->writable;
+
+    return clone;
+}
+
+
+static cepStore* cep_store_clone_structure(const cepStore* store) {
+    if (!cep_store_valid(store))
+        return NULL;
+
+    cepDT dt = store->_dt;
+    cepStore* clone = NULL;
+
+    unsigned storage = store->storage;
+    unsigned indexing = store->indexing;
+    bool requiresCompare = (indexing == CEP_INDEX_BY_FUNCTION || indexing == CEP_INDEX_BY_HASH);
+    cepCompare compare = store->compare;
+
+    if (requiresCompare && !compare)
+        return NULL;
+
+    switch (storage) {
+      case CEP_STORAGE_LINKED_LIST:
+      case CEP_STORAGE_RED_BLACK_T: {
+        if (requiresCompare)
+            clone = cep_store_new(&dt, storage, indexing, compare);
+        else
+            clone = cep_store_new(&dt, storage, indexing);
+        break;
+      }
+
+      case CEP_STORAGE_ARRAY: {
+        size_t capacity = ((const cepArray*) store)->capacity;
+        if (!capacity)
+            capacity = cep_max(store->chdCount, (size_t)1);
+        if (requiresCompare)
+            clone = cep_store_new(&dt, storage, indexing, capacity, compare);
+        else
+            clone = cep_store_new(&dt, storage, indexing, capacity);
+        break;
+      }
+
+      case CEP_STORAGE_PACKED_QUEUE: {
+        size_t capacity = ((const cepPackedQ*) store)->nodeCapacity;
+        if (!capacity)
+            capacity = cep_max(store->chdCount, (size_t)1);
+        clone = cep_store_new(&dt, storage, indexing, (int)capacity);
+        break;
+      }
+
+      case CEP_STORAGE_HASH_TABLE: {
+        size_t bucketHint = ((const cepHashTable*) store)->bucketCount;
+        if (!bucketHint)
+            bucketHint = cep_max(store->chdCount, (size_t)8);
+        clone = cep_store_new(&dt, storage, indexing, bucketHint, compare);
+        break;
+      }
+
+      case CEP_STORAGE_OCTREE: {
+        const cepOctree* oct = (const cepOctree*) store;
+        cepOctreeBound bound = oct->root.bound;
+        clone = cep_store_new(&dt, storage, indexing, bound.center, (double)bound.subwide, compare);
+        if (clone) {
+            cepOctree* octClone = (cepOctree*) clone;
+            octClone->maxDepth   = oct->maxDepth;
+            octClone->maxPerNode = oct->maxPerNode;
+            octClone->minSubwide = oct->minSubwide;
+        }
+        break;
+      }
+
+      default:
+        return NULL;
+    }
+
+    if (!clone)
+        return NULL;
+
+    clone->autoid    = store->autoid;
+    clone->created   = store->created;
+    clone->deleted   = store->deleted;
+    clone->modified  = store->modified;
+    clone->writable  = store->writable;
+    clone->lock      = 0u;
+    clone->lockOwner = NULL;
+    clone->bindings  = NULL;
+    clone->past      = NULL;
+    clone->chdCount  = 0;
+    clone->totCount  = 0;
+    clone->compare   = compare;
+
+    return clone;
+}
+
+
+static void cep_cell_clone_cleanup(cepCell* cell) {
+    if (!cell)
+        return;
+
+    if (cep_cell_is_normal(cell)) {
+        if (cell->store) {
+            bool writable = cell->store->writable;
+            cell->store->writable = true;
+            cep_store_delete_children_hard(cell->store);
+            cell->store->writable = writable;
+            cep_store_del(cell->store);
+            cell->store = NULL;
+        }
+        if (cell->data) {
+            cep_data_del(cell->data);
+            cell->data = NULL;
+        }
+    }
+
+    CEP_0(cell);
+}
+
+
+static bool cep_cell_clone_children(const cepCell* src, cepCell* dst) {
+    if (!src || !dst || !src->store || !dst->store)
+        return true;
+
+    cepStore* store = dst->store;
+    bool originalWritable = store->writable;
+    store->writable = true;
+
+    for (cepCell* child = cep_cell_first((cepCell*) src);
+         child;
+         child = cep_cell_next((cepCell*) src, child)) {
+        cepCell temp = {0};
+        if (!cep_cell_clone_into(child, &temp, true)) {
+            store->writable = originalWritable;
+            cep_cell_finalize(&temp);
+            return false;
+        }
+
+        cepCell* inserted;
+        if (store->indexing == CEP_INDEX_BY_INSERTION)
+            inserted = cep_cell_append(dst, false, &temp);
+        else
+            inserted = cep_cell_add(dst, 0, &temp);
+
+        if (!inserted) {
+            store->writable = originalWritable;
+            cep_cell_finalize(&temp);
+            return false;
+        }
+    }
+
+    store->writable = originalWritable;
+    store->autoid   = src->store->autoid;
+    store->created  = src->store->created;
+    store->deleted  = src->store->deleted;
+    store->modified = src->store->modified;
+    store->totCount = src->store->totCount;
+    store->lock     = 0u;
+    store->lockOwner = NULL;
+    store->bindings = NULL;
+    store->past     = NULL;
+
+    return true;
+}
+
+
+static bool cep_cell_clone_into(const cepCell* src, cepCell* dst, bool deep) {
+    if (!src || !dst || !cep_cell_is_normal(src))
+        return false;
+
+    CEP_0(dst);
+
+    bool resourceLink = (src->data && (src->data->datatype == CEP_DATATYPE_HANDLE || src->data->datatype == CEP_DATATYPE_STREAM));
+
+    if (resourceLink) {
+        /* Resource-backed payloads cannot be duplicated deterministically;
+           represent the clone as a link to the original cell so both trees share
+           the same upstream producer while still forming a navigable structure. */
+        dst->metacell = src->metacell;
+        dst->metacell.type        = CEP_TYPE_LINK;
+        dst->metacell.shadowing   = CEP_SHADOW_NONE;
+        dst->metacell.targetDead  = 0u;
+        dst->parent = NULL;
+        dst->link   = NULL;
+        cep_link_set(dst, (cepCell*)src);
+        return true;
+    }
+
+    dst->metacell = src->metacell;
+    dst->metacell.shadowing  = CEP_SHADOW_NONE;
+    dst->metacell.targetDead = 0u;
+    dst->parent = NULL;
+    dst->data   = NULL;
+    dst->store  = NULL;
+
+    if (src->data) {
+        cepData* dataClone = cep_data_clone_payload(src->data);
+        if (!dataClone)
+            return false;
+        dst->data = dataClone;
+    }
+
+    if (deep && src->store) {
+        cepStore* storeClone = cep_store_clone_structure(src->store);
+        if (!storeClone) {
+            cep_cell_clone_cleanup(dst);
+            return false;
+        }
+
+        cep_cell_set_store(dst, storeClone);
+
+        if (!cep_cell_clone_children(src, dst)) {
+            cep_cell_clone_cleanup(dst);
+            return false;
+        }
+    }
+
+    if (dst->data) {
+        dst->data->hash      = src->data->hash;
+        dst->data->modified  = src->data->modified;
+        dst->data->created   = src->data->created;
+        dst->data->deleted   = src->data->deleted;
+        dst->data->writable  = src->data->writable;
+        dst->data->lock      = 0u;
+        dst->data->lockOwner = NULL;
+    }
+
+    return true;
 }
 
 
@@ -2552,6 +2827,56 @@ void cep_cell_initialize_clone(cepCell* clone, cepDT* name, cepCell* cell) {
     CEP_0(clone);
 
     clone->metacell = cell->metacell;
+}
+
+
+/* Create a heap-backed duplicate of a normal cell without copying its
+   descendants. VALUE/DATA payloads are deep-copied; HANDLE/STREAM payloads turn
+   into link cells that reference the original node so external resources stay
+   unified. We clear shadowing bits on the copy and return NULL when allocation
+   fails or the payload cannot be cloned. Callers own the returned cell and
+   should eventually pass it through cep_cell_finalize before releasing it.
+*/
+cepCell* cep_cell_clone(const cepCell* cell) {
+    if (!cell || !cep_cell_is_normal(cell))
+        return NULL;
+
+    CEP_NEW(cepCell, clone);
+    if (!clone)
+        return NULL;
+
+    if (!cep_cell_clone_into(cell, clone, false)) {
+        cep_free(clone);
+        return NULL;
+    }
+
+    return clone;
+}
+
+
+/* Deep-copy a normal cell subtree, producing an independent hierarchy whose
+   VALUE/DATA payloads and child stores no longer reference the original.
+   HANDLE/STREAM payloads become link cells pointing back to their source so the
+   shared resource remains authoritative. The clone keeps structural metadata
+   (names, timestamps, auto-id cursors) but intentionally drops runtime-only
+   details such as bindings, locks, and history chains so the new tree starts
+   clean. The caller assumes ownership of the returned root and should finalise
+   it when done.
+*/
+cepCell* cep_cell_clone_deep(const cepCell* cell) {
+    if (!cell || !cep_cell_is_normal(cell))
+        return NULL;
+
+    CEP_NEW(cepCell, clone);
+    if (!clone)
+        return NULL;
+
+    if (!cep_cell_clone_into(cell, clone, true)) {
+        cep_free(clone);
+        return NULL;
+    }
+
+    return clone;
 }
 
 
