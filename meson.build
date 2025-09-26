@@ -148,7 +148,9 @@ if get_option('server').enabled()
 endif
 
 code_map_opt = get_option('code_map')
-python3 = python_mod.find_installation('python3', required: code_map_opt)
+docs_html_opt = get_option('docs_html')
+python_needed = code_map_opt or docs_html_opt
+python3 = python_mod.find_installation('python3', required: python_needed)
 if python3.found()
   code_map_script = files('tools/generate_code_map.py')
   code_map_outputs = [
@@ -176,4 +178,53 @@ if python3.found()
   )
 elif code_map_opt
   warning('code_map option requested but python3 was not found; skipping code map target.')
+endif
+
+if docs_html_opt
+  doxygen = find_program('doxygen', required: true)
+  dot = find_program('dot', required: true)
+  dot_path = fs.parent(dot.full_path())
+  doc_output_dir = join_paths(meson.current_build_dir(), 'docs')
+  main_page = join_paths(meson.project_source_root(), 'docs/README.md')
+  if not fs.exists('docs/README.md')
+    main_page = join_paths(meson.project_source_root(), 'docs/BUILD.md')
+  endif
+  if not fs.exists('docs/BUILD.md')
+    main_page = ''
+  endif
+
+  doxy_config = configuration_data()
+  doxy_config.set('PROJECT_NAME', meson.project_name())
+  doxy_config.set('PROJECT_VERSION', meson.project_version())
+  doxy_config.set('OUTPUT_DIRECTORY', doc_output_dir)
+  doxy_config.set('SOURCE_ROOT', meson.project_source_root())
+  doxy_config.set('STRIP_FROM_PATH', meson.project_source_root())
+  doxy_config.set('DOT_PATH', dot_path)
+  doxy_config.set('MAIN_PAGE', main_page)
+
+  doxyfile = configure_file(
+    input: 'docs/Doxyfile.in',
+    output: 'Doxyfile',
+    configuration: doxy_config,
+  )
+
+  if not python3.found()
+    error('docs_html option requires python3 to be available.')
+  endif
+
+  doxygen_runner = files('tools/run_doxygen.py')
+  custom_target('docs_html',
+    input: [doxyfile],
+    output: 'docs_html.stamp',
+    command: [
+      python3,
+      doxygen_runner,
+      '--doxygen', doxygen.full_path(),
+      '--config', '@INPUT0@',
+      '--stamp', '@OUTPUT0@',
+    ],
+    depend_files: [doxygen_runner],
+    build_by_default: docs_html_opt,
+    build_always_stale: docs_html_opt,
+  )
 endif

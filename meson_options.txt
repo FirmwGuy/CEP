@@ -1,5 +1,6 @@
 option('asan', type: 'boolean', value: false, description: 'Enable Address/UB sanitizers')
 option('code_map', type: 'boolean', value: false, description: 'Generate ctags+cscope mapping artifacts')
+option('docs_html', type: 'boolean', value: false, description: 'Build HTML docs with Doxygen + Graphviz')
 option('tests', type: 'feature', value: 'enabled', description: 'Build unit tests')
 option('server', type: 'feature', value: 'disabled', description: 'Build standalone CEP server')
 option('both_libs', type: 'boolean', value: false, description: 'Build both static and shared libraries')

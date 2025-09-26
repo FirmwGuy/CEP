@@ -1,0 +1,51 @@
+# Doxygen configuration template for CEP
+
+PROJECT_NAME           = "@PROJECT_NAME@"
+PROJECT_NUMBER         = "@PROJECT_VERSION@"
+OUTPUT_DIRECTORY       = "@OUTPUT_DIRECTORY@"
+CREATE_SUBDIRS         = YES
+OUTPUT_LANGUAGE        = English
+
+INPUT                  = "@SOURCE_ROOT@/src/l0_kernel" \
+                         "@SOURCE_ROOT@/docs"
+FILE_PATTERNS          = *.c \
+                         *.h \
+                         *.md
+RECURSIVE              = YES
+EXCLUDE                = "@SOURCE_ROOT@/src/test"
+EXCLUDE_PATTERNS       = */build/* \
+                         */munit.c \
+                         */munit.h
+
+MARKDOWN_SUPPORT       = YES
+USE_MDFILE_AS_MAINPAGE = @MAIN_PAGE@
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_LATEX         = NO
+GENERATE_MAN           = NO
+GENERATE_RTF           = NO
+GENERATE_XML           = NO
+GENERATE_TAGFILE       = ""
+
+FULL_PATH_NAMES        = YES
+STRIP_FROM_PATH        = "@STRIP_FROM_PATH@"
+
+HAVE_DOT               = YES
+DOT_PATH               = "@DOT_PATH@"
+DOT_IMAGE_FORMAT       = svg
+CALL_GRAPH             = YES
+CALLER_GRAPH           = YES
+DOT_GRAPH_MAX_NODES    = 50
+INTERACTIVE_SVG        = YES
+
+QUIET                  = YES
+WARN_NO_PARAMDOC       = NO
+WARN_IF_UNDOCUMENTED   = NO
+
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = YES
+
+GENERATE_TREEVIEW      = YES

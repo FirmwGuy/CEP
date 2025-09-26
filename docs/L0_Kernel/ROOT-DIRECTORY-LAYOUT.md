@@ -2,7 +2,6 @@
 
 This document describes a practical, deterministic directory structure for CEP cells when introducing the heartbeat runtime and enzymes.
 
----
 
 ## 1) Introduction
 
@@ -14,7 +13,6 @@ Imagine a tidy workshop:
 
 Work in CEP happens in beats. What you prepare during beat N only becomes visible to everyone at beat N+1. This rhythm keeps the workshop calm, debuggable, and fair: nothing “jumps the line,” and you can always explain what happened and why.
 
----
 
 ## 2) Technical Layout
 
@@ -33,7 +31,7 @@ At the root, use a dictionary by name for stable lookups. Each top-level folder 
   tmp/       — ephemeral scratch outside a beat (list)
 ```
 
-Determinism rules
+#### Determinism Rules
 - Root-level folders are dictionaries; iteration order is defined by name compare.
 - Queues are lists by insertion order. No nondeterministic iteration.
 - External reads/writes are journaled with hashes and preconditions.
@@ -44,19 +42,19 @@ We’ll use a running example: “resize_image” enzyme that makes a thumbnail 
 
 ### 2.1 `sys/` — System Settings and Constants (dictionary)
 
-Purpose
+#### Purpose
 - House global kernel settings, heartbeat counters, and optional schema/type anchors.
 - Rarely changes during a beat; read-only for most enzymes.
 
-Typical contents
+#### Typical Contents
 - `sys/time`: current beat, epoch/time policy, tick duration.
 - `sys/config`: budgets, logging levels, toggles.
 - `sys/schema`: bootstrap type IDs (optional, for inspection tools).
 
-Storage
+#### Storage
 - Dictionary by name; stable iteration. Small VALUE/DATA cells.
 
-Example
+#### Example
 1) Initialize beat counters:
    - `/sys/time/current = 1`
    - `/sys/time/tick_ms = 50`
@@ -64,11 +62,11 @@ Example
 
 ### 2.2 `rt/` — Runtime State Per Heartbeat (dictionary)
 
-Purpose
+#### Purpose
 - Everything live and transient while a beat is executing.
 - Scopes effects and ensures visibility at the N→N+1 boundary.
 
-Structure
+#### Structure
 ```
 rt/
   beat/<N>/
@@ -82,16 +80,16 @@ rt/
   tmp         — ephemeral buffers (list)
 ```
 
-Storage
+#### Storage
 - `rt/beat/<N>/*/inbox|agenda|stage`: list by insertion.
 - `tokens|locks|budgets|metrics`: dictionaries (and sublists as needed).
 
-Note
+#### Note
 - Agenda resolution uses an in-memory enzyme function registry keyed by
   query paths. No function pointers are ever stored inside cells for
   security and portability.
 
-Example
+#### Example
 1) Beat 1 begins; create `rt/beat/1/*`.
 2) An impulse arrives: “make thumbnail for img123.”
    - Append to `/rt/beat/1/inbox`: `{kind=make_thumbnail, target=/env/fs/.../img123.jpg}`
@@ -104,13 +102,13 @@ Example
 
 ### 2.3 `enzymes/` — Registry of Enzyme Definitions (dictionary)
 
-Purpose
+#### Purpose
 - Durable, auditable declarations of enzyme capabilities.
 - Versioned metadata and I/O contracts (domains touched, preconditions, budgets).
  - Security: this directory stores only metadata. It never persists function
    addresses or code pointers.
 
-Structure
+#### Structure
 ```
 enzymes/
   <name>/
@@ -120,10 +118,10 @@ enzymes/
     version  — semantic version (value)
 ```
 
-Storage
+#### Storage
 - Dictionary by name; small cells with VALUE/DATA.
 
-Function registry (runtime, non‑persistent)
+#### Function Registry (Runtime, Non-Persistent)
 - Residency: process memory only; built via `cep_enzyme_register(query, fn)`.
 - Key: a “query” `cepPath` describing what the enzyme should react to.
 - Value: ordered list of `cep_enzyme_fn` function pointers.
@@ -133,7 +131,7 @@ Function registry (runtime, non‑persistent)
   order. Details in `docs/L0_Kernel/HEARTBEAT-AND-ENZYMES.md`.
 - Persistence: none. Only enzyme metadata under `enzymes/` is durable.
 
-Example
+#### Example
 1) Register `resize_image`:
    - `/enzymes/resize_image/version = 1.0.0`
    - `/enzymes/resize_image/io/reads = [env/fs]`
@@ -143,11 +141,11 @@ Example
 
 ### 2.4 `env/` — Handles to the Outside World (dictionary)
 
-Purpose
+#### Purpose
 - Model external resources via HANDLE/STREAM without peeking internal fields.
 - Gate all reads/writes through adapters and journal them for replay.
 
-Structure
+#### Structure
 ```
 env/
   fs/   — files, directories (HANDLE/STREAM)
@@ -156,10 +154,10 @@ env/
   gpu/  — GPU buffers (HANDLE/STREAM)
 ```
 
-Storage
+#### Storage
 - Dictionary of handles; content accessed via adapters in `lib/` and journaled.
 
-Example
+#### Example
 1) Create a file handle:
    - `/env/fs/projects/p1/img123.jpg = HANDLE{identity=F:... , version=Etag123}`
 2) `resize_image` requests a STREAM window (read):
@@ -168,10 +166,10 @@ Example
 
 ### 2.5 `journal/` — Intents, Reads, Outcomes (append-only) (dictionary)
 
-Purpose
+#### Purpose
 - The auditable trace that enables simulation (no side effects) and re-apply (touch the world again if preconditions hold).
 
-Structure
+#### Structure
 ```
 journal/
   beat/<N>/
@@ -180,10 +178,10 @@ journal/
     outcomes — commit results and divergences (list)
 ```
 
-Storage
+#### Storage
 - Lists by insertion; items reference CAS entries for large payloads.
 
-Example
+#### Example
 1) Record read of `img123.jpg` header:
    - Append to `/journal/beat/1/reads`: `{target=/env/fs/.../img123.jpg, off=0, len=64KiB, hash=H0}`
 2) Stage a write intent for thumbnail:
@@ -193,20 +191,20 @@ Example
 
 ### 2.6 `cas/` — Content-Addressed Store (dictionary)
 
-Purpose
+#### Purpose
 - Keep large payloads by hash to avoid duplication and support exact replay.
 
-Structure
+#### Structure
 ```
 cas/
   <algo>/<prefix>/<hash>  — stored payload
   pins/                   — references preventing GC
 ```
 
-Storage
+#### Storage
 - Dictionary by path; payloads as opaque bytes; small metadata cells for pins.
 
-Example
+#### Example
 1) Store thumbnail bytes:
    - `/cas/sha256/ab/cdef...` = stored payload (opaque bytes)
 2) Reference from journal intent/outcome by `hash=H1` and pin if needed:
@@ -214,10 +212,10 @@ Example
 
 ### 2.7 `lib/` — External Library Adapters (dictionary)
 
-Purpose
+#### Purpose
 - Define glue code contracts (vtables), lifetimes, and safe debug serializers.
 
-Structure
+#### Structure
 ```
 lib/
   imageio/
@@ -226,20 +224,20 @@ lib/
     debug    — stable, human-readable serializer (dictionary)
 ```
 
-Storage
+#### Storage
 - Dictionary of small VALUE/DATA cells and references to code modules.
 
-Example
+#### Example
 1) Register `imageio` adapter used by `env/fs` file handle:
    - `/lib/imageio/safety/zero_copy = false` (forces snapshot for decisions)
 2) `resize_image` resolves the handle’s adapter through `lib/imageio`.
 
 ### 2.8 `data/` — Durable Application Data (dictionary)
 
-Purpose
+#### Purpose
 - The authoritative state produced by committed workflows. Visible at N+1.
 
-Structure
+#### Structure
 ```
 data/
   assets/
@@ -248,27 +246,26 @@ data/
       thumbnail  — DATA (bytes) or HANDLE to env/fs copy
 ```
 
-Storage
+#### Storage
 - Mostly dictionaries for stable lookup; lists for ordered collections.
 
-Example
+#### Example
 1) After commit of beat 1, the thumbnail becomes visible:
    - `/data/assets/img123/thumbnail = DATA{hash=H1, size=…}`
 2) Any views or indices (e.g., by creation time) are updated deterministically.
 
 ### 2.9 `tmp/` — Ephemeral Workspace (list)
 
-Purpose
+#### Purpose
 - Scratch space outside a specific beat; cleared on startup or per policy.
 
-Storage
+#### Storage
 - List by insertion; no durability guarantees; never drives decisions.
 
-Example
+#### Example
 1) During development, an enzyme may write debug dumps here:
    - `/tmp/resize_image/preview_0001.png` (not journaled, not durable)
 
----
 
 ## 3) Beat Lifecycle (N → N+1)
 
@@ -280,17 +277,16 @@ Example
 6) Visibility: staged outputs from N become visible at `N+1`.
 7) Rotate: initialize `rt/beat/N+1/*`, GC `rt/beat/N/*` per policy.
 
-Mini end-to-end example (recap)
+### Mini End-to-End Example (Recap)
 - Beat 1: read `/env/fs/.../img123.jpg` header → `journal/beat/1/reads`.
 - Beat 1: stage thumbnail bytes → `rt/beat/1/stage`; intent → `journal/beat/1/intents`.
 - Commit: store payload in `cas/*`, write `/data/assets/img123/thumbnail`, record `journal/beat/1/outcomes`.
 - Beat 2: `/data/.../thumbnail` is visible to other enzymes and users.
 
----
 
 ## 4) Implementation Notes & Checklists
 
-Storage/indexing
+#### Storage/Indexing
 - Dictionaries: use name-based compare; RB-tree where ordered iteration matters.
 - Queues: lists by insertion; avoid mixing sorted and insertion modes in a store.
 
@@ -299,16 +295,15 @@ Determinism
 - No hidden side effects; enzyme outputs appear only at N+1.
 - Use canonical bytes for VALUE/DATA per `NATIVE-TYPES.md`.
 
-Ownership/lifetimes
+#### Ownership and Lifetimes
 - `rt/*` and `tmp/` are ephemeral.
 - `data/`, `enzymes/`, `lib/`, `env/` handles are durable.
 - `cas/` is durable with GC via `pins/`.
 
-Testing
+#### Testing
 - Seed a beat, enqueue impulses, run a dry simulation reading only from `journal`.
 - Verify that re-apply respects preconditions and reproduces outcomes.
 
----
 
 ## 5) Q&A
 

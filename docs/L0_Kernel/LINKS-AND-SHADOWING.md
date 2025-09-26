@@ -1,10 +1,10 @@
-Links And Shadowing In CEP Cells
+# Links and Shadowing in CEP Cells
 
-Introduction
+## Introduction
 - Think of a link as a shortcut to another item. Instead of copying the original, a link points to it. CEP keeps these shortcuts safe: when you follow a link, you always reach the real item (never another shortcut), and the real item knows who is linking to it so nothing breaks.
 - Shadowing is how CEP tracks “who points to me.” When several links target the same cell, CEP maintains a small structure inside the target listing those links. This turns an otherwise tree‑shaped hierarchy into a graph while preserving safe navigation and backtracking.
 
-Technical Overview
+## Technical Overview
 - Link cells
   - A link is a cell with type `LINK` that references a target cell.
   - Non‑interlinkage policy: if a link points to another link, resolution follows the chain until a non‑link cell is found. Accessors use `cep_link_pull(...)` so operations act on the ultimate target.
@@ -39,7 +39,7 @@ Technical Overview
     - Links to root are disallowed for now.
     - Cycles (link A → B, B → A or via longer chains) are invalid and must be prevented by callers or higher layers. Resolution follows chains; cycles would be detected and rejected.
 
-Developer Notes
+## Developer Notes
 - Access patterns
   - Public cell APIs that read data or traverse children first resolve links (`cep_link_pull`) so the behavior matches the target cell’s semantics.
   - When inspecting linkage, use shadowing metadata on the target to find all linkers.
@@ -52,7 +52,7 @@ Developer Notes
   - Backlinks are in‑memory pointers within the same process space; this guarantees no broken references under normal operation.
   - Finalization of a target asserts `shadowing == NONE` to prevent orphaned links.
 
-Q&A
+## Q&A
 - Why force links to resolve to non‑link targets?
   - It simplifies reasoning and ensures consistent behavior: a link behaves like the target it represents, not like a chain of aliases.
 

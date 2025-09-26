@@ -1,10 +1,10 @@
-CEP Build Guide
+# CEP Build Guide
 
-Introduction
+## Introduction
 
 CEP is a C library with a small test executable. You can build it on Windows (MSYS2 UCRT64) and Linux (Manjaro) using Meson and Ninja. If you’re not a programmer: Meson prepares the build plan, and Ninja runs the fast, incremental compilation. All temporary files stay inside a build folder so your source files remain clean.
 
-Getting Started (Simple)
+## Getting Started (Simple)
 
 - Windows (MSYS2 UCRT64 shell)
   - Install tools: `pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-meson mingw-w64-ucrt-x86_64-ninja`
@@ -18,12 +18,12 @@ Getting Started (Simple)
   - Build: `meson compile -C build`
   - Run tests: `meson test -C build`
 
-What Gets Built
+## What Gets Built
 
 - Library: `cep` built from sources under `src/l0_kernel/` (e.g., `cep_cell.c`).
 - Executable: the unit test harness under `src/test/` builds a single program named `cep_tests` in the `build/` folder, linked against the library.
 
-Developer Details
+## Developer Details
 
 - Compiler flags
   - Defaults include `-g -Wall` and `-fplan9-extensions` (when supported), plus `_GNU_SOURCE`.
@@ -33,7 +33,7 @@ Developer Details
   - Enable with: `meson setup build -Dasan=true`.
   - Recommended with Clang on MSYS2 UCRT64; supported with GCC/Clang on Manjaro.
 
-Clang Build (Optional)
+## Clang Build (Optional)
 
 If you want extra diagnostics and better sanitizers, you can build with Clang.
 
@@ -60,7 +60,7 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
 - IDEs
   - Many IDEs understand Meson; or configure an external build with `meson compile -C build`.
 
-Q&A
+## Q&A
 
 - Why Meson instead of raw Makefiles?
   - Meson is portable, fast (via Ninja), and keeps build artifacts out of your source tree with minimal configuration.
@@ -77,7 +77,7 @@ Q&A
 - How do I run tests?
   - `meson test -C build` runs the suite and prints results.
 
-Build Variants and Options
+## Build Variants and Options
 
 - Static vs Shared library
   - Default is static: `meson setup build`.
@@ -95,8 +95,13 @@ Build Variants and Options
   - Enable during configuration: `meson setup build -Dcode_map=true`.
   - Or trigger later: `meson compile -C build code_map`.
   - Outputs land in the build tree (e.g., `build/code_map_ctags.json`, `build/code_map_cscope_callers.tsv`, `build/code_map_cscope_callees.tsv`).
+- HTML documentation (Doxygen + Graphviz)
+  - Enable during configuration: `meson setup build -Ddocs_html=true`.
+  - Or run ad hoc: `meson compile -C build docs_html`.
+  - Generated site lives in `build/docs/html/` (open `index.html`).
+  - Only the public kernel and manual docs are included; test harness sources (munit) are excluded.
 
-Offline Fallback (No Meson/Ninja)
+## Offline Fallback (No Meson/Ninja)
 
 - Use the emergency Makefile under `unix/Makefile`.
   - Build dir is isolated at `build-make/` to avoid clobbering the Meson build.
@@ -104,5 +109,5 @@ Offline Fallback (No Meson/Ninja)
   - Run: `../build-make/bin/cep_tests --log-visible debug`
   - Clean: `make -C unix clean`
   - Notes: This fallback compiles the core library sources into the test executable.
-Notes
+## Notes
 - Optional sanitizers: `meson setup build -Dasan=true` (best with Clang on MSYS2 UCRT64).
