@@ -3153,18 +3153,22 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
     tempPath->length = 0;
 
     // Traverse up the hierarchy to construct the path in reverse order
-    for (const cepCell* current = cell;  current;  current = cep_cell_parent(current)) {  // FixMe: assuming single parenthood for now.
+    for (const cepCell* current = cell;  current;  current = cep_cell_parent(current)) {
         if (tempPath->length >= tempPath->capacity) {
             unsigned newCapacity = tempPath->capacity * 2;
-            cepPath* newPath = cep_dyn_malloc(cepPath, cepPast, newCapacity);     // FixMe: use realloc.
+            size_t bytes = sizeof(cepPath) + ((size_t)newCapacity * sizeof(cepPast));
+            cepPath* resized = cep_realloc(tempPath, bytes);
+            if (!resized)
+                return false;
 
-            unsigned used = tempPath->length;
-            unsigned start = tempPath->capacity - used;
-            memcpy(&newPath->past[newCapacity - used], &tempPath->past[start], used * sizeof(cepPast));
+            if (tempPath->length) {
+                unsigned used = tempPath->length;
+                unsigned start = tempPath->capacity - used;
+                memmove(&resized->past[newCapacity - used], &resized->past[start], used * sizeof(cepPast));
+            }
 
-            newPath->length   = used;
-            newPath->capacity = newCapacity;
-            CEP_PTR_OVERW(tempPath, newPath);
+            tempPath = resized;
+            tempPath->capacity = newCapacity;
             *path = tempPath;
         }
 
@@ -3244,8 +3248,12 @@ cepCell* cep_cell_find_by_name_past(const cepCell* cell, const cepDT* name, cepO
 cepCell* cep_cell_find_by_key(const cepCell* cell, cepCell* key, cepCompare compare, void* context) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
     
-    // FixMe: use store->compare instead of provided compare?
-    return store_find_child_by_key(store, key, compare, context);
+    if (!compare)
+        compare = store->compare;
+    cepCell* found = store_find_child_by_key(store, key, compare, context);
+    if (!found && compare && compare != store->compare && store->compare)
+        found = store_find_child_by_key(store, key, store->compare, context);
+    return found;
 }
 
 

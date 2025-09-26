@@ -780,7 +780,11 @@ cepCell* cep_cell_clone_deep(const cepCell* cell);
 #define cep_cell_initialize_spatial(r, name, dt, center, subwide, compare)   cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(dt, CEP_STORAGE_OCTREE, CEP_INDEX_BY_FUNCTION, center, subwide, compare))
 
 static inline void  cep_cell_set_tag_id(cepCell* cell, cepID id)      {assert(cell && cep_id_valid(id));  CEP_ID_SET(cell->metacell.tag, id);}
-static inline void  cep_cell_set_name(cepCell* cell, cepDT* name)     {assert(cell && cep_dt_valid(name));  cell->metacell.domain = name->domain; cell->metacell.tag = name->tag;}    // FixMe: mask 'name->tag' before assignation.
+static inline void  cep_cell_set_name(cepCell* cell, cepDT* name)     {
+    assert(cell && cep_dt_valid(name));
+    cell->metacell.domain = name->domain;
+    CEP_ID_SET(cell->metacell.tag, name->tag);
+}
 //static inline cepDT cep_cell_get_name(const cepCell* cell)        {assert(cell);  return cell->metacell.name;}
 #define cep_cell_get_tag_id(r)    cep_id(CEP_DT(r)->tag)
 
@@ -851,7 +855,11 @@ static inline void  cep_cell_set_autoid(const cepCell* cell, cepID id)  {assert(
 static inline cepID cep_cell_get_autoid(const cepCell* cell)            {assert(cep_cell_has_store(cell));  return cell->store->autoid;}
 
 #define cep_cell_name_is(cell, name)        (0 == cep_dt_compare(CEP_DT(&(cell)->metacell), CEP_DT(name)))
-#define cep_cell_get_name(cell)             (&(cell)->metacell._dt)     /* FixMe: filter sysbits out? */
+static inline const cepDT* cep_cell_get_name(const cepCell* cell) {
+    assert(cell);
+    ((cepCell*)cell)->metacell._reserved = 0;
+    return &cell->metacell._dt;
+}
 
 
 static inline void cep_cell_relink_storage(cepCell* cell)     {assert(cep_cell_has_store(cell));  cell->store->owner = cell;}     // Re-links cell with its own children storage.

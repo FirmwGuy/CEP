@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2024-2025 Victor M. Barrientos
+ *  Copyright (c) 2025 Victor M. Barrientos
  *  (https://github.com/FirmwGuy/CEP)
  *
  *  Permission is hereby granted, free of charge, to any person obtaining a copy of
