@@ -626,79 +626,26 @@ void*    cep_data(const cepData* data);
 void     cep_data_history_push(cepData* data);
 void     cep_data_history_clear(cepData* data);
 
-/**
- * @brief Bootstrap a HANDLE/STREAM library adapter under the given cell.
- */
 void  cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* ops, void* context);
-
-/**
- * @brief Retrieve metadata describing the library adapter bound to @p library.
- */
 const cepLibraryBinding* cep_library_binding(const cepCell* library);
-
-/**
- * @brief Access the opaque adapter context associated with @p library.
- */
 void* cep_library_context(const cepCell* library);
-
-/**
- * @brief Update the opaque adapter context managed by @p library.
- */
 void  cep_library_set_context(cepCell* library, void* context);
-
-/**
- * @brief Read a portion of a STREAM payload into a caller-provided buffer.
- */
 bool  cep_cell_stream_read(cepCell* cell, uint64_t offset, void* dst, size_t size, size_t* out_read);
-
-/**
- * @brief Write bytes into a STREAM payload while honouring adapter preconditions.
- */
 bool  cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size_t size, size_t* out_written);
-
-/**
- * @brief Acquire a mapped view into a STREAM payload for direct access.
- */
 bool  cep_cell_stream_map(cepCell* cell, uint64_t offset, size_t size, unsigned access, cepStreamView* view);
-
-/**
- * @brief Release a mapped view, optionally committing staged writes.
- */
 bool  cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit);
 
 
-/**
- * @brief Initialise a proxy cell whose storage is mediated through adapter callbacks.
- */
 void  cep_proxy_initialize(cepCell* cell, cepDT* name, const cepProxyOps* ops, void* context);
-
-/**
- * @brief Replace the opaque context pointer owned by a proxy cell.
- */
 void  cep_proxy_set_context(cepCell* cell, void* context);
-
-/**
- * @brief Read the opaque context pointer owned by a proxy cell.
- */
 void* cep_proxy_context(const cepCell* cell);
-
-/**
- * @brief Retrieve the adapter vtable used by a proxy cell.
- */
 const cepProxyOps* cep_proxy_ops(const cepCell* cell);
 
 bool  cep_proxy_snapshot(cepCell* cell, cepProxySnapshot* snapshot);
 void  cep_proxy_release_snapshot(cepCell* cell, cepProxySnapshot* snapshot);
 bool  cep_proxy_restore(cepCell* cell, const cepProxySnapshot* snapshot);
 
-/**
- * @brief Initialise a proxy around an existing HANDLE cell using @p library.
- */
 void  cep_proxy_initialize_handle(cepCell* cell, cepDT* name, cepCell* handle, cepCell* library);
-
-/**
- * @brief Initialise a proxy around an existing STREAM cell using @p library.
- */
 void  cep_proxy_initialize_stream(cepCell* cell, cepDT* name, cepCell* stream, cepCell* library);
 
 
@@ -871,46 +818,12 @@ typedef bool (*cepTraverse)(cepEntry*, void*);
  */
 
 // Initiate cells
-/**
- * @brief Initialise a cell with the provided metadata, payload and store.
- *
- * @param cell  Destination cell to initialise.
- * @param type  One of the #_cepCellType values describing the runtime flavour.
- * @param name  Domain/tag assigned to the cell; must satisfy cep_dt_valid().
- * @param data  Optional payload instance owned by the cell after the call.
- * @param store Optional child store instance owned by the cell after the call.
- */
 void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* data, cepStore* store);
-
-/**
- * @brief Initialise @p newClone so it mirrors the structure of @p cell.
- *
- * @param newClone Destination cell receiving the cloned view.
- * @param name     New domain/tag identifier for the clone.
- * @param cell     Source cell to replicate.
- */
 void cep_cell_initialize_clone(cepCell* newClone, cepDT* name, cepCell* cell);
-/**
- * @brief Release resources held by @p cell. The caller must ensure no backlinks remain.
- */
 void cep_cell_finalize(cepCell* cell);          // Internal: asserts no backlinks remain.
-
-/**
- * @brief Forcefully tear down @p cell regardless of backlinks (used for aborted builds).
- */
 void cep_cell_finalize_hard(cepCell* cell);     // Public hard teardown for aborted cells.
-/**
- * @brief Update the tombstone flag so shadowing links reflect the target status.
- */
 void cep_cell_shadow_mark_target_dead(cepCell* cell, bool dead);
-/**
- * @brief Create a shallow clone of @p cell sharing payload/store history.
- */
 cepCell* cep_cell_clone(const cepCell* cell);
-
-/**
- * @brief Create a deep clone duplicating the entire subtree rooted at @p cell.
- */
 cepCell* cep_cell_clone_deep(const cepCell* cell);
 
 #define cep_cell_initialize_empty(r, name)                                                            cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, NULL)
@@ -1210,15 +1123,8 @@ cepCell* cep_cell_find_next_by_name_past(const cepCell* cell, cepDT* name, uintp
 cepCell* cep_cell_find_next_by_path_past(const cepCell* start, cepPath* path, uintptr_t* prev, cepOpCount snapshot);
 #define  cep_cell_find_next_by_path(start, path, prev)      cep_cell_find_next_by_path_past((start), (path), (prev), 0)
 
-/**
- * @brief Iterate over direct children using the provided callback.
- */
 bool cep_cell_traverse      (cepCell* cell, cepTraverse func, void* context, cepEntry* entry);
 bool cep_cell_traverse_internal(cepCell* cell, cepTraverse func, void* context, cepEntry* entry);
-
-/**
- * @brief Traverse historical snapshots of the child list at @p timestamp.
- */
 bool cep_cell_traverse_past (cepCell* cell, cepOpCount timestamp, cepTraverse func, void* context, cepEntry* entry);
 
 bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);

@@ -83,15 +83,22 @@ static int cep_cell_append_binding(cepCell* cell, const cepDT* name, uint32_t fl
     return CEP_ENZYME_SUCCESS;
 }
 
+/** Append a binding for @p name onto @p cell so future impulses can trigger the
+    enzyme directly from the tree. The helper records the heartbeat in the
+    binding and optionally marks it for propagation down the subtree. */
 int cep_cell_bind_enzyme(cepCell* cell, const cepDT* name, bool propagate) {
     uint32_t flags = propagate ? CEP_ENZYME_BIND_PROPAGATE : 0u;
     return cep_cell_append_binding(cell, name, flags);
 }
 
+/** Append a tombstone for @p name, hiding the enzyme from subsequent resolves
+    without destroying historical bindings. */
 int cep_cell_unbind_enzyme(cepCell* cell, const cepDT* name) {
     return cep_cell_append_binding(cell, name, CEP_ENZYME_BIND_TOMBSTONE);
 }
 
+/** Surface the binding list associated with @p cell so diagnostics and tooling
+    can inspect it without walking internal structures. */
 const cepEnzymeBinding* cep_cell_enzyme_bindings(const cepCell* cell) {
     if (!cell || !cep_cell_is_normal(cell)) {
         return NULL;
@@ -107,4 +114,3 @@ const cepEnzymeBinding* cep_cell_enzyme_bindings(const cepCell* cell) {
 
     return NULL;
 }
-

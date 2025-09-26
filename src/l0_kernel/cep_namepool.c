@@ -406,6 +406,8 @@ static cepNamePoolEntry* cep_namepool_lookup_entry(cepID id) {
     return entry;
 }
 
+/** Ensure the name pool backing structures exist so reference IDs can be
+    issued on demand. Subsequent calls are cheap and simply confirm the state. */
 bool cep_namepool_bootstrap(void) {
     if (namepool_root) {
         return true;
@@ -440,6 +442,9 @@ bool cep_namepool_bootstrap(void) {
     return true;
 }
 
+/** Intern a UTF-8 buffer and return a CEP_NAMING_REFERENCE identifier, compact
+    encoding to word/acronym/numeric when possible before falling back to the
+    pool. */
 cepID cep_namepool_intern(const char* text, size_t length) {
     if (!text || length == 0u || length > CEP_NAMEPOOL_MAX_LENGTH) {
         return 0;
@@ -498,6 +503,7 @@ cepID cep_namepool_intern(const char* text, size_t length) {
     }
 }
 
+/** Convenience wrapper around cep_namepool_intern for null-terminated strings. */
 cepID cep_namepool_intern_cstr(const char* text) {
     if (!text) {
         return 0;
@@ -505,6 +511,8 @@ cepID cep_namepool_intern_cstr(const char* text) {
     return cep_namepool_intern(text, strlen(text));
 }
 
+/** Register a static caller-owned string without copying it into the pool so
+    adapters can reference compile-time text cheaply. */
 cepID cep_namepool_intern_static(const char* text, size_t length) {
     if (!text || length == 0u || length > CEP_NAMEPOOL_MAX_LENGTH) {
         return 0;
@@ -560,6 +568,8 @@ cepID cep_namepool_intern_static(const char* text, size_t length) {
     }
 }
 
+/** Resolve a reference ID back into its stored bytes, returning the length when
+    requested so callers can avoid strlen() on binary data. */
 const char* cep_namepool_lookup(cepID id, size_t* length) {
     cepNamePoolEntry* entry = cep_namepool_lookup_entry(id);
     if (!entry) {
@@ -571,6 +581,8 @@ const char* cep_namepool_lookup(cepID id, size_t* length) {
     return entry->bytes;
 }
 
+/** Decrement the reference count for @p id and reclaim the slot when the count
+    reaches zero, allowing dynamic names to disappear once no consumers remain. */
 bool cep_namepool_release(cepID id) {
     if (!cep_id_is_reference(id)) {
         return true;

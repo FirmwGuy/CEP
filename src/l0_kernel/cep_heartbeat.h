@@ -156,45 +156,15 @@ typedef struct {
 } cepHeartbeatRuntime;
 
 
-/**
- * @brief Configure the heartbeat runtime prior to bootstrapping.
- */
 bool  cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHeartbeatPolicy* policy);
-/**
- * @brief Create required directories and seed runtime state under the policy.
- */
 bool  cep_heartbeat_bootstrap(void);
-/**
- * @brief Start the heartbeat loop using the supplied topology and policy.
- */
 bool  cep_heartbeat_startup(void);
-/**
- * @brief Restart the heartbeat loop without destroying runtime scaffolding.
- */
 bool  cep_heartbeat_restart(void);
-/**
- * @brief Prepare runtime state to process the supplied beat number.
- */
 bool  cep_heartbeat_begin(cepBeatNumber beat);
-/**
- * @brief Resolve the execution agenda for the current beat.
- */
 bool  cep_heartbeat_resolve_agenda(void);
-/**
- * @brief Execute the enzymes scheduled during agenda resolution.
- */
 bool  cep_heartbeat_execute_agenda(void);
-/**
- * @brief Stage committed changes so they become visible in the next beat.
- */
 bool  cep_heartbeat_stage_commit(void);
-/**
- * @brief Convenience helper that runs resolve, execute and stage for one beat.
- */
 bool  cep_heartbeat_step(void);
-/**
- * @brief Stop the heartbeat runtime and release temporary allocations.
- */
 void  cep_heartbeat_shutdown(void);
 
 
@@ -205,23 +175,11 @@ const cepHeartbeatTopology* cep_heartbeat_topology(void);
 cepEnzymeRegistry*          cep_heartbeat_registry(void);
 
 
-/**
- * @brief Queue a signal/target pair for processing on the selected beat.
- */
 int   cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path, const cepPath* target_path);
-/**
- * @brief Queue a fully materialised impulse for future processing.
- */
 int   cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse);
-/**
- * @brief Drain the current inbox, resolving newly enqueued impulses.
- */
 bool  cep_heartbeat_process_impulses(void);
 
 
-/**
- * @brief Convenience accessors for well-known subtrees within the topology.
- */
 cepCell*  cep_heartbeat_sys_root(void);
 cepCell*  cep_heartbeat_rt_root(void);
 cepCell*  cep_heartbeat_journal_root(void);

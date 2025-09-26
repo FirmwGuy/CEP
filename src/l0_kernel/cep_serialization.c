@@ -32,6 +32,8 @@ static size_t cep_serialization_header_payload_size(const cepSerializationHeader
     return CEP_SERIALIZATION_HEADER_BASE + (size_t) header->metadata_length;
 }
 
+/** Compute the number of bytes required to serialise @p header into a chunk so
+    callers can reserve output buffers accurately. */
 size_t cep_serialization_header_chunk_size(const cepSerializationHeader* header) {
     /* Report the total number of bytes required for the control header chunk so callers can size buffers before attempting to encode it. */
     if (!header)
@@ -44,6 +46,8 @@ size_t cep_serialization_header_chunk_size(const cepSerializationHeader* header)
     return payload + CEP_SERIALIZATION_CHUNK_OVERHEAD;
 }
 
+/** Serialise @p header into @p dst, updating @p out_size with the number of
+    bytes written when successful. */
 bool cep_serialization_header_write(const cepSerializationHeader* header,
                                     uint8_t* dst,
                                     size_t capacity,
@@ -103,6 +107,8 @@ bool cep_serialization_header_write(const cepSerializationHeader* header,
     return true;
 }
 
+/** Parse @p chunk back into a structured header, validating magic, version,
+    and metadata length. */
 bool cep_serialization_header_read(const uint8_t* chunk,
                                    size_t chunk_size,
                                    cepSerializationHeader* header) {
@@ -445,10 +451,13 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
    chunked data descriptor depending on payload size. Callers supply a sink that
    receives fully framed chunks, letting them forward bytes to files, sockets, or
    higher-level transports without exposing the traversal mechanics. */
+/** Emit a sequence of chunks that describes @p cell and, optionally, its blob
+    payloads. The writer callback receives each chunk and can stream it to disk
+    or over the network. */
 bool cep_serialization_emit_cell(const cepCell* cell,
-                                 const cepSerializationHeader* header,
-                                 cepSerializationWriteFn write,
-                                 void* context,
+                                   const cepSerializationHeader* header,
+                                   cepSerializationWriteFn write,
+                                   void* context,
                                  size_t blob_payload_bytes) {
     if (!cell || !write)
         return false;
@@ -646,6 +655,7 @@ static void cep_serialization_reader_init(cepSerializationReader* reader, cepCel
     reader->root = root ? cep_link_pull(root) : NULL;
 }
 
+/** Allocate a reader that reconstructs cells under @p root as chunks arrive. */
 cepSerializationReader* cep_serialization_reader_create(cepCell* root) {
     cepSerializationReader* reader = cep_malloc0(sizeof *reader);
     if (!reader)
@@ -654,6 +664,7 @@ cepSerializationReader* cep_serialization_reader_create(cepCell* root) {
     return reader;
 }
 
+/** Destroy a reader, releasing staged chunks and transaction caches. */
 void cep_serialization_reader_destroy(cepSerializationReader* reader) {
     if (!reader)
         return;
@@ -676,6 +687,7 @@ void cep_serialization_reader_destroy(cepSerializationReader* reader) {
 }
 
 
+/** Reset a reader to its initial state while keeping allocations for reuse. */
 void cep_serialization_reader_reset(cepSerializationReader* reader) {
     if (!reader)
         return;
@@ -1093,6 +1105,8 @@ static void cep_serialization_reader_fail(cepSerializationReader* reader) {
     cep_serialization_reader_clear_transactions(reader);
 }
 
+/** Feed a serialisation chunk into the reader state machine, staging work until
+    commit is requested. */
 bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8_t* chunk, size_t chunk_size) {
     if (!reader || !chunk || chunk_size < CEP_SERIALIZATION_CHUNK_OVERHEAD)
         return false;
@@ -1252,6 +1266,8 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
     return true;
 }
 
+/** Apply staged chunks to the target tree, materialising payloads and proxy
+    state. */
 bool cep_serialization_reader_commit(cepSerializationReader* reader) {
     if (!reader)
         return false;
@@ -1277,6 +1293,7 @@ bool cep_serialization_reader_commit(cepSerializationReader* reader) {
     return true;
 }
 
+/** Return true when the reader has staged work that still needs committing. */
 bool cep_serialization_reader_pending(const cepSerializationReader* reader) {
     if (!reader)
         return false;

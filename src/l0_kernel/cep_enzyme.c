@@ -613,9 +613,9 @@ static bool cep_enzyme_descriptor_equal(const cepEnzymeDescriptor* a, const cepE
 }
 
 
-/* Creates a registry instance so enzymes can be registered and does an upfront
- * capacity reservation based on environment hints to reduce later reallocations.
- */
+/** Create a registry instance so enzymes can be registered and perform an
+    upfront capacity reservation based on environment hints to reduce later
+    reallocations. */
 cepEnzymeRegistry* cep_enzyme_registry_create(void) {
     CEP_NEW(cepEnzymeRegistry, registry);
     if (!registry) {
@@ -634,9 +634,8 @@ cepEnzymeRegistry* cep_enzyme_registry_create(void) {
 }
 
 
-/* Tears down a registry by releasing all tracked entries so callers can avoid
- * leaking per-enzyme allocations when a runtime shuts down.
- */
+/** Tear down a registry by releasing all tracked entries so callers avoid
+    leaking per-enzyme allocations when the runtime shuts down. */
 void cep_enzyme_registry_destroy(cepEnzymeRegistry* registry) {
     if (!registry) {
         return;
@@ -647,9 +646,8 @@ void cep_enzyme_registry_destroy(cepEnzymeRegistry* registry) {
 }
 
 
-/* Clears the registry contents while keeping the buffer alive so repeated test
- * runs can start from a clean slate without paying the allocation cost again.
- */
+/** Clear the registry contents while keeping the buffer alive so repeated test
+    runs can start from a clean slate without paying the allocation cost again. */
 void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
     if (!registry) {
         return;
@@ -706,18 +704,17 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
 }
 
 
-/* Reports how many enzymes are currently tracked so higher layers can decide
- * whether new registrations are needed or whether iteration should even start.
- */
+/** Report how many enzymes are currently tracked so higher layers can decide
+    whether new registrations are needed or whether iteration should even
+    start. */
 size_t cep_enzyme_registry_size(const cepEnzymeRegistry* registry) {
     return registry ? registry->entry_count : 0u;
 }
 
 
-/* Promotes pending enzyme registrations into the active registry so
- * the next beat observes them in deterministic order without mutating the
- * frozen agenda mid-cycle.
- */
+/** Promote pending enzyme registrations into the active registry so the next
+    beat observes them in deterministic order without mutating the frozen agenda
+    mid-cycle. */
 void cep_enzyme_registry_activate_pending(cepEnzymeRegistry* registry) {
     if (!registry || registry->pending_count == 0u) {
         return;
@@ -826,10 +823,10 @@ static int cep_enzyme_registry_pending_add(cepEnzymeRegistry* registry, const ce
 }
 
 
-/* Registers a new enzyme by cloning the query path and storing the descriptor
- * for deterministic dispatch, deferring activation to the next beat when the
- * heartbeat is live so mid-beat registrations never perturb the frozen agenda.
- */
+/** Register a new enzyme by cloning the query path and storing the descriptor
+    for deterministic dispatch, deferring activation to the next beat when the
+    heartbeat is live so mid-beat registrations never perturb the frozen
+    agenda. */
 int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor) {
     if (!cep_heartbeat_bootstrap()) {
         return CEP_ENZYME_FATAL;
@@ -864,9 +861,9 @@ int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const
 }
 
 
-/* Removes a previously registered enzyme entry to keep dispatch decisions in
- * sync with caller intent, compacting the table so subsequent lookups stay fast.
- */
+/** Remove a previously registered enzyme entry to keep dispatch decisions in
+    sync with caller intent, compacting the table so subsequent lookups stay
+    fast. */
 int cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor) {
     if (!cep_heartbeat_bootstrap()) {
         return CEP_ENZYME_FATAL;
@@ -1083,17 +1080,11 @@ static size_t cep_enzyme_ready_pop(size_t* heap, size_t* heap_size, const cepEnz
 }
 
 
-/*
- * Impulse resolution combines cell-bound bindings with signal-indexed filters.
- *
- *   1. Gather bindings along the target path (respecting propagate flags and
- *      tombstones). For each bound enzyme name pick the most specific descriptor
- *      that also matches the signal when one is present.
- *   2. If no bindings apply (or no target was provided), fall back to the
- *      signal index and collect signal-only matches.
- *   3. Assemble dependency edges between the resulting descriptors and perform
- *      a deterministic topological sort with the existing priority tuple.
- */
+/** Resolve an impulse by merging cell-bound bindings with signal-indexed
+    filters, then building a deterministic execution order that honours
+    dependencies and specificity. The routine gathers bindings along the target
+    path, intersects them with signal matches, and performs a stable
+    topological sort before materialising the agenda into @p ordered. */
 size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* impulse, const cepEnzymeDescriptor** ordered, size_t capacity) {
     if (!registry || !impulse || registry->entry_count == 0u) {
         return 0u;

@@ -70,63 +70,24 @@ static inline uint16_t cep_serialization_chunk_sequence(uint64_t chunk_id) {
     return (uint16_t)(chunk_id & UINT64_C(0xFFFF));
 }
 
-/**
- * @brief Compute the size in bytes required to emit @p header.
- */
 size_t cep_serialization_header_chunk_size(const cepSerializationHeader* header);
-
-/**
- * @brief Serialize @p header into @p dst.
- */
 bool cep_serialization_header_write(const cepSerializationHeader* header,
                                     uint8_t* dst,
                                     size_t capacity,
                                     size_t* out_size);
-
-/**
- * @brief Parse a header chunk back into its structured representation.
- */
 bool cep_serialization_header_read(const uint8_t* chunk,
                                    size_t chunk_size,
                                    cepSerializationHeader* header);
-
-/**
- * @brief Emit a sequence of chunks describing @p cell and its subtree.
- */
 bool cep_serialization_emit_cell(const cepCell* cell,
                                    const cepSerializationHeader* header,
                                    cepSerializationWriteFn write,
                                    void* context,
                                    size_t blob_payload_bytes);
-
-/**
- * @brief Allocate a reader that rehydrates cells from incoming chunks.
- */
 cepSerializationReader* cep_serialization_reader_create(cepCell* root);
-
-/**
- * @brief Destroy a reader instance and free owned buffers.
- */
 void cep_serialization_reader_destroy(cepSerializationReader* reader);
-
-/**
- * @brief Reset a reader to its initial state while preserving allocations.
- */
 void cep_serialization_reader_reset(cepSerializationReader* reader);
-
-/**
- * @brief Feed a serialized chunk into the reader state machine.
- */
 bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8_t* chunk, size_t size);
-
-/**
- * @brief Commit staged chunks, applying them to the destination tree.
- */
 bool cep_serialization_reader_commit(cepSerializationReader* reader);
-
-/**
- * @brief Return true when the reader still has unapplied chunks.
- */
 bool cep_serialization_reader_pending(const cepSerializationReader* reader);
 
 #ifdef __cplusplus

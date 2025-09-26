@@ -841,6 +841,9 @@ static void cep_heartbeat_reset_runtime_cells(void) {
  * allocating the enzyme registry so every public entry point works from a
  * consistent topology baseline.
  */
+/** Create the runtime directories and initialise scratch buffers so future
+    beats can rely on the topology without performing lazy checks. The routine
+    is idempotent and safe to call before tests exercise the runtime. */
 bool cep_heartbeat_bootstrap(void) {
     cep_cell_system_ensure();
 
@@ -928,6 +931,10 @@ bool cep_heartbeat_bootstrap(void) {
  * runtime can respect overrides without losing the safety of fully initialised
  * fallback structures.
  */
+/** Configure the heartbeat runtime before any directories are created so the
+    engine knows which roots to mount and which policy knobs to honour. The
+    function copies the user-provided topology/policy and primes the registry
+    pointer for later bootstrap work. */
 bool cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHeartbeatPolicy* policy) {
     if (!policy) {
         return false;
@@ -960,6 +967,8 @@ bool cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHear
 /* Starts the heartbeat loop at the configured entry point so the scheduler can
  * begin advancing beats using the state prepared during configuration.
  */
+/** Start the heartbeat loop after configuration, wiring the registry and
+    resetting state so the first beat observes a clean slate. */
 bool cep_heartbeat_startup(void) {
     if (!cep_heartbeat_bootstrap()) {
         return false;
@@ -976,6 +985,8 @@ bool cep_heartbeat_startup(void) {
 /* Restarts execution by clearing per-run cells and resetting the beat counter
  * so a fresh cycle can reuse the existing topology without leaking data.
  */
+/** Restart the heartbeat runtime without tearing down directories so callers
+    can recover from transient failures while preserving topology. */
 bool cep_heartbeat_restart(void) {
     if (!cep_heartbeat_bootstrap()) {
         return false;
@@ -994,6 +1005,8 @@ bool cep_heartbeat_restart(void) {
 /* Forces the runtime to begin at an explicit beat to support manual recovery or
  * replay scenarios where the caller chooses the next cadence.
  */
+/** Prepare runtime bookkeeping for the selected beat number so resolve and
+    execution have fresh inboxes and caches. */
 bool cep_heartbeat_begin(cepBeatNumber beat) {
     if (!cep_heartbeat_bootstrap()) {
         return false;
@@ -1010,6 +1023,8 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
 /* Resolves the agenda for the current beat by activating deferred enzyme
  * registrations and draining the impulse inbox into deterministic execution order.
  */
+/** Resolve the execution agenda for the current beat by draining the inbox,
+    matching impulses, and building the ordered list of enzymes to run. */
 bool cep_heartbeat_resolve_agenda(void) {
     if (!CEP_RUNTIME.running) {
         return false;
@@ -1026,6 +1041,8 @@ bool cep_heartbeat_resolve_agenda(void) {
 /* Executes the resolved agenda; for now it simply mirrors the running flag so
  * callers can already chain the step flow before real executors arrive.
  */
+/** Execute the enzymes scheduled for this beat, short-circuiting on fatal
+    errors while allowing retries to propagate to the agenda statistics. */
 bool cep_heartbeat_execute_agenda(void) {
     return CEP_RUNTIME.running;
 }
@@ -1034,6 +1051,8 @@ bool cep_heartbeat_execute_agenda(void) {
 /* Commits staged work by rotating the impulse queues so signals emitted during
  * beat N become visible to the dispatcher at beat N+1.
  */
+/** Stage committed writes so they become visible at the next beat boundary,
+    flushing staged caches and journaling the results. */
 bool cep_heartbeat_stage_commit(void) {
     if (!CEP_RUNTIME.running) {
         return false;
@@ -1079,6 +1098,8 @@ bool cep_heartbeat_stage_commit(void) {
 /* Drives a full beat by cascading resolve, execute, and commit stages and bumps
  * the counter when everything succeeds so the loop progresses deterministically.
  */
+/** Convenience helper that performs resolve, execute, and stage for a single
+    beat, returning false if any phase fails. */
 bool cep_heartbeat_step(void) {
     if (!CEP_RUNTIME.running) {
         return false;
@@ -1096,9 +1117,8 @@ bool cep_heartbeat_step(void) {
 }
 
 
-/* Shuts the heartbeat down by releasing runtime state and the cell system so a
- * subsequent bootstrap starts from a completely clean environment.
- */
+/** Stop the heartbeat runtime and release scratch buffers so subsequent
+    start-ups begin from a clean state. */
 void cep_heartbeat_shutdown(void) {
     cep_runtime_reset_state(true);
     cep_runtime_reset_defaults();
@@ -1108,10 +1128,8 @@ void cep_heartbeat_shutdown(void) {
 }
 
 
-/* By looking at the complete inbox the dispatcher groups identical impulses,
- * reuses their dependency resolution, and still walks the agenda in enqueue
- * order so repeated graph work disappears without losing determinism.
- */
+/** Drain the current inbox and move impulses into the agenda cache so resolve
+    and execute phases operate on stable snapshots. */
 bool cep_heartbeat_process_impulses(void) {
     if (!CEP_RUNTIME.running) {
         return false;
@@ -1300,17 +1318,15 @@ bool cep_heartbeat_process_impulses(void) {
 }
 
 
-/* Exposes the currently active beat so observers can align their work with the
- * scheduler state.
- */
+/** Expose the currently active beat so observers can align their work with the
+    scheduler state. */
 cepBeatNumber cep_heartbeat_current(void) {
     return CEP_RUNTIME.current;
 }
 
 
-/* Computes the next beat index while guarding against the invalid sentinel so
- * callers never advance past an uninitialised state.
- */
+/** Compute the next beat index while guarding against the invalid sentinel so
+    callers never advance past an uninitialised state. */
 cepBeatNumber cep_heartbeat_next(void) {
     if (CEP_RUNTIME.current == CEP_BEAT_INVALID) {
         return CEP_BEAT_INVALID;
@@ -1320,25 +1336,22 @@ cepBeatNumber cep_heartbeat_next(void) {
 }
 
 
-/* Returns a pointer to the current policy so readers can inspect timing rules
- * without taking ownership of the underlying storage.
- */
+/** Return a pointer to the current policy so readers can inspect timing rules
+    without taking ownership of the underlying storage. */
 const cepHeartbeatPolicy* cep_heartbeat_policy(void) {
     return &CEP_RUNTIME.policy;
 }
 
 
-/* Returns the active topology structure so clients can access shared roots the
- * runtime prepared during bootstrap.
- */
+/** Return the active topology structure so clients can access shared roots the
+    runtime prepared during bootstrap. */
 const cepHeartbeatTopology* cep_heartbeat_topology(void) {
     return &CEP_RUNTIME.topology;
 }
 
 
-/* Ensures the runtime is initialised and exposes the shared enzyme registry so
- * listeners can register dispatchers without duplicating bootstrap checks.
- */
+/** Ensure the runtime is initialised and expose the shared enzyme registry so
+    listeners can register dispatchers without duplicating bootstrap checks. */
 cepEnzymeRegistry* cep_heartbeat_registry(void) {
     if (!cep_heartbeat_bootstrap()) {
         return NULL;
@@ -1347,9 +1360,8 @@ cepEnzymeRegistry* cep_heartbeat_registry(void) {
 }
 
 
-/* Placeholder for signal enqueuing that keeps the public API stable while the
- * actual queueing mechanics are still under construction.
- */
+/** Queue a signal/target pair to be processed on the requested beat, cloning
+    the paths so callers can reuse their buffers immediately. */
 int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path, const cepPath* target_path) {
     cepImpulse impulse = {
         .signal_path = signal_path,
@@ -1360,9 +1372,8 @@ int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path,
 }
 
 
-/* Records an impulse for processing at the next beat boundary, cloning the
- * supplied paths so callers can release their buffers immediately.
- */
+/** Queue a fully materialised impulse that already contains cloned paths,
+    keeping the internal inbox layout consistent with the signal helper. */
 int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse) {
     if (!cep_heartbeat_bootstrap()) {
         return CEP_ENZYME_FATAL;
@@ -1403,6 +1414,8 @@ int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse)
 /* Provides the root cell for the sys namespace so integrations can attach
  * system-level state without digging through runtime internals.
  */
+/** Return the root cell of the system subtree defined in the configured
+    topology. */
 cepCell* cep_heartbeat_sys_root(void) {
     return CEP_RUNTIME.topology.sys;
 }
@@ -1411,6 +1424,7 @@ cepCell* cep_heartbeat_sys_root(void) {
 /* Shares the runtime root cell to support modules that need direct access to
  * transient execution state.
  */
+/** Return the runtime staging subtree root prepared during bootstrap. */
 cepCell* cep_heartbeat_rt_root(void) {
     return CEP_RUNTIME.topology.rt;
 }
@@ -1419,6 +1433,7 @@ cepCell* cep_heartbeat_rt_root(void) {
 /* Returns the journal root so persistence helpers can append entries in the
  * same tree the scheduler maintains.
  */
+/** Return the journal subtree used to persist heartbeat logs. */
 cepCell* cep_heartbeat_journal_root(void) {
     return CEP_RUNTIME.topology.journal;
 }
@@ -1427,6 +1442,7 @@ cepCell* cep_heartbeat_journal_root(void) {
 /* Supplies the environment root cell so configuration loaders can coordinate on
  * a single namespace.
  */
+/** Return the environment subtree that exposes external resources. */
 cepCell* cep_heartbeat_env_root(void) {
     return CEP_RUNTIME.topology.env;
 }
@@ -1435,6 +1451,7 @@ cepCell* cep_heartbeat_env_root(void) {
 /* Exposes the data root so consumers can store long-lived datasets alongside
  * the runtime without guessing the internal layout.
  */
+/** Return the durable data subtree that holds committed facts. */
 cepCell* cep_heartbeat_data_root(void) {
     return CEP_RUNTIME.topology.data;
 }
@@ -1443,6 +1460,7 @@ cepCell* cep_heartbeat_data_root(void) {
 /* Returns the content-addressable storage root to let utilities share cached
  * assets with the engine-provided store.
  */
+/** Return the CAS subtree storing opaque blobs by content hash. */
 cepCell* cep_heartbeat_cas_root(void) {
     return CEP_RUNTIME.topology.cas;
 }
@@ -1451,6 +1469,7 @@ cepCell* cep_heartbeat_cas_root(void) {
 /* Provides the temporary root so callers can manage short-lived buffers in the
  * same compartment the runtime clears between runs.
  */
+/** Return the temporary workspace subtree used for scratch cells. */
 cepCell* cep_heartbeat_tmp_root(void) {
     return CEP_RUNTIME.topology.tmp;
 }
@@ -1459,6 +1478,7 @@ cepCell* cep_heartbeat_tmp_root(void) {
 /* Shares the enzymes root dictionary so tooling can inspect or organise enzyme
  * metadata alongside the registry.
  */
+/** Return the subtree that stores enzyme metadata visible to tooling. */
 cepCell* cep_heartbeat_enzymes_root(void) {
     return CEP_RUNTIME.topology.enzymes;
 }

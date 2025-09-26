@@ -125,11 +125,12 @@ unsigned MAX_DEPTH = CEP_MAX_FAST_STACK_DEPTH;     // FixMe: (used by path/trave
 #define cepFunc     void*
 
 
-/* Construct a proxy cell by wiring a proxy vtable to the generic cell
-   initializer so callers can expose virtual payloads without touching the
-   regular data/store fields. We allocate the lightweight proxy descriptor,
-   stash the user context, and keep the cell free from accidental normal-type
-   invariants so other helpers can recognise the proxy flavour. */
+/** Construct a proxy cell by wiring a proxy vtable to the generic cell
+    initializer so callers can expose virtual payloads without touching the
+    regular data/store fields. The helper allocates the lightweight proxy
+    descriptor, stashes the user context, and keeps the cell free from
+    accidental normal-type invariants so later helpers recognise the proxy
+    flavour. */
 void cep_proxy_initialize(cepCell* cell, cepDT* name, const cepProxyOps* ops, void* context) {
     assert(cell && name && cep_dt_valid(name));
     assert(ops);
@@ -142,10 +143,11 @@ void cep_proxy_initialize(cepCell* cell, cepDT* name, const cepProxyOps* ops, vo
     cell->proxy = proxy;
 }
 
-/* Update or seed the opaque context stored with a proxy cell so adapters can
-   keep per-instance state (like handles or configuration) without reaching past
-   the public API. Context assignment lazily allocates the proxy wrapper if the
-   cell was promoted from a raw initializer. */
+/** Update or seed the opaque context stored with a proxy cell so adapters can
+    keep per-instance state (like handles or configuration) without reaching
+    past the public API. Context assignment lazily allocates the proxy wrapper
+    when the cell was promoted from a raw initializer, keeping the invariant
+    that proxy storage always exists when needed. */
 void cep_proxy_set_context(cepCell* cell, void* context) {
     assert(cell && cep_cell_is_proxy(cell));
 
@@ -158,9 +160,10 @@ void cep_proxy_set_context(cepCell* cell, void* context) {
     proxy->context = context;
 }
 
-/* Return the adapter-defined context associated with a proxy cell so callers
-   can retrieve live bindings without poking at the proxy internals. The helper
-   shields users from NULL checks when a proxy was initialised without context. */
+/** Return the adapter-defined context associated with a proxy cell so callers
+    can retrieve live bindings without poking at the proxy internals. The helper
+    shields users from NULL checks when a proxy was initialised without context,
+    making subsequent calls simpler. */
 void* cep_proxy_context(const cepCell* cell) {
     assert(cell && cep_cell_is_proxy(cell));
 
@@ -168,9 +171,10 @@ void* cep_proxy_context(const cepCell* cell) {
     return proxy ? proxy->context : NULL;
 }
 
-/* Surface the proxy operations table configured for a cell so subsystems such
-   as serialization and streaming can dispatch through the appropriate callback
-   set. Returning NULL signals a placeholder proxy that cannot yet serve calls. */
+/** Surface the proxy operations table configured for a cell so subsystems such
+    as serialization and streaming can dispatch through the appropriate callback
+    set. Returning NULL signals a placeholder proxy that cannot yet serve calls,
+    giving callers a quick readiness check. */
 const cepProxyOps* cep_proxy_ops(const cepCell* cell) {
     assert(cell && cep_cell_is_proxy(cell));
 
@@ -178,10 +182,10 @@ const cepProxyOps* cep_proxy_ops(const cepCell* cell) {
     return proxy ? proxy->ops : NULL;
 }
 
-/* Ask the proxy to materialise a snapshot of its payload, which may be an
-   inline buffer or an external ticket depending on the adapter flags. The
-   output structure is zeroed before delegation so callers always see a fully
-   initialised snapshot even when the adapter declines to produce one. */
+/** Ask the proxy to materialise a snapshot of its payload, which may be an
+    inline buffer or an external ticket depending on the adapter flags. The
+    output structure is zeroed before delegation so callers always see a fully
+    initialised snapshot even when the adapter declines to produce one. */
 bool cep_proxy_snapshot(cepCell* cell, cepProxySnapshot* snapshot) {
     assert(cell && cep_cell_is_proxy(cell));
     assert(snapshot);
@@ -195,10 +199,11 @@ bool cep_proxy_snapshot(cepCell* cell, cepProxySnapshot* snapshot) {
     return proxy->ops->snapshot(cell, snapshot);
 }
 
-/* Allow adapters to tear down resources associated with a previously emitted
-   snapshot, ensuring ephemeral buffers or handles do not leak once the caller
-   (e.g., serializer) is done using them. The helper tolerates missing release
-   callbacks so simple proxies can rely on stack-allocated data. */
+/** Allow adapters to tear down resources associated with a previously emitted
+    snapshot, ensuring ephemeral buffers or handles do not leak once the caller
+    (for example the serializer) is done using them. The helper tolerates
+    missing release callbacks so simple proxies can rely on stack-allocated data
+    without extra bookkeeping. */
 void cep_proxy_release_snapshot(cepCell* cell, cepProxySnapshot* snapshot) {
     assert(cell && cep_cell_is_proxy(cell));
     assert(snapshot);
@@ -216,10 +221,10 @@ void cep_proxy_release_snapshot(cepCell* cell, cepProxySnapshot* snapshot) {
     memset(snapshot, 0, sizeof *snapshot);
 }
 
-/* Restore a proxy cell from a serialized snapshot so deserialisation can bring
-   virtual payloads back online. Adapters decide how to interpret the bytes or
-   tickets; a missing restore hook means the proxy cannot be reconstructed and
-   signals failure to the caller. */
+/** Restore a proxy cell from a serialized snapshot so deserialisation can bring
+    virtual payloads back online. Adapters decide how to interpret the bytes or
+    tickets; a missing restore hook means the proxy cannot be reconstructed and
+    signals failure to the caller. */
 bool cep_proxy_restore(cepCell* cell, const cepProxySnapshot* snapshot) {
     assert(cell && cep_cell_is_proxy(cell));
     assert(snapshot);
@@ -358,6 +363,10 @@ static const cepProxyOps cep_proxy_library_ops = {
     .finalize = cep_proxy_library_finalize,
 };
 
+/** Prepare a proxy-backed HANDLE so adapters can front opaque resources while
+    still benefiting from proxy lifecycle management. The helper wires the
+    library context, retains the source cell if provided, and records whether
+    later operations should treat the resource as stream-less. */
 void cep_proxy_initialize_handle(cepCell* cell, cepDT* name, cepCell* handle, cepCell* library) {
     assert(cell && name && cep_dt_valid(name));
     assert(library);
@@ -373,6 +382,10 @@ void cep_proxy_initialize_handle(cepCell* cell, cepDT* name, cepCell* handle, ce
         cep_proxy_library_set_resource(cell, ctx, handle);
 }
 
+/** Prepare a proxy-backed STREAM using the same library wiring as the handle
+    helper but flagging the context so adapters expose streaming callbacks. The
+    proxy is initialised first and then seeded with the optional stream resource
+    so consumers can reach the live window immediately. */
 void cep_proxy_initialize_stream(cepCell* cell, cepDT* name, cepCell* stream, cepCell* library) {
     assert(cell && name && cep_dt_valid(name));
     assert(library);
@@ -1205,6 +1218,10 @@ static void cep_shadow_detach(cepCell* target, const cepCell* link)
     }
 }
 
+/** Flag link shadows when a target cell dies so lookups avoid stale entries and
+    resurrected cells clear the state consistently. The helper walks the shadow
+    list and mirrors the @p dead flag onto every referencing link, keeping link
+    callers in sync with the origin cell's visibility. */
 void cep_cell_shadow_mark_target_dead(cepCell* target, bool dead) {
     if (!target || cep_cell_is_void(target))
         return;
@@ -2848,12 +2865,11 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
 
 
 
-/* Initialise a cell with its type, name, payload, and optional child store. 
-   Validate arguments, assign metacell fields, connect data/store pointers, and 
-   link store ownership for normal cells. Provide a single constructor that 
-   enforces CEP invariants before a cell enters the tree.
-
-*/
+/** Initialise a cell with its type, name, payload, and optional child store so
+    callers funnel every new node through a single invariant-enforcing path.
+    The routine validates inputs, stamps the metacell, attaches payload/store
+    pointers, and transfers ownership, ensuring freshly created cells are ready
+    for insertion without additional bookkeeping. */
 void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* data, cepStore* store) {
     assert(cell && cep_dt_valid(name) && (type && type < CEP_TYPE_COUNT));
     bool isLink = (type == CEP_TYPE_LINK);
@@ -2919,11 +2935,11 @@ void cep_cell_transfer(cepCell* src, cepCell* dst)
 }
 
 
-/* Seed a clone cell with the metadata of an existing cell. Validate the 
-   source, zero the destination, and copy the metacell fields while deferring 
-   data/store duplication. Lay the groundwork for future deep-clone support 
-   without breaking current callers.
-*/
+/** Seed a clone cell with the metadata of an existing cell so callers can set
+    up a matching shell before deciding how much history to replicate. The
+    helper validates the source, zeros the destination, and mirrors metacell
+    timestamps while deferring payload/store duplication for specialised clone
+    helpers. */
 void cep_cell_initialize_clone(cepCell* clone, cepDT* name, cepCell* cell) {
     assert(clone && cep_cell_is_normal(cell));
     (void)name;
@@ -2940,13 +2956,13 @@ void cep_cell_initialize_clone(cepCell* clone, cepDT* name, cepCell* cell) {
 }
 
 
-/* Create a heap-backed duplicate of a normal cell without copying its
+/** Create a heap-backed duplicate of a normal cell without copying its
    descendants. VALUE/DATA payloads are deep-copied; HANDLE/STREAM payloads turn
    into link cells that reference the original node so external resources stay
    unified. We clear shadowing bits on the copy and return NULL when allocation
    fails or the payload cannot be cloned. Callers own the returned cell and
    should eventually pass it through cep_cell_finalize before releasing it.
-*/
+ */
 cepCell* cep_cell_clone(const cepCell* cell) {
     if (!cell || !cep_cell_is_normal(cell))
         return NULL;
@@ -2964,7 +2980,7 @@ cepCell* cep_cell_clone(const cepCell* cell) {
 }
 
 
-/* Deep-copy a normal cell subtree, producing an independent hierarchy whose
+/** Deep-copy a normal cell subtree, producing an independent hierarchy whose
    VALUE/DATA payloads and child stores no longer reference the original.
    HANDLE/STREAM payloads become link cells pointing back to their source so the
    shared resource remains authoritative. The clone keeps structural metadata
@@ -2972,7 +2988,7 @@ cepCell* cep_cell_clone(const cepCell* cell) {
    details such as bindings, locks, and history chains so the new tree starts
    clean. The caller assumes ownership of the returned root and should finalise
    it when done.
-*/
+ */
 cepCell* cep_cell_clone_deep(const cepCell* cell) {
     if (!cell || !cep_cell_is_normal(cell))
         return NULL;
@@ -3028,9 +3044,9 @@ static void cep_cell_release_contents(cepCell* cell) {
 }
 
 
-/* Finalise a cell that is guaranteed to have no backlinks. Callers must ensure
-   shadow invariants hold before invoking this helper; it will assert if any
-   links still reference the cell. */
+/** Finalise a cell that is guaranteed to have no backlinks. Callers must ensure
+    shadow invariants hold before invoking this helper; it will assert if any
+    links still reference the cell. */
 void cep_cell_finalize(cepCell* cell) {
     assert(!cep_cell_is_void(cell));
 
@@ -3043,9 +3059,9 @@ void cep_cell_finalize(cepCell* cell) {
 }
 
 
-/* Forcefully finalise a cell, breaking backlinks when necessary. Intended for
-   aborting in-flight construction or reclaiming detached cells before they are
-   made visible to the hierarchy. */
+/** Forcefully finalise a cell, breaking backlinks when necessary. Intended for
+    aborting in-flight construction or reclaiming detached cells before they are
+    made visible to the hierarchy. */
 void cep_cell_finalize_hard(cepCell* cell) {
     assert(!cep_cell_is_void(cell));
 
@@ -3631,6 +3647,9 @@ cepCell* cep_cell_find_next_by_path_past(const cepCell* start, cepPath* path, ui
    the owning store and delegate to store_traverse with the provided callback. 
    Expose a shallow iteration primitive without leaking storage-specific details.
 */
+/** Walk the immediate children of @p cell and invoke @p func for each entry,
+    wiring enough metadata into @p entry so callbacks understand position and
+    depth. Returning false from the callback aborts the traversal early. */
 bool cep_cell_traverse(cepCell* cell, cepTraverse func, void* context, cepEntry* entry) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
     return store_traverse(store, func, context, entry);
@@ -3651,6 +3670,9 @@ bool cep_cell_traverse_internal(cepCell* cell, cepTraverse func, void* context, 
    timestamp. Allow observers to inspect historical states without mutating the 
    structure.
 */
+/** Replay the child list as it looked at @p timestamp and invoke @p func for
+    each entry, allowing callers to inspect historical topologies without
+    mutating the live tree. */
 bool cep_cell_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, void* context, cepEntry* entry) {
     assert(!cep_cell_is_void(cell) && func && timestamp);
 
@@ -3687,6 +3709,9 @@ bool cep_cell_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse fun
    reuse the generic deep traversal engine. Support history analyses that need 
    recursive inspection without altering the tree.
 */
+/** Replay the entire subtree as it existed at @p timestamp, calling @p func for
+    each node and @p endFunc at the end of sibling lists so historical traversals
+    mimic the live API. */
 bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, cepTraverse endFunc, void* context, cepEntry* entry) {
     assert(!cep_cell_is_void(cell) && timestamp && (func || endFunc));
 
@@ -3742,6 +3767,9 @@ bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTravers
 /*
     Traverses each child branch and *sub-branch* of a cell, applying a function to each one
 */
+/** Walk a cell and its descendants depth-first, calling @p func for each node
+    and @p endFunc when a sibling list finishes so callers can maintain custom
+    stacks or emit delimiters. */
 bool cep_cell_deep_traverse(cepCell* cell, cepTraverse func, cepTraverse endFunc, void* context, cepEntry* entry) {
     assert(!cep_cell_is_void(cell) && (func || endFunc));
 

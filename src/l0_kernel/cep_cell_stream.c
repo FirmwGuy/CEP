@@ -22,10 +22,10 @@ static const cepLibraryBinding* cep_library_binding_const(const cepCell* library
 static cepLibraryBinding*       cep_library_binding_mut(cepCell* library);
 
 
-/* Seed a library cell with an adapter binding so HANDLE/STREAM payloads can
-   delegate back into foreign integrations. The binding owns both the vtable
-   and any opaque context, letting adapters update their state without
-   micromanaging lifetime. */
+/** Seed a library cell with an adapter binding so HANDLE/STREAM payloads can
+    delegate back into foreign integrations. The binding owns both the vtable
+    and any opaque context, letting adapters update their state without
+    micromanaging lifetime. */
 void cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* ops, void* context) {
     assert(library && ops);
 
@@ -43,26 +43,26 @@ void cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* 
 }
 
 
-/* Retrieve the immutable binding for a library cell. Links are resolved so
-   adapters can be referenced through aliases without losing access to their
-   vtable or context. */
+/** Retrieve the immutable binding for a library cell. Links are resolved so
+    adapters can be referenced through aliases without losing access to their
+    vtable or context. */
 const cepLibraryBinding* cep_library_binding(const cepCell* library) {
     return cep_library_binding_const(library);
 }
 
 
-/* Surface the adapter context stored with a library binding so callers can
-   pass state to custom operations without cracking open the binding structure
-   themselves. */
+/** Surface the adapter context stored with a library binding so callers can
+    pass state to custom operations without cracking open the binding structure
+    themselves. */
 void* cep_library_context(const cepCell* library) {
     const cepLibraryBinding* binding = cep_library_binding_const(library);
     return binding? binding->ctx: NULL;
 }
 
 
-/* Update the opaque context associated with a library binding. Integrations
-   can refresh handles or swap delegates while keeping the registered vtable in
-   place. */
+/** Update the opaque context associated with a library binding. Integrations
+    can refresh handles or swap delegates while keeping the registered vtable in
+    place. */
 void cep_library_set_context(cepCell* library, void* context) {
     cepLibraryBinding* binding = cep_library_binding_mut(library);
     if (binding)
@@ -136,11 +136,11 @@ typedef struct {
 } cepStreamMapToken;
 
 
-/* Read a window from a cell's payload while keeping journaling and delegation
-   consistent across VALUE, DATA, HANDLE, and STREAM representations. Memory
-   backed cells copy bytes directly; external handles route through the
-   library's adapter. Each call records a journal entry with the requested and
-   actual byte counts plus a content hash of the bytes observed. */
+/** Read a window from a cell's payload while keeping journaling and delegation
+    consistent across VALUE, DATA, HANDLE, and STREAM representations. Memory
+    backed cells copy bytes directly; external handles route through the
+    library's adapter. Each call records a journal entry with the requested and
+    actual byte counts plus a content hash of the bytes observed. */
 bool cep_cell_stream_read(cepCell* cell, uint64_t offset, void* dst, size_t size, size_t* out_read) {
     assert(cell);
 
@@ -221,10 +221,10 @@ bool cep_cell_stream_read(cepCell* cell, uint64_t offset, void* dst, size_t size
 }
 
 
-/* Write a window into a cell's payload, updating history for VALUE/DATA
-   buffers and delegating to adapters for HANDLE/STREAM cells. Successful
-   writes refresh hashes and modified timestamps and emit a journal entry
-   describing the mutation. */
+/** Write a window into a cell's payload, updating history for VALUE/DATA
+    buffers and delegating to adapters for HANDLE/STREAM cells. Successful
+    writes refresh hashes and modified timestamps and emit a journal entry
+    describing the mutation so downstream tooling can audit the change. */
 bool cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size_t size, size_t* out_written) {
     assert(cell);
 
@@ -330,9 +330,9 @@ bool cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size
 }
 
 
-/* Map a stream window into memory. VALUE/DATA payloads expose direct pointers
-   with an optional copy-on-write backup so unmap can roll back on failed
-   commits. HANDLE/STREAM payloads defer to the registered adapter. */
+/** Map a stream window into memory. VALUE/DATA payloads expose direct pointers
+    with an optional copy-on-write backup so unmap can roll back on failed
+    commits. HANDLE/STREAM payloads defer to the registered adapter. */
 bool cep_cell_stream_map(cepCell* cell, uint64_t offset, size_t size, unsigned access, cepStreamView* view) {
     assert(cell && view);
 
@@ -406,10 +406,10 @@ bool cep_cell_stream_map(cepCell* cell, uint64_t offset, size_t size, unsigned a
 }
 
 
-/* Finalise a mapped stream window. Commit writes by updating VALUE/DATA hashes
-   and timestamps; aborts restore the backed-up bytes. Library-backed maps are
-   handed back to the adapter. Journaling captures committed writes while
-   read-only maps remain side-effect free. */
+/** Finalise a mapped stream window. Commit writes by updating VALUE/DATA hashes
+    and timestamps; aborts restore the backed-up bytes. Library-backed maps are
+    handed back to the adapter. Journaling captures committed writes while
+    read-only maps remain side-effect free. */
 bool cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit) {
     assert(cell && view);
 

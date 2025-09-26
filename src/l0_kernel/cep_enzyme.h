@@ -110,70 +110,16 @@ typedef struct {
 typedef struct _cepEnzymeRegistry  cepEnzymeRegistry;
 
 
-/**
- * @brief Allocate a fresh enzyme registry.
- */
 cepEnzymeRegistry*  cep_enzyme_registry_create(void);
-
-/**
- * @brief Destroy a registry, freeing all owned resources.
- */
 void                cep_enzyme_registry_destroy(cepEnzymeRegistry* registry);
-
-/**
- * @brief Drop every registered descriptor and cached agenda state.
- */
 void                cep_enzyme_registry_reset(cepEnzymeRegistry* registry);
-
-/**
- * @brief Obtain the number of activation-ready descriptors stored in @p registry.
- */
 size_t              cep_enzyme_registry_size(const cepEnzymeRegistry* registry);
-
-/**
- * @brief Promote descriptors staged for activation into the live registry.
- */
 void                cep_enzyme_registry_activate_pending(cepEnzymeRegistry* registry);
-
-/**
- * @brief Register an enzyme descriptor under the provided query path.
- *
- * @param registry Registry that receives the descriptor.
- * @param query    Signal path used when matching impulses.
- * @param descriptor Detailed metadata describing the enzyme.
- * @return 0 on success; a negative errno-style value otherwise.
- */
 int                 cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor);
-
-/**
- * @brief Remove a descriptor previously registered for a query path.
- */
 int                 cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor);
-
-/**
- * @brief Produce an ordered execution list for the supplied impulse.
- *
- * @param registry Source registry.
- * @param impulse  Signal/target pair to match against.
- * @param ordered  Output array receiving pointers to descriptors.
- * @param capacity Maximum number of elements that can be written to @p ordered.
- * @return Number of descriptors produced (may exceed @p capacity, in which case the result is truncated).
- */
 size_t              cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* impulse, const cepEnzymeDescriptor** ordered, size_t capacity);
-
-/**
- * @brief Append a binding for @p name on @p cell, optionally inheriting to descendants.
- */
 int                 cep_cell_bind_enzyme(cepCell* cell, const cepDT* name, bool propagate);
-
-/**
- * @brief Tombstone a previously bound enzyme name on @p cell.
- */
 int                 cep_cell_unbind_enzyme(cepCell* cell, const cepDT* name);
-
-/**
- * @brief Retrieve the head of the binding list associated with @p cell.
- */
 const cepEnzymeBinding* cep_cell_enzyme_bindings(const cepCell* cell);
 
 
