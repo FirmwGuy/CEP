@@ -1,3 +1,9 @@
+/* Copyright (c) 2024–2025 Victor M. Barrientos (https://github.com/FirmwGuy/CEP) */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+
 /**
  * @file
  * @brief Interned string support backing CEP_NAMING_REFERENCE identifiers.

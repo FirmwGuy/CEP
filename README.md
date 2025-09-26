@@ -154,3 +154,6 @@ Let’s trace a single action—Alice pressing **Save**—through the layers:
 
 See [`docs/CEP.txt`](./docs/CEP.txt) for the full conceptual framework, glossary, and worked examples.
 
+## 📝 License
+
+CEP is licensed under the Mozilla Public License 2.0 (MPL‑2.0). See `NOTICE` and `docs/LICENSING.md`.

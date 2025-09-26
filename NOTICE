@@ -1,0 +1,12 @@
+CEP is licensed under the Mozilla Public License 2.0 (MPL-2.0).
+Copyright (c) 2024–2025 Victor M. Barrientos
+https://github.com/FirmwGuy/CEP
+
+Third-party components used for test builds only:
+- µnit Testing Framework (munit) — Copyright (c) 2013–2017 Evan Nemerson — MIT License.
+  Vendored in `src/test/munit.c` and `src/test/munit.h` for unit tests only.
+  See the license header in those files for the full MIT license text.
+
+Notes:
+- Test sources other than `munit.*` are dedicated to the public domain (CC0 1.0).
+- The installed library and headers do not contain munit; it is only compiled into test binaries.
