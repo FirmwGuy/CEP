@@ -29,8 +29,7 @@
 #define MUNIT_ENABLE_ASSERT_ALIASES
 #include "munit.h"
 
-
-typedef struct TestWatchdog TestWatchdog;
+#include "watchdog.h"
 
 enum {
     CEP_NAME_ENUMERATION = 100,
@@ -46,8 +45,6 @@ void        test_cell_tear_down(void* fixture);
 MunitResult test_traverse(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_traverse_setup(const MunitParameter params[], void* user_data);
 void        test_traverse_tear_down(void* fixture);
-
-void        test_watchdog_signal(TestWatchdog* wd);
 
 MunitResult test_dt_naming(const MunitParameter params[], void* user_data_or_fixture);
 

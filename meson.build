@@ -101,6 +101,7 @@ if get_option('tests').enabled()
   test_srcs = files(
     'src/test/munit.c',
     'src/test/test.c',
+    'src/test/watchdog.c',
     'src/test/l0_kernel/test_cell.c',
     'src/test/l0_kernel/test_traverse.c',
     'src/test/l0_kernel/test_dt_naming.c',
@@ -109,6 +110,11 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_stream.c',
     'src/test/l0_kernel/test_serialization.c',
     'src/test/l0_kernel/test_locking.c',
+    'src/test/l0_kernel/test_cells_randomized.c',
+    'src/test/l0_kernel/test_locking_randomized.c',
+    'src/test/l0_kernel/test_scheduler_randomized.c',
+    'src/test/l0_kernel/test_serialization_randomized.c',
+    'src/test/l0_kernel/test_streams_randomized.c',
   )
   test_dependencies = []
   if zip_dep.found()

@@ -28,162 +28,45 @@
 #include "test.h"
 #include "cep_cell.h"
 
-#include <stdio.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
-#include <limits.h>
-#include <stdatomic.h>
-#if defined(_WIN32)
-#  include <windows.h>
-#  include <process.h>
-#else
-#  include <pthread.h>
-#  include <unistd.h>
-#  include <time.h>
-#endif
 
 
 
-extern cepCell* tech_catalog_create_structure(cepID name, int32_t value);
+extern cepCell* tech_catalog_insert(cepCell* catalog, cepID name, int32_t value);
 extern int      tech_catalog_compare(const cepCell* key, const cepCell* cell, void* unused);
 
 
 #define TEST_TIMEOUT_SECONDS  20u
 
-static unsigned resolve_timeout_seconds(const MunitParameter params[], unsigned fallback);
 
-
-struct TestWatchdog {
-    atomic_bool done;
-    unsigned    timeoutSeconds;
-#if defined(_WIN32)
-    HANDLE      thread;
-#else
-    pthread_t   thread;
-#endif
-};
-
-
-#if defined(_WIN32)
-static unsigned __stdcall test_watchdog_thread(void* param) {
-    TestWatchdog* wd = param;
-    for (unsigned elapsed = 0; elapsed < wd->timeoutSeconds; elapsed++) {
-        Sleep(1000);
-        if (atomic_load_explicit(&wd->done, memory_order_acquire))
-            return 0;
-    }
-
-    fputs("test timed out after 60 seconds\n", stderr);
-    fflush(stderr);
-    _Exit(EXIT_FAILURE);
-}
-#else
-static void* test_watchdog_thread(void* param) {
-    TestWatchdog* wd = param;
-    for (unsigned elapsed = 0; elapsed < wd->timeoutSeconds; elapsed++) {
-        struct timespec ts = {1, 0};
-        nanosleep(&ts, NULL);
-        if (atomic_load_explicit(&wd->done, memory_order_acquire))
-            return NULL;
-    }
-
-    fputs("test timed out after 60 seconds\n", stderr);
-    fflush(stderr);
-    _Exit(EXIT_FAILURE);
-    return NULL;
-}
-#endif
-
-static void test_watchdog_start(TestWatchdog* wd, unsigned seconds) {
-    atomic_init(&wd->done, false);
-    wd->timeoutSeconds = seconds;
-#if defined(_WIN32)
-    uintptr_t handle = _beginthreadex(NULL, 0, test_watchdog_thread, wd, 0, NULL);
-    assert(handle);
-    wd->thread = (HANDLE)handle;
-#else
-    int rc = pthread_create(&wd->thread, NULL, test_watchdog_thread, wd);
-    assert(rc == 0);
-#endif
-}
-
-void test_watchdog_signal(TestWatchdog* wd) {
-    if (!wd)
-        return;
-    atomic_store_explicit(&wd->done, true, memory_order_release);
-}
-
-static void test_watchdog_stop(TestWatchdog* wd) {
-    if (!wd)
-        return;
-    test_watchdog_signal(wd);
-#if defined(_WIN32)
-    WaitForSingleObject(wd->thread, INFINITE);
-    CloseHandle(wd->thread);
-#else
-    pthread_join(wd->thread, NULL);
-#endif
-}
-
-static TestWatchdog* test_watchdog_create(unsigned seconds) {
-    TestWatchdog* wd = munit_malloc(sizeof *wd);
-    test_watchdog_start(wd, seconds);
-    return wd;
-}
-
-static void test_watchdog_destroy(TestWatchdog* wd) {
-    if (!wd)
-        return;
-    test_watchdog_stop(wd);
-    free(wd);
-}
-
+/* test_cell_setup arms a watchdog per test case so the randomized loops bail out if they overrun the agreed timeout. */
 void* test_cell_setup(const MunitParameter params[], void* user_data) {
     (void)user_data;
 
-    unsigned seconds = resolve_timeout_seconds(params, TEST_TIMEOUT_SECONDS);
-    if (!seconds)
-        seconds = TEST_TIMEOUT_SECONDS;
+    const unsigned seconds = test_watchdog_resolve_timeout(params, TEST_TIMEOUT_SECONDS);
     return test_watchdog_create(seconds);
 }
 
+/* test_cell_tear_down stops the watchdog fixture so background threads never leak between unit tests. */
 void test_cell_tear_down(void* fixture) {
     test_watchdog_destroy(fixture);
 }
 
+/* test_traverse_setup mirrors the cell setup and gives traversal cases their own watchdog to clamp long fuzz loops. */
 void* test_traverse_setup(const MunitParameter params[], void* user_data) {
     (void)user_data;
 
-    unsigned seconds = resolve_timeout_seconds(params, TEST_TIMEOUT_SECONDS);
-    if (!seconds)
-        seconds = TEST_TIMEOUT_SECONDS;
+    const unsigned seconds = test_watchdog_resolve_timeout(params, TEST_TIMEOUT_SECONDS);
     return test_watchdog_create(seconds);
 }
 
+/* test_traverse_tear_down releases the watchdog once traversal assertions finish so later suites start clean. */
 void test_traverse_tear_down(void* fixture) {
     test_watchdog_destroy(fixture);
 }
-
-
-static unsigned resolve_timeout_seconds(const MunitParameter params[], unsigned fallback) {
-    if (!params)
-        return fallback;
-
-    const char* value = munit_parameters_get(params, "timeout");
-    if (!value || !value[0])
-        return fallback;
-
-    char* endptr = NULL;
-    errno = 0;
-    unsigned long parsed = strtoul(value, &endptr, 10);
-    if (errno != 0 || endptr == value || (endptr && *endptr))
-        return fallback;
-    if (parsed == 0 || parsed > UINT_MAX)
-        return fallback;
-    return (unsigned)parsed;
-}
-
 
 #define RANDOM_TRAVERSE_ITEMS 16
 
@@ -1227,7 +1110,7 @@ static void random_catalog_dataset_init(RandomCatalogDataset* dataset, unsigned 
             continue;
 
         cepID name = (cepID)(CEP_NAME_TEMP + 3000 + (cepID)step);
-        cepCell* entry = cep_cell_add(dataset->container, 0, tech_catalog_create_structure(name, value));
+        cepCell* entry = tech_catalog_insert(dataset->container, name, value);
         assert_not_null(entry);
 
         names[used] = name;
@@ -1316,7 +1199,7 @@ static void test_cell_traverse_past_random_catalogs(RandomCatalogDataset* datase
 
         cepID tag = dataset->finalTags[i];
         int32_t value = dataset->finalValues[i];
-        cepCell* entry = cep_cell_add(cat, 0, tech_catalog_create_structure(tag, value));
+        cepCell* entry = tech_catalog_insert(cat, tag, value);
         assert_not_null(entry);
 
         cepCell* item = cep_cell_find_by_name(entry, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
@@ -1404,7 +1287,7 @@ static void test_cell_deep_traverse_past_random_catalogs(RandomCatalogDataset* d
 
         cepID tag = dataset->finalTags[i];
         int32_t value = dataset->finalValues[i];
-        cepCell* entry = cep_cell_add(cat, 0, tech_catalog_create_structure(tag, value));
+        cepCell* entry = tech_catalog_insert(cat, tag, value);
         assert_not_null(entry);
 
         cepCell* item = cep_cell_find_by_name(entry, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));

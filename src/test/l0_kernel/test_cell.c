@@ -76,15 +76,15 @@ static int hash_value_compare(const cepCell* first, const cepCell* second, void*
 }
 
 
+/* hash_index_add_value adds an entry via the value helper so the hash tests exercise the supported insertion surface. */
 static cepCell* hash_index_add_value(cepCell* table, cepID name, uint32_t value) {
-    cepCell child = {0};
-    cep_cell_initialize_value(&child,
-                              CEP_DTS(CEP_ACRO("CEP"), name),
-                              CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION),
-                              &value,
-                              sizeof value,
-                              sizeof value);
-    cepCell* inserted = cep_cell_add(table, 0, &child);
+    cepCell* inserted = cep_cell_add_value(table,
+                                           CEP_DTS(CEP_ACRO("CEP"), name),
+                                           0,
+                                           CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION),
+                                           &value,
+                                           sizeof value,
+                                           sizeof value);
     assert_not_null(inserted);
     return inserted;
 }
@@ -545,19 +545,49 @@ static void test_cell_tech_hash(unsigned storage, size_t capacity) {
 
 
 
+static cepCell* tech_catalog_prepare_key(cepCell* key, cepID name, int32_t value);
+
 /*
  * Catalog scenarios: ensure comparator-driven stores agree across
  * implementations, keeping sorted order, replacement symmetry, and key-based
  * lookups intact even as catalog entries shuffle.
  */
  
-cepCell* tech_catalog_create_structure(cepID name, int32_t value) {
-    static cepCell cell;
-    CEP_0(&cell);
-    cep_cell_initialize_dictionary(&cell, CEP_DTS(CEP_ACRO("CEP"), name), CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_ARRAY, 2);
-    cepCell* item = cep_cell_add_value(&cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), 0, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION), &value, sizeof(int32_t), sizeof(int32_t));
-    test_cell_value(item, value);
-    return &cell;
+/* tech_catalog_insert prepares a catalog entry with the helper macros and queues it through cep_cell_add so the tests lean on the public surface instead of manual struct wiring. */
+cepCell* tech_catalog_insert(cepCell* catalog, cepID name, int32_t value) {
+    munit_assert_not_null(catalog);
+
+    cepCell entry;
+    tech_catalog_prepare_key(&entry, name, value);
+
+    cepCell* inserted = cep_cell_add(catalog, 0, &entry);
+    munit_assert_not_null(inserted);
+
+    cepCell* item = cep_cell_find_by_name(inserted, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
+    munit_assert_not_null(item);
+    test_cell_value(item, (uint32_t)value);
+    return inserted;
+}
+
+/* tech_catalog_prepare_key initialises an in-memory catalog entry so lookups can reuse the comparator without altering live stores. */
+static cepCell* tech_catalog_prepare_key(cepCell* key, cepID name, int32_t value) {
+    CEP_0(key);
+    cep_cell_initialize_dictionary(key,
+                                   CEP_DTS(CEP_ACRO("CEP"), name),
+                                   CEP_DTAW("CEP", "dictionary"),
+                                   CEP_STORAGE_ARRAY,
+                                   2);
+
+    cepCell* item = cep_cell_add_value(key,
+                                       CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION),
+                                       0,
+                                       CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION),
+                                       &value,
+                                       sizeof value,
+                                       sizeof value);
+    munit_assert_not_null(item);
+    test_cell_value(item, (uint32_t)value);
+    return item;
 }
 
 int tech_catalog_compare(const cepCell* key, const cepCell* cell, void* unused) {
@@ -583,7 +613,7 @@ static void test_cell_tech_catalog(unsigned storage) {
     // Isert, lookups and delete
     test_cell_zero_item_ops(cat);
     int32_t value = 1;
-    cepCell* cell = cep_cell_add(cat, 0, tech_catalog_create_structure(CEP_NAME_TEMP, value));
+    cepCell* cell = tech_catalog_insert(cat, CEP_NAME_TEMP, value);
     cepCell* item = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
     test_cell_nested_one_item_ops(cat, CEP_NAME_TEMP, item);
     cep_cell_delete_hard(cell);
@@ -623,7 +653,7 @@ static void test_cell_tech_catalog(unsigned storage) {
         if (value < vmin)   vmin = value;
         if (value > vmax)   vmax = value;
 
-        cell = cep_cell_add(cat, 0, tech_catalog_create_structure(name, value));
+        cell = tech_catalog_insert(cat, name, value);
         item   = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
         test_cell_value(item, value);
 
@@ -792,8 +822,8 @@ static void test_cell_tech_sequencing_catalog(void) {
     cepCell* catT = cep_cell_add_catalog(cep_root(), CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP+3), 0, CEP_DTAW("CEP", "catalog"), CEP_STORAGE_RED_BLACK_T, tech_catalog_compare);
 
     cepCell* foundL, *foundA, *foundT;
-    cepCell  key = *tech_catalog_create_structure(CEP_NAME_TEMP, 0);
-    cepCell* item = cep_cell_find_by_name(&key, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
+    cepCell  key;
+    cepCell* item = tech_catalog_prepare_key(&key, CEP_NAME_TEMP, 0);
 
     for (unsigned n = 0; n < maxItems;  n++) {
         int32_t value = 1 + (munit_rand_uint32() % (maxItems>>1));
@@ -820,9 +850,9 @@ static void test_cell_tech_sequencing_catalog(void) {
             }
         }
 
-        cep_cell_add(catL, 0, tech_catalog_create_structure(name, value));
-        cep_cell_add(catA, 0, tech_catalog_create_structure(name, value));
-        cep_cell_add(catT, 0, tech_catalog_create_structure(name, value));
+        tech_catalog_insert(catL, name, value);
+        tech_catalog_insert(catA, name, value);
+        tech_catalog_insert(catT, name, value);
 
         cepCell* bookL = cep_cell_first(catL);
         cepCell* bookA = cep_cell_first(catA);
@@ -882,7 +912,6 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
     test_cell_tech_sequencing_catalog();
 
     test_cell_links_shadowing();
-
 
     if (watchdog)
         test_watchdog_signal(watchdog);
