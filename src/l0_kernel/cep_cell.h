@@ -127,11 +127,11 @@ typedef uint64_t  cepID;
  */
 typedef struct {
     struct {
-        cepID           _sysbits1:  6,  // Used by other parts of CEP system.
+        cepID           _sysbits1:  6,  /**< Used by other parts of CEP system. */
                         domain:     CEP_NAME_BITS;
     };
     struct {
-        cepID           _sysbits2:  6,  // Used by other parts of CEP system.
+        cepID           _sysbits2:  6,  /**< Used by other parts of CEP system. */
                         tag:        CEP_NAME_BITS;
     };
 } cepDT;
@@ -167,10 +167,10 @@ typedef struct {
     
     struct {
       struct {
-        cepID   type:       2,    // Type of cell (dictionary, link, etc).
-                hidden:     1,    // Cell won't appear on listings (it can only be accessed directly).
-                shadowing:  2,    // If cell has shadowing cells (links pointing to it).
-                targetDead: 1,    // Set (1) if this cell is a link and the target died.
+        cepID   type:       2,    /**< Type of cell (dictionary, link, etc). */
+                hidden:     1,    /**< Cell won't appear on listings (it can only be accessed directly). */
+                shadowing:  2,    /**< If cell has shadowing cells (links pointing to it). */
+                targetDead: 1,    /**< Set (1) if this cell is a link and the target died. */
 
                 domain:     CEP_NAME_BITS;
       };
@@ -189,10 +189,10 @@ static_assert(sizeof(cepMetacell) == sizeof(cepDT), "System bits can't exceed 2 
  * @brief Runtime types a cell instance can assume.
  */
 enum _cepCellType {
-    CEP_TYPE_VOID,              // A void (uninitialized) cell.
-    CEP_TYPE_NORMAL,            // Regular cell.
-    CEP_TYPE_PROXY,             // Virtual cell whose payload is mediated through proxy callbacks.
-    CEP_TYPE_LINK,              // Link to another cell.
+    CEP_TYPE_VOID,              /**< A void (uninitialized) cell. */
+    CEP_TYPE_NORMAL,            /**< Regular cell. */
+    CEP_TYPE_PROXY,             /**< Virtual cell whose payload is mediated through proxy callbacks. */
+    CEP_TYPE_LINK,              /**< Link to another cell. */
     //
     CEP_TYPE_COUNT
 };
@@ -201,19 +201,19 @@ enum _cepCellType {
  * @brief State of the backlink list that records link shadows.
  */
 enum _cepCellShadowing {
-    CEP_SHADOW_NONE,            // No shadow cells.
-    CEP_SHADOW_SINGLE,          // Single shadow cell.
-    CEP_SHADOW_MULTIPLE,        // Multiple shadows.
+    CEP_SHADOW_NONE,            /**< No shadow cells. */
+    CEP_SHADOW_SINGLE,          /**< Single shadow cell. */
+    CEP_SHADOW_MULTIPLE,        /**< Multiple shadows. */
 };
 
 /**
  * @brief Encodings supported by the Domain-Tag naming system.
  */
 enum _cepCellNaming {
-    CEP_NAMING_WORD,            // Lowercase text value, 11 chars max (it must be the first in this enum!).
-    CEP_NAMING_ACRONYM,         // Uppercase/numeric text, 9 characters maximum.
-    CEP_NAMING_REFERENCE,       // Numerical reference to text cell (a pointer in 32bit systems).
-    CEP_NAMING_NUMERIC,         // Per-parent numerical ID.
+    CEP_NAMING_WORD,            /**< Lowercase text value, 11 chars max (it must be the first in this enum!). */
+    CEP_NAMING_ACRONYM,         /**< Uppercase/numeric text, 9 characters maximum. */
+    CEP_NAMING_REFERENCE,       /**< Numerical reference to text cell (a pointer in 32bit systems). */
+    CEP_NAMING_NUMERIC,         /**< Per-parent numerical ID. */
 
     CEP_NAMING_COUNT
 };
@@ -398,28 +398,28 @@ struct _cepEnzymeBinding {
 
 typedef struct _cepDataNode  cepDataNode;
 struct _cepDataNode {
-    cepOpCount          modified;       // CEP heartbeat in which data was modified (including creation/deletion). 
-    cepDataNode*        past;           // Pointer to past data content history.
+    cepOpCount          modified;       /**< CEP heartbeat in which data was modified (including creation/deletion). */
+    cepDataNode*        past;           /**< Pointer to past data content history. */
     
-    cepEnzymeBinding*   bindings;       // List of enzyme bindings.
+    cepEnzymeBinding*   bindings;       /**< List of enzyme bindings. */
     
-    size_t              size;           // Data size in bytes.
-    size_t              capacity;       // Buffer capacity in bytes.
-    uint64_t            hash;           // Hash value of content.
+    size_t              size;           /**< Data size in bytes. */
+    size_t              capacity;       /**< Buffer capacity in bytes. */
+    uint64_t            hash;           /**< Hash value of content. */
 
     union {
         struct {
-            void*       data;           // Points to container of data value.
-            cepDel      destructor;     // Data container destruction function.
+            void*       data;           /**< Points to container of data value. */
+            cepDel      destructor;     /**< Data container destruction function. */
         };
         struct {
           union {
-            cepCell*    handle;         // Resource cell id (used with external libraries).
-            cepCell*    stream;         // Data window to streamed content.
+            cepCell*    handle;         /**< Resource cell id (used with external libraries). */
+            cepCell*    stream;         /**< Data window to streamed content. */
           };
-          cepCell*      library;        // Library where the resource is located.
+          cepCell*      library;        /**< Library where the resource is located. */
         };
-        uint8_t         value[2 * sizeof(void*)];  // Data value may start from here.
+        uint8_t         value[2 * sizeof(void*)];  /**< Data value may start from here. */
     };
 };
 
@@ -429,14 +429,14 @@ struct _cepData {
       
       struct {
         struct {
-          cepID         datatype:   2,  // Type of data (see _cepDataType).
+          cepID         datatype:   2,  /**< Type of data (see _cepDataType). */
                         _unused:    4, 
 
                         domain:     CEP_NAME_BITS;
         };
         struct {
-          cepID         writable:   1,  // If data can be updated.
-                        lock:       1,  // Lock on data content.
+          cepID         writable:   1,  /**< If data can be updated. */
+                        lock:       1,  /**< Lock on data content. */
                         _reserved:  4,
                         
                         tag:        CEP_NAME_BITS;
@@ -444,18 +444,18 @@ struct _cepData {
       };
     };
     
-    cepOpCount          created;        // Data content creation time.
-    cepOpCount          deleted;        // Data content deletion time (if any).
+    cepOpCount          created;        /**< Data content creation time. */
+    cepOpCount          deleted;        /**< Data content deletion time (if any). */
 
     cepDataNode;
-    cepCell*            lockOwner;      // Cell that currently holds the payload lock (if any).
+    cepCell*            lockOwner;      /**< Cell that currently holds the payload lock (if any). */
 };
 
 enum _cepDataType {
-    CEP_DATATYPE_VALUE,         // Data starts at "value" field of cepData.
-    CEP_DATATYPE_DATA,          // Data is in address pointed by "data" field.
-    CEP_DATATYPE_HANDLE,        // Data is just a handle to an opaque (library internal) resource.
-    CEP_DATATYPE_STREAM,        // Data is a window to a larger (library internal) stream.
+    CEP_DATATYPE_VALUE,         /**< Data starts at "value" field of cepData. */
+    CEP_DATATYPE_DATA,          /**< Data is in address pointed by "data" field. */
+    CEP_DATATYPE_HANDLE,        /**< Data is just a handle to an opaque (library internal) resource. */
+    CEP_DATATYPE_STREAM,        /**< Data is a window to a larger (library internal) stream. */
     //
     CEP_DATATYPE_COUNT
 };
@@ -545,11 +545,11 @@ static inline uint64_t cep_data_compute_hash(const cepData* data) {
 }
 
 typedef struct {
-    void*       address;        // Backing memory exposed to the caller.
-    size_t      length;         // Span length mapped into the caller's address space.
-    uint64_t    offset;         // Stream offset associated with the view.
-    unsigned    access;         // Access flags requested for the view.
-    void*       token;          // Library or kernel specific handle to release resources.
+    void*       address;        /**< Backing memory exposed to the caller. */
+    size_t      length;         /**< Span length mapped into the caller's address space. */
+    uint64_t    offset;         /**< Stream offset associated with the view. */
+    unsigned    access;         /**< Access flags requested for the view. */
+    void*       token;          /**< Library or kernel specific handle to release resources. */
 } cepStreamView;
 
 enum {
@@ -558,15 +558,15 @@ enum {
 };
 
 typedef struct {
-    const void* payload;        // Snapshot payload bytes (may point to an external buffer).
-    size_t      size;           // Size of the payload bytes.
-    uint32_t    flags;          // Snapshot flags describing the payload semantics.
-    void*       ticket;         // Opaque handle passed back to the proxy when releasing the snapshot.
+    const void* payload;        /**< Snapshot payload bytes (may point to an external buffer). */
+    size_t      size;           /**< Size of the payload bytes. */
+    uint32_t    flags;          /**< Snapshot flags describing the payload semantics. */
+    void*       ticket;         /**< Opaque handle passed back to the proxy when releasing the snapshot. */
 } cepProxySnapshot;
 
 enum {
-    CEP_PROXY_SNAPSHOT_INLINE   = 1u << 0,   // Payload is in-memory and owned by the proxy module.
-    CEP_PROXY_SNAPSHOT_EXTERNAL = 1u << 1,   // Payload references external state that must be refetched.
+    CEP_PROXY_SNAPSHOT_INLINE   = 1u << 0,   /**< Payload is in-memory and owned by the proxy module. */
+    CEP_PROXY_SNAPSHOT_EXTERNAL = 1u << 1,   /**< Payload references external state that must be refetched. */
 };
 
 typedef struct cepLibraryBinding cepLibraryBinding;
@@ -586,8 +586,8 @@ typedef struct {
 } cepLibraryOps;
 
 struct cepLibraryBinding {
-    const cepLibraryOps* ops;   // Adapter vtable registered by the foreign library.
-    void*                ctx;   // Library defined context passed back on every invocation.
+    const cepLibraryOps* ops;   /**< Adapter vtable registered by the foreign library. */
+    void*                ctx;   /**< Library defined context passed back on every invocation. */
 };
 
 
@@ -636,9 +636,9 @@ void  cep_proxy_initialize_stream(cepCell* cell, cepDT* name, cepCell* stream, c
 */
 
 typedef struct {
-    unsigned        count;      // Number of cell pointers.
-    unsigned        capacity;   // Capacity of array.
-    cepCell*        cell[];     // Array of cells shadowing this one.
+    unsigned        count;      /**< Number of cell pointers. */
+    unsigned        capacity;   /**< Capacity of array. */
+    cepCell*        cell[];     /**< Array of cells shadowing this one. */
 } cepShadow;
 
 typedef struct {
@@ -655,20 +655,20 @@ typedef struct _cepStoreNode  cepStoreNode;
 
 struct _cepStoreNode {
     union {
-        cepCell*        linked;     // A linked shadow cell (when children, see in cepCell otherwise).
-        cepShadow*      shadow;     // Shadow structure (if cell has children).
+        cepCell*        linked;     /**< A linked shadow cell (when children, see in cepCell otherwise). */
+        cepShadow*      shadow;     /**< Shadow structure (if cell has children). */
     };
 
-    cepOpCount          modified;   // CEP heartbeat in which store was modified (including creation/deletion). 
+    cepOpCount          modified;   /**< CEP heartbeat in which store was modified (including creation/deletion). */
     
-    cepStoreNode*       past;       // Points to the previous store index in history (only used if catalog is re-sorted/indexed with different sorting function).
+    cepStoreNode*       past;       /**< Points to the previous store index in history (only used if catalog is re-sorted/indexed with different sorting function). */
 
-    cepEnzymeBinding*   bindings; // List of enzyme bindings.
+    cepEnzymeBinding*   bindings; /**< List of enzyme bindings. */
 
-    size_t              chdCount;   // Number of child cells.
-    size_t              totCount;   // Number of all cells included dead ones.
-    cepCompare          compare;    // Compare function for indexing children.
-    cepCell*            lockOwner;  // Cell that currently holds the structural lock (if any).
+    size_t              chdCount;   /**< Number of child cells. */
+    size_t              totCount;   /**< Number of all cells included dead ones. */
+    cepCompare          compare;    /**< Compare function for indexing children. */
+    cepCell*            lockOwner;  /**< Cell that currently holds the structural lock (if any). */
 
     // The specific storage structure will follow after this...
 };
@@ -679,15 +679,15 @@ struct _cepStore {
       
       struct {
         struct {
-        cepID       storage:    3,              // Data structure for children storage (array, linked-list, etc).
-                    indexing:   2,              // Indexing (sorting) criteria for children.
+        cepID       storage:    3,              /**< Data structure for children storage (array, linked-list, etc). */
+                    indexing:   2,              /**< Indexing (sorting) criteria for children. */
                     _unused:    1,
 
                     domain:     CEP_NAME_BITS;
         };
         struct {
-        cepID       writable:   1,              // If chidren can be added/deleted.
-                    lock:       1,              // Lock on children operations.
+        cepID       writable:   1,              /**< If chidren can be added/deleted. */
+                    lock:       1,              /**< Lock on children operations. */
                     _reserved:  4,
 
                     tag:        CEP_NAME_BITS;
@@ -695,32 +695,32 @@ struct _cepStore {
       };
     };
 
-    cepCell*        owner;      // Cell owning this child storage.
+    cepCell*        owner;      /**< Cell owning this child storage. */
 
-    cepOpCount      created;    // CEP heartbeat in which store was created. 
-    cepOpCount      deleted;    // CEP heartbeat in which store was deleted (if any). 
+    cepOpCount      created;    /**< CEP heartbeat in which store was created. */
+    cepOpCount      deleted;    /**< CEP heartbeat in which store was deleted (if any). */
 
-    cepID           autoid;     // Auto-increment ID for inserting new child cells.
+    cepID           autoid;     /**< Auto-increment ID for inserting new child cells. */
 
     cepStoreNode;
 };
 
 enum _cepCellStorage {
-    CEP_STORAGE_LINKED_LIST,    // Children stored in a doubly linked list.
-    CEP_STORAGE_ARRAY,          // Children stored in an array.
-    CEP_STORAGE_PACKED_QUEUE,   // Children stored in a packed queue.
-    CEP_STORAGE_RED_BLACK_T,    // Children stored in a red-black tree.
-    CEP_STORAGE_HASH_TABLE,     // Children stored in a hash table with ordered buckets.
-    CEP_STORAGE_OCTREE,         // Children stored in an octree spatial index.
+    CEP_STORAGE_LINKED_LIST,    /**< Children stored in a doubly linked list. */
+    CEP_STORAGE_ARRAY,          /**< Children stored in an array. */
+    CEP_STORAGE_PACKED_QUEUE,   /**< Children stored in a packed queue. */
+    CEP_STORAGE_RED_BLACK_T,    /**< Children stored in a red-black tree. */
+    CEP_STORAGE_HASH_TABLE,     /**< Children stored in a hash table with ordered buckets. */
+    CEP_STORAGE_OCTREE,         /**< Children stored in an octree spatial index. */
     //
     CEP_STORAGE_COUNT
 };
 
 enum _cepCellIndexing {
-    CEP_INDEX_BY_INSERTION,      // Children indexed by their insertion order (the default).
-    CEP_INDEX_BY_NAME,           // Children indexed by their unique name (a dicionary).
-    CEP_INDEX_BY_FUNCTION,       // Children indexed by a custom comparation function.
-    CEP_INDEX_BY_HASH,           // Children indexed by data hash value (first) and then by a comparation function (second).
+    CEP_INDEX_BY_INSERTION,      /**< Children indexed by their insertion order (the default). */
+    CEP_INDEX_BY_NAME,           /**< Children indexed by their unique name (a dicionary). */
+    CEP_INDEX_BY_FUNCTION,       /**< Children indexed by a custom comparation function. */
+    CEP_INDEX_BY_HASH,           /**< Children indexed by data hash value (first) and then by a comparation function (second). */
     //
     CEP_INDEX_COUNT
 };
@@ -746,8 +746,8 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child);
 */
 
 typedef struct {
-    cepDT           dt;         // Path segment identifier.
-    cepOpCount      timestamp;  // Snapshot timestamp for this segment (0 means latest).
+    cepDT           dt;         /**< Path segment identifier. */
+    cepOpCount      timestamp;  /**< Snapshot timestamp for this segment (0 means latest). */
 } cepPast;
 
 typedef struct {
@@ -758,28 +758,28 @@ typedef struct {
 
 
 struct _cepCell {
-    cepMetacell     metacell;   // Meta about this cell entry (including name (DT), system bits, etc).
-    cepStore*       parent;     // Parent structure (list, array, etc) where this cell is stored in.
+    cepMetacell     metacell;   /**< Meta about this cell entry (including name (DT), system bits, etc). */
+    cepStore*       parent;     /**< Parent structure (list, array, etc) where this cell is stored in. */
 
     union {
-        cepData*    data;       // Address of cepData structure.
+        cepData*    data;       /**< Address of cepData structure. */
 
-        cepCell*    link;       // Link to another cell.
+        cepCell*    link;       /**< Link to another cell. */
 
-        cepProxy*   proxy;      // Proxy definition mediating externalised payloads.
+        cepProxy*   proxy;      /**< Proxy definition mediating externalised payloads. */
     };
 
     union {
-        cepStore*   store;      // Address of cepStore structure.
+        cepStore*   store;      /**< Address of cepStore structure. */
 
-        cepCell*    linked;     // A linked shadow cell (if no children, see in cepStore otherwise).
-        cepShadow*  shadow;     // Structure for multiple linked cells (if no children).
+        cepCell*    linked;     /**< A linked shadow cell (if no children, see in cepStore otherwise). */
+        cepShadow*  shadow;     /**< Structure for multiple linked cells (if no children). */
 
         //cepCell*  instance;   // Agent instance this cell belongs to (if cell is a Link).
     };
 
-    cepOpCount      created;    // Timestamp when this cell became visible.
-    cepOpCount      deleted;    // Timestamp when this cell was soft-deleted (0 = alive).
+    cepOpCount      created;    /**< Timestamp when this cell became visible. */
+    cepOpCount      deleted;    /**< Timestamp when this cell was soft-deleted (0 = alive). */
 };
 
 

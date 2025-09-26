@@ -7,17 +7,17 @@
 typedef struct _cepListNode     cepListNode;
 
 struct _cepListNode {
-    cepListNode*  next;         // Next node.
-    cepListNode*  prev;         // Previous node.
+    cepListNode*  next;         /**< Next node. */
+    cepListNode*  prev;         /**< Previous node. */
     //
-    cepCell       cell;         // Child cell.
+    cepCell       cell;         /**< Child cell. */
 };
 
 typedef struct {
-    cepStore      store;        // Parent info.
+    cepStore      store;        /**< Parent info. */
     //
-    cepListNode*  head;         // Head of the doubly linked list
-    cepListNode*  tail;         // Tail of the doubly linked list for quick append
+    cepListNode*  head;         /**< Head of the doubly linked list */
+    cepListNode*  tail;         /**< Tail of the doubly linked list for quick append */
 } cepList;
 
 

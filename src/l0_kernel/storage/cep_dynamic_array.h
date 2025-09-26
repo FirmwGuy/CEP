@@ -5,11 +5,11 @@
 
 
 typedef struct {
-    cepStore    store;          // Parent info.
+    cepStore    store;          /**< Parent info. */
     //
-    size_t      capacity;       // Total capacity of the array to manage allocations
+    size_t      capacity;       /**< Total capacity of the array to manage allocations */
     //
-    cepCell*    cell;           // Children Cell
+    cepCell*    cell;           /**< Children Cell */
 } cepArray;
 
 

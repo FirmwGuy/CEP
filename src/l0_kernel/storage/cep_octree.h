@@ -10,26 +10,26 @@ typedef struct _cepOctreeList   cepOctreeList;
 typedef struct _cepOctreeNode   cepOctreeNode;
 
 struct _cepOctreeList {
-    cepOctreeList*  next;           // Next child in current sector.
-    cepOctreeList*  prev;           // Previous child in current sector.
-    cepOctreeNode*  onode;          // Node owning this list.
+    cepOctreeList*  next;           /**< Next child in current sector. */
+    cepOctreeList*  prev;           /**< Previous child in current sector. */
+    cepOctreeNode*  onode;          /**< Node owning this list. */
     //cepOctreeList*  self;           // Next self in other sectors.
     //
-    cepCell         cell;           // Child cell.
+    cepCell         cell;           /**< Child cell. */
 };
 
 typedef struct {
-    float           subwide;        // Half the width/height/depth of the bounding space.
-    float           center[3];      // Center of the bounding space (XYZ coords).
+    float           subwide;        /**< Half the width/height/depth of the bounding space. */
+    float           center[3];      /**< Center of the bounding space (XYZ coords). */
 } cepOctreeBound;
 
 struct _cepOctreeNode {
-    cepOctreeNode*  children[8];    // Pointers to child nodes.
-    cepOctreeNode*  parent;         // Parent node.
-    cepOctreeList*  list;           // List of cells in this node.
-    cepOctreeBound  bound;          // Bounding space covered by this node.
-    unsigned        index;          // Child index of this node in parent.
-    unsigned        count;          // Number of cells stored directly in this node.
+    cepOctreeNode*  children[8];    /**< Pointers to child nodes. */
+    cepOctreeNode*  parent;         /**< Parent node. */
+    cepOctreeList*  list;           /**< List of cells in this node. */
+    cepOctreeBound  bound;          /**< Bounding space covered by this node. */
+    unsigned        index;          /**< Child index of this node in parent. */
+    unsigned        count;          /**< Number of cells stored directly in this node. */
 };
 
 enum {
@@ -40,13 +40,13 @@ enum {
 #define CEP_OCTREE_MIN_SUBWIDE_DEFAULT   (1e-5f)
 
 typedef struct {
-    cepStore        store;          // Storage info.
+    cepStore        store;          /**< Storage info. */
     //
-    cepOctreeNode   root;           // The root node.
-    unsigned        depth;          // Maximum tree depth (ever used).
-    unsigned        maxDepth;       // Policy: deepest subdivision allowed.
-    unsigned        maxPerNode;     // Policy: split nodes after this many cells.
-    float           minSubwide;     // Policy: stop subdividing when subwide below this.
+    cepOctreeNode   root;           /**< The root node. */
+    unsigned        depth;          /**< Maximum tree depth (ever used). */
+    unsigned        maxDepth;       /**< Policy: deepest subdivision allowed. */
+    unsigned        maxPerNode;     /**< Policy: split nodes after this many cells. */
+    float           minSubwide;     /**< Policy: stop subdividing when subwide below this. */
 } cepOctree;
 
 

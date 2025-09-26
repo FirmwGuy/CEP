@@ -7,20 +7,20 @@
 typedef struct _cepHashNode    cepHashNode;
 
 struct _cepHashNode {
-    cepHashNode*        bucketNext;     // Next node in the bucket chain.
-    cepHashNode*        orderNext;      // Next node in the global ordering list.
-    cepHashNode*        orderPrev;      // Previous node in the global ordering list.
-    uint64_t            hash;           // Cached hash for quick bucket dispatch.
-    cepCell             cell;           // Stored cell payload.
+    cepHashNode*        bucketNext;     /**< Next node in the bucket chain. */
+    cepHashNode*        orderNext;      /**< Next node in the global ordering list. */
+    cepHashNode*        orderPrev;      /**< Previous node in the global ordering list. */
+    uint64_t            hash;           /**< Cached hash for quick bucket dispatch. */
+    cepCell             cell;           /**< Stored cell payload. */
 };
 
 typedef struct {
-    cepStore            store;          // Parent info header – keeps metadata shared with cepStore.
-    cepHashNode**       buckets;        // Bucket table used for hash lookups.
-    size_t              bucketCount;    // Number of buckets – always a power of two.
-    size_t              bucketMask;     // bucketCount - 1, used to map hashes into buckets.
-    cepHashNode*        head;           // First node in sorted iteration order.
-    cepHashNode*        tail;           // Last node in sorted iteration order.
+    cepStore            store;          /**< Parent info header – keeps metadata shared with cepStore. */
+    cepHashNode**       buckets;        /**< Bucket table used for hash lookups. */
+    size_t              bucketCount;    /**< Number of buckets – always a power of two. */
+    size_t              bucketMask;     /**< bucketCount - 1, used to map hashes into buckets. */
+    cepHashNode*        head;           /**< First node in sorted iteration order. */
+    cepHashNode*        tail;           /**< Last node in sorted iteration order. */
 } cepHashTable;
 
 

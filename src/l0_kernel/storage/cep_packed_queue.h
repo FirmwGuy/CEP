@@ -24,22 +24,22 @@
 typedef struct _cepPackedQNode  cepPackedQNode;
 
 struct _cepPackedQNode {
-    cepPackedQNode* next;       // Pointer to the next node in the list.
-    cepPackedQNode* prev;       // Previous node.
-    cepCell*        first;      // Current first live cell.
-    cepCell*        last;       // Current last live cell.
-    size_t          count;      // Number of live cells in this node.
-    cepPackedQNode* recycleNext;// Next node in the recycle list when not active.
-    cepCell         cell[];     // Fixed-size buffer for this node.
+    cepPackedQNode* next;       /**< Pointer to the next node in the list. */
+    cepPackedQNode* prev;       /**< Previous node. */
+    cepCell*        first;      /**< Current first live cell. */
+    cepCell*        last;       /**< Current last live cell. */
+    size_t          count;      /**< Number of live cells in this node. */
+    cepPackedQNode* recycleNext;/**< Next node in the recycle list when not active. */
+    cepCell         cell[];     /**< Fixed-size buffer for this node. */
 };
 
 typedef struct {
-    cepStore        store;      // Parent info.
-    size_t          nodeSize;   // Node storage size in bytes.
-    size_t          nodeCapacity; // Number of cells per node.
-    cepPackedQNode* head;       // Head of the buffer list.
-    cepPackedQNode* tail;       // Tail of the buffer list.
-    cepPackedQNode* freeNodes;  // Recycled nodes ready for reuse.
+    cepStore        store;      /**< Parent info. */
+    size_t          nodeSize;   /**< Node storage size in bytes. */
+    size_t          nodeCapacity; /**< Number of cells per node. */
+    cepPackedQNode* head;       /**< Head of the buffer list. */
+    cepPackedQNode* tail;       /**< Tail of the buffer list. */
+    cepPackedQNode* freeNodes;  /**< Recycled nodes ready for reuse. */
 } cepPackedQ;
 
 

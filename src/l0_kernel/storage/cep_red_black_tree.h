@@ -7,18 +7,18 @@
 typedef struct _cepRbTreeNode   cepRbTreeNode;
 
 struct _cepRbTreeNode {
-    cepRbTreeNode*  left;         // Left node.
-    cepRbTreeNode*  right;        // Right node.
-    cepRbTreeNode*  tParent;      // Parent node.
-    bool            isRed;        // True if node is red.
+    cepRbTreeNode*  left;         /**< Left node. */
+    cepRbTreeNode*  right;        /**< Right node. */
+    cepRbTreeNode*  tParent;      /**< Parent node. */
+    bool            isRed;        /**< True if node is red. */
     //
-    cepCell         cell;         // Child cell.
+    cepCell         cell;         /**< Child cell. */
 };
 
 typedef struct {
-    cepStore        store;        // Parent info.
+    cepStore        store;        /**< Parent info. */
     //
-    cepRbTreeNode*  root;         // The root node.
+    cepRbTreeNode*  root;         /**< The root node. */
     //cepRbTreeNode*  maximum;      // Node holding the maximum data.
     //cepRbTreeNode*  minimum;      // Node holding the minimum data.
 } cepRbTree;
