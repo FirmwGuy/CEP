@@ -231,7 +231,7 @@ enum _cepCellNaming {
 #define cep_id_is_numeric(name)         ((CEP_NAMING_MASK & (name)) == cep_id_from_naming(CEP_NAMING_NUMERIC))
 
 #define cep_id_valid(id)                (cep_id(id) && ((id) <= CEP_AUTOID))
-#define cep_id_text_valid(name)         (cep_id(name) && !cep_id_is_numeric(name))
+#define cep_id_text_valid(name)         (cep_id(name) && (cep_id_is_word(name) || cep_id_is_acronym(name) || cep_id_is_reference(name)))
 #define cep_id_naming(name)             (((name) >> CEP_AUTOID_BITS) & 3)
 
 #define cep_dt_valid(dt)                ((dt) && cep_id_text_valid((dt)->domain) && cep_id_valid((dt)->tag))

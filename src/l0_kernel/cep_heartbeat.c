@@ -25,6 +25,7 @@
 
 #include "cep_heartbeat.h"
 #include "cep_heartbeat_internal.h"
+#include "cep_namepool.h"
 #include "stream/cep_stream_internal.h"
 
 #include <string.h>
@@ -121,7 +122,22 @@ static bool cep_heartbeat_id_to_string(cepID id, char* buffer, size_t capacity, 
 
     size_t len = 0u;
 
-    if (cep_id_is_word(id)) {
+    if (cep_id_is_reference(id)) {
+        size_t ref_len = 0u;
+        const char* text = cep_namepool_lookup(id, &ref_len);
+        if (!text) {
+            return false;
+        }
+        if (ref_len + 1u > capacity) {
+            return false;
+        }
+        memcpy(buffer, text, ref_len);
+        buffer[ref_len] = '\0';
+        if (out_len) {
+            *out_len = ref_len;
+        }
+        return true;
+    } else if (cep_id_is_word(id)) {
         len = cep_word_to_text(id, buffer);
     } else if (cep_id_is_acronym(id)) {
         len = cep_acronym_to_text(id, buffer);

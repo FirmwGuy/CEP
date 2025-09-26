@@ -62,6 +62,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_heartbeat_queue.c',
   'src/l0_kernel/cep_enzyme.c',
   'src/l0_kernel/cep_heartbeat.c',
+  'src/l0_kernel/cep_namepool.c',
   'src/l0_kernel/cep_serialization.c',
 )
 
