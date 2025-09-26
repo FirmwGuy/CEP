@@ -103,6 +103,9 @@ static inline cepCell* store_find_child_by_position(const cepStore* store, size_
 static inline cepCell* store_first_child(const cepStore* store);
 static inline cepCell* store_last_child(const cepStore* store);
 static inline cepCell* store_next_child(const cepStore* store, cepCell* child);
+static inline cepCell* store_first_child_internal(const cepStore* store);
+static inline cepCell* store_next_child_internal(const cepStore* store, cepCell* child);
+static inline bool store_traverse_internal(cepStore* store, cepTraverse func, void* context, cepEntry* entry);
 
 static void cep_enzyme_binding_list_destroy(cepEnzymeBinding* bindings) {
     while (bindings) {
@@ -2152,6 +2155,25 @@ static inline bool store_traverse(cepStore* store, cepTraverse func, void* conte
 }
 
 
+static inline bool store_traverse_internal(cepStore* store, cepTraverse func, void* context, cepEntry* entry) {
+    assert(cep_store_valid(store) && func);
+
+    if (store->chdCount <= 1)
+        return store_traverse(store, func, context, entry);
+
+    switch (store->storage) {
+      case CEP_STORAGE_RED_BLACK_T:
+        return rb_tree_traverse_internal((cepRbTree*) store, func, context, entry);
+
+      case CEP_STORAGE_HASH_TABLE:
+        return hash_table_traverse_internal((cepHashTable*) store, func, context, entry);
+
+      default:
+        return store_traverse(store, func, context, entry);
+    }
+}
+
+
 
 
 typedef struct {
@@ -3296,6 +3318,43 @@ cepCell* cep_cell_find_by_key(const cepCell* cell, cepCell* key, cepCompare comp
 }
 
 
+static inline cepCell* store_first_child_internal(const cepStore* store) {
+    assert(cep_store_valid(store));
+
+    if (!store->chdCount)
+        return NULL;
+
+    switch (store->storage) {
+      case CEP_STORAGE_RED_BLACK_T:
+        return rb_tree_internal_first((cepRbTree*) store);
+
+      case CEP_STORAGE_HASH_TABLE:
+        return hash_table_internal_first((cepHashTable*) store);
+
+      default:
+        return store_first_child(store);
+    }
+}
+
+
+static inline cepCell* store_next_child_internal(const cepStore* store, cepCell* child) {
+    assert(cep_store_valid(store));
+    if (!child)
+        return NULL;
+
+    switch (store->storage) {
+      case CEP_STORAGE_RED_BLACK_T:
+        return rb_tree_internal_next(child);
+
+      case CEP_STORAGE_HASH_TABLE:
+        return hash_table_internal_next((cepHashTable*) store, child);
+
+      default:
+        return store_next_child(store, child);
+    }
+}
+
+
 /* Fetch a child by positional index for a snapshot. Resolve the store and 
    iterate through snapshot-visible children until the requested position is 
    reached. Enable snapshot-stable positional addressing within sibling lists.
@@ -3469,6 +3528,15 @@ cepCell* cep_cell_find_next_by_path_past(const cepCell* start, cepPath* path, ui
 bool cep_cell_traverse(cepCell* cell, cepTraverse func, void* context, cepEntry* entry) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
     return store_traverse(store, func, context, entry);
+}
+
+/* Visit direct children using the storage's native layout. Tree stores surface
+   their physical pre-order (root, left, right), hash tables iterate buckets in
+   allocation order, and other backends fall back to the logical traversal when
+   both orders coincide. */
+bool cep_cell_traverse_internal(cepCell* cell, cepTraverse func, void* context, cepEntry* entry) {
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, true);
+    return store_traverse_internal(store, func, context, entry);
 }
 
 
@@ -3655,6 +3723,86 @@ bool cep_cell_deep_traverse(cepCell* cell, cepTraverse func, cepTraverse endFunc
         // Next cell.
         entry->prev   = entry->cell;
         entry->cell = entry->next;
+        entry->position += 1;
+    }
+
+    if (MAX_DEPTH > CEP_MAX_FAST_STACK_DEPTH)
+        cep_free(stack);
+
+return ok;
+}
+
+
+/* Depth-first traversal that respects the storage's physical ordering. Tree
+   backends walk their node layout in pre-order and hash tables scan bucket
+   chains so callers can inspect structural shape; other backends defer to the
+   standard deep traversal when physical and logical orders already align. */
+bool cep_cell_deep_traverse_internal(cepCell* cell, cepTraverse func, cepTraverse endFunc, void* context, cepEntry* entry) {
+    assert(!cep_cell_is_void(cell) && (func || endFunc));
+
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, true);
+    if (!store->chdCount)
+        return true;
+
+    bool ok = true;
+    cepCell* child;
+    unsigned depth = 0;
+    if (!entry)
+        entry = cep_alloca(sizeof(cepEntry));
+    CEP_0(entry);
+    entry->parent = cell;
+    entry->cell = store_first_child_internal(store);
+    entry->prev = NULL;
+    entry->position = 0;
+    entry->depth = 0;
+
+    size_t stackSize = MAX_DEPTH * sizeof(cepEntry);
+    cepEntry* stack = (MAX_DEPTH > CEP_MAX_FAST_STACK_DEPTH)? cep_malloc(stackSize): cep_alloca(stackSize);
+
+    for (;;) {
+        if (!entry->cell) {
+            if CEP_RARELY(!depth)  break;
+            depth--;
+
+            if (endFunc) {
+                ok = endFunc(&stack[depth], context);
+                if (!ok)  break;
+            }
+
+            entry->cell   = stack[depth].next;
+            entry->parent = stack[depth].parent;
+            entry->prev   = stack[depth].cell;
+            entry->next   = NULL;
+            entry->position = stack[depth].position + 1;
+            entry->depth  = depth;
+            continue;
+        }
+
+      NEXT_SIBLING:
+        entry->next = store_next_child_internal(entry->parent->store, entry->cell);
+
+        if (func) {
+            ok = func(entry, context);
+            if (!ok)  break;
+        }
+
+        if (entry->cell->store && entry->cell->store->chdCount
+        && ((child = store_first_child_internal(entry->cell->store)))) {
+            assert(depth < MAX_DEPTH);
+
+            stack[depth++] = *entry;
+
+            entry->parent   = entry->cell;
+            entry->cell     = child;
+            entry->prev     = NULL;
+            entry->position = 0;
+            entry->depth    = depth;
+
+            goto NEXT_SIBLING;
+        }
+
+        entry->prev   = entry->cell;
+        entry->cell   = entry->next;
         entry->position += 1;
     }
 

@@ -238,6 +238,93 @@ static inline bool rb_tree_traverse(cepRbTree* tree, unsigned maxDepth, cepTrave
 }
 
 
+static inline cepCell* rb_tree_internal_first(cepRbTree* tree) {
+    return (tree && tree->root)? &tree->root->cell: NULL;
+}
+
+
+static inline cepCell* rb_tree_internal_next(cepCell* cell) {
+    if (!cell)
+        return NULL;
+
+    cepRbTreeNode* node = rb_tree_node_from_cell(cell);
+    if (node->left)
+        return &node->left->cell;
+    if (node->right)
+        return &node->right->cell;
+
+    for (cepRbTreeNode* parent = node->tParent; parent; parent = parent->tParent) {
+        if (node == parent->left && parent->right)
+            return &parent->right->cell;
+        node = parent;
+    }
+
+    return NULL;
+}
+
+
+static inline bool rb_tree_traverse_internal(cepRbTree* tree, cepTraverse func, void* context, cepEntry* entry) {
+    assert(tree && func);
+
+    if (!tree->store.chdCount)
+        return true;
+
+    cepEntry localEntry;
+    if (!entry) {
+        CEP_0(&localEntry);
+        entry = &localEntry;
+    } else {
+        CEP_0(entry);
+    }
+
+    entry->parent = tree->store.owner;
+    entry->depth  = 0;
+    entry->position = 0;
+    entry->prev = NULL;
+    entry->cell = NULL;
+
+    unsigned maxDepth = cep_bitson(tree->store.chdCount) + 2;
+    size_t stackSize = (size_t)maxDepth * sizeof(cepRbTreeNode*);
+    bool useHeap = (maxDepth > RB_TREE_MIN_DEPTH);
+    cepRbTreeNode** stack = useHeap? cep_malloc(stackSize): cep_alloca(stackSize);
+
+    int top = 0;
+    stack[0] = tree->root;
+    entry->next = &stack[0]->cell;
+
+    bool ok = true;
+    while (top >= 0) {
+        cepRbTreeNode* node = stack[top--];
+
+        if (entry->cell) {
+            if (!func(entry, context)) {
+                ok = false;
+                break;
+            }
+            entry->position++;
+            entry->prev = entry->cell;
+        }
+
+        entry->cell = &node->cell;
+
+        if (node->right)
+            stack[++top] = node->right;
+        if (node->left)
+            stack[++top] = node->left;
+
+        entry->next = (top >= 0)? &stack[top]->cell: NULL;
+    }
+
+    if (ok)
+        ok = func(entry, context);
+
+    if (useHeap)
+        cep_free(stack);
+
+    return ok;
+}
+
+
 static inline int rb_traverse_func_break_at_name(cepEntry* entry, uintptr_t name) {
     return !cep_cell_name_is(entry->cell, name);
 }

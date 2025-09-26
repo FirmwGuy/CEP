@@ -1057,9 +1057,11 @@ cepCell* cep_cell_find_next_by_path_past(const cepCell* start, cepPath* path, ui
 #define  cep_cell_find_next_by_path(start, path, prev)      cep_cell_find_next_by_path_past((start), (path), (prev), 0)
 
 bool cep_cell_traverse      (cepCell* cell, cepTraverse func, void* context, cepEntry* entry);
+bool cep_cell_traverse_internal(cepCell* cell, cepTraverse func, void* context, cepEntry* entry);
 bool cep_cell_traverse_past (cepCell* cell, cepOpCount timestamp, cepTraverse func, void* context, cepEntry* entry);
 bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 bool cep_cell_deep_traverse (cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
+bool cep_cell_deep_traverse_internal(cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 
 
 // Removing cells

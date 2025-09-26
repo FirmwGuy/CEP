@@ -438,6 +438,89 @@ static inline bool hash_table_traverse(cepHashTable* table, cepTraverse func, vo
 }
 
 
+static inline cepCell* hash_table_internal_first(cepHashTable* table) {
+    assert(table);
+    if (!table->store.chdCount)
+        return NULL;
+    if (!table->bucketCount)
+        return hash_table_first(table);
+    for (size_t i = 0; i < table->bucketCount; ++i) {
+        cepHashNode* node = table->buckets[i];
+        if (node)
+            return &node->cell;
+    }
+    return NULL;
+}
+
+
+static inline cepCell* hash_table_internal_next(cepHashTable* table, cepCell* cell) {
+    assert(table && cell);
+
+    cepHashNode* node = hash_table_node_from_cell(cell);
+    if (node->bucketNext)
+        return &node->bucketNext->cell;
+
+    if (!table->bucketCount)
+        return hash_table_next(table, cell);
+
+    size_t index = node->hash & table->bucketMask;
+    for (size_t i = index + 1; i < table->bucketCount; ++i) {
+        cepHashNode* next = table->buckets[i];
+        if (next)
+            return &next->cell;
+    }
+
+    return NULL;
+}
+
+
+static inline bool hash_table_traverse_internal(cepHashTable* table, cepTraverse func, void* context, cepEntry* entry) {
+    assert(table && func);
+
+    if (!table->store.chdCount)
+        return true;
+
+    if (!table->bucketCount)
+        return hash_table_traverse(table, func, context, entry);
+
+    cepEntry localEntry;
+    if (!entry) {
+        CEP_0(&localEntry);
+        entry = &localEntry;
+    } else {
+        CEP_0(entry);
+    }
+
+    entry->parent = table->store.owner;
+    entry->depth  = 0;
+    entry->position = 0;
+    entry->prev = NULL;
+    entry->cell = NULL;
+    entry->next = NULL;
+
+    for (size_t bucket = 0; bucket < table->bucketCount; ++bucket) {
+        for (cepHashNode* node = table->buckets[bucket]; node; node = node->bucketNext) {
+            if (entry->cell) {
+                if (!func(entry, context))
+                    return false;
+                entry->position++;
+                entry->prev = entry->cell;
+            }
+
+            entry->cell = &node->cell;
+
+            cepHashNode* peek = node->bucketNext;
+            size_t peekBucket = bucket;
+            while (!peek && ++peekBucket < table->bucketCount)
+                peek = table->buckets[peekBucket];
+            entry->next = peek? &peek->cell: NULL;
+        }
+    }
+
+    return func(entry, context);
+}
+
+
 /* Remove the last child from the table, return its payload to the caller, and
    free the underlying node. Buckets and ordering links are updated so the
    structure stays consistent.
