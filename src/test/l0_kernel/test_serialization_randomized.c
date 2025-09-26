@@ -186,6 +186,28 @@ static const cepLibraryOps proxy_library_ops = {
     .stream_snapshot = proxy_stream_snapshot,
     .stream_restore  = proxy_stream_restore,
 };
+
+/*
+ *  Failure stubs let the serializer exercise emit/ingest error propagation
+ *  without crafting bespoke external bindings in the test body.
+ */
+static bool proxy_handle_snapshot_fail(const cepLibraryBinding* binding,
+                                       cepCell* handle,
+                                       cepProxySnapshot* snapshot) {
+    (void)binding;
+    (void)handle;
+    (void)snapshot;
+    return false;
+}
+
+static bool proxy_handle_restore_fail(const cepLibraryBinding* binding,
+                                      const cepProxySnapshot* snapshot,
+                                      cepCell** out_handle) {
+    (void)binding;
+    (void)snapshot;
+    (void)out_handle;
+    return false;
+}
 static cepDT random_child_name(SerializationFixture* fix) {
     if (!fix->next_tag || fix->next_tag > CEP_AUTOID_MAX)
         fix->next_tag = CEP_ID(1);
@@ -401,6 +423,8 @@ static void exercise_proxy_roundtrip(SerializationFixture* fix) {
     munit_assert_size(capture.count, >, 0u);
 
     cep_cell_finalize_hard(&proxy_handle);
+    cep_cell_finalize_hard(handle_resource);
+    cep_free(handle_resource);
     cep_cell_finalize_hard(&library);
 
     cep_cell_system_initiate();
@@ -438,6 +462,9 @@ static void exercise_proxy_roundtrip(SerializationFixture* fix) {
     munit_assert_size(import_ctx.handle_retains, ==, 1u);
     munit_assert_size(import_ctx.handle_releases, ==, 0u);
 
+    cep_cell_delete_hard(restored);
+    munit_assert_size(import_ctx.handle_releases, ==, 1u);
+
     cep_cell_system_shutdown();
     cep_cell_finalize_hard(&import_lib);
 
@@ -461,6 +488,90 @@ static void exercise_proxy_roundtrip(SerializationFixture* fix) {
     cep_serialization_reader_destroy(reader);
     cep_cell_system_shutdown();
     cep_cell_finalize_hard(&missing_lib);
+
+    cep_cell_system_initiate();
+    ProxyContext restore_fail_ctx = {0};
+    cepCell restore_fail_lib;
+    CEP_0(&restore_fail_lib);
+    const cepLibraryOps restore_fail_ops = {
+        .handle_retain   = proxy_handle_retain,
+        .handle_release  = proxy_handle_release,
+        .handle_snapshot = proxy_handle_snapshot,
+        .handle_restore  = proxy_handle_restore_fail,
+        .stream_read     = NULL,
+        .stream_write    = NULL,
+        .stream_expected_hash = NULL,
+        .stream_map      = NULL,
+        .stream_unmap    = NULL,
+        .stream_snapshot = proxy_stream_snapshot,
+        .stream_restore  = proxy_stream_restore,
+    };
+    cep_library_initialize(&restore_fail_lib,
+                           CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("library")),
+                           &restore_fail_ops,
+                           &restore_fail_ctx);
+
+    cepCell restore_placeholder;
+    CEP_0(&restore_placeholder);
+    cep_proxy_initialize_handle(&restore_placeholder,
+                                CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("handle")),
+                                NULL,
+                                &restore_fail_lib);
+    munit_assert_not_null(cep_cell_add(cep_root(), 0, &restore_placeholder));
+
+    reader = cep_serialization_reader_create(cep_root());
+    munit_assert_not_null(reader);
+    for (size_t i = 0; i < capture.count; ++i) {
+        munit_assert_true(cep_serialization_reader_ingest(reader,
+                                                          capture.chunks[i].data,
+                                                          capture.chunks[i].size));
+    }
+    munit_assert_false(cep_serialization_reader_commit(reader));
+    cep_serialization_reader_destroy(reader);
+    cep_cell_system_shutdown();
+    cep_cell_finalize_hard(&restore_fail_lib);
+
+    capture_reset(&capture);
+
+    ProxyContext snapshot_fail_ctx = {0};
+    cepCell snapshot_fail_lib;
+    CEP_0(&snapshot_fail_lib);
+    const cepLibraryOps snapshot_fail_ops = {
+        .handle_retain   = proxy_handle_retain,
+        .handle_release  = proxy_handle_release,
+        .handle_snapshot = proxy_handle_snapshot_fail,
+        .handle_restore  = proxy_handle_restore,
+        .stream_read     = NULL,
+        .stream_write    = NULL,
+        .stream_expected_hash = NULL,
+        .stream_map      = NULL,
+        .stream_unmap    = NULL,
+        .stream_snapshot = proxy_stream_snapshot,
+        .stream_restore  = proxy_stream_restore,
+    };
+    cep_library_initialize(&snapshot_fail_lib,
+                           CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("library")),
+                           &snapshot_fail_ops,
+                           &snapshot_fail_ctx);
+
+    cepCell* snapshot_resource = proxy_make_handle_resource(payload, payload_size);
+    cepCell snapshot_handle;
+    CEP_0(&snapshot_handle);
+    cep_proxy_initialize_handle(&snapshot_handle,
+                                CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("handle")),
+                                snapshot_resource,
+                                &snapshot_fail_lib);
+
+    munit_assert_false(cep_serialization_emit_cell(&snapshot_handle,
+                                                   NULL,
+                                                   capture_sink,
+                                                   &capture,
+                                                   0));
+
+    cep_cell_finalize_hard(&snapshot_handle);
+    cep_cell_finalize_hard(snapshot_resource);
+    cep_free(snapshot_resource);
+    cep_cell_finalize_hard(&snapshot_fail_lib);
 
     capture_reset(&capture);
 
@@ -491,6 +602,8 @@ static void exercise_proxy_roundtrip(SerializationFixture* fix) {
                                                   0));
 
     cep_cell_finalize_hard(&proxy_stream);
+    cep_cell_finalize_hard(stream_resource);
+    cep_free(stream_resource);
     cep_cell_finalize_hard(&stream_lib);
 
     cep_cell_system_initiate();

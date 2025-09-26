@@ -11,19 +11,34 @@
 #include "cep_cell.h"
 #include "cep_namepool.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <string.h>
 
-#define TEST_TIMEOUT_SECONDS 60u
-#define MAX_TREE_DEPTH       4u
-#define MAX_TREE_CANDIDATES  96u
-#define RANDOM_ITERATIONS    96u
+
+#define TEST_TIMEOUT_SECONDS        60u
+#define MAX_TREE_DEPTH              4u
+#define MAX_TREE_CANDIDATES         96u
+#define RANDOM_ITERATIONS           96u
+#define PACKED_QUEUE_ITERATIONS     64u
+#define MAX_PACKED_QUEUE_CHILDREN   64u
+#define OCTREE_ITERATIONS           64u
+#define MAX_OCTREE_CHILDREN         64u
 
 typedef struct {
     TestWatchdog* watchdog;
     cepCell       root;
     cepID         next_numeric;
 } CellRandomFixture;
+
+typedef struct {
+    float position[3];
+} OctreePoint;
+
+typedef struct {
+    float subwide;
+    float center[3];
+} cepOctreeBound;
 
 static cepDT make_random_child_name(CellRandomFixture* fix) {
     cepDT name = {0};
@@ -148,6 +163,27 @@ static size_t collect_value_nodes(cepCell* node, cepCell** out, size_t capacity,
     return count;
 }
 
+/*
+ *  Octree comparators treat the second argument as a bounding volume. Returning
+ *  a positive value keeps the traversal within that quadrant, so points that
+ *  fit entirely inside the box report success while anything straddling the
+ *  boundary forces the caller to stay at the current node.
+ */
+static int octree_point_compare(const cepCell* cell, const cepCell* bound_cell, void* context) {
+    (void)context;
+    const OctreePoint* point = cep_cell_data(cell);
+    const cepOctreeBound* bound = (const cepOctreeBound*)(const void*)bound_cell;
+    if (!point || !bound)
+        return 0;
+
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        float delta = point->position[axis] - bound->center[axis];
+        if (fabsf(delta) > bound->subwide)
+            return 0;
+    }
+    return 1;
+}
+
 static unsigned node_depth(const cepCell* node) {
     unsigned depth = 0;
     for (const cepCell* current = node; current && !cep_cell_is_root((cepCell*)current); current = cep_cell_parent(current))
@@ -238,6 +274,176 @@ static void verify_store_consistency(cepCell* parent) {
     }
 
     munit_assert_size(index, ==, expected);
+}
+
+/*
+ *  Packed queue coverage inserts, updates, and deletes cells at arbitrary
+ *  positions while mirroring the expected ordering in a shadow array so the
+ *  test can prove that packed queues keep positional lookups and name
+ *  searches consistent across node splits and recycling.
+ */
+static void exercise_packed_queue_random(CellRandomFixture* fix) {
+    cepCell list;
+    CEP_0(&list);
+
+    cepDT list_name = *CEP_DTWW("pq", "root");
+    cepDT store_name = *CEP_DTAW("PQ", "buffer");
+    cep_cell_initialize_list(&list, &list_name, &store_name, CEP_STORAGE_PACKED_QUEUE, 8);
+
+    cepDT names[MAX_PACKED_QUEUE_CHILDREN];
+    uint32_t values[MAX_PACKED_QUEUE_CHILDREN];
+    size_t count = 0;
+
+    for (unsigned iter = 0; iter < PACKED_QUEUE_ITERATIONS; ++iter) {
+        bool can_insert = count < MAX_PACKED_QUEUE_CHILDREN;
+        bool do_insert = (count == 0) || (can_insert && (munit_rand_uint32() & 1u));
+
+        if (do_insert) {
+            size_t position = count ? (size_t)munit_rand_int_range(0, (int)(count + 1)) : 0u;
+            if (position > count)
+                position = count;
+
+            cepDT child_name = make_random_child_name(fix);
+            uint32_t payload = munit_rand_uint32();
+
+            cepCell* inserted = cep_cell_add_value(&list,
+                                                   &child_name,
+                                                   position,
+                                                   CEP_DTS(CEP_ACRO("VAL"), CEP_ACRO("PKQ")),
+                                                   &payload,
+                                                   sizeof payload,
+                                                   sizeof payload);
+            munit_assert_not_null(inserted);
+
+            for (size_t idx = count; idx > position; --idx) {
+                names[idx] = names[idx - 1u];
+                values[idx] = values[idx - 1u];
+            }
+            names[position] = child_name;
+            values[position] = payload;
+            ++count;
+        } else {
+            size_t position = (size_t)munit_rand_int_range(0, (int)(count - 1));
+            cepCell* victim = cep_cell_find_by_position(&list, position);
+            munit_assert_not_null(victim);
+
+            cepCell* by_name = cep_cell_find_by_name(&list, &names[position]);
+            munit_assert_ptr_equal(by_name, victim);
+
+            cep_cell_delete_hard(victim);
+
+            for (size_t idx = position; idx + 1u < count; ++idx) {
+                names[idx] = names[idx + 1u];
+                values[idx] = values[idx + 1u];
+            }
+            --count;
+        }
+
+        munit_assert_size(count, ==, cep_cell_children(&list));
+
+        for (size_t idx = 0; idx < count; ++idx) {
+            cepCell* by_position = cep_cell_find_by_position(&list, idx);
+            munit_assert_not_null(by_position);
+
+            cepCell* by_name = cep_cell_find_by_name(&list, &names[idx]);
+            munit_assert_ptr_equal(by_name, by_position);
+
+            uint32_t stored = *(uint32_t*)cep_cell_data(by_position);
+            munit_assert_uint32(stored, ==, values[idx]);
+        }
+
+        test_watchdog_signal(fix->watchdog);
+    }
+
+    while (cep_cell_children(&list)) {
+        cepCell* child = cep_cell_first(&list);
+        cep_cell_delete_hard(child);
+    }
+    cep_cell_finalize_hard(&list);
+}
+
+/*
+ *  Octree fuzzing sprays points throughout a bounded cube, letting the spatial
+ *  comparator place them inside sub-quadrants. The test mirrors coordinates to
+ *  ensure restored payloads stay intact and that lookups by name succeed after
+ *  random insert/remove cycles.
+ */
+static void exercise_octree_random(CellRandomFixture* fix) {
+    cepCell spatial;
+    CEP_0(&spatial);
+
+    cepDT root_name = *CEP_DTWW("oct", "root");
+    cepDT store_name = *CEP_DTAW("OCT", "space");
+    float center[3] = {0.0f, 0.0f, 0.0f};
+    float subwide = 8.0f;
+
+    cep_cell_initialize_spatial(&spatial,
+                                &root_name,
+                                &store_name,
+                                center,
+                                subwide,
+                                octree_point_compare);
+
+    typedef struct {
+        cepDT       name;
+        OctreePoint point;
+    } OctreeEntry;
+
+    OctreeEntry entries[MAX_OCTREE_CHILDREN];
+    size_t count = 0;
+
+    for (unsigned iter = 0; iter < OCTREE_ITERATIONS; ++iter) {
+        bool can_insert = count < MAX_OCTREE_CHILDREN;
+        bool do_insert = (count == 0) || (can_insert && (munit_rand_uint32() & 1u));
+
+        if (do_insert) {
+            OctreeEntry entry;
+            entry.name = make_random_child_name(fix);
+            for (unsigned axis = 0; axis < 3; ++axis) {
+                int raw = munit_rand_int_range(-700, 700);
+                entry.point.position[axis] = (float)raw / 100.0f;
+            }
+
+            cepCell* inserted = cep_cell_add_value(&spatial,
+                                                   &entry.name,
+                                                   0,
+                                                   CEP_DTS(CEP_ACRO("VAL"), CEP_ACRO("OCT")),
+                                                   &entry.point,
+                                                   sizeof entry.point,
+                                                   sizeof entry.point);
+            munit_assert_not_null(inserted);
+
+            entries[count++] = entry;
+        } else {
+            size_t index = (size_t)munit_rand_int_range(0, (int)(count - 1));
+            cepCell* victim = cep_cell_find_by_name(&spatial, &entries[index].name);
+            munit_assert_not_null(victim);
+
+            cep_cell_delete_hard(victim);
+
+            for (size_t idx = index; idx + 1u < count; ++idx)
+                entries[idx] = entries[idx + 1u];
+            --count;
+        }
+
+        munit_assert_size(count, ==, cep_cell_children(&spatial));
+
+        for (size_t idx = 0; idx < count; ++idx) {
+            cepCell* child = cep_cell_find_by_name(&spatial, &entries[idx].name);
+            munit_assert_not_null(child);
+            munit_assert_memory_equal(sizeof entries[idx].point,
+                                      &entries[idx].point,
+                                      cep_cell_data(child));
+        }
+
+        test_watchdog_signal(fix->watchdog);
+    }
+
+    while (cep_cell_children(&spatial)) {
+        cepCell* child = cep_cell_first(&spatial);
+        cep_cell_delete_hard(child);
+    }
+    cep_cell_finalize_hard(&spatial);
 }
 
 static void exercise_random_mutations(CellRandomFixture* fix) {
@@ -343,6 +549,8 @@ MunitResult test_cells_randomized(const MunitParameter params[], void* fixture) 
     munit_assert_not_null(fix);
 
     exercise_random_mutations(fix);
+    exercise_packed_queue_random(fix);
+    exercise_octree_random(fix);
     verify_inline_naming();
     return MUNIT_OK;
 }
