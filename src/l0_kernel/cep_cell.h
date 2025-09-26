@@ -1046,6 +1046,8 @@ cepCell* cep_cell_find_by_position_past(const cepCell* cell, size_t position, ce
 cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, cepOpCount snapshot);
 #define  cep_cell_find_by_path(start, path)                 cep_cell_find_by_path_past((start), (path), 0)
 
+bool cep_cell_indexof(const cepCell* parent, const cepCell* child, size_t* position);
+
 cepCell* cep_cell_prev_past(const cepCell* cell, cepCell* child, cepOpCount snapshot);
 #define  cep_cell_prev(cell, child)     cep_cell_prev_past((cell), (child), 0)
 cepCell* cep_cell_next_past(const cepCell* cell, cepCell* child, cepOpCount snapshot);
@@ -1224,16 +1226,6 @@ void cep_cell_system_shutdown(void);
 bool cep_cell_system_initialized(void);
 void cep_cell_system_ensure(void);
 
-
-/*
-    TODO:
-    - Implement a 'one-member only' dictionary, intended for organizational purposes.
-    - Implement range queries (between a minimum and a maximum key) for cells.
-    - Traverse book in internal (stoTech) order.
-    - Add indexof() for cells.
-    - Update MAX_DEPTH based on path/traverse operations.
-    - If a cell is added with its name explicitly above "auto_id", then that must be updated.
-*/
 
 #ifdef __cplusplus
 }

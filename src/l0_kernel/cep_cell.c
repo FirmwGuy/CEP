@@ -3365,6 +3365,35 @@ cepCell* cep_cell_find_by_position_past(const cepCell* cell, size_t position, ce
 }
 
 
+/* Report the logical position of a live child within an insertion-ordered
+   parent. Resolve links, make sure the child belongs to the same store, and
+   walk siblings in positional order until the target is reached. */
+bool cep_cell_indexof(const cepCell* parent, const cepCell* child, size_t* position) {
+    if (!parent || !child || cep_cell_is_void(parent) || cep_cell_is_void(child))
+        return false;
+
+    cepCell* resolvedParent = cep_link_pull((cepCell*)parent);
+    cepStore* store = resolvedParent->store;
+    if (!store || store->indexing != CEP_INDEX_BY_INSERTION)
+        return false;
+
+    cepCell* resolvedChild = cep_link_pull((cepCell*)child);
+    if (resolvedChild->parent != store)
+        return false;
+
+    size_t index = 0;
+    for (cepCell* current = store_first_child(store); current; current = store_next_child(store, current)) {
+        if (current == resolvedChild) {
+            CEP_PTR_SEC_SET(position, index);
+            return true;
+        }
+        index++;
+    }
+
+    return false;
+}
+
+
 /* Resolve a descendant cell that matches a recorded path. Step through each 
    path segment, performing snapshot-aware name lookups per depth. Allow callers 
    to replay stored paths against historical tree states.
