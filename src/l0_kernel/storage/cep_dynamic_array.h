@@ -59,7 +59,7 @@ static inline cepCell* array_search(cepArray* array, const void* key, cepCompare
     do {
         i = (imax + imin) >> 1;  // (max + min) / 2
         cell = &array->cell[i];
-        int res = compare(key, cell, context);
+        int res = cep_store_compare_cells(key, cell, compare, context);
         if (0 > res) {
             if (!i) break;
             imax = i - 1;

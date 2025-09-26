@@ -55,9 +55,22 @@ struct _cepProxy {
 
 static inline int cell_compare_by_name(const cepCell* restrict key, const cepCell* restrict rec, void* unused) {
     (void)unused;
+    int cmp = cep_dt_compare(CEP_DT(key), CEP_DT(rec));
+    if (cmp)
+        return cmp;
 
-    return cep_dt_compare(CEP_DT(key), CEP_DT(rec));
+    bool keyHasTimeline = !cep_cell_is_void(key) && cep_cell_is_normal(key)
+                        && (key->data || key->store || key->parent);
+    bool recHasTimeline = !cep_cell_is_void(rec) && cep_cell_is_normal(rec)
+                        && (rec->data || rec->store || rec->parent);
+
+    if (keyHasTimeline && recHasTimeline)
+        return cep_cell_order_compare(key, rec);
+
+    return 0;
 }
+
+static cepCell* cep_store_replace_child(cepStore* store, cepCell* existing, cepCell* incoming);
 
 
 static cepStoreHistory*     cep_store_history_snapshot(const cepStore* store, const cepStoreHistory* previous);
@@ -1616,6 +1629,28 @@ static inline void store_check_auto_id(cepStore* store, cepCell* child) {
 }
 
 
+static cepCell* cep_store_replace_child(cepStore* store, cepCell* existing, cepCell* incoming) {
+    assert(cep_store_valid(store));
+    assert(existing && incoming);
+    assert(cep_cell_is_normal(existing) && cep_cell_is_normal(incoming));
+
+    cepOpCount timestamp = cep_cell_timestamp_next();
+
+    cep_cell_finalize(existing);
+    CEP_0(existing);
+
+    cep_cell_transfer(incoming, existing);
+    CEP_0(incoming);
+
+    store_check_auto_id(store, existing);
+
+    existing->parent = store;
+    store->modified = timestamp;
+
+    return existing;
+}
+
+
 /* Insert a child cell into a store according to its indexing policy.
    Deduplicate structural matches, then delegate to the backend-specific helper
    before updating metadata. Append-only invariant: mutations must leave the
@@ -1628,22 +1663,26 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
     if (!store->writable || cep_store_hierarchy_locked(store->owner))
         return NULL;
 
+    cepCell* existing = NULL;
+
     if (store->indexing == CEP_INDEX_BY_NAME) {
-        cepCell* existing = store_find_child_by_name(store, cep_cell_get_name(child));
-        if (existing && cep_cell_structural_equal(existing, child))
-            return existing;
+        existing = store_find_child_by_name(store, cep_cell_get_name(child));
     } else if (store->indexing == CEP_INDEX_BY_INSERTION) {
         if (store->chdCount && store->chdCount > (size_t)context) {
-            cepCell* existing = store_find_child_by_position(store, (size_t)context);
-            if (existing && cep_cell_structural_equal(existing, child))
-                return existing;
+            existing = store_find_child_by_position(store, (size_t)context);
         }
     } else if (store->indexing == CEP_INDEX_BY_FUNCTION
             || store->indexing == CEP_INDEX_BY_HASH) {
         assert(store->compare);
-        cepCell* existing = store_find_child_by_key(store, child, store->compare, (void*)context);
-        if (existing && cep_cell_structural_equal(existing, child))
+        existing = store_find_child_by_key(store, child, store->compare, (void*)context);
+    }
+
+    if (existing) {
+        if (cep_cell_structural_equal(existing, child))
             return existing;
+        if (store->indexing != CEP_INDEX_BY_INSERTION)
+            return cep_store_replace_child(store, existing, child);
+        existing = NULL;
     }
 
     cepCell* cell;

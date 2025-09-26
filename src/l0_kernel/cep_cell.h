@@ -812,6 +812,70 @@ static inline bool cep_cell_is_deleted(const cepCell* cell) {
     return dataDeleted && storeDeleted;
 }
 
+static inline cepOpCount cep_cell_latest_timestamp(const cepCell* cell) {
+    if (!cell || cep_cell_is_void(cell))
+        return 0;
+
+    cepOpCount latest = 0;
+
+    if (cep_cell_is_normal(cell)) {
+        if (cell->data) {
+            if (cell->data->modified > latest)
+                latest = cell->data->modified;
+            if (cell->data->deleted > latest)
+                latest = cell->data->deleted;
+            if (cell->data->created > latest)
+                latest = cell->data->created;
+        }
+
+        if (cell->store) {
+            if (cell->store->modified > latest)
+                latest = cell->store->modified;
+            if (cell->store->deleted > latest)
+                latest = cell->store->deleted;
+            if (cell->store->created > latest)
+                latest = cell->store->created;
+        }
+    }
+
+    if (cell->parent && cell->parent->modified > latest)
+        latest = cell->parent->modified;
+
+    return latest;
+}
+
+static inline int cep_cell_order_compare(const cepCell* lhs, const cepCell* rhs) {
+    if (lhs == rhs)
+        return 0;
+
+    bool lhsDead = cep_cell_is_deleted(lhs);
+    bool rhsDead = cep_cell_is_deleted(rhs);
+    if (lhsDead != rhsDead)
+        return lhsDead? 1: -1;   // Alive entries come first.
+
+    cepOpCount lhsTs = cep_cell_latest_timestamp(lhs);
+    cepOpCount rhsTs = cep_cell_latest_timestamp(rhs);
+    if (lhsTs > rhsTs)
+        return -1;
+    if (lhsTs < rhsTs)
+        return 1;
+
+    uintptr_t lhsAddr = (uintptr_t) lhs;
+    uintptr_t rhsAddr = (uintptr_t) rhs;
+    if (lhsAddr == rhsAddr)
+        return 0;
+    return (lhsAddr < rhsAddr)? -1: 1;
+}
+
+static inline int cep_store_compare_cells(const cepCell* lhs, const cepCell* rhs, cepCompare compare, void* context) {
+    int cmp = compare? compare(lhs, rhs, context): 0;
+    if (!cmp && lhs && rhs && !cep_cell_is_void(lhs) && !cep_cell_is_void(rhs)) {
+        if (lhs->parent && lhs->parent == rhs->parent)
+            cmp = cep_cell_order_compare(lhs, rhs);
+    }
+    return cmp;
+}
+
 static inline void cep_cell_set_data(cepCell* cell, cepData* data) {
     assert(!cep_cell_has_data(cell) && cep_data_valid(data));
     cell->data = data;
