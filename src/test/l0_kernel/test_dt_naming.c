@@ -25,12 +25,14 @@
 
 #include "test.h"
 #include "cep_cell.h"
+#include "cep_namepool.h"
 
 #include <stdio.h>      // printf()
 #include <ctype.h>      // islower()
+#include <string.h>
 
 
-static int test_wordacron_text(const char* text) {
+static int test_dt_naming_text(const char* text) {
     cepID word  = cep_text_to_word(text);
     cepID acron = cep_text_to_acronym(text);
 
@@ -69,7 +71,7 @@ static inline size_t get_trimmed_length(const char* s) {
 #define CODABLE_MIN     2
 #define PRINTABLE_MIN   5
 
-static void test_wordacron_coding(void) {
+static void test_dt_naming_coding(void) {
     const char* acronym_tests[] = {
         " ",
         "TOOLONGNAMEEXCEEDS",
@@ -138,15 +140,62 @@ static void test_wordacron_coding(void) {
     }
 }
 
+static void test_reference_interning(void) {
+    assert_true(cep_namepool_bootstrap());
 
-MunitResult test_wordacron(const MunitParameter params[], void* user_data_or_fixture) {
+    static const char dynamic_text[] = "dynamic-namepool-entry";
+    size_t dynamic_len = strlen(dynamic_text);
+    cepID dynamic_id1 = cep_namepool_intern(dynamic_text, dynamic_len);
+    assert_true(cep_id_is_reference(dynamic_id1));
+    assert_true(cep_id_text_valid(dynamic_id1));
+
+    size_t lookup_len = 0u;
+    const char* lookup_bytes = cep_namepool_lookup(dynamic_id1, &lookup_len);
+    assert_not_null(lookup_bytes);
+    assert_size(lookup_len, ==, dynamic_len);
+    assert_memory_equal(dynamic_len, dynamic_text, lookup_bytes);
+
+    cepID dynamic_id2 = cep_namepool_intern(dynamic_text, dynamic_len);
+    assert_true(dynamic_id1 == dynamic_id2);
+
+    assert_true(cep_namepool_release(dynamic_id1));
+    assert_true(cep_namepool_release(dynamic_id2));
+    assert_null(cep_namepool_lookup(dynamic_id1, NULL));
+
+    cepID dynamic_id3 = cep_namepool_intern(dynamic_text, dynamic_len);
+    assert_uint64(dynamic_id3, !=, 0u);
+    assert_true(cep_namepool_release(dynamic_id3));
+
+    static const char static_text[] = "static-namepool-entry";
+    cepID static_id = cep_namepool_intern_static(static_text, strlen(static_text));
+    assert_true(cep_id_is_reference(static_id));
+    assert_true(cep_id_text_valid(static_id));
+
+    lookup_bytes = cep_namepool_lookup(static_id, &lookup_len);
+    assert_not_null(lookup_bytes);
+    assert_size(lookup_len, ==, strlen(static_text));
+    assert_ptr_equal(lookup_bytes, static_text);
+
+    cepDT dt = {
+        .domain = static_id,
+        .tag = CEP_DTAW("CEP", "domain")->tag,
+    };
+    assert_true(cep_dt_valid(&dt));
+
+    assert_true(cep_namepool_release(static_id));
+    assert_not_null(cep_namepool_lookup(static_id, NULL));
+}
+
+
+MunitResult test_dt_naming(const MunitParameter params[], void* user_data_or_fixture) {
     (void)user_data_or_fixture;
 
     const char* param_value = munit_parameters_get(params, "text");
     if (param_value) {
-        return test_wordacron_text(param_value);
+        return test_dt_naming_text(param_value);
     } else {
-        test_wordacron_coding();
+        test_dt_naming_coding();
+        test_reference_interning();
     }
 
     return MUNIT_OK;

@@ -103,7 +103,7 @@ if get_option('tests').enabled()
     'src/test/test.c',
     'src/test/l0_kernel/test_cell.c',
     'src/test/l0_kernel/test_traverse.c',
-    'src/test/l0_kernel/test_wordacron.c',
+    'src/test/l0_kernel/test_dt_naming.c',
     'src/test/l0_kernel/test_enzyme.c',
     'src/test/l0_kernel/test_heartbeat.c',
     'src/test/l0_kernel/test_stream.c',

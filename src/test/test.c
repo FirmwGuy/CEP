@@ -52,8 +52,8 @@ MunitTest tests[] = {
         timeout_params             // Parameters.
     },
     {
-        "/wordacron",
-        test_wordacron,
+        "/dt_naming",
+        test_dt_naming,
         NULL,                     // Setup
         NULL,                     // Tear_down
         MUNIT_TEST_OPTION_NONE,

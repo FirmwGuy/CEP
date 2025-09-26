@@ -49,7 +49,7 @@ void        test_traverse_tear_down(void* fixture);
 
 void        test_watchdog_signal(TestWatchdog* wd);
 
-MunitResult test_wordacron(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_dt_naming(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_enzyme_setup(const MunitParameter params[], void* user_data);

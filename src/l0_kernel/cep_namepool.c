@@ -247,24 +247,25 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
         .tag    = cep_id_to_numeric((cepID)(entry->slot + 1u)),
     };
 
-    char* copy = cep_malloc(length);
+    char* copy = cep_malloc(length + 1u);
     if (!copy) {
         return false;
     }
     memcpy(copy, text, length);
+    copy[length] = '\0';
 
-    cepCell* value_cell = cep_cell_add_value(page_cell,
+    cepCell* value_cell = cep_cell_add_data(page_cell,
         &slot_name,
         0,
         CEP_DTAW("CEP", "text"),
         copy,
         length,
-        length
+        length + 1u,
+        (cepDel)cep_free
     );
 
-    cep_free(copy);
-
     if (!value_cell || !cep_cell_has_data(value_cell)) {
+        cep_free(copy);
         return false;
     }
 
