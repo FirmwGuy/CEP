@@ -743,6 +743,9 @@ struct _cepCell {
 
         //cepCell*  instance;   // Agent instance this cell belongs to (if cell is a Link).
     };
+
+    cepOpCount      created;    // Timestamp when this cell became visible.
+    cepOpCount      deleted;    // Timestamp when this cell was soft-deleted (0 = alive).
 };
 
 
@@ -803,13 +806,22 @@ static inline bool cep_cell_has_store(const cepCell* cell)    {assert(cep_cell_i
 static inline bool cep_cell_is_deleted(const cepCell* cell) {
     assert(cell && !cep_cell_is_void(cell));
 
+    if (cell->deleted)
+        return true;
+
     if (!cep_cell_is_normal(cell))
         return false;
 
-    bool dataDeleted  = !cell->data  || cell->data->deleted;
-    bool storeDeleted = !cell->store || cell->store->deleted;
+    bool hasData = (cell->data != NULL);
+    bool hasStore = (cell->store != NULL);
 
-    return dataDeleted && storeDeleted;
+    bool dataAlive = hasData && !cell->data->deleted;
+    bool storeAlive = hasStore && !cell->store->deleted;
+
+    if (hasData || hasStore)
+        return !(dataAlive || storeAlive);
+
+    return false;
 }
 
 static inline cepOpCount cep_cell_latest_timestamp(const cepCell* cell) {
@@ -1169,6 +1181,9 @@ static inline void cep_cell_delete(cepCell* cell) {
         cep_cell_delete_children(cell);
         cep_cell_delete_store(cell);
     }
+
+    if (!cell->deleted)
+        cell->deleted = cep_cell_timestamp();
 
     cep_cell_shadow_mark_target_dead(cell, cep_cell_is_deleted(cell));
 }

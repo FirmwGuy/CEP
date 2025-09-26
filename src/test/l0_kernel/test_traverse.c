@@ -462,9 +462,9 @@ static void test_cell_traverse_sequences(void) {
 }
 
 /*
- * Exercises timestamp-gated traversal to prove we only revisit children modified
- * at a given operation count, ensuring historical queries remain scoped to the
- * intended edits and avoid replaying unrelated siblings.
+ * Exercises timestamp-gated traversal to prove we can reconstruct the set of
+ * children alive at a given operation count, ensuring historical queries replay
+ * the full view that callers would have observed at that time.
  */
 static void test_cell_traverse_past_timelines(void) {
     cepCell* list = cep_cell_add_list(cep_root(),
@@ -506,14 +506,26 @@ static void test_cell_traverse_past_timelines(void) {
 
     list->store->past = NULL;
     assert_true(cep_cell_traverse_past(list, tsUpdateB, traverse_capture_cb, &capture, &iterEntry));
-    assert_size(capture.count, ==, 1);
-    assert_ptr_equal(capture.entry[0].cell, second);
-    assert_ptr_equal(capture.entry[0].parent, list);
-    assert_true(capture.entry[0].tag == tagSecond);
-    assert_size(capture.entry[0].position, ==, 0);
-    assert_uint(capture.entry[0].depth, ==, 0);
-    assert_null(capture.entry[0].prev);
-    assert_null(capture.entry[0].next);
+    assert_size(capture.count, ==, 2);
+
+    TraverseCaptureEntry* recFirst = &capture.entry[0];
+    TraverseCaptureEntry* recSecond = &capture.entry[1];
+
+    assert_ptr_equal(recFirst->cell, first);
+    assert_ptr_equal(recFirst->parent, list);
+    assert_true(recFirst->tag == tagFirst);
+    assert_size(recFirst->position, ==, 0);
+    assert_uint(recFirst->depth, ==, 0);
+    assert_null(recFirst->prev);
+    assert_ptr_equal(recFirst->next, second);
+
+    assert_ptr_equal(recSecond->cell, second);
+    assert_ptr_equal(recSecond->parent, list);
+    assert_true(recSecond->tag == tagSecond);
+    assert_size(recSecond->position, ==, 1);
+    assert_uint(recSecond->depth, ==, 0);
+    assert_ptr_equal(recSecond->prev, first);
+    assert_null(recSecond->next);
 
     size_t pastCalls = 0;
     list->store->past = NULL;
@@ -529,14 +541,26 @@ static void test_cell_traverse_past_timelines(void) {
 
     list->store->past = NULL;
     assert_true(cep_cell_traverse_past(list, tsUpdateA, traverse_capture_cb, &capture, &iterEntry));
-    assert_size(capture.count, ==, 1);
-    assert_ptr_equal(capture.entry[0].cell, first);
-    assert_ptr_equal(capture.entry[0].parent, list);
-    assert_true(capture.entry[0].tag == tagFirst);
-    assert_size(capture.entry[0].position, ==, 0);
-    assert_uint(capture.entry[0].depth, ==, 0);
-    assert_null(capture.entry[0].prev);
-    assert_null(capture.entry[0].next);
+    assert_size(capture.count, ==, 2);
+
+    recFirst = &capture.entry[0];
+    recSecond = &capture.entry[1];
+
+    assert_ptr_equal(recFirst->cell, first);
+    assert_ptr_equal(recFirst->parent, list);
+    assert_true(recFirst->tag == tagFirst);
+    assert_size(recFirst->position, ==, 0);
+    assert_uint(recFirst->depth, ==, 0);
+    assert_null(recFirst->prev);
+    assert_ptr_equal(recFirst->next, second);
+
+    assert_ptr_equal(recSecond->cell, second);
+    assert_ptr_equal(recSecond->parent, list);
+    assert_true(recSecond->tag == tagSecond);
+    assert_size(recSecond->position, ==, 1);
+    assert_uint(recSecond->depth, ==, 0);
+    assert_ptr_equal(recSecond->prev, first);
+    assert_null(recSecond->next);
 
     cep_cell_delete_hard(list);
 }
@@ -653,9 +677,9 @@ static void test_cell_deep_traverse_sequences(void) {
 
 
 /*
- * Replays deep traversal history filters to verify timestamp scoping drills down
- * through nested stores, ensuring that only descendants touched by an update get
- * surfaced when auditing past states.
+ * Replays deep traversal history filters to verify timestamp scoping walks the
+ * full hierarchy that existed at a given beat, ensuring historical deep scans
+ * surface every descendant that was alive at that time.
  */
 static void test_cell_deep_traverse_past_timelines(void) {
     DeepTraverseFixture fixture;
@@ -675,14 +699,35 @@ static void test_cell_deep_traverse_past_timelines(void) {
                                             NULL,
                                             &capture,
                                             &iterEntry));
-    assert_size(capture.count, ==, 1);
-    TraverseCaptureEntry* rec = &capture.entry[0];
-    assert_ptr_equal(rec->cell, fixture.dictionaryValue);
-    assert_ptr_equal(rec->parent, fixture.branchDictionary);
-    assert_uint(rec->depth, ==, 2);
-    assert_size(rec->position, ==, 0);
-    assert_null(rec->prev);
-    assert_null(rec->next);
+
+    cepCell* expectedNodes[] = {
+        fixture.first,
+        fixture.branch,
+        fixture.branchLeaf,
+        fixture.branchDictionary,
+        fixture.dictionaryValue,
+        fixture.third,
+    };
+    cepCell* expectedParents[] = {
+        fixture.root,
+        fixture.root,
+        fixture.branch,
+        fixture.branch,
+        fixture.branchDictionary,
+        fixture.root,
+    };
+    unsigned expectedDepths[] = {0u, 0u, 1u, 1u, 2u, 0u};
+    size_t expectedPositions[] = {0u, 1u, 0u, 1u, 0u, 2u};
+    size_t expectedCount = sizeof expectedNodes / sizeof expectedNodes[0];
+    assert_size(capture.count, ==, expectedCount);
+
+    for (size_t i = 0; i < expectedCount; i++) {
+        TraverseCaptureEntry* rec = &capture.entry[i];
+        assert_ptr_equal(rec->cell, expectedNodes[i]);
+        assert_ptr_equal(rec->parent, expectedParents[i]);
+        assert_uint(rec->depth, ==, expectedDepths[i]);
+        assert_size(rec->position, ==, expectedPositions[i]);
+    }
 
     size_t callCount = 0;
     deep_traverse_fixture_reset_past(&fixture);
@@ -708,14 +753,15 @@ static void test_cell_deep_traverse_past_timelines(void) {
                                             NULL,
                                             &capture,
                                             &iterEntry));
-    assert_size(capture.count, ==, 1);
-    rec = &capture.entry[0];
-    assert_ptr_equal(rec->cell, fixture.third);
-    assert_ptr_equal(rec->parent, fixture.root);
-    assert_uint(rec->depth, ==, 0);
-    assert_size(rec->position, ==, 0);
-    assert_null(rec->prev);
-    assert_null(rec->next);
+    assert_size(capture.count, ==, expectedCount);
+
+    for (size_t i = 0; i < expectedCount; i++) {
+        TraverseCaptureEntry* rec = &capture.entry[i];
+        assert_ptr_equal(rec->cell, expectedNodes[i]);
+        assert_ptr_equal(rec->parent, expectedParents[i]);
+        assert_uint(rec->depth, ==, expectedDepths[i]);
+        assert_size(rec->position, ==, expectedPositions[i]);
+    }
 
     deep_traverse_fixture_cleanup(&fixture);
 }

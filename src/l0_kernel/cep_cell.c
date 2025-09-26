@@ -854,6 +854,8 @@ static bool cep_cell_clone_into(const cepCell* src, cepCell* dst, bool deep) {
         dst->metacell.targetDead  = 0u;
         dst->parent = NULL;
         dst->link   = NULL;
+        dst->created = src->created;
+        dst->deleted = src->deleted;
         cep_link_set(dst, (cepCell*)src);
         return true;
     }
@@ -864,6 +866,8 @@ static bool cep_cell_clone_into(const cepCell* src, cepCell* dst, bool deep) {
     dst->parent = NULL;
     dst->data   = NULL;
     dst->store  = NULL;
+    dst->created = src->created;
+    dst->deleted = src->deleted;
 
     if (src->data) {
         cepData* dataClone = cep_data_clone_payload(src->data);
@@ -2189,23 +2193,6 @@ typedef struct {
 } cepTraversePastCtx;
 
 
-static inline bool cep_data_chain_has_timestamp(const cepData* data, cepOpCount timestamp) {
-    if (!data)
-        return false;
-
-    const cepDataNode* node = (const cepDataNode*) &data->modified;
-    while (node) {
-        if (node->modified == timestamp)
-            return true;
-        if (node->modified < timestamp)
-            break;
-        node = node->past;
-    }
-
-    return false;
-}
-
-
 static inline const cepDataNode* cep_data_chain_find_snapshot(const cepData* data, cepOpCount snapshot) {
     if (!data)
         return NULL;
@@ -2250,47 +2237,89 @@ static inline void* cep_data_node_payload(const cepData* owner, const cepDataNod
     return NULL;
 }
 
-static inline bool cep_store_chain_has_timestamp(const cepStore* store, cepOpCount timestamp) {
+static inline bool cep_data_alive_at(const cepData* data, cepOpCount timestamp) {
+    if (!data)
+        return false;
+
+    if (!timestamp)
+        return true;
+
+    if (data->created && timestamp < data->created)
+        return false;
+
+    if (data->deleted && timestamp >= data->deleted)
+        return false;
+
+    return true;
+}
+
+static inline bool cep_store_alive_at(const cepStore* store, cepOpCount timestamp) {
     if (!store)
         return false;
 
-    const cepStoreNode* node = (const cepStoreNode*) &store->modified;
-    while (node) {
-        if (node->modified == timestamp)
-            return true;
-        if (node->modified < timestamp)
-            break;
-        node = node->past;
-    }
+    if (!timestamp)
+        return true;
 
-    return false;
+    if (store->created && timestamp < store->created)
+        return false;
+
+    if (store->deleted && timestamp >= store->deleted)
+        return false;
+
+    return true;
 }
 
+static inline bool cep_cell_alive_at(const cepCell* cell, cepOpCount timestamp) {
+    if (!cell)
+        return false;
+
+    if (!timestamp)
+        return true;
+
+    if (cell->created && timestamp < cell->created)
+        return false;
+
+    if (cell->deleted && timestamp >= cell->deleted)
+        return false;
+
+    if (!cep_cell_is_normal(cell))
+        return true;
+
+    bool hasData = (cell->data != NULL);
+    bool hasStore = (cell->store != NULL);
+
+    bool dataAlive = hasData ? cep_data_alive_at(cell->data, timestamp) : false;
+    bool storeAlive = hasStore ? cep_store_alive_at(cell->store, timestamp) : false;
+
+    if (hasData || hasStore)
+        return dataAlive || storeAlive;
+
+    return true;
+}
 
 static inline bool cep_entry_has_timestamp(const cepEntry* entry, cepOpCount timestamp) {
     assert(entry);
 
-    const cepCell* cell = entry->cell;
-    if (!cell || !timestamp)
+    if (!timestamp)
         return false;
 
-    if (cell->metacell.type == CEP_TYPE_NORMAL) {
-        if (cep_data_chain_has_timestamp(cell->data, timestamp))
-            return true;
-        if (cep_store_chain_has_timestamp(cell->store, timestamp))
-            return true;
-    }
+    const cepCell* cell = entry->cell;
+    if (!cell || !cep_cell_alive_at(cell, timestamp))
+        return false;
 
-    return cep_store_chain_has_timestamp(cell->parent, timestamp);
+    const cepCell* parentCell = entry->parent;
+    if (parentCell && !cep_cell_alive_at(parentCell, timestamp))
+        return false;
+
+    const cepStore* container = cell->parent;
+    if (container && !cep_store_alive_at(container, timestamp))
+        return false;
+
+    return true;
 }
 
 static inline bool cep_cell_matches_snapshot(const cepCell* cell, cepOpCount snapshot) {
-    if (!cell || !snapshot)
-        return true;
-
-    cepEntry entry = {0};
-    entry.cell = (cepCell*)cell;
-    return cep_entry_has_timestamp(&entry, snapshot);
+    return cep_cell_alive_at(cell, snapshot);
 }
 
 static inline cepCell* store_find_child_by_name_past(const cepStore* store, const cepDT* name, cepOpCount snapshot) {
@@ -2847,6 +2876,10 @@ void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* dat
         if (store)
             store->owner = cell;
     }
+
+    cepOpCount timestamp = cep_cell_timestamp_next();
+    cell->created = timestamp;
+    cell->deleted = 0;
 }
 
 
@@ -2900,6 +2933,8 @@ void cep_cell_initialize_clone(cepCell* clone, cepDT* name, cepCell* cell) {
     CEP_0(clone);
 
     clone->metacell = cell->metacell;
+    clone->created  = cell->created;
+    clone->deleted  = cell->deleted;
 }
 
 
