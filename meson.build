@@ -194,9 +194,21 @@ if docs_html_opt
     main_page = join_paths(meson.project_source_root(), 'docs/BUILD.md')
   endif
 
+  doc_version = meson.project_version()
+  git_tag_script = join_paths(meson.project_source_root(), 'tools/git_tag_version.py')
+  if python3.found() and fs.exists(git_tag_script)
+    tag_cmd = run_command(python3, git_tag_script, check: false)
+    if tag_cmd.returncode() == 0
+      tag_output = tag_cmd.stdout().strip()
+      if tag_output != ''
+        doc_version = tag_output
+      endif
+    endif
+  endif
+
   doxy_config = configuration_data()
   doxy_config.set('PROJECT_NAME', meson.project_name())
-  doxy_config.set('PROJECT_VERSION', meson.project_version())
+  doxy_config.set('PROJECT_VERSION', doc_version)
   doxy_config.set('OUTPUT_DIRECTORY', doc_output_dir)
   doxy_config.set('SOURCE_ROOT', meson.project_source_root())
   doxy_config.set('STRIP_FROM_PATH', meson.project_source_root())
@@ -213,7 +225,8 @@ if docs_html_opt
     error('docs_html option requires python3 to be available.')
   endif
 
-  doxygen_runner = files('tools/run_doxygen.py')
+  doxygen_runner = files('tools/run_doxygen.py')[0]
+  git_tag_file = files('tools/git_tag_version.py')[0]
   custom_target('docs_html',
     input: [doxyfile],
     output: 'docs_html.stamp',
@@ -224,7 +237,7 @@ if docs_html_opt
       '--config', '@INPUT0@',
       '--stamp', '@OUTPUT0@',
     ],
-    depend_files: [doxygen_runner],
+    depend_files: [doxygen_runner, git_tag_file],
     build_by_default: docs_html_opt,
     build_always_stale: docs_html_opt,
   )
