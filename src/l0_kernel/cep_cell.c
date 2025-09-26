@@ -1599,8 +1599,20 @@ void cep_store_delete_children_hard(cepStore* store) {
 static inline void store_check_auto_id(cepStore* store, cepCell* child) {
     if (cep_cell_id_is_pending(child)) {
         child->metacell.tag = cep_id_to_numeric(store->autoid++);
+        return;
     }
-    // FixMe: if otherwise.
+
+    cepID tag = cep_id(child->metacell.tag);
+    if (tag) {
+        if (tag > CEP_AUTOID_MAXVAL) {
+            assert(!"Requested tag exceeds CEP auto-id range");
+            return;
+        }
+        cepID next = cep_id_to_numeric(store->autoid);
+        if (tag >= next) {
+            store->autoid = (tag + 1u);
+        }
+    }
 }
 
 
@@ -2563,10 +2575,12 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
     if (cep_store_hierarchy_locked(store->owner))
         return;
 
+    unsigned previousIndex = store->indexing;
+
     cep_store_history_push(store);   // Snapshot current layout before re-sorting by custom comparator.
 
     store->compare  = compare;
-    store->indexing = CEP_INDEX_BY_FUNCTION;   // FixMe: by hash?
+    store->indexing = CEP_INDEX_BY_FUNCTION;
     store->modified = cep_cell_timestamp_next();
 
     if (store->chdCount <= 1)
@@ -2591,13 +2605,11 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
         break;
       }
       case CEP_STORAGE_RED_BLACK_T: {
-        // ToDo: re-sort RB-tree.
-        assert(store->storage != CEP_STORAGE_RED_BLACK_T);
+        if (previousIndex == CEP_INDEX_BY_HASH)
+            (void)rb_tree_reindex_with_compare(store, compare, context);
         break;
       }
-      case CEP_STORAGE_OCTREE: {
-        // ToDo: re-sort Octree.
-        assert(store->storage != CEP_STORAGE_OCTREE);
+      case CEP_STORAGE_OCTREE: {                            // Unneeded.
         break;
       }
     }

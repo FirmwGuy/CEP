@@ -464,6 +464,48 @@ static inline void rb_tree_del_all_children_recursively(cepRbTreeNode* tnode) {
     cep_free(tnode);
 }
 
+static inline bool rb_tree_reindex_with_compare(cepStore* store, cepCompare compare, void* context) {
+    assert(store && store->storage == CEP_STORAGE_RED_BLACK_T);
+
+    if (store->chdCount <= 1)
+        return true;
+
+    size_t count = store->chdCount;
+    cepCell* scratch = cep_malloc(count * sizeof(*scratch));
+    if (!scratch)
+        return false;
+
+    for (size_t i = 0; i < count; ++i)
+        CEP_0(&scratch[i]);
+
+    cepRbTree* tree = (cepRbTree*) store;
+    size_t extracted = 0;
+    while (extracted < count) {
+        rb_tree_take(tree, &scratch[extracted]);
+        if (store->chdCount)
+            store->chdCount--;
+        if (store->totCount)
+            store->totCount--;
+        ++extracted;
+    }
+
+    tree->root = NULL;
+    store->chdCount = 0;
+    store->totCount = 0;
+
+    for (size_t i = 0; i < count; ++i) {
+        cepCell* inserted = rb_tree_sorted_insert(tree, &scratch[i], compare, context);
+        if (inserted) {
+            inserted->parent = store;
+            store->chdCount++;
+            store->totCount++;
+        }
+    }
+
+    cep_free(scratch);
+    return true;
+}
+
 static inline void rb_tree_del_all_children(cepRbTree* tree) {
     if (tree->root) {
         rb_tree_del_all_children_recursively(tree->root);
