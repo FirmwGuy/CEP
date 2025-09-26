@@ -74,6 +74,13 @@ typedef struct {
 
 
 typedef struct {
+    uint8_t executed;   /* Memoises whether the descriptor already ran this beat. */
+    uint8_t emitted;    /* Tracks if the descriptor emitted follow-up signals. */
+    int     last_rc;    /* Stores the most recent return code for duplicate detections. */
+} cepHeartbeatDescriptorMemo;
+
+
+typedef struct {
     uint8_t                      used;
     size_t                       stamp;
     uint64_t                     hash;
@@ -82,6 +89,9 @@ typedef struct {
     const cepEnzymeDescriptor**  descriptors;
     size_t                       descriptor_count;
     size_t                       descriptor_capacity;
+    cepHeartbeatDescriptorMemo*  memo;
+    size_t                       memo_count;
+    size_t                       memo_capacity;
 } cepHeartbeatDispatchCacheEntry;
 
 

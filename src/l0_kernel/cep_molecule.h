@@ -123,7 +123,7 @@ typedef void (*cepDel)(void*);
 #define     cep_ptr_dif(p1, p2)       ((void*)(((uint8_t*)(p1)) - ((uint8_t*)(p2))))
 #define     cep_ptr_idx(p, o, z)      ((size_t)cep_ptr_dif(o, p) / (z))
 #define     cep_ptr_adr(p, i, z)      cep_ptr_off(p, (i)*(z))
-#define     cep_ptr_sec_get(p, v)     ((p)? *(p): (n))
+#define     cep_ptr_sec_get(p, v)     ((p)? *(p): (v))
 #define     CEP_PTR_SEC_SET(p, n)     ({if (p) *(p)=(n);})
 #define     CEP_PTR_OVERW(p, n)       ({cep_free(p); (p)=(n);})
 

@@ -627,6 +627,10 @@ static void cep_heartbeat_dispatch_cache_destroy(cepHeartbeatScratch* scratch) {
             scratch->entries[i].descriptor_count = 0u;
             scratch->entries[i].signal_path = NULL;
             scratch->entries[i].target_path = NULL;
+            CEP_FREE(scratch->entries[i].memo);
+            scratch->entries[i].memo = NULL;
+            scratch->entries[i].memo_capacity = 0u;
+            scratch->entries[i].memo_count = 0u;
             scratch->entries[i].used = 0u;
             scratch->entries[i].stamp = 0u;
             scratch->entries[i].hash = 0u;
@@ -656,9 +660,50 @@ static void cep_heartbeat_scratch_next_generation(cepHeartbeatScratch* scratch) 
                 scratch->entries[i].signal_path = NULL;
                 scratch->entries[i].target_path = NULL;
                 scratch->entries[i].descriptor_count = 0u;
+                scratch->entries[i].memo_count = 0u;
             }
         }
     }
+}
+
+
+/*
+    Ensure dispatch cache entries keep memo buffers large enough to hold per
+    descriptor execution state so duplicate impulses within a beat can be
+    short-circuited safely. The allocator grows geometrically, zero-filling the
+    newly added tail while preserving prior observations for descriptors that
+    already ran this generation.
+*/
+static bool cep_heartbeat_dispatch_entry_reserve_memo(cepHeartbeatDispatchCacheEntry* entry, size_t required) {
+    if (!entry) {
+        return required == 0u;
+    }
+
+    if (required == 0u || entry->memo_capacity >= required) {
+        return true;
+    }
+
+    size_t new_capacity = entry->memo_capacity ? entry->memo_capacity : 4u;
+    while (new_capacity < required) {
+        new_capacity <<= 1u;
+    }
+
+    size_t bytes = new_capacity * sizeof(*entry->memo);
+    cepHeartbeatDescriptorMemo* memo = entry->memo ?
+        cep_realloc(entry->memo, bytes) :
+        cep_malloc(bytes);
+    if (!memo) {
+        return false;
+    }
+
+    if (new_capacity > entry->memo_capacity) {
+        size_t old_bytes = entry->memo_capacity * sizeof(*entry->memo);
+        memset(((uint8_t*)memo) + old_bytes, 0, bytes - old_bytes);
+    }
+
+    entry->memo = memo;
+    entry->memo_capacity = new_capacity;
+    return true;
 }
 
 
@@ -679,6 +724,7 @@ static cepHeartbeatDispatchCacheEntry* cep_heartbeat_dispatch_cache_acquire(cepH
             entry->signal_path = record ? record->signal_path : NULL;
             entry->target_path = record ? record->target_path : NULL;
             entry->descriptor_count = 0u;
+            entry->memo_count = 0u;
             if (fresh) {
                 *fresh = true;
             }
@@ -714,6 +760,7 @@ static void cep_heartbeat_dispatch_cache_cleanup_generation(cepHeartbeatScratch*
             entry->signal_path = NULL;
             entry->target_path = NULL;
             entry->descriptor_count = 0u;
+            entry->memo_count = 0u;
         }
     }
 }
@@ -1136,9 +1183,31 @@ bool cep_heartbeat_process_impulses(void) {
                     entry->descriptors = buffer;
                     entry->descriptor_capacity = resolved;
                 }
+
+                if (!cep_heartbeat_dispatch_entry_reserve_memo(entry, resolved)) {
+                    ok = false;
+                    break;
+                }
+
                 memcpy(entry->descriptors, scratch->ordered, resolved * sizeof(*scratch->ordered));
+                memset(entry->memo, 0, resolved * sizeof(*entry->memo));
+                entry->memo_count = resolved;
+            } else {
+                entry->memo_count = 0u;
             }
             entry->descriptor_count = resolved;
+        } else if (entry->descriptor_count > entry->memo_count) {
+            size_t previous = entry->memo_count;
+            if (!cep_heartbeat_dispatch_entry_reserve_memo(entry, entry->descriptor_count)) {
+                ok = false;
+                break;
+            }
+            memset(entry->memo + previous, 0, (entry->descriptor_count - previous) * sizeof(*entry->memo));
+            entry->memo_count = entry->descriptor_count;
+        }
+
+        if (!ok) {
+            break;
         }
 
         if (entry->descriptor_count == 0u && cep_heartbeat_policy_use_dirs()) {
@@ -1146,13 +1215,54 @@ bool cep_heartbeat_process_impulses(void) {
         }
 
         if (entry->descriptor_count > 0u && entry->descriptors) {
+            cepHeartbeatDescriptorMemo* memo_array = entry->memo;
             for (size_t j = 0; j < entry->descriptor_count && ok; ++j) {
                 const cepEnzymeDescriptor* descriptor = entry->descriptors[j];
                 if (!descriptor || !descriptor->callback) {
                     continue;
                 }
 
+                cepHeartbeatDescriptorMemo* memo = (memo_array && j < entry->memo_count) ? &memo_array[j] : NULL;
+                bool executed_before = memo && memo->executed;
+                bool should_run = true;
+                unsigned flags = descriptor->flags;
+
+                if (executed_before && should_run) {
+                    if (flags & CEP_ENZYME_FLAG_STATEFUL) {
+                        should_run = false;
+                    }
+                    if (should_run && (flags & CEP_ENZYME_FLAG_EMIT_SIGNALS) && memo->emitted) {
+                        should_run = false;
+                    }
+                    if (should_run && (flags & CEP_ENZYME_FLAG_IDEMPOTENT) && memo->last_rc == CEP_ENZYME_SUCCESS) {
+                        should_run = false;
+                    }
+                }
+
+                if (!should_run) {
+                    if (cep_heartbeat_policy_use_dirs()) {
+                        int rc_log = memo ? memo->last_rc : CEP_ENZYME_SUCCESS;
+                        if (!cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, descriptor, rc_log, &impulse)) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
+                size_t before_signals = CEP_RUNTIME.inbox_next.count;
                 int rc = descriptor->callback(impulse.signal_path, impulse.target_path);
+                size_t after_signals = CEP_RUNTIME.inbox_next.count;
+                bool emitted = after_signals > before_signals;
+
+                if (memo) {
+                    memo->executed = 1u;
+                    memo->last_rc = rc;
+                    if (emitted) {
+                        memo->emitted = 1u;
+                    }
+                }
+
                 if (cep_heartbeat_policy_use_dirs()) {
                     if (!cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, descriptor, rc, &impulse)) {
                         ok = false;
