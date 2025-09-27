@@ -9,7 +9,7 @@
 - `src/l0_kernel/storage/*` — Pluggable child-storage implementations (linked list, dynamic array, packed queue, RB-tree, octree).
 - `src/l0_kernel/cep_molecule.h` — Low-level utilities: memory, alignment, branch prediction, small helpers.
 - `src/test/*` — MUnit tests, examples of API usage.
-- `docs/CEP.txt` — Conceptual blueprint: layers, execution model, goals.
+- `docs/CEP.md` — Conceptual blueprint: layers, execution model, goals.
 
 ## Related Docs
 - Core cell model

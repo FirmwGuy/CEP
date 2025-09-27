@@ -152,7 +152,22 @@ Let’s trace a single action—Alice pressing **Save**—through the layers:
 
 ## 📖 Learn More
 
-See [`docs/CEP.txt`](./docs/CEP.txt) for the full conceptual framework, glossary, and worked examples.
+See [`docs/CEP.md`](./docs/CEP.md) for the full conceptual framework, glossary, and worked examples.
+
+---
+
+## 🧭 Roadmap
+
+| Layer | Status | Notes |
+| --- | --- | --- |
+| L0 Kernel | ✅ Implemented | Core heartbeat and data persistence are already shipping. |
+| L1 Bonds & Coherence | 🛠️ In progress | Relationship tracking and consistency guards are being assembled. |
+| L2 Ecology of Flows | 🕒 Planned | Parallel strategy orchestration is on deck after coherence lands. |
+| L3 Cognition | 🕒 Planned | Pattern recognition and scoring will build on the earlier layers. |
+| L4 Society | 🕒 Planned | Governance workflows arrive once cognition can suggest reforms. |
+| L5 Culture | 🕒 Planned | Story-building tools will cap the stack after governance stabilizes. |
+
+---
 
 ## 📝 License
 
