@@ -228,6 +228,7 @@ if docs_html_opt
 
   doxygen_runner = files('tools/run_doxygen.py')[0]
   git_tag_file = files('tools/git_tag_version.py')[0]
+  fix_toc_script = files('tools/fix_doxygen_toc.py')[0]
   custom_target('docs_html',
     input: [doxyfile],
     output: 'docs_html.stamp',
@@ -237,8 +238,10 @@ if docs_html_opt
       '--doxygen', doxygen.full_path(),
       '--config', '@INPUT0@',
       '--stamp', '@OUTPUT0@',
+      '--post-process', fix_toc_script,
+      '--html-root', join_paths(doc_output_dir, 'html'),
     ],
-    depend_files: [doxygen_runner, git_tag_file],
+    depend_files: [doxygen_runner, git_tag_file, fix_toc_script],
     build_by_default: docs_html_opt,
     build_always_stale: docs_html_opt,
   )

@@ -2,7 +2,7 @@
 
 ---
 
-## Introduction
+## 1. Introduction
 
 CEP is a way to build systems that behave like living communities, not just machines. At the very bottom, it handles simple, certain steps (like a clock). In the middle, it allows many approaches to coexist and learn which work best (like a small ecosystem). At the top, it helps people understand, agree, and remember what the system is doing and why (like shared rules and stories in a group).
 
@@ -25,7 +25,7 @@ CEP advances in small steps called **passes** so it's predictable and debuggable
 
 ---
 
-## Design Goals
+## 2. Design Goals
 
 CEP aims to be both **trustworthy** (you can always replay what happened) and **creative** (it can try different approaches and improve).
 
@@ -45,7 +45,7 @@ CEP aims to be both **trustworthy** (you can always replay what happened) and **
 
 ---
 
-## Layered Architecture
+## 3. Layered Architecture
 
 ### Layer 0 - Kernel (Physiology of Computing)
 
@@ -163,7 +163,7 @@ Shared understanding helps people align faster than raw data or long specs.
 
 ---
 
-## Implementation Phases
+## 4. Implementation Phases
 
 ### How to Adopt CEP Gradually
 
@@ -186,7 +186,7 @@ You don't need everything on day one. Start small and grow.
 
 ---
 
-## Execution Model
+## 5. Execution Model
 
 ### The Rhythm of Work
 
