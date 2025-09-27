@@ -16,7 +16,7 @@ while most test code is dedicated to the public domain for friction‑free reuse
     are dedicated to the public domain using the CC0 1.0 Universal dedication.
   - This allows you to copy test scaffolding into your own projects without attribution.
 - munit (test harness only): MIT
-  - We vendor the µnit Testing Framework (`src/test/munit.c`, `src/test/munit.h`) for
+  - We provide the µnit Testing Framework (`src/test/munit.c`, `src/test/munit.h`) for
     building and running tests. These files are MIT‑licensed by their author(s) and
     retain their original license headers.
   - The library build does not install or ship munit; it is used only for test binaries.
