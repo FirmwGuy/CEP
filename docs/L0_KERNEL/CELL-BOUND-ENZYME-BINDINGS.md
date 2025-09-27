@@ -13,7 +13,7 @@ Imagine putting a sticky note on a folder that says “run these helpers here.�
 - Literal paths: enzymes bound to concrete cell paths remain stored directly on the target cell and optionally inherit to descendants when marked propagate.
 - Wildcard paths: any binding whose target path contains glob segments is captured in the registry-owned wildcard tree instead of the cell graph.
 - Signal filters: signal paths behave the same way—literal entries live in the per-signal buckets, wildcard entries live in the wildcard tree for signals.
-- Literal naming constraints: namepool rejects segments containing `*` or `?` so literal bindings stay unambiguous; those characters are reserved for wildcard matching.
+- Literal naming constraints: namepool rejects segments containing `*` or `?` so literal bindings stay unambiguous; multi-segment wildcards rely on the dedicated `CEP_ID_GLOB_MULTI` sentinel while `*` and `?` remain reserved for upcoming per-segment selectors.
 - Domains and tags: impulse cell paths resolve across both `cepData` and `cepStore` domains; bindings record the domain segment explicitly so literals attach to the correct list and wildcard nodes match the intended domain/tag combination.
 - Append-only: binding and unbinding append records with the enzyme identity (`cepDT name`), flags, and registration stamp. Entries become visible on the next heartbeat; callers schedule bind/unbind work outside the active beat to preserve N→N+1 semantics.
 - De-duplication: when the resolver gathers bindings it keeps the first occurrence of a name (most specific wins) and ignores duplicates.
@@ -38,9 +38,9 @@ Imagine putting a sticky note on a folder that says “run these helpers here.�
   - Resolve semantics: the target cell contributes all non-tombstoned entries; ancestors contribute only entries with the propagate flag set.
   - Runtime append-only trail: bind/unbind operations append nodes and stamp `modified` with `cep_cell_timestamp_next()`.
 - Wildcard registry (target and signal):
-  - Per-domain trie keyed by path segments, with literal children and wildcard drawers (`*`, `?`, `**`) stored separately.
+  - Per-domain trie keyed by path segments, with literal children and wildcard drawers stored separately.
   - Each node keeps vectors of binding records plus tombstones in registration order, carrying the same flags as literal nodes.
-  - `cepID` segments are canonicalised: literal children cache the namepool `cepID` for the exact segment, while wildcard drawers use reserved glob `cepID`s (for `*`, `?`, `**`) so lookup stays O(1) and identifiers remain inspectable. Nodes retain the original pattern text for debugging, but the resolver relies on the precomputed glob kind.
+  - `cepID` segments are canonicalised: literal children cache the namepool `cepID` for the exact segment, while wildcard drawers use reserved glob sentinels (`CEP_ID_GLOB_MULTI` today, with `CEP_ID_GLOB_STAR`/`CEP_ID_GLOB_QUESTION` reserved for future single-segment matches) so lookup stays O(1) and identifiers remain inspectable. Nodes retain the original pattern text for debugging, but the resolver relies on the precomputed glob kind.
   - Traversal metadata precomputes segment matchers so resolve-time checks avoid repeated parsing.
   - Domain/tag awareness is encoded in the segment keys so `cepData` vs `cepStore` bindings never collide.
 - Inheritance masking:

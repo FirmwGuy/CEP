@@ -10,6 +10,7 @@
 
 #include "test.h"
 #include "cep_enzyme.h"
+#include "cep_heartbeat.h"
 
 
 
@@ -48,10 +49,115 @@ static const cepPath* make_path_from_segments(CepPathBufDyn* buf, const cepDT* s
 }
 
 
+static void enzyme_runtime_start(void) {
+    cepHeartbeatPolicy policy = {
+        .start_at = 0u,
+        .ensure_directories = false,
+        .enforce_visibility = false,
+    };
+    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
+    munit_assert_true(cep_heartbeat_startup());
+}
+
+
+static const cepPath* ensure_dictionary_path(const cepDT* segments,
+                                             unsigned count,
+                                             CepPathBufDyn* buf,
+                                             const cepDT* type_dt,
+                                             cepCell** out_leaf) {
+    cepCell* parent = cep_root();
+    for (unsigned i = 0; i < count; ++i) {
+        cepCell* child = cep_cell_find_by_name(parent, &segments[i]);
+        if (!child) {
+            child = cep_cell_add_dictionary(parent,
+                                            (cepDT*)&segments[i],
+                                            0,
+                                            (cepDT*)type_dt,
+                                            CEP_STORAGE_RED_BLACK_T);
+        }
+        munit_assert_not_null(child);
+        parent = child;
+    }
+
+    if (out_leaf) {
+        *out_leaf = parent;
+    }
+
+    return make_path_from_segments(buf, segments, count);
+}
+
+
 static int dummy_enzyme_success(const cepPath* signal, const cepPath* target) {
     (void)signal;
     (void)target;
     return CEP_ENZYME_SUCCESS;
+}
+
+
+static MunitResult test_enzyme_tombstone_masks_ancestor(void) {
+    enzyme_runtime_start();
+
+    cepEnzymeRegistry* registry = cep_enzyme_registry_create();
+    munit_assert_not_null(registry);
+
+    const cepDT seg_root = *CEP_DTAA("ENZ", "ROOT");
+    const cepDT seg_leaf = *CEP_DTAA("ENZ", "LEAF");
+    const cepDT path_segments[] = { seg_root, seg_leaf };
+
+    CepPathBufDyn target_buf = {0};
+    cepCell* leaf = NULL;
+    const cepPath* target_path = ensure_dictionary_path(path_segments,
+                                                       cep_lengthof(path_segments),
+                                                       &target_buf,
+                                                       CEP_DTAW("CEP", "dictionary"),
+                                                       &leaf);
+    munit_assert_not_null(target_path);
+    munit_assert_not_null(leaf);
+
+    cepCell* parent = cep_cell_parent(leaf);
+    munit_assert_not_null(parent);
+
+    const cepDT enzyme_name = *CEP_DTAA("EZ", "MASK");
+
+    munit_assert_int(cep_cell_bind_enzyme(parent, &enzyme_name, true), ==, CEP_ENZYME_SUCCESS);
+
+    CepPathBuf signal_buf;
+    const cepPath* signal_path = make_single_segment_path(&signal_buf, &seg_root);
+
+    cepEnzymeDescriptor descriptor = {
+        .name   = enzyme_name,
+        .label  = "tombstone-mask",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &descriptor), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+
+    cepImpulse impulse = {
+        .signal_path = NULL,
+        .target_path = target_path,
+    };
+
+    const cepEnzymeDescriptor* ordered[2] = {0};
+    size_t resolved = cep_enzyme_resolve(registry, &impulse, ordered, cep_lengthof(ordered));
+    munit_assert_size(resolved, ==, 1);
+    munit_assert_not_null(ordered[0]);
+    munit_assert_int(cep_dt_compare(&ordered[0]->name, &enzyme_name), ==, 0);
+
+    munit_assert_int(cep_cell_unbind_enzyme(leaf, &enzyme_name), ==, CEP_ENZYME_SUCCESS);
+
+    resolved = cep_enzyme_resolve(registry, &impulse, ordered, cep_lengthof(ordered));
+    munit_assert_size(resolved, ==, 0);
+
+    cep_enzyme_registry_destroy(registry);
+    cep_heartbeat_shutdown();
+    return MUNIT_OK;
 }
 
 
@@ -306,6 +412,250 @@ static MunitResult test_enzyme_specificity_priority(void) {
 }
 
 
+static MunitResult test_enzyme_data_binding_resolves(void) {
+    enzyme_runtime_start();
+
+    cepEnzymeRegistry* registry = cep_enzyme_registry_create();
+    munit_assert_not_null(registry);
+
+    const cepDT seg_root = *CEP_DTAA("ENZ", "DATA");
+    const cepDT path_segments[] = { seg_root };
+
+    CepPathBufDyn target_buf = {0};
+    cepCell* target = NULL;
+    const cepPath* target_path = ensure_dictionary_path(path_segments,
+                                                       cep_lengthof(path_segments),
+                                                       &target_buf,
+                                                       CEP_DTAW("CEP", "dictionary"),
+                                                       &target);
+    munit_assert_not_null(target);
+
+    uint8_t payload[] = { 0xDE, 0xAD, 0xBE, 0xEF };
+    cepData* data = cep_data_new_value(CEP_DTAW("EZ", "payload"), payload, sizeof payload);
+    munit_assert_not_null(data);
+    cep_cell_set_data(target, data);
+    munit_assert_not_null(target->data);
+    munit_assert_not_null(target->store);
+
+    const cepDT enzyme_data_name = *CEP_DTAA("EZ", "DATA");
+    const cepDT enzyme_store_name = *CEP_DTAA("EZ", "STORE");
+
+    cepEnzymeBinding* data_binding = cep_malloc0(sizeof *data_binding);
+    data_binding->name = enzyme_data_name;
+    data_binding->flags = 0u;
+    data_binding->modified = cep_cell_timestamp_next();
+    data_binding->next = target->data->bindings;
+    target->data->bindings = data_binding;
+
+    munit_assert_int(cep_cell_bind_enzyme(target, &enzyme_store_name, false), ==, CEP_ENZYME_SUCCESS);
+
+    CepPathBuf signal_buf;
+    const cepPath* signal_path = make_single_segment_path(&signal_buf, &seg_root);
+
+    cepEnzymeDescriptor desc_data = {
+        .name   = enzyme_data_name,
+        .label  = "data-binding",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    cepEnzymeDescriptor desc_store = {
+        .name   = enzyme_store_name,
+        .label  = "store-binding",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &desc_data), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_enzyme_register(registry, signal_path, &desc_store), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+
+    cepImpulse impulse = {
+        .signal_path = NULL,
+        .target_path = target_path,
+    };
+
+    const cepEnzymeDescriptor* ordered[4] = {0};
+    size_t resolved = cep_enzyme_resolve(registry, &impulse, ordered, cep_lengthof(ordered));
+    munit_assert_size(resolved, ==, 2);
+
+    bool seen_data = false;
+    bool seen_store = false;
+    for (size_t i = 0; i < resolved; ++i) {
+        const cepEnzymeDescriptor* desc = ordered[i];
+        munit_assert_not_null(desc);
+        if (cep_dt_compare(&desc->name, &enzyme_data_name) == 0) {
+            seen_data = true;
+        }
+        if (cep_dt_compare(&desc->name, &enzyme_store_name) == 0) {
+            seen_store = true;
+        }
+    }
+    munit_assert_true(seen_data);
+    munit_assert_true(seen_store);
+
+    cep_enzyme_registry_destroy(registry);
+    cep_heartbeat_shutdown();
+    return MUNIT_OK;
+}
+
+
+static MunitResult test_enzyme_signal_wildcard_priority(void) {
+    cepEnzymeRegistry* registry = cep_enzyme_registry_create();
+    munit_assert_not_null(registry);
+
+    cepDT seg_head = *CEP_DTAA("SIG", "ROOT");
+    cepDT seg_tail = *CEP_DTAA("IMG", "VIEW");
+    cepDT literal_segments[] = { seg_head, seg_tail };
+
+    CepPathBufDyn signal_buf = {0};
+    const cepPath* signal_path = make_path_from_segments(&signal_buf, literal_segments, cep_lengthof(literal_segments));
+
+    CepPathBufDyn literal_buf = {0};
+    const cepPath* literal_path = make_path_from_segments(&literal_buf, literal_segments, cep_lengthof(literal_segments));
+
+    cepDT wildcard_tag_segments[] = { seg_head, seg_tail };
+    wildcard_tag_segments[1].tag = CEP_ID_GLOB_MULTI;
+    CepPathBufDyn wildcard_tag_buf = {0};
+    const cepPath* wildcard_tag_path = make_path_from_segments(&wildcard_tag_buf, wildcard_tag_segments, cep_lengthof(wildcard_tag_segments));
+
+    cepEnzymeDescriptor desc_literal = {
+        .name   = *CEP_DTAA("EZ", "LIT"),
+        .label  = "literal",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    cepEnzymeDescriptor desc_wild_tag = {
+        .name   = *CEP_DTAA("EZ", "WLTG"),
+        .label  = "wild-tag",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    munit_assert_int(cep_enzyme_register(registry, literal_path, &desc_literal), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_enzyme_register(registry, wildcard_tag_path, &desc_wild_tag), ==, CEP_ENZYME_SUCCESS);
+
+    cepImpulse impulse = {
+        .signal_path = signal_path,
+        .target_path = NULL,
+    };
+
+    const cepEnzymeDescriptor* ordered[4] = {0};
+    size_t resolved = cep_enzyme_resolve(registry, &impulse, ordered, cep_lengthof(ordered));
+    munit_assert_size(resolved, ==, 2);
+
+    munit_assert_int(cep_dt_compare(&ordered[0]->name, &desc_literal.name), ==, 0);
+    munit_assert_int(cep_dt_compare(&ordered[1]->name, &desc_wild_tag.name), ==, 0);
+
+    cep_enzyme_registry_destroy(registry);
+    return MUNIT_OK;
+}
+
+
+static MunitResult test_enzyme_signal_prefix_wildcard(void) {
+    cepEnzymeRegistry* registry = cep_enzyme_registry_create();
+    munit_assert_not_null(registry);
+
+    cepDT seg_head = *CEP_DTAA("SIG", "ROOT");
+    cepDT seg_mid  = *CEP_DTAA("IMG", "CHAN");
+    cepDT seg_tail = *CEP_DTAA("VAR", "LEAF");
+    cepDT signal_segments[] = { seg_head, seg_mid, seg_tail };
+
+    CepPathBufDyn signal_buf = {0};
+    const cepPath* signal_path = make_path_from_segments(&signal_buf, signal_segments, cep_lengthof(signal_segments));
+
+    cepDT prefix_specific_segments[] = { seg_head, seg_mid };
+    CepPathBufDyn prefix_specific_buf = {0};
+    const cepPath* prefix_specific_path = make_path_from_segments(&prefix_specific_buf, prefix_specific_segments, cep_lengthof(prefix_specific_segments));
+
+    cepDT prefix_head_literal_segments[] = { seg_head };
+    CepPathBufDyn prefix_head_literal_buf = {0};
+    const cepPath* prefix_head_literal_path = make_path_from_segments(&prefix_head_literal_buf, prefix_head_literal_segments, cep_lengthof(prefix_head_literal_segments));
+
+    cepDT prefix_mid_any_segments[] = { seg_head, seg_mid };
+    prefix_mid_any_segments[1].tag = CEP_ID_GLOB_MULTI;
+    CepPathBufDyn prefix_mid_any_buf = {0};
+    const cepPath* prefix_mid_any_path = make_path_from_segments(&prefix_mid_any_buf, prefix_mid_any_segments, cep_lengthof(prefix_mid_any_segments));
+
+    cepEnzymeDescriptor desc_specific = {
+        .name   = *CEP_DTAA("EZ", "PFS1"),
+        .label  = "prefix-specific",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    cepEnzymeDescriptor desc_head_literal = {
+        .name   = *CEP_DTAA("EZ", "PFS2"),
+        .label  = "prefix-head-literal",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    cepEnzymeDescriptor desc_mid_any = {
+        .name   = *CEP_DTAA("EZ", "PFS3"),
+        .label  = "prefix-mid-any",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = dummy_enzyme_success,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    munit_assert_int(cep_enzyme_register(registry, prefix_specific_path, &desc_specific), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_enzyme_register(registry, prefix_head_literal_path, &desc_head_literal), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(cep_enzyme_register(registry, prefix_mid_any_path, &desc_mid_any), ==, CEP_ENZYME_SUCCESS);
+
+    cepImpulse impulse = {
+        .signal_path = signal_path,
+        .target_path = NULL,
+    };
+
+    const cepEnzymeDescriptor* ordered[4] = {0};
+    size_t resolved = cep_enzyme_resolve(registry, &impulse, ordered, cep_lengthof(ordered));
+    munit_assert_size(resolved, ==, 3);
+
+    munit_assert_int(cep_dt_compare(&ordered[0]->name, &desc_specific.name), ==, 0);
+    munit_assert_int(cep_dt_compare(&ordered[1]->name, &desc_mid_any.name), ==, 0);
+    munit_assert_int(cep_dt_compare(&ordered[2]->name, &desc_head_literal.name), ==, 0);
+
+    cep_enzyme_registry_destroy(registry);
+    return MUNIT_OK;
+}
+
+
 void* test_enzyme_setup(const MunitParameter params[], void* user_data) {
     (void)params;
     (void)user_data;
@@ -335,6 +685,26 @@ MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixtur
     }
 
     result = test_enzyme_name_tiebreak();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_enzyme_tombstone_masks_ancestor();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_enzyme_data_binding_resolves();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_enzyme_signal_wildcard_priority();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_enzyme_signal_prefix_wildcard();
     if (result != MUNIT_OK) {
         return result;
     }
