@@ -1660,7 +1660,7 @@ static cepCell* cep_store_replace_child(cepStore* store, cepCell* existing, cepC
    Deduplicate structural matches, then delegate to the backend-specific helper
    before updating metadata. Append-only invariant: mutations must leave the
    sibling ordering intact so historical traversals can rebuild the directory
-   (see docs/L0_Kernel/APPEND-ONLY-AND-IDEMPOTENCY.md).
+   (see docs/L0_KERNEL/APPEND-ONLY-AND-IDEMPOTENCY.md).
 */
 cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child) {
     assert(cep_store_valid(store) && !cep_cell_is_void(child));

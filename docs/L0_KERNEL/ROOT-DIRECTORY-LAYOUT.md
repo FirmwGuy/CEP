@@ -36,7 +36,7 @@ At the root, use a dictionary by name for stable lookups. Each top-level folder 
 - Queues are lists by insertion order. No nondeterministic iteration.
 - External reads/writes are journaled with hashes and preconditions.
 - Outputs created in N become visible in N+1.
-- See also: `docs/L0_Kernel/APPEND-ONLY-AND-IDEMPOTENCY.md` for cell-level append-only history and idempotent updates.
+- See also: `docs/L0_KERNEL/APPEND-ONLY-AND-IDEMPOTENCY.md` for cell-level append-only history and idempotent updates.
 
 We’ll use a running example: “resize_image” enzyme that makes a thumbnail for `/env/fs/projects/p1/img123.jpg` and writes the result to `/data/assets/img123/thumbnail`.
 
@@ -128,7 +128,7 @@ enzymes/
 - Matching: eligible when the query matches either the inbox item’s
   `signal_path` or its `target_path`.
 - Ordering: deterministic — sort by match specificity, then by registration
-  order. Details in `docs/L0_Kernel/HEARTBEAT-AND-ENZYMES.md`.
+  order. Details in `docs/L0_KERNEL/HEARTBEAT-AND-ENZYMES.md`.
 - Persistence: none. Only enzyme metadata under `enzymes/` is durable.
 
 #### Example

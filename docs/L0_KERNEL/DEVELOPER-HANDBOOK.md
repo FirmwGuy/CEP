@@ -13,15 +13,15 @@
 
 ## Related Docs
 - Core cell model
-  - `docs/L0_Kernel/NATIVE-TYPES.md` — L0 native types, canonical encoding, hashing/comparison.
-  - `docs/L0_Kernel/LINKS-AND-SHADOWING.md` — Link resolution, backlinks, and shadowing (tree → safe graph).
-  - `docs/L0_Kernel/APPEND-ONLY-AND-IDEMPOTENCY.md` — Append‑only history and idempotent updates for cells.
+  - `docs/L0_KERNEL/NATIVE-TYPES.md` — L0 native types, canonical encoding, hashing/comparison.
+  - `docs/L0_KERNEL/LINKS-AND-SHADOWING.md` — Link resolution, backlinks, and shadowing (tree → safe graph).
+  - `docs/L0_KERNEL/APPEND-ONLY-AND-IDEMPOTENCY.md` — Append‑only history and idempotent updates for cells.
 - Runtime and scheduling
-  - `docs/L0_Kernel/HEARTBEAT-AND-ENZYMES.md` — Beat model, scheduling, enzyme contracts, replay safety.
-  - `docs/L0_Kernel/ROOT-DIRECTORY-LAYOUT.md` — Recommended root structure, journal/CAS, visibility rules.
+  - `docs/L0_KERNEL/HEARTBEAT-AND-ENZYMES.md` — Beat model, scheduling, enzyme contracts, replay safety.
+  - `docs/L0_KERNEL/ROOT-DIRECTORY-LAYOUT.md` — Recommended root structure, journal/CAS, visibility rules.
 - External I/O
-  - `docs/L0_Kernel/EXTERNAL-LIBRARIES-INTERFACE.md` — Access to foreign structures; handles vs snapshots; zero‑copy rules.
-  - `docs/L0_Kernel/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect log, streams, preconditions, CAS, replay modes.
+  - `docs/L0_KERNEL/EXTERNAL-LIBRARIES-INTERFACE.md` — Access to foreign structures; handles vs snapshots; zero‑copy rules.
+  - `docs/L0_KERNEL/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect log, streams, preconditions, CAS, replay modes.
 
 ## Build & Test (MSYS/bash)
 - Meson/Ninja (recommended)
