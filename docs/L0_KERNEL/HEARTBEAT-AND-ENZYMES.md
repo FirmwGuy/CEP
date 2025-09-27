@@ -1,4 +1,4 @@
-# CEP Heartbeat, Signals, and Enzymes
+# L0 Kernel: Heartbeat, Signals, and Enzymes
 
 ## Introduction
 

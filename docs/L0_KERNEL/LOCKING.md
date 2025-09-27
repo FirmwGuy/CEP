@@ -1,4 +1,4 @@
-# Store and Payload Locks
+# L0 Kernel: Store and Payload Locks
 
 Locking lets you "freeze" a portion of the tree so structure or payloads stay put while you inspect or snapshot it. Picture a librarian roping off a shelf: visitors can still look, but no one rearranges the books until the rope comes off.
 

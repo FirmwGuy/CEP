@@ -1,4 +1,4 @@
-# Append-Only and Idempotency in CEP Cells
+# L0 Kernel: Append-Only and Idempotency in Cells
 
 ## Introduction
 CEP stores information the way a careful archivist files letters: every note and every folder is kept in the order it was received, with timestamps that tell you exactly when each item arrived. Nothing is ever overwritten or shuffled out of place, so you can always open the cabinet and see both the present state and any prior version. Whether the cell holds a single piece of data, behaves like a directory of children, or mixes both, the goal is the same—add new material without disturbing the trail that brought us here.

@@ -1,4 +1,4 @@
-# L0 Kernel Roadmap
+# L0 Kernel: Roadmap
 
 The L0 Kernel keeps CEP's tree of cells organised so applications can treat it like a digital filing cabinet. Picture a network-spanning set of folders where each update is timestamped; L0 is the librarian that knows which sheet moved, when it moved, and how every drawer lines up.
 

@@ -1,4 +1,4 @@
-# Links and Shadowing in CEP Cells
+# L0 Kernel: Links and Shadowing in Cells
 
 ## Introduction
 - Think of a link as a shortcut to another item. Instead of copying the original, a link points to it. CEP keeps these shortcuts safe: when you follow a link, you always reach the real item (never another shortcut), and the real item knows who is linking to it so nothing breaks.

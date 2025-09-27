@@ -1,4 +1,4 @@
-# CEP Serialization and Streams
+# L0 Kernel: Serialization and Streams
 
 CEP serialization packages cell state into travel-friendly pieces so snapshots and replays can hop between machines without special tooling. Think of it as a mail service: every envelope carries enough guidance for the receiver to rebuild what mattered, whether that is a tiny value or a multi-gigabyte blob. Streams show up here because they are our conveyor belt--the same chunk vocabulary powers on-disk archives, replication, and long-haul transfers.
 

@@ -1,4 +1,4 @@
-# CEP L0 Root Directory Layout
+# L0 Kernel: Root Directory Layout
 
 This document describes a practical, deterministic directory structure for CEP cells when introducing the heartbeat runtime and enzymes.
 

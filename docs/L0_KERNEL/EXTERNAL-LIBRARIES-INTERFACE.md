@@ -1,4 +1,4 @@
-# Accessing Foreign Library Structures (L0)
+# L0 Kernel: Accessing Foreign Library Structures
 
 This document explains how the CEP kernel (Layer 0) safely uses internal data from external libraries (audio, video, 3D, networking, etc.).
 

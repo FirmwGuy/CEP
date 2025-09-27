@@ -1,4 +1,4 @@
-# CEP Developer Handbook
+# L0 Kernel: Developer Handbook
 
 ## Overview
 - Scope: Hands-on guidance for implementing and extending CEP Layer 0 (Kernel) and preparing for Layers 1–2. Focus on `cep_cell.*` as the foundation. Ignore enzymes/heartbeat modules for now unless explicitly noted.

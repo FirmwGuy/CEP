@@ -1,4 +1,4 @@
-# Cell-Bound Enzyme Bindings and Signal-Indexed Dispatch
+# L0 Kernel: Cell-Bound Enzyme Bindings and Signal-Indexed Dispatch
 
 ## Introduction
 
