@@ -286,104 +286,116 @@ static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target, s
     size_t active_count = 0u;
     size_t active_capacity = 0u;
 
-    cepEffectiveBinding* blocked = NULL;
-    size_t blocked_count = 0u;
-    size_t blocked_capacity = 0u;
+    cepEffectiveBinding* masked = NULL;
+    size_t masked_count = 0u;
+    size_t masked_capacity = 0u;
 
     for (const cepCell* cell = target; cell; cell = cep_cell_parent(cell)) {
-        bool is_target = (cell == target);
-        const cepEnzymeBinding* binding = cep_cell_enzyme_bindings(cell);
-        if (!binding) {
+        if (!cep_cell_is_normal(cell)) {
             continue;
         }
+
+        bool is_target = (cell == target);
+
+        const cepEnzymeBinding* binding_lists[2] = {
+            (cell && cell->data)  ? cell->data->bindings  : NULL,
+            (cell && cell->store) ? cell->store->bindings : NULL,
+        };
 
         cepEffectiveBinding* local_seen = NULL;
         size_t local_count = 0u;
         size_t local_capacity = 0u;
 
-        for (const cepEnzymeBinding* node = binding; node; node = node->next) {
-            if (cep_enzyme_binding_contains(local_seen, local_count, &node->name, NULL)) {
+        for (size_t list_index = 0u; list_index < (sizeof binding_lists / sizeof binding_lists[0]); ++list_index) {
+            const cepEnzymeBinding* node = binding_lists[list_index];
+            if (!node) {
                 continue;
             }
 
-            if (local_count == local_capacity) {
-                size_t new_capacity = local_capacity ? (local_capacity << 1u) : 4u;
-                cepEffectiveBinding* resized = cep_realloc(local_seen, new_capacity * sizeof(*resized));
-                if (!resized) {
-                    CEP_FREE(local_seen);
-                    CEP_FREE(blocked);
-                    CEP_FREE(active);
-                    if (out_count) {
-                        *out_count = SIZE_MAX;
-                    }
-                    return NULL;
+            for (; node; node = node->next) {
+                if (cep_enzyme_binding_contains(local_seen, local_count, &node->name, NULL)) {
+                    continue;
                 }
-                local_seen = resized;
-                local_capacity = new_capacity;
-            }
-            local_seen[local_count++].name = node->name;
 
-            if (node->flags & CEP_ENZYME_BIND_TOMBSTONE) {
-                size_t idx;
-                if (cep_enzyme_binding_contains(active, active_count, &node->name, &idx)) {
-                    if (idx + 1u < active_count) {
-                        memmove(&active[idx], &active[idx + 1u], (active_count - (idx + 1u)) * sizeof(*active));
-                    }
-                    active_count--;
-                }
-                if (!cep_enzyme_binding_contains(blocked, blocked_count, &node->name, NULL)) {
-                    if (blocked_count == blocked_capacity) {
-                        size_t new_capacity = blocked_capacity ? (blocked_capacity << 1u) : 8u;
-                        cepEffectiveBinding* resized = cep_realloc(blocked, new_capacity * sizeof(*resized));
-                        if (!resized) {
-                            CEP_FREE(local_seen);
-                        CEP_FREE(blocked);
-                        CEP_FREE(active);
-                        if (out_count) {
-                            *out_count = SIZE_MAX;
-                        }
-                        return NULL;
-                    }
-                    blocked = resized;
-                    blocked_capacity = new_capacity;
-                }
-                    blocked[blocked_count++].name = node->name;
-                }
-                continue;
-            }
-
-            if (!is_target && !(node->flags & CEP_ENZYME_BIND_PROPAGATE)) {
-                continue;
-            }
-
-            if (cep_enzyme_binding_contains(blocked, blocked_count, &node->name, NULL)) {
-                continue;
-            }
-
-            if (!cep_enzyme_binding_contains(active, active_count, &node->name, NULL)) {
-                if (active_count == active_capacity) {
-                    size_t new_capacity = active_capacity ? (active_capacity << 1u) : 8u;
-                    cepEffectiveBinding* resized = cep_realloc(active, new_capacity * sizeof(*resized));
+                if (local_count == local_capacity) {
+                    size_t new_capacity = local_capacity ? (local_capacity << 1u) : 4u;
+                    cepEffectiveBinding* resized = cep_realloc(local_seen, new_capacity * sizeof(*resized));
                     if (!resized) {
                         CEP_FREE(local_seen);
-                        CEP_FREE(blocked);
+                        CEP_FREE(masked);
                         CEP_FREE(active);
                         if (out_count) {
                             *out_count = SIZE_MAX;
                         }
                         return NULL;
                     }
-                    active = resized;
-                    active_capacity = new_capacity;
+                    local_seen = resized;
+                    local_capacity = new_capacity;
                 }
-                active[active_count++].name = node->name;
+                local_seen[local_count++].name = node->name;
+
+                if (node->flags & CEP_ENZYME_BIND_TOMBSTONE) {
+                    size_t idx;
+                    if (cep_enzyme_binding_contains(active, active_count, &node->name, &idx)) {
+                        if (idx + 1u < active_count) {
+                            memmove(&active[idx], &active[idx + 1u], (active_count - (idx + 1u)) * sizeof(*active));
+                        }
+                        active_count--;
+                    }
+                    if (!cep_enzyme_binding_contains(masked, masked_count, &node->name, NULL)) {
+                        if (masked_count == masked_capacity) {
+                            size_t new_capacity = masked_capacity ? (masked_capacity << 1u) : 8u;
+                            cepEffectiveBinding* resized = cep_realloc(masked, new_capacity * sizeof(*resized));
+                            if (!resized) {
+                                CEP_FREE(local_seen);
+                                CEP_FREE(masked);
+                                CEP_FREE(active);
+                                if (out_count) {
+                                    *out_count = SIZE_MAX;
+                                }
+                                return NULL;
+                            }
+                            masked = resized;
+                            masked_capacity = new_capacity;
+                        }
+                        masked[masked_count++].name = node->name;
+                    }
+                    continue;
+                }
+
+                if (!is_target && !(node->flags & CEP_ENZYME_BIND_PROPAGATE)) {
+                    continue;
+                }
+
+                if (cep_enzyme_binding_contains(masked, masked_count, &node->name, NULL)) {
+                    continue;
+                }
+
+                if (!cep_enzyme_binding_contains(active, active_count, &node->name, NULL)) {
+                    if (active_count == active_capacity) {
+                        size_t new_capacity = active_capacity ? (active_capacity << 1u) : 8u;
+                        cepEffectiveBinding* resized = cep_realloc(active, new_capacity * sizeof(*resized));
+                        if (!resized) {
+                            CEP_FREE(local_seen);
+                            CEP_FREE(masked);
+                            CEP_FREE(active);
+                            if (out_count) {
+                                *out_count = SIZE_MAX;
+                            }
+                            return NULL;
+                        }
+                        active = resized;
+                        active_capacity = new_capacity;
+                    }
+                    active[active_count++].name = node->name;
+                }
             }
         }
 
         CEP_FREE(local_seen);
     }
 
-    CEP_FREE(blocked);
+    CEP_FREE(masked);
 
     if (out_count) {
         *out_count = active_count;
@@ -544,10 +556,10 @@ static size_t cep_enzyme_path_specificity(const cepPath* pattern) {
     size_t specificity = 0u;
     for (unsigned i = 0; i < pattern->length; ++i) {
         const cepDT* dt = &pattern->past[i].dt;
-        if (!cep_id_is_match_any(dt->domain)) {
+        if (!cep_id_is_glob_multi(dt->domain)) {
             specificity++;
         }
-        if (!cep_id_is_match_any(dt->tag)) {
+        if (!cep_id_is_glob_multi(dt->tag)) {
             specificity++;
         }
     }

@@ -54,6 +54,21 @@ static size_t               name_bucket_threshold = 0u;
 
 static cepCell*             namepool_root     = NULL;
 
+static CEP_CONST_FUNC bool cep_namepool_contains_glob(const char* text, size_t length) {
+    if (!text) {
+        return false;
+    }
+
+    for (size_t i = 0; i < length; ++i) {
+        char c = text[i];
+        if (c == '*' || c == '?') {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static cepID cep_namepool_try_compact(const char* text, size_t length) {
     if (!text || length == 0u) {
         return 0;
@@ -456,6 +471,10 @@ cepID cep_namepool_intern(const char* text, size_t length) {
         return 0;
     }
 
+    if (cep_namepool_contains_glob(text, length)) {
+        return 0;
+    }
+
     cepID compact = cep_namepool_try_compact(text, length);
     if (compact) {
         return compact;
@@ -521,6 +540,10 @@ cepID cep_namepool_intern_cstr(const char* text) {
     adapters can reference compile-time text cheaply. */
 cepID cep_namepool_intern_static(const char* text, size_t length) {
     if (!text || length == 0u || length > CEP_NAMEPOOL_MAX_LENGTH) {
+        return 0;
+    }
+
+    if (cep_namepool_contains_glob(text, length)) {
         return 0;
     }
 

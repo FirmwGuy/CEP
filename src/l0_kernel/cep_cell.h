@@ -227,10 +227,12 @@ enum _cepCellNaming {
 #define cep_id_to_reference(ref)        ((ref)  | cep_id_from_naming(CEP_NAMING_REFERENCE))
 #define cep_id_to_numeric(numb)         ((numb) | cep_id_from_naming(CEP_NAMING_NUMERIC))
 
-/* Reserved identifier that behaves as a wildcard during signal matching. The
-   payload uses the maximum reference offset so regular namepool entries do not
-   collide with the sentinel. */
-#define CEP_ID_MATCH_ANY                cep_id_to_reference(CEP_AUTOID_MAXVAL)
+/* Reserved identifiers that behave as wildcard sentinels during signal
+   matching. They occupy the highest reference-space values so namepool entries
+   never collide with them. */
+#define CEP_ID_GLOB_MULTI               cep_id_to_reference(CEP_AUTOID_MAXVAL)
+#define CEP_ID_GLOB_STAR                cep_id_to_reference(CEP_AUTOID_MAXVAL - 1u)
+#define CEP_ID_GLOB_QUESTION            cep_id_to_reference(CEP_AUTOID_MAXVAL - 2u)
 
 #define cep_id(name)                    ((name) & CEP_AUTOID_MAXVAL)
 #define CEP_ID_SET(name, id)            do{ name = ((name) & CEP_NAMING_MASK) | cep_id(id); }while(0)
@@ -248,12 +250,20 @@ enum _cepCellNaming {
 #define cep_id_text_valid(name)         (cep_id(name) && (cep_id_is_word(name) || cep_id_is_acronym(name) || cep_id_is_reference(name)))
 #define cep_id_naming(name)             (((name) >> CEP_AUTOID_BITS) & 3)
 
-static inline bool cep_id_is_match_any(cepID id) {
+static inline bool cep_id_is_glob_multi(cepID id) {
     return cep_id_is_reference(id) && cep_id(id) == CEP_AUTOID_MAXVAL;
 }
 
+static inline bool cep_id_is_glob_star(cepID id) {
+    return cep_id_is_reference(id) && cep_id(id) == (CEP_AUTOID_MAXVAL - 1u);
+}
+
+static inline bool cep_id_is_glob_question(cepID id) {
+    return cep_id_is_reference(id) && cep_id(id) == (CEP_AUTOID_MAXVAL - 2u);
+}
+
 static inline bool cep_id_matches(cepID pattern, cepID observed) {
-    return cep_id_is_match_any(pattern) || pattern == observed;
+    return cep_id_is_glob_multi(pattern) || pattern == observed;
 }
 
 #define cep_dt_valid(dt)                ((dt) && cep_id_text_valid((dt)->domain) && cep_id_valid((dt)->tag))

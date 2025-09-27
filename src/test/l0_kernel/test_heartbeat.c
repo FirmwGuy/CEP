@@ -650,8 +650,8 @@ static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
     munit_assert_size(path_len, >, 1u);
 
     cepDT wildcard = {0};
-    wildcard.domain = CEP_ID_MATCH_ANY;
-    wildcard.tag = CEP_ID_MATCH_ANY;
+    wildcard.domain = CEP_ID_GLOB_MULTI;
+    wildcard.tag = CEP_ID_GLOB_MULTI;
 
     size_t data_index = SIZE_MAX;
     for (size_t i = 0; i < path_len; ++i) {
@@ -763,8 +763,8 @@ static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
     munit_assert_size(path_len, >, 1u);
 
     cepDT wildcard = {0};
-    wildcard.domain = CEP_ID_MATCH_ANY;
-    wildcard.tag = CEP_ID_MATCH_ANY;
+    wildcard.domain = CEP_ID_GLOB_MULTI;
+    wildcard.tag = CEP_ID_GLOB_MULTI;
 
     size_t store_index = path_len - 1u;
     const cepDT store_dt = dynamic_path->past[store_index].dt;

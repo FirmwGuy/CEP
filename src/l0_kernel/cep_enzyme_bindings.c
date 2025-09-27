@@ -87,12 +87,20 @@ const cepEnzymeBinding* cep_cell_enzyme_bindings(const cepCell* cell) {
         return NULL;
     }
 
+    if (cell->data && cell->data->bindings) {
+        return cell->data->bindings;
+    }
+
     if (cell->store && cell->store->bindings) {
         return cell->store->bindings;
     }
 
     if (cell->data) {
         return cell->data->bindings;
+    }
+
+    if (cell->store) {
+        return cell->store->bindings;
     }
 
     return NULL;
