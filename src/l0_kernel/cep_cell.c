@@ -3322,6 +3322,54 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
             memmove(tempPath->past, &tempPath->past[start], tempPath->length * sizeof(cepPast));
     }
 
+    const cepCell* leaf = cell;
+    if (leaf && cep_cell_is_normal(leaf)) {
+        if (leaf->data && cep_dt_valid(&leaf->data->_dt)) {
+            if (tempPath->length >= tempPath->capacity) {
+                unsigned newCapacity = tempPath->capacity ? (tempPath->capacity << 1u) : 4u;
+                if (newCapacity < tempPath->length + 1u) {
+                    newCapacity = tempPath->length + 1u;
+                }
+                size_t bytes = sizeof(cepPath) + ((size_t)newCapacity * sizeof(cepPast));
+                cepPath* resized = cep_realloc(tempPath, bytes);
+                if (!resized) {
+                    return false;
+                }
+                tempPath = resized;
+                tempPath->capacity = newCapacity;
+                *path = tempPath;
+            }
+
+            cepPast* segment = &tempPath->past[tempPath->length++];
+            segment->dt.domain = leaf->data->_dt.domain;
+            segment->dt.tag = leaf->data->_dt.tag;
+            segment->timestamp = 0u;
+        }
+
+        const cepStore* store = leaf->store;
+        if (store && store->chdCount && cep_dt_valid(&store->_dt)) {
+            if (tempPath->length >= tempPath->capacity) {
+                unsigned newCapacity = tempPath->capacity ? (tempPath->capacity << 1u) : 4u;
+                if (newCapacity < tempPath->length + 1u) {
+                    newCapacity = tempPath->length + 1u;
+                }
+                size_t bytes = sizeof(cepPath) + ((size_t)newCapacity * sizeof(cepPast));
+                cepPath* resized = cep_realloc(tempPath, bytes);
+                if (!resized) {
+                    return false;
+                }
+                tempPath = resized;
+                tempPath->capacity = newCapacity;
+                *path = tempPath;
+            }
+
+            cepPast* segment = &tempPath->past[tempPath->length++];
+            segment->dt.domain = store->_dt.domain;
+            segment->dt.tag = store->_dt.tag;
+            segment->timestamp = 0u;
+        }
+    }
+
     return true;
 }
 
@@ -3478,12 +3526,43 @@ cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, c
         return NULL;
     cepCell* cell = CEP_P(start);
 
-    for (unsigned depth = 0;  depth < path->length;  depth++) {
+    unsigned depth = 0u;
+    for (; depth < path->length; ++depth) {
         const cepPast* segment = &path->past[depth];
-        cepOpCount segSnapshot = segment->timestamp? segment->timestamp: snapshot;
-        cell = cep_cell_find_by_name_past(cell, &segment->dt, segSnapshot);
-        if (!cell)
+        cepOpCount segSnapshot = segment->timestamp ? segment->timestamp : snapshot;
+        cepCell* next = cep_cell_find_by_name_past(cell, &segment->dt, segSnapshot);
+        if (!next) {
+            break;
+        }
+        cell = next;
+    }
+
+    if (depth == path->length) {
+        return cell;
+    }
+
+    if (!cell || !cep_cell_is_normal(cell)) {
+        return NULL;
+    }
+
+    bool data_consumed = false;
+    bool store_consumed = false;
+
+    for (; depth < path->length; ++depth) {
+        const cepPast* segment = &path->past[depth];
+        bool matched = false;
+
+        if (!data_consumed && cell->data && cep_dt_compare(&cell->data->_dt, &segment->dt) == 0) {
+            data_consumed = true;
+            matched = true;
+        } else if (!store_consumed && cell->store && cep_dt_compare(&cell->store->_dt, &segment->dt) == 0) {
+            store_consumed = true;
+            matched = true;
+        }
+
+        if (!matched) {
             return NULL;
+        }
     }
 
     return cell;

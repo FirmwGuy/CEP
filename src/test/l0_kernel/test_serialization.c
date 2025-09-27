@@ -246,7 +246,7 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
 
     const uint8_t* manifest_payload_bytes = manifest_chunk->data + CEP_SERIALIZATION_CHUNK_OVERHEAD;
     uint16_t segment_count = read_be16(manifest_payload_bytes);
-    munit_assert_uint16(segment_count, ==, 1);
+    munit_assert_uint16(segment_count, ==, 2);
     uint8_t cell_type = manifest_payload_bytes[2];
     uint8_t manifest_flags = manifest_payload_bytes[3];
     munit_assert_uint8(cell_type, ==, CEP_TYPE_NORMAL);
@@ -257,6 +257,12 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     uint64_t tag = read_be64(path_bytes + 8);
     munit_assert_uint64(domain, ==, expected_domain);
     munit_assert_uint64(tag, ==, expected_tag);
+
+    const uint8_t* data_bytes = path_bytes + 16;
+    uint64_t data_domain = read_be64(data_bytes);
+    uint64_t data_tag = read_be64(data_bytes + 8);
+    munit_assert_uint64(data_domain, ==, data->_dt.domain);
+    munit_assert_uint64(data_tag, ==, data->_dt.tag);
 
     const SerializationChunk* data_chunk = &capture.chunks[2];
     const SerializationChunk* control_chunk = &capture.chunks[3];

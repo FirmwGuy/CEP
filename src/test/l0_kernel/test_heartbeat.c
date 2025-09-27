@@ -192,7 +192,7 @@ static MunitResult test_heartbeat_binding_propagation(void) {
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
 
-    const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
+    cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
     const cepDT seg_root = *CEP_DTAA("TST", "ROOT");
     const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
     const cepDT path_segments[] = { seg_root, seg_leaf };
@@ -620,6 +620,223 @@ static MunitResult test_heartbeat_binding_signal_filter(void) {
 }
 
 
+static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
+    cep_heartbeat_shutdown();
+    heartbeat_runtime_start();
+
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
+    const cepDT seg_root = *CEP_DTAA("TST", "DATA");
+    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT path_segments[] = { seg_root, seg_leaf };
+
+    CepHeartbeatPathBuf target_buf = {0};
+    cepCell* leaf_cell = NULL;
+    (void)create_binding_path(path_segments, cep_lengthof(path_segments), &target_buf, &type_dictionary, &leaf_cell);
+    munit_assert_not_null(leaf_cell);
+
+    uint8_t payload[] = { 0xCA, 0xFE };
+    cepData* data = cep_data_new_value(CEP_DTAW("EZ", "payload"), payload, sizeof payload);
+    munit_assert_not_null(data);
+    cep_cell_set_data(leaf_cell, data);
+
+    cepPath* dynamic_path = NULL;
+    munit_assert_true(cep_cell_path(leaf_cell, &dynamic_path));
+    munit_assert_not_null(dynamic_path);
+
+    size_t path_len = dynamic_path->length;
+    munit_assert_size(path_len, >, 1u);
+
+    cepDT wildcard = {0};
+    wildcard.domain = CEP_ID_MATCH_ANY;
+    wildcard.tag = CEP_ID_MATCH_ANY;
+
+    size_t data_index = SIZE_MAX;
+    for (size_t i = 0; i < path_len; ++i) {
+        const cepDT* segment = &dynamic_path->past[i].dt;
+        if (segment->domain == leaf_cell->data->_dt.domain &&
+            segment->tag == leaf_cell->data->_dt.tag) {
+            data_index = i;
+            break;
+        }
+    }
+    munit_assert_size(data_index, !=, SIZE_MAX);
+
+    size_t trim_len = path_len - 1u;
+    size_t data_index_trim = data_index - 1u;
+    munit_assert_size(data_index_trim, <, trim_len);
+
+    CepHeartbeatPathBuf target_runtime = {0};
+    munit_assert_size(trim_len, <=, cep_lengthof(target_runtime.segments));
+    target_runtime.length = (unsigned)trim_len;
+    target_runtime.capacity = cep_lengthof(target_runtime.segments);
+    for (size_t i = 0; i < trim_len; ++i) {
+        target_runtime.segments[i].dt = dynamic_path->past[i + 1u].dt;
+        target_runtime.segments[i].timestamp = 0u;
+    }
+    const cepPath* trimmed_path = (const cepPath*)&target_runtime;
+
+    CepHeartbeatPathBuf query_buf = {0};
+    query_buf.length = (unsigned)trim_len;
+    query_buf.capacity = cep_lengthof(query_buf.segments);
+    for (size_t i = 0; i < trim_len; ++i) {
+        cepDT dt = wildcard;
+        if (i == data_index_trim) {
+            dt = target_runtime.segments[i].dt;
+        }
+        query_buf.segments[i].dt = dt;
+        query_buf.segments[i].timestamp = 0u;
+    }
+    const cepPath* query_path = (const cepPath*)&query_buf;
+
+    const cepDT enzyme_name = *CEP_DTAA("EZ", "DATA");
+    cepEnzymeDescriptor descriptor = {
+        .name   = enzyme_name,
+        .label  = "binding-data-suffix",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = heartbeat_binding_enzyme,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    heartbeat_binding_calls = 0;
+
+    munit_assert_int(cep_enzyme_register(registry, query_path, &descriptor), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+    munit_assert_int(cep_cell_bind_enzyme(leaf_cell, &enzyme_name, false), ==, CEP_ENZYME_SUCCESS);
+
+    const cepEnzymeBinding* leaf_bindings = cep_cell_enzyme_bindings(leaf_cell);
+    munit_assert_not_null(leaf_bindings);
+    munit_assert_int(cep_dt_compare(&leaf_bindings->name, &enzyme_name), ==, 0);
+
+    cepCell* resolved = cep_cell_find_by_path(cep_root(), trimmed_path);
+    munit_assert_ptr_equal(resolved, leaf_cell);
+
+    cepImpulse impulse = {
+        .signal_path = NULL,
+        .target_path = trimmed_path,
+    };
+
+    munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_true(cep_heartbeat_stage_commit());
+    munit_assert_true(cep_heartbeat_process_impulses());
+    munit_assert_int(heartbeat_binding_calls, ==, 1);
+
+    cep_free(dynamic_path);
+    cep_heartbeat_shutdown();
+    return MUNIT_OK;
+}
+
+
+static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
+    cep_heartbeat_shutdown();
+    heartbeat_runtime_start();
+
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
+    const cepDT seg_root = *CEP_DTAA("TST", "STOR");
+    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT path_segments[] = { seg_root, seg_leaf };
+
+    CepHeartbeatPathBuf target_buf = {0};
+    cepCell* leaf_cell = NULL;
+    (void)create_binding_path(path_segments, cep_lengthof(path_segments), &target_buf, &type_dictionary, &leaf_cell);
+    munit_assert_not_null(leaf_cell);
+    munit_assert_true(cep_cell_has_store(leaf_cell));
+
+    cepDT child_name = *CEP_DTAA("TST", "CHLD");
+    cepCell* child = cep_cell_add_dictionary(leaf_cell, &child_name, 0, &type_dictionary, CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(child);
+
+    cepPath* dynamic_path = NULL;
+    munit_assert_true(cep_cell_path(leaf_cell, &dynamic_path));
+    munit_assert_not_null(dynamic_path);
+
+    size_t path_len = dynamic_path->length;
+    munit_assert_size(path_len, >, 1u);
+
+    cepDT wildcard = {0};
+    wildcard.domain = CEP_ID_MATCH_ANY;
+    wildcard.tag = CEP_ID_MATCH_ANY;
+
+    size_t store_index = path_len - 1u;
+    const cepDT store_dt = dynamic_path->past[store_index].dt;
+
+    size_t trim_len = path_len - 1u;
+    size_t store_index_trim = store_index - 1u;
+
+    CepHeartbeatPathBuf target_runtime = {0};
+    munit_assert_size(trim_len, <=, cep_lengthof(target_runtime.segments));
+    target_runtime.length = (unsigned)trim_len;
+    target_runtime.capacity = cep_lengthof(target_runtime.segments);
+    for (size_t i = 0; i < trim_len; ++i) {
+        target_runtime.segments[i].dt = dynamic_path->past[i + 1u].dt;
+        target_runtime.segments[i].timestamp = 0u;
+    }
+    const cepPath* trimmed_path = (const cepPath*)&target_runtime;
+
+    CepHeartbeatPathBuf query_buf = {0};
+    query_buf.length = (unsigned)trim_len;
+    query_buf.capacity = cep_lengthof(query_buf.segments);
+    for (size_t i = 0; i < trim_len; ++i) {
+        cepDT dt = wildcard;
+        if (i == store_index_trim) {
+            dt = store_dt;
+        }
+        query_buf.segments[i].dt = dt;
+        query_buf.segments[i].timestamp = 0u;
+    }
+    const cepPath* query_path = (const cepPath*)&query_buf;
+
+    const cepDT enzyme_name = *CEP_DTAA("EZ", "STOR");
+    cepEnzymeDescriptor descriptor = {
+        .name   = enzyme_name,
+        .label  = "binding-store-suffix",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = heartbeat_binding_enzyme,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    heartbeat_binding_calls = 0;
+
+    munit_assert_int(cep_enzyme_register(registry, query_path, &descriptor), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+    munit_assert_int(cep_cell_bind_enzyme(leaf_cell, &enzyme_name, false), ==, CEP_ENZYME_SUCCESS);
+
+    const cepEnzymeBinding* leaf_bindings = cep_cell_enzyme_bindings(leaf_cell);
+    munit_assert_not_null(leaf_bindings);
+    munit_assert_int(cep_dt_compare(&leaf_bindings->name, &enzyme_name), ==, 0);
+
+    cepCell* resolved = cep_cell_find_by_path(cep_root(), trimmed_path);
+    munit_assert_ptr_equal(resolved, leaf_cell);
+
+    cepImpulse impulse = {
+        .signal_path = NULL,
+        .target_path = trimmed_path,
+    };
+
+    munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_true(cep_heartbeat_stage_commit());
+    munit_assert_true(cep_heartbeat_process_impulses());
+    munit_assert_int(heartbeat_binding_calls, ==, 1);
+
+    cep_free(dynamic_path);
+    cep_heartbeat_shutdown();
+    return MUNIT_OK;
+}
+
+
 static MunitResult test_heartbeat_signal_broadcast(void) {
     cep_heartbeat_shutdown();
     heartbeat_runtime_start();
@@ -712,6 +929,16 @@ MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fix
     }
 
     result = test_heartbeat_binding_signal_filter();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_heartbeat_binding_matches_data_suffix();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_heartbeat_binding_matches_store_suffix();
     if (result != MUNIT_OK) {
         return result;
     }

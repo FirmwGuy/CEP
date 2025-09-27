@@ -997,13 +997,41 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
     if (!reader || !stage || !reader->root)
         return false;
 
+    unsigned path_length = stage->path->length;
+    if (!path_length)
+        return false;
+
+    unsigned limit = path_length;
+
+    if (stage->manifest_flags & 0x10u) {
+        if (limit == 0u)
+            return false;
+        limit--;
+    }
+
+    if (stage->data.needed) {
+        if (limit == 0u)
+            return false;
+        const cepPast* data_segment = &stage->path->past[limit - 1u];
+        if (stage->data.dt.domain && stage->data.dt.tag) {
+            if (stage->data.dt.domain != data_segment->dt.domain ||
+                stage->data.dt.tag != data_segment->dt.tag) {
+                return false;
+            }
+        }
+        limit--;
+    }
+
+    if (limit == 0u)
+        return false;
+
     cepCell* current = reader->root;
-    for (unsigned idx = 0; idx < stage->path->length; ++idx) {
+    for (unsigned idx = 0; idx < limit; ++idx) {
         const cepPast* segment = &stage->path->past[idx];
         cepDT name = {.domain = segment->dt.domain, .tag = segment->dt.tag};
         cepCell* child = cep_cell_find_by_name(current, &name);
         if (!child) {
-            bool final_segment = (idx + 1u == stage->path->length);
+            bool final_segment = (idx + 1u == limit);
             if (final_segment && stage->cell_type == CEP_TYPE_PROXY)
                 return false;
 

@@ -71,7 +71,9 @@ static bool cep_enzyme_binding_contains(const cepEffectiveBinding* list, size_t 
 static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target, size_t* out_count);
 static bool cep_enzyme_matches_signal(const cepEnzymeEntry* entry, const cepPath* signal, size_t* specificity_out);
 static void cep_enzyme_match_merge(cepEnzymeMatch* matches, size_t* match_count, const cepEnzymeMatch* candidate);
-static bool cep_enzyme_paths_equal(const cepPath* a, const cepPath* b);
+static size_t cep_enzyme_path_specificity(const cepPath* pattern);
+static bool cep_enzyme_dt_matches(const cepDT* pattern, const cepDT* observed);
+static bool cep_enzyme_paths_equal(const cepPath* pattern, const cepPath* candidate);
 static bool cep_enzyme_path_is_prefix(const cepPath* prefix, const cepPath* path);
 
 static cepDT cep_enzyme_query_head(const cepPath* path) {
@@ -405,7 +407,7 @@ static bool cep_enzyme_matches_signal(const cepEnzymeEntry* entry, const cepPath
         return true;
     }
 
-    size_t specificity = entry->query->length;
+    size_t specificity = cep_enzyme_path_specificity(entry->query);
 
     switch (entry->descriptor.match) {
       case CEP_ENZYME_MATCH_EXACT:
@@ -534,19 +536,49 @@ static cepPath* cep_enzyme_path_clone(const cepPath* path) {
 }
 
 
-static bool cep_enzyme_paths_equal(const cepPath* a, const cepPath* b) {
-    if (a == b) {
-        return true;
+static size_t cep_enzyme_path_specificity(const cepPath* pattern) {
+    if (!pattern || pattern->length == 0u) {
+        return 0u;
     }
-    if (!a || !b) {
-        return false;
+
+    size_t specificity = 0u;
+    for (unsigned i = 0; i < pattern->length; ++i) {
+        const cepDT* dt = &pattern->past[i].dt;
+        if (!cep_id_is_match_any(dt->domain)) {
+            specificity++;
+        }
+        if (!cep_id_is_match_any(dt->tag)) {
+            specificity++;
+        }
     }
-    if (a->length != b->length) {
+
+    return specificity;
+}
+
+
+static bool cep_enzyme_dt_matches(const cepDT* pattern, const cepDT* observed) {
+    if (!pattern || !observed) {
         return false;
     }
 
-    for (unsigned i = 0; i < a->length; ++i) {
-        if (cep_dt_compare(&a->past[i].dt, &b->past[i].dt) != 0) {
+    return cep_id_matches(pattern->domain, observed->domain) &&
+           cep_id_matches(pattern->tag, observed->tag);
+}
+
+
+static bool cep_enzyme_paths_equal(const cepPath* pattern, const cepPath* candidate) {
+    if (pattern == candidate) {
+        return true;
+    }
+    if (!pattern || !candidate) {
+        return false;
+    }
+    if (pattern->length != candidate->length) {
+        return false;
+    }
+
+    for (unsigned i = 0; i < pattern->length; ++i) {
+        if (!cep_enzyme_dt_matches(&pattern->past[i].dt, &candidate->past[i].dt)) {
             return false;
         }
     }
@@ -564,7 +596,7 @@ static bool cep_enzyme_path_is_prefix(const cepPath* prefix, const cepPath* path
     }
 
     for (unsigned i = 0; i < prefix->length; ++i) {
-        if (cep_dt_compare(&prefix->past[i].dt, &path->past[i].dt) != 0) {
+        if (!cep_enzyme_dt_matches(&prefix->past[i].dt, &path->past[i].dt)) {
             return false;
         }
     }
@@ -1123,11 +1155,13 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
 
                 const cepEnzymeEntry* entry = &registry->entries[entry_index];
 
+                size_t target_specificity = cep_enzyme_path_specificity(entry->query);
+
                 cepEnzymeMatch candidate = {
                     .descriptor = &entry->descriptor,
                     .specificity_signal = 0u,
-                    .specificity_target = entry->query ? entry->query->length : 0u,
-                    .specificity_total = entry->query ? entry->query->length : 0u,
+                    .specificity_target = target_specificity,
+                    .specificity_total = target_specificity,
                     .registration_order = entry->registration_order,
                     .match_type = CEP_ENZYME_MATCH_FLAG_TARGET,
                 };
@@ -1187,7 +1221,7 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
                 .descriptor = &entry->descriptor,
                 .specificity_signal = signal_specificity,
                 .specificity_target = 0u,
-                .specificity_total = signal_specificity ? signal_specificity : (entry->query ? entry->query->length : 0u),
+                .specificity_total = signal_specificity ? signal_specificity : cep_enzyme_path_specificity(entry->query),
                 .registration_order = entry->registration_order,
                 .match_type = CEP_ENZYME_MATCH_FLAG_SIGNAL,
             };
