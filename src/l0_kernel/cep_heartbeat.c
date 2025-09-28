@@ -7,6 +7,7 @@
 #include "cep_heartbeat.h"
 #include "cep_heartbeat_internal.h"
 #include "cep_namepool.h"
+#include "../enzymes/cep_cell_operations.h"
 #include "stream/cep_stream_internal.h"
 
 #include <string.h>
@@ -902,6 +903,10 @@ bool cep_heartbeat_bootstrap(void) {
         if (!CEP_RUNTIME.registry) {
             return false;
         }
+    }
+
+    if (!cep_cell_operations_register(CEP_RUNTIME.registry)) {
+        return false;
     }
 
     return true;
