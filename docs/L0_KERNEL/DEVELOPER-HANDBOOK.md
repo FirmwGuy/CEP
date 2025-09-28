@@ -18,7 +18,7 @@
   - `docs/L0_KERNEL/APPEND-ONLY-AND-IDEMPOTENCY.md` — Append‑only history and idempotent updates for cells.
 - Runtime and scheduling
   - `docs/L0_KERNEL/HEARTBEAT-AND-ENZYMES.md` — Beat model, scheduling, enzyme contracts, replay safety.
-  - `docs/L0_KERNEL/ROOT-DIRECTORY-LAYOUT.md` — Recommended root structure, journal/CAS, visibility rules.
+  - `docs/ROOT-DIRECTORY-LAYOUT.md` — Recommended root structure, journal/CAS, visibility rules.
 - External I/O
   - `docs/L0_KERNEL/EXTERNAL-LIBRARIES-INTERFACE.md` — Access to foreign structures; handles vs snapshots; zero‑copy rules.
   - `docs/L0_KERNEL/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect log, streams, preconditions, CAS, replay modes.
@@ -51,6 +51,12 @@
   - Storage: linked list, array, packed queue, red-black tree, octree.
   - Indexing: insertion order, by name, by user compare, by hash+compare.
 - cepCell: The unit node. Holds metacell, optional data or link, and optional store for children.
+
+### Naming vs Structural Tags
+- `cell->metacell.dt` carries the cell's own name (domain + tag). For dictionary children this matches the key assigned by the parent.
+- `cell->data->dt` describes the payload schema or datatype. Helpers such as `cep_cell_add_value` pass a DT here so higher layers know how to interpret the bytes while keeping the payload opaque to the kernel.
+- `cell->store->dt` labels the child collection. `cep_cell_add_dictionary(child, name, context_dt, type_dt, ...)` uses `name` for the child's metacell and `type_dt` for the store so traversal can recognize record classes ("CEP:being", "CEP:bond", etc.).
+- Rule of thumb: metacell names identity; data/store `dt` signal structure. Mixing them makes history harder to read and breaks discovery helpers.
 
 ### Name Interning
 Short nicknames stay on the label; long nicknames get filed once and every cell just keeps a reference number. You still talk to the cell the same way, but the kernel decides the cheapest way to store the name.

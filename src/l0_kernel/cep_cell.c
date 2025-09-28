@@ -630,7 +630,7 @@ static cepData* cep_data_clone_payload(const cepData* data) {
     if (!data)
         return NULL;
 
-    cepDT dt = data->_dt;
+    cepDT dt = data->dt;
     cepData* clone = NULL;
 
     switch (data->datatype) {
@@ -676,7 +676,7 @@ static cepStore* cep_store_clone_structure(const cepStore* store) {
     if (!cep_store_valid(store))
         return NULL;
 
-    cepDT dt = store->_dt;
+    cepDT dt = store->dt;
     cepStore* clone = NULL;
 
     unsigned storage = store->storage;
@@ -3324,7 +3324,7 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
 
     const cepCell* leaf = cell;
     if (leaf && cep_cell_is_normal(leaf)) {
-        if (leaf->data && cep_dt_valid(&leaf->data->_dt)) {
+        if (leaf->data && cep_dt_valid(&leaf->data->dt)) {
             if (tempPath->length >= tempPath->capacity) {
                 unsigned newCapacity = tempPath->capacity ? (tempPath->capacity << 1u) : 4u;
                 if (newCapacity < tempPath->length + 1u) {
@@ -3341,13 +3341,13 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
             }
 
             cepPast* segment = &tempPath->past[tempPath->length++];
-            segment->dt.domain = leaf->data->_dt.domain;
-            segment->dt.tag = leaf->data->_dt.tag;
+            segment->dt.domain = leaf->data->dt.domain;
+            segment->dt.tag = leaf->data->dt.tag;
             segment->timestamp = 0u;
         }
 
         const cepStore* store = leaf->store;
-        if (store && store->chdCount && cep_dt_valid(&store->_dt)) {
+        if (store && store->chdCount && cep_dt_valid(&store->dt)) {
             if (tempPath->length >= tempPath->capacity) {
                 unsigned newCapacity = tempPath->capacity ? (tempPath->capacity << 1u) : 4u;
                 if (newCapacity < tempPath->length + 1u) {
@@ -3364,8 +3364,8 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
             }
 
             cepPast* segment = &tempPath->past[tempPath->length++];
-            segment->dt.domain = store->_dt.domain;
-            segment->dt.tag = store->_dt.tag;
+            segment->dt.domain = store->dt.domain;
+            segment->dt.tag = store->dt.tag;
             segment->timestamp = 0u;
         }
     }
@@ -3552,10 +3552,10 @@ cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, c
         const cepPast* segment = &path->past[depth];
         bool matched = false;
 
-        if (!data_consumed && cell->data && cep_dt_compare(&cell->data->_dt, &segment->dt) == 0) {
+        if (!data_consumed && cell->data && cep_dt_compare(&cell->data->dt, &segment->dt) == 0) {
             data_consumed = true;
             matched = true;
-        } else if (!store_consumed && cell->store && cep_dt_compare(&cell->store->_dt, &segment->dt) == 0) {
+        } else if (!store_consumed && cell->store && cep_dt_compare(&cell->store->dt, &segment->dt) == 0) {
             store_consumed = true;
             matched = true;
         }

@@ -44,7 +44,7 @@ static inline uint64_t hash_table_cell_hash(const cepCell* cell) {
     if (cep_cell_is_normal(cell) && cell->data)
         return cell->data->hash;
 
-    return cep_hash_bytes(&cell->metacell._dt, sizeof(cell->metacell._dt));
+    return cep_hash_bytes(&cell->metacell.dt, sizeof(cell->metacell.dt));
 }
 
 

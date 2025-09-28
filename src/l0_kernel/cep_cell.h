@@ -163,7 +163,7 @@ static inline int cep_dt_compare(const cepDT* restrict key, const cepDT* restric
  */
 typedef struct {
   union {
-    cepDT       _dt;
+    cepDT       dt;
     
     struct {
       struct {
@@ -448,7 +448,7 @@ struct _cepDataNode {
 
 struct _cepData {
     union {
-      cepDT             _dt;
+      cepDT             dt;
       
       struct {
         struct {
@@ -558,8 +558,8 @@ static inline uint64_t cep_data_compute_hash(const cepData* data) {
         uint64_t size;
         uint64_t payload;
     } key = {
-        .domain  = data->_dt.domain,
-        .tag     = data->_dt.tag,
+        .domain  = data->dt.domain,
+        .tag     = data->dt.tag,
         .size    = data->size,
         .payload = payloadHash,
     };
@@ -626,7 +626,7 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
                         void** dataloc, void* value, ...  );
 void     cep_data_del(cepData* data);
 void*    cep_data(const cepData* data);
-#define  cep_data_valid(d)                             ((d) && (d)->capacity && cep_dt_valid(&(d)->_dt))
+#define  cep_data_valid(d)                             ((d) && (d)->capacity && cep_dt_valid(&(d)->dt))
 #define  cep_data_new_value(dt, value, z)              ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, _z, _z);})
 void     cep_data_history_push(cepData* data);
 void     cep_data_history_clear(cepData* data);
@@ -698,7 +698,7 @@ struct _cepStoreNode {
 
 struct _cepStore {
     union {
-      cepDT         _dt;
+      cepDT         dt;
       
       struct {
         struct {
@@ -752,7 +752,7 @@ enum _cepCellIndexing {
 cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...);
 void      cep_store_del(cepStore* store);
 void      cep_store_delete_children_hard(cepStore* store);
-#define   cep_store_valid(s)      ((s) && cep_dt_valid(&(s)->_dt))
+#define   cep_store_valid(s)      ((s) && cep_dt_valid(&(s)->dt))
 
 static inline bool cep_store_is_insertable(cepStore* store)   {assert(cep_store_valid(store));  return (store->indexing == CEP_INDEX_BY_INSERTION);}
 static inline bool cep_store_is_dictionary(cepStore* store)   {assert(cep_store_valid(store));  return (store->indexing == CEP_INDEX_BY_NAME);}
@@ -835,6 +835,7 @@ cepCell* cep_cell_clone_deep(const cepCell* cell);
 #define cep_cell_initialize_value(r, name, dt, value, size, capacity)                cep_cell_initialize(r, CEP_TYPE_NORMAL, name, cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)
 #define cep_cell_initialize_data(r, name, dt, value, size, capacity, destructor)     cep_cell_initialize(r, CEP_TYPE_NORMAL, name, cep_data_new(dt, CEP_DATATYPE_DATA, true, NULL, value, size, capacity, destructor), NULL)
 
+// name -> cell metacell, dt -> store label (record type); keep identity and structure separated.
 #define cep_cell_initialize_list(r, name, dt, storage, ...)                  cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
 #define cep_cell_initialize_dictionary(r, name, dt, storage, ...)            cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
 #define cep_cell_initialize_catalog(r, name, dt, storage, ...)               cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_FUNCTION, ##__VA_ARGS__))
@@ -849,7 +850,7 @@ static inline void  cep_cell_set_name(cepCell* cell, cepDT* name)     {
 //static inline cepDT cep_cell_get_name(const cepCell* cell)        {assert(cell);  return cell->metacell.name;}
 #define cep_cell_get_tag_id(r)    cep_id(CEP_DT(r)->tag)
 
-#define cep_cell_is_void(r)       (((r)->metacell.type == CEP_TYPE_VOID) || !cep_dt_valid(&(r)->metacell._dt))
+#define cep_cell_is_void(r)       (((r)->metacell.type == CEP_TYPE_VOID) || !cep_dt_valid(&(r)->metacell.dt))
 #define cep_cell_is_normal(r)     ((r)->metacell.type == CEP_TYPE_NORMAL)
 #define cep_cell_is_proxy(r)      ((r)->metacell.type == CEP_TYPE_PROXY)
 #define cep_cell_is_link(r)       ((r)->metacell.type == CEP_TYPE_LINK)
@@ -992,7 +993,7 @@ static inline cepID cep_cell_get_autoid(const cepCell* cell)            {assert(
 static inline const cepDT* cep_cell_get_name(const cepCell* cell) {
     assert(cell);
     ((cepCell*)cell)->metacell._reserved = 0;
-    return &cell->metacell._dt;
+    return &cell->metacell.dt;
 }
 
 

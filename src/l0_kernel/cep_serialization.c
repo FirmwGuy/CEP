@@ -394,11 +394,11 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     memcpy(p, &hash_be, sizeof hash_be);
     p += sizeof hash_be;
 
-    uint64_t dt_domain_be = cep_serial_to_be64(data->_dt.domain);
+    uint64_t dt_domain_be = cep_serial_to_be64(data->dt.domain);
     memcpy(p, &dt_domain_be, sizeof dt_domain_be);
     p += sizeof dt_domain_be;
 
-    uint64_t dt_tag_be = cep_serial_to_be64(data->_dt.tag);
+    uint64_t dt_tag_be = cep_serial_to_be64(data->dt.tag);
     memcpy(p, &dt_tag_be, sizeof dt_tag_be);
     p += sizeof dt_tag_be;
 

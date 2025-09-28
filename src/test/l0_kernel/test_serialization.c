@@ -261,8 +261,8 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     const uint8_t* data_bytes = path_bytes + 16;
     uint64_t data_domain = read_be64(data_bytes);
     uint64_t data_tag = read_be64(data_bytes + 8);
-    munit_assert_uint64(data_domain, ==, data->_dt.domain);
-    munit_assert_uint64(data_tag, ==, data->_dt.tag);
+    munit_assert_uint64(data_domain, ==, data->dt.domain);
+    munit_assert_uint64(data_tag, ==, data->dt.tag);
 
     const SerializationChunk* data_chunk = &capture.chunks[2];
     const SerializationChunk* control_chunk = &capture.chunks[3];
@@ -318,8 +318,8 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     munit_assert_not_null(recovered);
     cepData* recovered_data = recovered->data;
     munit_assert_not_null(recovered_data);
-    munit_assert_uint64(recovered_data->_dt.domain, ==, CEP_DTAW("CEP", "value")->domain);
-    munit_assert_uint64(recovered_data->_dt.tag, ==, CEP_DTAW("CEP", "value")->tag);
+    munit_assert_uint64(recovered_data->dt.domain, ==, CEP_DTAW("CEP", "value")->domain);
+    munit_assert_uint64(recovered_data->dt.tag, ==, CEP_DTAW("CEP", "value")->tag);
     munit_assert_uint64(recovered_data->size, ==, sizeof payload - 1u);
     munit_assert_int(memcmp(recovered_data->value, payload, sizeof payload - 1u), ==, 0);
 

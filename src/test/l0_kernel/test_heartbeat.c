@@ -656,8 +656,8 @@ static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
     size_t data_index = SIZE_MAX;
     for (size_t i = 0; i < path_len; ++i) {
         const cepDT* segment = &dynamic_path->past[i].dt;
-        if (segment->domain == leaf_cell->data->_dt.domain &&
-            segment->tag == leaf_cell->data->_dt.tag) {
+        if (segment->domain == leaf_cell->data->dt.domain &&
+            segment->tag == leaf_cell->data->dt.tag) {
             data_index = i;
             break;
         }
