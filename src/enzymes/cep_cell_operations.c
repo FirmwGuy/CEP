@@ -20,27 +20,27 @@ typedef struct {
 } cepPathConst2;
 
 
-static const cepDT* dt_signal_cell(void) { return CEP_DTWW("sig", "cell"); }
-static const cepDT* dt_op_add(void)      { return CEP_DTWW("op", "add"); }
-static const cepDT* dt_op_update(void)   { return CEP_DTWW("op", "update"); }
-static const cepDT* dt_op_delete(void)   { return CEP_DTWW("op", "delete"); }
-static const cepDT* dt_op_move(void)     { return CEP_DTWW("op", "move"); }
-static const cepDT* dt_op_clone(void)    { return CEP_DTWW("op", "clone"); }
+static const cepDT* dt_signal_cell(void) { return CEP_DTAW("CEP", "sig_cell"); }
+static const cepDT* dt_op_add(void)      { return CEP_DTAW("CEP", "op_add"); }
+static const cepDT* dt_op_update(void)   { return CEP_DTAW("CEP", "op_upd"); }
+static const cepDT* dt_op_delete(void)   { return CEP_DTAW("CEP", "op_delete"); }
+static const cepDT* dt_op_move(void)     { return CEP_DTAW("CEP", "op_move"); }
+static const cepDT* dt_op_clone(void)    { return CEP_DTAW("CEP", "op_clone"); }
 
-static const cepDT* dt_role_parent(void)   { return CEP_DTWA("role", "parent"); }
-static const cepDT* dt_role_subject(void)  { return CEP_DTWA("role", "subject"); }
-static const cepDT* dt_role_source(void)   { return CEP_DTWA("role", "source"); }
-static const cepDT* dt_role_template(void) { return CEP_DTWA("role", "template"); }
+static const cepDT* dt_role_parent(void)   { return CEP_DTAW("CEP", "role_parnt"); }
+static const cepDT* dt_role_subject(void)  { return CEP_DTAW("CEP", "role_subj"); }
+static const cepDT* dt_role_source(void)   { return CEP_DTAW("CEP", "role_source"); }
+static const cepDT* dt_role_template(void) { return CEP_DTAW("CEP", "role_templ"); }
 
-static const cepDT* dt_arg_position(void) { return CEP_DTWA("arg", "position"); }
-static const cepDT* dt_arg_prepend(void)  { return CEP_DTWA("arg", "prepend"); }
-static const cepDT* dt_arg_deep(void)     { return CEP_DTWA("arg", "deep"); }
+static const cepDT* dt_arg_position(void) { return CEP_DTAW("CEP", "arg_pos"); }
+static const cepDT* dt_arg_prepend(void)  { return CEP_DTAW("CEP", "arg_prepend"); }
+static const cepDT* dt_arg_deep(void)     { return CEP_DTAW("CEP", "arg_deep"); }
 
-static const cepDT* dt_enz_add(void)    { return CEP_DTWA("enz", "cell_add"); }
-static const cepDT* dt_enz_update(void) { return CEP_DTWA("enz", "cell_upd"); }
-static const cepDT* dt_enz_delete(void) { return CEP_DTWA("enz", "cell_del"); }
-static const cepDT* dt_enz_move(void)   { return CEP_DTWA("enz", "cell_mov"); }
-static const cepDT* dt_enz_clone(void)  { return CEP_DTWA("enz", "cell_cln"); }
+static const cepDT* dt_enz_add(void)    { return CEP_DTAW("CEP", "enz_add"); }
+static const cepDT* dt_enz_update(void) { return CEP_DTAW("CEP", "enz_upd"); }
+static const cepDT* dt_enz_delete(void) { return CEP_DTAW("CEP", "enz_del"); }
+static const cepDT* dt_enz_move(void)   { return CEP_DTAW("CEP", "enz_mov"); }
+static const cepDT* dt_enz_clone(void)  { return CEP_DTAW("CEP", "enz_cln"); }
 
 
 static cepCell* cep_cell_enzyme_resolve(const cepPath* path) {

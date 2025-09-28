@@ -71,10 +71,10 @@
 #include "src/l0_kernel/cep_cell.h"
 
 void add_can_edit(cepCell* root, cepCell* actor, cepCell* object) {
-    cepDT* B_CAN_EDIT = CEP_DTWA("bond", "CAN_EDIT");
-    cepDT* ROLE_ENTRY = CEP_DTWW("role", "entry");
-    cepDT* ROLE_A     = CEP_DTWW("role", "a");
-    cepDT* ROLE_B     = CEP_DTWW("role", "b");
+    cepDT* B_CAN_EDIT = CEP_DTAW("CEP", "bond_caned");
+    cepDT* ROLE_ENTRY = CEP_DTAW("CEP", "role_entry");
+    cepDT* ROLE_A     = CEP_DTAW("CEP", "role_a");
+    cepDT* ROLE_B     = CEP_DTAW("CEP", "role_b");
 
     cepCell* can_edit = cep_dict_add_dictionary(root, B_CAN_EDIT, ROLE_ENTRY, CEP_STORAGE_RED_BLACK_T);
     (void)cep_dict_add_link(can_edit, ROLE_A, actor);

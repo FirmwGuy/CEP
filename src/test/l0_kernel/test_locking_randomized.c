@@ -39,7 +39,7 @@ static cepDT random_child_name(LockingFixture* fix) {
 static cepCell* ensure_child(LockingFixture* fix) {
     if (!cep_cell_children(&fix->parent)) {
         uint32_t seed = munit_rand_uint32();
-        cepDT name = *CEP_DTAA("LCK", "INIT");
+        cepDT name = *CEP_DTAW("CEP", "test_lck_in");
         cepCell* added = cep_cell_add_value(&fix->parent,
                                             &name,
                                             0,
@@ -151,7 +151,7 @@ void* test_locking_randomized_setup(const MunitParameter params[], void* user_da
     CEP_0(&fix->parent);
     cep_cell_initialize_dictionary(&fix->parent,
                                    CEP_DTS(CEP_ACRO("LCK"), CEP_WORD("parent")),
-                                   CEP_DTAW("LCK", "children"),
+                                   CEP_DTAW("CEP", "test_lck_ch"),
                                    CEP_STORAGE_LINKED_LIST);
     fix->next_numeric = CEP_ID(1);
 

@@ -153,7 +153,7 @@ static void exercise_random_registry(SchedulerFixture* fix) {
     munit_assert_not_null(registry);
 
     PathBuffer path_buf;
-    const cepDT signal_segments[] = { *CEP_DTAA("SIG", "RAND") };
+    const cepDT signal_segments[] = { *CEP_DTAW("CEP", "sig_rand") };
     const cepPath* query = make_path(&path_buf, signal_segments, 1u);
 
     if (build_random_dag(enzymes, topo_order, enzyme_count, registry, query)) {
@@ -209,11 +209,11 @@ static void exercise_heartbeat_sequence(SchedulerFixture* fix) {
     munit_assert_not_null(registry);
 
     PathBuffer path_buf;
-    const cepDT path_segments[] = { *CEP_DTAA("SIG", "HB") };
+    const cepDT path_segments[] = { *CEP_DTAW("CEP", "sig_hb") };
     const cepPath* path = make_path(&path_buf, path_segments, 1u);
 
     cepEnzymeDescriptor success_a = {
-        .name   = *CEP_DTAA("HB", "A"),
+        .name   = *CEP_DTAW("CEP", "test_hb_a"),
         .label  = "heartbeat-success-a",
         .before = NULL,
         .before_count = 0,
@@ -225,11 +225,11 @@ static void exercise_heartbeat_sequence(SchedulerFixture* fix) {
     };
 
     cepEnzymeDescriptor success_b = success_a;
-    success_b.name = *CEP_DTAA("HB", "B");
+    success_b.name = *CEP_DTAW("CEP", "test_hb_b");
     success_b.label = "heartbeat-success-b";
 
     cepEnzymeDescriptor retrying = success_a;
-    retrying.name = *CEP_DTAA("HB", "R");
+    retrying.name = *CEP_DTAW("CEP", "test_hb_r");
     retrying.label = "heartbeat-retry";
     retrying.callback = heartbeat_retry;
 

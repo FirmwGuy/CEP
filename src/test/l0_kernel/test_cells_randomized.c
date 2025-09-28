@@ -294,8 +294,8 @@ static void exercise_packed_queue_random(CellRandomFixture* fix) {
     cepCell list;
     CEP_0(&list);
 
-    cepDT list_name = *CEP_DTWW("pq", "root");
-    cepDT store_name = *CEP_DTAW("PQ", "buffer");
+    cepDT list_name = *CEP_DTAW("CEP", "pq_root");
+    cepDT store_name = *CEP_DTAW("CEP", "pq_buffer");
     cep_cell_initialize_list(&list, &list_name, &store_name, CEP_STORAGE_PACKED_QUEUE, 8);
 
     cepDT names[MAX_PACKED_QUEUE_CHILDREN];
@@ -380,8 +380,8 @@ static void exercise_octree_random(CellRandomFixture* fix) {
     cepCell spatial;
     CEP_0(&spatial);
 
-    cepDT root_name = *CEP_DTWW("oct", "root");
-    cepDT store_name = *CEP_DTAW("OCT", "space");
+    cepDT root_name = *CEP_DTAW("CEP", "oct_root");
+    cepDT store_name = *CEP_DTAW("CEP", "oct_space");
     float center[3] = {0.0f, 0.0f, 0.0f};
     float subwide = 8.0f;
 
@@ -518,8 +518,8 @@ void* test_cells_randomized_setup(const MunitParameter params[], void* user_data
     cep_cell_system_initiate();
     CEP_0(&fix->root);
 
-    cepDT root_name = *CEP_DTWW("sys", "root");
-    cepDT store_name = *CEP_DTAW("SYS", "children");
+    cepDT root_name = *CEP_DTAW("CEP", "sys_root");
+    cepDT store_name = *CEP_DTAW("CEP", "sys_child");
     cep_cell_initialize_dictionary(&fix->root,
                                    &root_name,
                                    &store_name,

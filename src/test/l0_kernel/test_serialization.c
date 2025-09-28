@@ -82,7 +82,7 @@ static cepCell* proxy_test_make_resource(const uint8_t* bytes, size_t size) {
     CEP_0(cell);
     cep_cell_initialize_value(cell,
                               CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("resource")),
-                              CEP_DTAW("LIB", "payload"),
+                              CEP_DTAW("CEP", "lib_payld"),
                               (void*)bytes,
                               size,
                               size? size: 1u);
@@ -130,7 +130,7 @@ static bool proxy_test_restore_common(const cepProxySnapshot* snapshot,
     cep_cell_initialize_value(cell,
                               is_stream? CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("stream"))
                                         : CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("handle")),
-                              CEP_DTAW("LIB", "payload"),
+                              CEP_DTAW("CEP", "lib_payld"),
                               (void*)snapshot->payload,
                               snapshot->size,
                               snapshot->size? snapshot->size: 1u);

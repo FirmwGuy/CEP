@@ -18,14 +18,14 @@ static MunitResult test_lock_store_blocks_append(const MunitParameter params[], 
     CEP_0(&parent);
     cep_cell_initialize_dictionary(&parent,
                                    CEP_DTS(CEP_ACRO("TST"), CEP_WORD("parent")),
-                                   CEP_DTAW("TST", "child"),
+                                   CEP_DTAW("CEP", "tst_child"),
                                    CEP_STORAGE_LINKED_LIST);
 
     cepCell child;
     CEP_0(&child);
     cep_cell_initialize_value(&child,
                               CEP_DTS(CEP_ACRO("TST"), CEP_WORD("child")),
-                              CEP_DTAW("TST", "value"),
+                              CEP_DTAW("CEP", "tst_value"),
                               "x",
                               (size_t)1,
                               (size_t)1);
@@ -43,7 +43,7 @@ static MunitResult test_lock_store_blocks_append(const MunitParameter params[], 
 
     cep_cell_initialize_value(&child,
                               CEP_DTS(CEP_ACRO("TST"), CEP_WORD("child")),
-                              CEP_DTAW("TST", "value"),
+                              CEP_DTAW("CEP", "tst_value"),
                               "x",
                               (size_t)1,
                               (size_t)1);
@@ -63,7 +63,7 @@ static MunitResult test_lock_data_blocks_update(const MunitParameter params[], v
     CEP_0(&cell);
     cep_cell_initialize_value(&cell,
                               CEP_DTS(CEP_ACRO("TST"), CEP_WORD("value")),
-                              CEP_DTAW("TST", "value"),
+                              CEP_DTAW("CEP", "tst_value"),
                               "a",
                               (size_t)1,
                               (size_t)1);

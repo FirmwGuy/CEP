@@ -75,7 +75,7 @@ static cepCell* proxy_make_handle_resource(const uint8_t* bytes, size_t size) {
     CEP_0(cell);
     cep_cell_initialize_value(cell,
                               CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("handle")),
-                              CEP_DTAW("LIB", "payload"),
+                              CEP_DTAW("CEP", "lib_payld"),
                               (void*)bytes,
                               size,
                               size ? size : 1u);
@@ -87,7 +87,7 @@ static cepCell* proxy_make_stream_resource(const uint8_t* bytes, size_t size) {
     CEP_0(cell);
     cep_cell_initialize_value(cell,
                               CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("stream")),
-                              CEP_DTAW("LIB", "payload"),
+                              CEP_DTAW("CEP", "lib_payld"),
                               (void*)bytes,
                               size,
                               size ? size : 1u);
@@ -136,7 +136,7 @@ static bool proxy_restore_common(const cepProxySnapshot* snapshot,
     cep_cell_initialize_value(cell,
                               is_stream ? CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("stream"))
                                         : CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("handle")),
-                              CEP_DTAW("LIB", "payload"),
+                              CEP_DTAW("CEP", "lib_payld"),
                               (void*)snapshot->payload,
                               snapshot->size,
                               snapshot->size ? snapshot->size : 1u);
@@ -260,7 +260,7 @@ static cepCell* add_random_container(SerializationFixture* fix, cepCell* parent,
         container = cep_cell_add_dictionary(parent,
                                             &name,
                                             0,
-                                            CEP_DTAW("SER", "dict"),
+                                            CEP_DTAW("CEP", "ser_dict"),
                                             CEP_STORAGE_LINKED_LIST);
         break;
     case 1: {
@@ -268,7 +268,7 @@ static cepCell* add_random_container(SerializationFixture* fix, cepCell* parent,
         container = cep_cell_add_dictionary(parent,
                                             &name,
                                             0,
-                                            CEP_DTAW("SER", "dict"),
+                                            CEP_DTAW("CEP", "ser_dict"),
                                             CEP_STORAGE_ARRAY,
                                             capacity);
         break;
@@ -277,7 +277,7 @@ static cepCell* add_random_container(SerializationFixture* fix, cepCell* parent,
         container = cep_cell_add_dictionary(parent,
                                             &name,
                                             0,
-                                            CEP_DTAW("SER", "dict"),
+                                            CEP_DTAW("CEP", "ser_dict"),
                                             CEP_STORAGE_RED_BLACK_T);
         break;
     }
@@ -343,8 +343,8 @@ static void run_roundtrip_once(SerializationFixture* fix) {
     cepCell restored;
     CEP_0(&restored);
 
-    cepDT name = *CEP_DTWW("ser", "root");
-    cepDT store = *CEP_DTAW("SER", "children");
+    cepDT name = *CEP_DTAW("CEP", "ser_root");
+    cepDT store = *CEP_DTAW("CEP", "ser_child");
     cep_cell_initialize_dictionary(&source, &name, &store, CEP_STORAGE_LINKED_LIST);
     cep_cell_initialize_dictionary(&restored, &name, &store, CEP_STORAGE_LINKED_LIST);
 

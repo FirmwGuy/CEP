@@ -91,12 +91,12 @@ static MunitResult test_heartbeat_duplicate_impulses(void) {
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
 
-    const cepDT seg_signal = *CEP_DTAA("SIG", "DUP");
+    const cepDT seg_signal = *CEP_DTAW("CEP", "sig_dup");
     CepHeartbeatPathBuf path_buf = {0};
     const cepPath* path = make_path(&path_buf, &seg_signal, 1u);
 
     cepEnzymeDescriptor descriptor = {
-        .name   = *CEP_DTAA("HB", "CNT"),
+        .name   = *CEP_DTAW("CEP", "test_hb_cn"),
         .label  = "heartbeat-count",
         .before = NULL,
         .before_count = 0,
@@ -134,12 +134,12 @@ static MunitResult test_heartbeat_retry_requeues(void) {
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
 
-    const cepDT seg_signal = *CEP_DTAA("SIG", "RTY");
+    const cepDT seg_signal = *CEP_DTAW("CEP", "sig_rty");
     CepHeartbeatPathBuf path_buf = {0};
     const cepPath* path = make_path(&path_buf, &seg_signal, 1u);
 
     cepEnzymeDescriptor descriptor = {
-        .name   = *CEP_DTAA("HB", "RTY"),
+        .name   = *CEP_DTAW("CEP", "test_hb_rt"),
         .label  = "heartbeat-retry",
         .before = NULL,
         .before_count = 0,
@@ -193,8 +193,8 @@ static MunitResult test_heartbeat_binding_propagation(void) {
     munit_assert_not_null(registry);
 
     cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
-    const cepDT seg_root = *CEP_DTAA("TST", "ROOT");
-    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT seg_root = *CEP_DTAW("CEP", "tst_root");
+    const cepDT seg_leaf = *CEP_DTAW("CEP", "tst_leaf");
     const cepDT path_segments[] = { seg_root, seg_leaf };
 
     CepHeartbeatPathBuf target_buf = {0};
@@ -203,7 +203,7 @@ static MunitResult test_heartbeat_binding_propagation(void) {
     munit_assert_not_null(leaf_cell);
     munit_assert_true(cep_cell_has_store(leaf_cell));
 
-    const cepDT enzyme_name = *CEP_DTAA("EZ", "BIND");
+    const cepDT enzyme_name = *CEP_DTAW("CEP", "test_ez_bd");
     cepEnzymeDescriptor descriptor = {
         .name   = enzyme_name,
         .label  = "binding-propagation",
@@ -216,8 +216,8 @@ static MunitResult test_heartbeat_binding_propagation(void) {
         .match = CEP_ENZYME_MATCH_PREFIX,
     };
 
-    const cepDT seg_sig_root = *CEP_DTAA("SIG", "IMG");
-    const cepDT seg_sig_leaf = *CEP_DTAA("SIG", "THUMB");
+    const cepDT seg_sig_root = *CEP_DTAW("CEP", "sig_img");
+    const cepDT seg_sig_leaf = *CEP_DTAW("CEP", "sig_thumb");
     const cepDT signal_segments[] = { seg_sig_root, seg_sig_leaf };
     CepHeartbeatPathBuf signal_buf = {0};
     const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
@@ -254,8 +254,8 @@ static MunitResult test_heartbeat_binding_tombstone(void) {
     munit_assert_not_null(registry);
 
     const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
-    const cepDT seg_root = *CEP_DTAA("TST", "MASK");
-    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT seg_root = *CEP_DTAW("CEP", "tst_mask");
+    const cepDT seg_leaf = *CEP_DTAW("CEP", "tst_leaf");
     const cepDT path_segments[] = { seg_root, seg_leaf };
 
     CepHeartbeatPathBuf target_buf = {0};
@@ -264,7 +264,7 @@ static MunitResult test_heartbeat_binding_tombstone(void) {
     munit_assert_not_null(leaf_cell);
     munit_assert_true(cep_cell_has_store(leaf_cell));
 
-    const cepDT enzyme_name = *CEP_DTAA("EZ", "MASK");
+    const cepDT enzyme_name = *CEP_DTAW("CEP", "test_ez_ma");
     cepEnzymeDescriptor descriptor = {
         .name   = enzyme_name,
         .label  = "binding-mask",
@@ -277,8 +277,8 @@ static MunitResult test_heartbeat_binding_tombstone(void) {
         .match = CEP_ENZYME_MATCH_PREFIX,
     };
 
-    const cepDT seg_sig_root = *CEP_DTAA("SIG", "MASK");
-    const cepDT seg_sig_leaf = *CEP_DTAA("SIG", "APPLY");
+    const cepDT seg_sig_root = *CEP_DTAW("CEP", "sig_mask");
+    const cepDT seg_sig_leaf = *CEP_DTAW("CEP", "sig_apply");
     const cepDT signal_segments[] = { seg_sig_root, seg_sig_leaf };
     CepHeartbeatPathBuf signal_buf = {0};
     const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
@@ -316,8 +316,8 @@ static MunitResult test_heartbeat_binding_no_propagation(void) {
     munit_assert_not_null(registry);
 
     const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
-    const cepDT seg_root = *CEP_DTAA("TST", "NOP");
-    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT seg_root = *CEP_DTAW("CEP", "tst_nop");
+    const cepDT seg_leaf = *CEP_DTAW("CEP", "tst_leaf");
     const cepDT path_segments[] = { seg_root, seg_leaf };
 
     CepHeartbeatPathBuf target_buf = {0};
@@ -325,7 +325,7 @@ static MunitResult test_heartbeat_binding_no_propagation(void) {
     const cepPath* target_path = create_binding_path(path_segments, cep_lengthof(path_segments), &target_buf, &type_dictionary, &leaf_cell);
     munit_assert_not_null(leaf_cell);
 
-    const cepDT enzyme_name = *CEP_DTAA("EZ", "NOP");
+    const cepDT enzyme_name = *CEP_DTAW("CEP", "test_ez_no");
     cepEnzymeDescriptor descriptor = {
         .name   = enzyme_name,
         .label  = "binding-no-propagate",
@@ -338,7 +338,7 @@ static MunitResult test_heartbeat_binding_no_propagation(void) {
         .match = CEP_ENZYME_MATCH_PREFIX,
     };
 
-    const cepDT seg_sig_root = *CEP_DTAA("SIG", "NOP");
+    const cepDT seg_sig_root = *CEP_DTAW("CEP", "sig_nop");
     const cepDT signal_segments[] = { seg_sig_root };
     CepHeartbeatPathBuf signal_buf = {0};
     const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
@@ -374,9 +374,9 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     munit_assert_not_null(registry);
 
     const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
-    const cepDT seg_root = *CEP_DTAA("TST", "TREE");
-    const cepDT seg_mid  = *CEP_DTAA("TST", "BRANCH");
-    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT seg_root = *CEP_DTAW("CEP", "tst_tree");
+    const cepDT seg_mid  = *CEP_DTAW("CEP", "tst_branch");
+    const cepDT seg_leaf = *CEP_DTAW("CEP", "tst_leaf");
     const cepDT path_segments[] = { seg_root, seg_mid, seg_leaf };
 
     CepHeartbeatPathBuf target_buf = {0};
@@ -389,11 +389,11 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     cepCell* root_cell = cep_cell_parent(mid_cell);
     munit_assert_not_null(root_cell);
 
-    const cepDT enzyme_root = *CEP_DTAA("EZ", "ROOT");
-    const cepDT enzyme_mid  = *CEP_DTAA("EZ", "MID");
-    const cepDT enzyme_leaf = *CEP_DTAA("EZ", "LEAF");
+    const cepDT enzyme_root = *CEP_DTAW("CEP", "test_ez_ro");
+    const cepDT enzyme_mid  = *CEP_DTAW("CEP", "test_ez_mi");
+    const cepDT enzyme_leaf = *CEP_DTAW("CEP", "test_ez_le");
 
-    const cepDT seg_sig_root = *CEP_DTAA("SIG", "TREE");
+    const cepDT seg_sig_root = *CEP_DTAW("CEP", "sig_tree");
     const cepDT signal_segments[] = { seg_sig_root };
     CepHeartbeatPathBuf signal_buf = {0};
     const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
@@ -449,8 +449,8 @@ static MunitResult test_heartbeat_binding_duplicate_mask(void) {
     munit_assert_not_null(registry);
 
     const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
-    const cepDT seg_root = *CEP_DTAA("TST", "DEDUP");
-    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT seg_root = *CEP_DTAW("CEP", "tst_dedup");
+    const cepDT seg_leaf = *CEP_DTAW("CEP", "tst_leaf");
     const cepDT path_segments[] = { seg_root, seg_leaf };
 
     CepHeartbeatPathBuf target_buf = {0};
@@ -458,7 +458,7 @@ static MunitResult test_heartbeat_binding_duplicate_mask(void) {
     const cepPath* target_path = create_binding_path(path_segments, cep_lengthof(path_segments), &target_buf, &type_dictionary, &leaf_cell);
     munit_assert_not_null(leaf_cell);
 
-    const cepDT enzyme_name = *CEP_DTAA("EZ", "DUPE");
+    const cepDT enzyme_name = *CEP_DTAW("CEP", "test_ez_du");
     cepEnzymeDescriptor descriptor = {
         .name   = enzyme_name,
         .label  = "binding-duplicate",
@@ -471,7 +471,7 @@ static MunitResult test_heartbeat_binding_duplicate_mask(void) {
         .match = CEP_ENZYME_MATCH_PREFIX,
     };
 
-    const cepDT seg_sig_root = *CEP_DTAA("SIG", "DEDUP");
+    const cepDT seg_sig_root = *CEP_DTAW("CEP", "sig_dedup");
     const cepDT signal_segments[] = { seg_sig_root };
     CepHeartbeatPathBuf signal_buf = {0};
     const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
@@ -508,8 +508,8 @@ static MunitResult test_heartbeat_target_requires_binding(void) {
     munit_assert_not_null(registry);
 
     const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
-    const cepDT seg_root = *CEP_DTAA("TST", "EMPTY");
-    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT seg_root = *CEP_DTAW("CEP", "tst_empty");
+    const cepDT seg_leaf = *CEP_DTAW("CEP", "tst_leaf");
     const cepDT path_segments[] = { seg_root, seg_leaf };
 
     CepHeartbeatPathBuf target_buf = {0};
@@ -517,7 +517,7 @@ static MunitResult test_heartbeat_target_requires_binding(void) {
     const cepPath* target_path = create_binding_path(path_segments, cep_lengthof(path_segments), &target_buf, &type_dictionary, &leaf_cell);
     munit_assert_not_null(leaf_cell);
 
-    const cepDT enzyme_name = *CEP_DTAA("EZ", "SILENT");
+    const cepDT enzyme_name = *CEP_DTAW("CEP", "test_ez_si");
     cepEnzymeDescriptor descriptor = {
         .name   = enzyme_name,
         .label  = "binding-silent",
@@ -530,7 +530,7 @@ static MunitResult test_heartbeat_target_requires_binding(void) {
         .match = CEP_ENZYME_MATCH_PREFIX,
     };
 
-    const cepDT seg_sig_root = *CEP_DTAA("SIG", "EMPTY");
+    const cepDT seg_sig_root = *CEP_DTAW("CEP", "sig_empty");
     const cepDT signal_segments[] = { seg_sig_root };
     CepHeartbeatPathBuf signal_buf = {0};
     const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
@@ -562,8 +562,8 @@ static MunitResult test_heartbeat_binding_signal_filter(void) {
     munit_assert_not_null(registry);
 
     const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
-    const cepDT seg_root = *CEP_DTAA("TST", "SIG");
-    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT seg_root = *CEP_DTAW("CEP", "tst_sig");
+    const cepDT seg_leaf = *CEP_DTAW("CEP", "tst_leaf");
     const cepDT path_segments[] = { seg_root, seg_leaf };
 
     CepHeartbeatPathBuf target_buf = {0};
@@ -572,7 +572,7 @@ static MunitResult test_heartbeat_binding_signal_filter(void) {
     munit_assert_not_null(leaf_cell);
     munit_assert_true(cep_cell_has_store(leaf_cell));
 
-    const cepDT enzyme_name = *CEP_DTAA("EZ", "SIG");
+    const cepDT enzyme_name = *CEP_DTAW("CEP", "test_ez_sig");
     cepEnzymeDescriptor descriptor = {
         .name   = enzyme_name,
         .label  = "binding-signal",
@@ -585,13 +585,13 @@ static MunitResult test_heartbeat_binding_signal_filter(void) {
         .match = CEP_ENZYME_MATCH_PREFIX,
     };
 
-    const cepDT seg_sig_root = *CEP_DTAA("SIG", "EXPECTED");
-    const cepDT seg_sig_leaf = *CEP_DTAA("SIG", "MATCH");
+    const cepDT seg_sig_root = *CEP_DTAW("CEP", "sig_expect");
+    const cepDT seg_sig_leaf = *CEP_DTAW("CEP", "sig_match");
     const cepDT signal_segments[] = { seg_sig_root, seg_sig_leaf };
     CepHeartbeatPathBuf signal_buf = {0};
     const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
 
-    const cepDT seg_wrong = *CEP_DTAA("SIG", "SKIP");
+    const cepDT seg_wrong = *CEP_DTAW("CEP", "sig_skip");
     const cepDT wrong_segments[] = { seg_wrong };
     CepHeartbeatPathBuf wrong_buf = {0};
     const cepPath* wrong_signal = make_path(&wrong_buf, wrong_segments, cep_lengthof(wrong_segments));
@@ -628,8 +628,8 @@ static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
     munit_assert_not_null(registry);
 
     const cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
-    const cepDT seg_root = *CEP_DTAA("TST", "DATA");
-    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT seg_root = *CEP_DTAW("CEP", "tst_data");
+    const cepDT seg_leaf = *CEP_DTAW("CEP", "tst_leaf");
     const cepDT path_segments[] = { seg_root, seg_leaf };
 
     CepHeartbeatPathBuf target_buf = {0};
@@ -638,7 +638,7 @@ static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
     munit_assert_not_null(leaf_cell);
 
     uint8_t payload[] = { 0xCA, 0xFE };
-    cepData* data = cep_data_new_value(CEP_DTAW("EZ", "payload"), payload, sizeof payload);
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP", "test_ez_pl"), payload, sizeof payload);
     munit_assert_not_null(data);
     cep_cell_set_data(leaf_cell, data);
 
@@ -691,7 +691,7 @@ static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
     }
     const cepPath* query_path = (const cepPath*)&query_buf;
 
-    const cepDT enzyme_name = *CEP_DTAA("EZ", "DATA");
+    const cepDT enzyme_name = *CEP_DTAW("CEP", "test_ez_da");
     cepEnzymeDescriptor descriptor = {
         .name   = enzyme_name,
         .label  = "binding-data-suffix",
@@ -741,8 +741,8 @@ static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
     munit_assert_not_null(registry);
 
     cepDT type_dictionary = *CEP_DTAW("CEP", "dictionary");
-    const cepDT seg_root = *CEP_DTAA("TST", "STOR");
-    const cepDT seg_leaf = *CEP_DTAA("TST", "LEAF");
+    const cepDT seg_root = *CEP_DTAW("CEP", "tst_stor");
+    const cepDT seg_leaf = *CEP_DTAW("CEP", "tst_leaf");
     const cepDT path_segments[] = { seg_root, seg_leaf };
 
     CepHeartbeatPathBuf target_buf = {0};
@@ -751,7 +751,7 @@ static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
     munit_assert_not_null(leaf_cell);
     munit_assert_true(cep_cell_has_store(leaf_cell));
 
-    cepDT child_name = *CEP_DTAA("TST", "CHLD");
+    cepDT child_name = *CEP_DTAW("CEP", "tst_chld");
     cepCell* child = cep_cell_add_dictionary(leaf_cell, &child_name, 0, &type_dictionary, CEP_STORAGE_RED_BLACK_T);
     munit_assert_not_null(child);
 
@@ -795,7 +795,7 @@ static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
     }
     const cepPath* query_path = (const cepPath*)&query_buf;
 
-    const cepDT enzyme_name = *CEP_DTAA("EZ", "STOR");
+    const cepDT enzyme_name = *CEP_DTAW("CEP", "test_ez_st");
     cepEnzymeDescriptor descriptor = {
         .name   = enzyme_name,
         .label  = "binding-store-suffix",
@@ -844,7 +844,7 @@ static MunitResult test_heartbeat_signal_broadcast(void) {
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
 
-    const cepDT enzyme_name = *CEP_DTAA("EZ", "BCAST");
+    const cepDT enzyme_name = *CEP_DTAW("CEP", "test_ez_bc");
     cepEnzymeDescriptor descriptor = {
         .name   = enzyme_name,
         .label  = "signal-broadcast",
@@ -857,7 +857,7 @@ static MunitResult test_heartbeat_signal_broadcast(void) {
         .match = CEP_ENZYME_MATCH_PREFIX,
     };
 
-    const cepDT seg_sig_root = *CEP_DTAA("SIG", "BROAD");
+    const cepDT seg_sig_root = *CEP_DTAW("CEP", "sig_broad");
     const cepDT signal_segments[] = { seg_sig_root };
     CepHeartbeatPathBuf signal_buf = {0};
     const cepPath* signal_path = make_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
