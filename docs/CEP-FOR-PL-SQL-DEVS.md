@@ -87,7 +87,7 @@ void add_can_edit(cepCell* root, cepCell* actor, cepCell* object) {
 - L0 cells, links, and shadowing: `docs/L0_KERNEL/LINKS-AND-SHADOWING.md`
 - Beats, impulses, and enzymes: `docs/L0_KERNEL/HEARTBEAT-AND-ENZYMES.md`
 - Append‑only and idempotency: `docs/L0_KERNEL/APPEND-ONLY-AND-IDEMPOTENCY.md`
-- L1 bonds, contexts, and example: `docs/L1_BONDS/OVERVIEW.md`, `docs/L1_BONDS/BONDS-AND-CONTEXTS.md`, `docs/L1_BONDS/EXAMPLE-EDIT-CONTEXT.md`
+- L1 bonds, contexts, and example: `docs/L1_BOUND/OVERVIEW.md`, `docs/L1_BOUND/BONDS-AND-CONTEXTS.md`, `docs/L1_BOUND/EXAMPLE-EDIT-CONTEXT.md`
 - Conceptual overview: `docs/CEP.md`
 
 ## Q&A

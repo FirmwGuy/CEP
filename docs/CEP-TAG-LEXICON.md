@@ -25,11 +25,14 @@ when a new behaviour needs a fresh word before it lands in code.
 | `/` | core | root dictionary mounted during bootstrap. |
 | `agenda` | core | heartbeat agenda ledger for resolved enzymes. |
 | `beat` | core | heartbeat list storing per-beat runtime entries. |
+| `being` | core | identity cards for long-lived Layer 1 beings. |
 | `cas` | core | content-addressable storage subtree. |
 | `catalog` | core | cell stores using catalog/indexed semantics. |
+| `ctx_*` | ops | simplex contexts maintained by Layer 1 bonds. |
 | `cmp_root` | test | comparison fixtures in traversal/randomised tests. |
 | `data` | core | durable dataset root under `/CEP/data`. |
 | `dict` | core | shorthand tag used in dynamic dictionary construction tests. |
+| `facet_*` | ops | closure facets derived from Layer 1 contexts. |
 | `dictionary` | core | canonical store tag for dictionary nodes. |
 | `domain` | test | validates domain/tag packing in namepool tests. |
 | `env` | core | runtime environment subtree. |
@@ -45,6 +48,9 @@ when a new behaviour needs a fresh word before it lands in code.
 | `list` | core | list-based store tag. |
 | `log` | core | heartbeat log entry list. |
 | `namepool` | core | backing catalog for identifier interning. |
+| `sig_bond_*` | ops | signal family for bond lifecycle events. |
+| `sig_ctx_*` | ops | signal family for context lifecycle events. |
+| `sig_fct_*` | ops | signal family for facet scheduling and completion. |
 | `oct_root` / `oct_space` | test | octree storage fixtures. |
 | `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | ops | signal namespace for cell mutations. |
 | `outcome` | core | heartbeat execution outcome records. |
@@ -54,6 +60,9 @@ when a new behaviour needs a fresh word before it lands in code.
 | `ser_child` / `ser_dict` / `ser_root` | io | serialization fixtures validating tree walkers. |
 | `sig_cell` | ops | signal family for cell operations, previously `/sig/cell`. |
 | `sig_apply` `sig_beta` `sig_broad` `sig_cycle` `sig_dedup` `sig_dup` `sig_empty` `sig_expect` `sig_gamma` `sig_hb` `sig_img` `sig_mask` `sig_match` `sig_nop` `sig_rand` `sig_root` `sig_rty` `sig_skip` `sig_thumb` `sig_tree` | ops | assorted signal tags used by scheduler and unit tests; see signal handling docs for behaviour. |
+| `facet_edlog` | ops | default edit-log facet emitted by `ctx_editssn`. |
+| `facet_prsnc` | ops | presence facet tracking active editors/watchers. |
+| `ctx_editssn` | ops | context describing an edit session between user, document, and tool. |
 | `stage` | core | heartbeat stage ledger for committed work. |
 | `stdio_res` / `stdio_str` | io | tags used by stdio-backed stream adapters. |
 | `stream-log` | core | stream logging store under `/CEP/journal`. |
@@ -66,6 +75,7 @@ when a new behaviour needs a fresh word before it lands in code.
 | `var_leaf` | test | variant selection fixture in unit tests. |
 | `zip_entry` / `zip_stream` | io | libzip-backed stream descriptors. |
 | `bond_caned` | ops | canonical bond tag “CAN_EDIT” (borrowed by tests). |
+| `bond_*` | ops | bond relationship classes managed by Layer 1. |
 | `arg_deep` / `arg_pos` / `arg_prepend` | ops | parameter dictionary tags for cell operation requests. |
 | `test_enz_*` (`test_enz_a`, `test_enz_b`, `test_enz_c`, `test_enz_d`, `test_enz_da`, `test_enz_e`, `test_enz_le`, `test_enz_ro`) | test | enzyme dependency graphs in unit tests. |
 | `test_ez_*` (`test_ez_bc`, `test_ez_bd`, … `test_ez_wl`) | test | synthetic descriptor names used by dispatch tests. |

@@ -37,6 +37,21 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
 - 📎 Range queries and hash-lookup helpers for large dictionaries.
 - 📎 Persistence and lock semantics across `cepData` and `cepStore`.
 
+### Future Stream Subsystem Enzymes
+Bringing stream helpers into the enzyme catalogue would let impulse-driven workflows capture file and socket actions without dropping into raw API calls, giving operators a friendlier switchboard for everything that currently lives in the IO layer.
+
+#### Technical Details
+- Surface wrappers around `cep_stream_stdio_*` and `cep_stream_zip_*` so impulses can append, rotate, or close resources under heartbeat control.
+- Provide enzymes for checkpoint-friendly stream snapshots (flush, rewind, truncate) that honour existing locking semantics.
+- Mirror the cell operation structure: each wrapper advertises a deterministic label, relies on the same registry plumbing, and stays idempotent by default to avoid duplicate writes when impulses retry.
+- Stage the rollout in two phases—stdio first, then ZIP/foreign streams—to keep dependency footprints reviewable and to align with HANDLE/STREAM lifecycle work already in the roadmap.
+
+#### Q&A
+- **Why start with stream wrappers?** They are the most common side-effecting calls that still bypass the heartbeat; wrapping them aligns IO with the impulse dispatch contract.
+- **Will this replace the existing API?** No. Direct calls stay available for tight loops, but enzymes give orchestration layers a safer entry point.
+- **Do we need new storage metadata?** Only lightweight descriptors (e.g., flush depth, rotation policy) so the resolver can track idempotency and retries.
+- **How will retries be handled?** The wrappers will validate stream state before acting and no-op when their requested change already landed, mirroring the pattern used by cell enzymes.
+
 ### Milestones
 - **Milestone 1 - Historic cells and idempotent stores**
   - ✅ Comparator/hash dedupe reuses existing nodes through `store_find_child_by_key`.
