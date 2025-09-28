@@ -106,7 +106,9 @@ if get_option('tests').enabled()
     'src/test/test.c',
     'src/test/watchdog.c',
     'src/test/l0_kernel/test_cell.c',
+    'src/test/l0_kernel/test_cell_mutations.c',
     'src/test/l0_kernel/test_traverse.c',
+    'src/test/enzymes/test_cell_operations.c',
     'src/test/l0_kernel/test_domain_tag_naming.c',
     'src/test/l0_kernel/test_enzyme.c',
     'src/test/l0_kernel/test_heartbeat.c',
@@ -175,7 +177,7 @@ if python3.found()
     output: code_map_outputs,
     command: code_map_command,
     depend_files: [code_map_script],
-    build_by_default: code_map_opt,
+    build_by_default: false,
     build_always_stale: code_map_opt,
   )
 elif code_map_opt
@@ -243,7 +245,7 @@ if docs_html_opt
       '--html-root', join_paths(doc_output_dir, 'html'),
     ],
     depend_files: [doxygen_runner, git_tag_file, fix_toc_script],
-    build_by_default: docs_html_opt,
+    build_by_default: false,
     build_always_stale: docs_html_opt,
   )
 endif

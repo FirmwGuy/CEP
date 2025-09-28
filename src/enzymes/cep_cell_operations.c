@@ -19,6 +19,53 @@ typedef struct {
     cepPast     past[2];
 } cepPathConst2;
 
+typedef struct {
+    cepEnzymeRegistry* registry;
+    size_t             baseline;
+} cepCellOperationsRegistryRecord;
+
+static cepCellOperationsRegistryRecord* cep_cell_operations_registry_records = NULL;
+static size_t cep_cell_operations_registry_record_count = 0u;
+static size_t cep_cell_operations_registry_record_capacity = 0u;
+static cepEnzymeRegistry* cep_cell_operations_active_registry = NULL;
+
+static cepCellOperationsRegistryRecord* cep_cell_operations_registry_record_find(cepEnzymeRegistry* registry) {
+    if (!registry || !cep_cell_operations_registry_records) {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < cep_cell_operations_registry_record_count; ++i) {
+        if (cep_cell_operations_registry_records[i].registry == registry) {
+            return &cep_cell_operations_registry_records[i];
+        }
+    }
+
+    return NULL;
+}
+
+static cepCellOperationsRegistryRecord* cep_cell_operations_registry_record_append(cepEnzymeRegistry* registry, size_t baseline) {
+    if (!registry) {
+        return NULL;
+    }
+
+    if (cep_cell_operations_registry_record_count == cep_cell_operations_registry_record_capacity) {
+        size_t new_capacity = cep_cell_operations_registry_record_capacity ? (cep_cell_operations_registry_record_capacity * 2u) : 4u;
+        size_t previous_bytes = cep_cell_operations_registry_record_capacity * sizeof(*cep_cell_operations_registry_records);
+        size_t bytes = new_capacity * sizeof(*cep_cell_operations_registry_records);
+        cepCellOperationsRegistryRecord* grown = cep_cell_operations_registry_records ? cep_realloc(cep_cell_operations_registry_records, bytes) : cep_malloc0(bytes);
+        if (cep_cell_operations_registry_records) {
+            memset(((uint8_t*)grown) + previous_bytes, 0, bytes - previous_bytes);
+        }
+        cep_cell_operations_registry_records = grown;
+        cep_cell_operations_registry_record_capacity = new_capacity;
+    }
+
+    cepCellOperationsRegistryRecord* record = &cep_cell_operations_registry_records[cep_cell_operations_registry_record_count++];
+    record->registry = registry;
+    record->baseline = baseline;
+    return record;
+}
+
 
 static const cepDT* dt_signal_cell(void) { return CEP_DTAW("CEP", "sig_cell"); }
 static const cepDT* dt_op_add(void)      { return CEP_DTAW("CEP", "op_add"); }
@@ -430,20 +477,14 @@ static int cep_cell_enzyme_clone(const cepPath* signal, const cepPath* target) {
     return CEP_ENZYME_SUCCESS;
 }
 
-
-bool cep_cell_operations_register(cepEnzymeRegistry* registry) {
+static bool cep_cell_operations_populate(cepEnzymeRegistry* registry) {
     if (!registry) {
         return false;
     }
 
-    static bool registered = false;
-    if (registered) {
-        return true;
-    }
-
     struct {
-        cepPathConst2          path;
-        cepEnzymeDescriptor    descriptor;
+        cepPathConst2       path;
+        cepEnzymeDescriptor descriptor;
     } entries[] = {
         {
             .path = {
@@ -552,14 +593,60 @@ bool cep_cell_operations_register(cepEnzymeRegistry* registry) {
         },
     };
 
-    registered = true;
-
     for (size_t i = 0; i < cep_lengthof(entries); ++i) {
         const cepPath* path = (const cepPath*)&entries[i].path;
         if (cep_enzyme_register(registry, path, &entries[i].descriptor) != CEP_ENZYME_SUCCESS) {
-            registered = false;
             return false;
         }
     }
+
     return true;
 }
+
+
+bool cep_cell_operations_register(cepEnzymeRegistry* registry) {
+    if (!registry) {
+        return false;
+    }
+
+    const size_t expected = 5u;
+    cepCellOperationsRegistryRecord* record = cep_cell_operations_registry_record_find(registry);
+    size_t current_size = cep_enzyme_registry_size(registry);
+
+    if (record && current_size >= record->baseline) {
+        return true;
+    }
+
+    if (!record && current_size >= expected) {
+        (void)cep_cell_operations_registry_record_append(registry, current_size);
+        return true;
+    }
+
+    if (cep_cell_operations_active_registry == registry) {
+        return true;
+    }
+
+    cepEnzymeRegistry* previous_active = cep_cell_operations_active_registry;
+    cep_cell_operations_active_registry = registry;
+
+    size_t size_before = current_size;
+    bool ok = cep_cell_operations_populate(registry);
+
+    cep_cell_operations_active_registry = previous_active;
+
+    if (!ok) {
+        return false;
+    }
+
+    size_t size_after = cep_enzyme_registry_size(registry);
+    size_t baseline = (size_after > size_before) ? size_after : (size_before + expected);
+
+    if (record) {
+        record->baseline = baseline;
+    } else {
+        (void)cep_cell_operations_registry_record_append(registry, baseline);
+    }
+
+    return true;
+}
+

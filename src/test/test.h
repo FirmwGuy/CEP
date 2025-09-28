@@ -22,6 +22,7 @@ enum {
 MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_cell_setup(const MunitParameter params[], void* user_data);
 void        test_cell_tear_down(void* fixture);
+MunitResult test_cell_mutations(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitResult test_traverse(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_traverse_setup(const MunitParameter params[], void* user_data);
@@ -32,6 +33,7 @@ MunitResult test_domain_tag_naming(const MunitParameter params[], void* user_dat
 MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_enzyme_setup(const MunitParameter params[], void* user_data);
 void        test_enzyme_tear_down(void* fixture);
+MunitResult test_cell_operations_enzymes(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization(const MunitParameter params[], void* user_data_or_fixture);
