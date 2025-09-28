@@ -17,7 +17,7 @@
 #include <string.h>
 
 
-static int test_dt_naming_text(const char* text) {
+static int test_domain_tag_naming_text(const char* text) {
     cepID word  = cep_text_to_word(text);
     cepID acron = cep_text_to_acronym(text);
 
@@ -56,7 +56,7 @@ static inline size_t get_trimmed_length(const char* s) {
 #define CODABLE_MIN     2
 #define PRINTABLE_MIN   5
 
-static void test_dt_naming_coding(void) {
+static void test_domain_tag_naming_coding(void) {
     const char* acronym_tests[] = {
         " ",
         "TOOLONGNAMEEXCEEDS",
@@ -165,7 +165,7 @@ static void test_reference_interning(void) {
         .domain = static_id,
         .tag = CEP_DTAW("CEP", "domain")->tag,
     };
-    assert_true(cep_dt_valid(&dt));
+    assert_true(cep_dt_is_valid(&dt));
 
     assert_true(cep_namepool_release(static_id));
     assert_not_null(cep_namepool_lookup(static_id, NULL));
@@ -190,14 +190,14 @@ static void test_reference_interning(void) {
 }
 
 
-MunitResult test_dt_naming(const MunitParameter params[], void* user_data_or_fixture) {
+MunitResult test_domain_tag_naming(const MunitParameter params[], void* user_data_or_fixture) {
     (void)user_data_or_fixture;
 
     const char* param_value = munit_parameters_get(params, "text");
     if (param_value) {
-        return test_dt_naming_text(param_value);
+        return test_domain_tag_naming_text(param_value);
     } else {
-        test_dt_naming_coding();
+        test_domain_tag_naming_coding();
         test_reference_interning();
     }
 

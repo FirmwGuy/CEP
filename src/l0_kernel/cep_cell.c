@@ -36,7 +36,7 @@ struct _cepProxy {
 
 static inline int cell_compare_by_name(const cepCell* restrict key, const cepCell* restrict rec, void* unused) {
     (void)unused;
-    int cmp = cep_dt_compare(CEP_DT(key), CEP_DT(rec));
+    int cmp = cep_dt_compare(CEP_DT_PTR(key), CEP_DT_PTR(rec));
     if (cmp)
         return cmp;
 
@@ -113,7 +113,7 @@ unsigned MAX_DEPTH = CEP_MAX_FAST_STACK_DEPTH;     // FixMe: (used by path/trave
     accidental normal-type invariants so later helpers recognise the proxy
     flavour. */
 void cep_proxy_initialize(cepCell* cell, cepDT* name, const cepProxyOps* ops, void* context) {
-    assert(cell && name && cep_dt_valid(name));
+    assert(cell && name && cep_dt_is_valid(name));
     assert(ops);
 
     cep_cell_initialize(cell, CEP_TYPE_PROXY, name, NULL, NULL);
@@ -349,7 +349,7 @@ static const cepProxyOps cep_proxy_library_ops = {
     library context, retains the source cell if provided, and records whether
     later operations should treat the resource as stream-less. */
 void cep_proxy_initialize_handle(cepCell* cell, cepDT* name, cepCell* handle, cepCell* library) {
-    assert(cell && name && cep_dt_valid(name));
+    assert(cell && name && cep_dt_is_valid(name));
     assert(library);
 
     cepProxyLibraryCtx* ctx = cep_malloc0(sizeof *ctx);
@@ -368,7 +368,7 @@ void cep_proxy_initialize_handle(cepCell* cell, cepDT* name, cepCell* handle, ce
     proxy is initialised first and then seeded with the optional stream resource
     so consumers can reach the live window immediately. */
 void cep_proxy_initialize_stream(cepCell* cell, cepDT* name, cepCell* stream, cepCell* library) {
-    assert(cell && name && cep_dt_valid(name));
+    assert(cell && name && cep_dt_is_valid(name));
     assert(library);
 
     cepProxyLibraryCtx* ctx = cep_malloc0(sizeof *ctx);
@@ -441,7 +441,7 @@ void cep_data_history_clear(cepData* data) {
 
 cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
                         void** dataloc, void* value, ...  ) {
-    assert(cep_dt_valid(type) && (datatype < CEP_DATATYPE_COUNT));
+    assert(cep_dt_is_valid(type) && (datatype < CEP_DATATYPE_COUNT));
 
     cepData* data;
     void*    address;
@@ -1432,7 +1432,7 @@ static bool cep_data_structural_equal(const cepData* existing, const cepData* in
           used; for CEP_INDEX_BY_INSERTION no comparator is needed.
 */
 cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
-    assert(cep_dt_valid(dt) && (storage < CEP_STORAGE_COUNT) && (indexing < CEP_INDEX_COUNT));
+    assert(cep_dt_is_valid(dt) && (storage < CEP_STORAGE_COUNT) && (indexing < CEP_INDEX_COUNT));
 
     cepStore* store;
     va_list  args;
@@ -1915,7 +1915,7 @@ static inline cepCell* store_last_child(const cepStore* store) {
     Retrieves a child cell by its ID
 */
 static inline cepCell* store_find_child_by_name(const cepStore* store, const cepDT* name) {
-    assert(cep_store_valid(store) && cep_dt_valid(name));
+    assert(cep_store_valid(store) && cep_dt_is_valid(name));
 
     if (!store->chdCount)
         return NULL;
@@ -2085,7 +2085,7 @@ static inline cepCell* store_next_child(const cepStore* store, cepCell* child) {
    repeated lookups without restarting scans from the beginning.
 */
 static inline cepCell* store_find_next_child_by_name(const cepStore* store, cepDT* name, uintptr_t* childIdx) {
-    assert(cep_store_valid(store) && cep_dt_valid(name));
+    assert(cep_store_valid(store) && cep_dt_is_valid(name));
 
     if (!store->chdCount)
         return NULL;
@@ -2323,7 +2323,7 @@ static inline bool cep_cell_matches_snapshot(const cepCell* cell, cepOpCount sna
 }
 
 static inline cepCell* store_find_child_by_name_past(const cepStore* store, const cepDT* name, cepOpCount snapshot) {
-    assert(cep_store_valid(store) && cep_dt_valid(name));
+    assert(cep_store_valid(store) && cep_dt_is_valid(name));
 
     if (!store->chdCount)
         return NULL;
@@ -2360,7 +2360,7 @@ static inline cepCell* store_find_child_by_position_past(const cepStore* store, 
 }
 
 static inline cepCell* store_find_next_child_by_name_past(const cepStore* store, cepDT* name, uintptr_t* childIdx, cepOpCount snapshot) {
-    assert(cep_store_valid(store) && cep_dt_valid(name));
+    assert(cep_store_valid(store) && cep_dt_is_valid(name));
 
     if (!snapshot)
         return store_find_next_child_by_name(store, name, childIdx);
@@ -2852,7 +2852,7 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
     pointers, and transfers ownership, ensuring freshly created cells are ready
     for insertion without additional bookkeeping. */
 void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* data, cepStore* store) {
-    assert(cell && cep_dt_valid(name) && (type && type < CEP_TYPE_COUNT));
+    assert(cell && cep_dt_is_valid(name) && (type && type < CEP_TYPE_COUNT));
     bool isLink = (type == CEP_TYPE_LINK);
     assert(isLink? (!store): ((data? cep_data_valid(data): true)  &&  (store? cep_store_valid(store): true)));
 
@@ -3121,7 +3121,7 @@ void* cep_cell_data(const cepCell* cell) {
    states without altering the live cell.
 */
 void* cep_cell_data_find_by_name_past(const cepCell* cell, cepDT* name, cepOpCount snapshot) {
-    assert(!cep_cell_is_void(cell) && cep_dt_valid(name));
+    assert(!cep_cell_is_void(cell) && cep_dt_is_valid(name));
 
     cepCell* found = cep_cell_find_by_name_past(cell, name, snapshot);
     if (!found)
@@ -3324,7 +3324,7 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
 
     const cepCell* leaf = cell;
     if (leaf && cep_cell_is_normal(leaf)) {
-        if (leaf->data && cep_dt_valid(&leaf->data->dt)) {
+        if (leaf->data && cep_dt_is_valid(&leaf->data->dt)) {
             if (tempPath->length >= tempPath->capacity) {
                 unsigned newCapacity = tempPath->capacity ? (tempPath->capacity << 1u) : 4u;
                 if (newCapacity < tempPath->length + 1u) {
@@ -3347,7 +3347,7 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
         }
 
         const cepStore* store = leaf->store;
-        if (store && store->chdCount && cep_dt_valid(&store->dt)) {
+        if (store && store->chdCount && cep_dt_is_valid(&store->dt)) {
             if (tempPath->length >= tempPath->capacity) {
                 unsigned newCapacity = tempPath->capacity ? (tempPath->capacity << 1u) : 4u;
                 if (newCapacity < tempPath->length + 1u) {

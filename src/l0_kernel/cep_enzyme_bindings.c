@@ -36,7 +36,7 @@ static cepEnzymeBinding** cep_cell_binding_slot(cepCell* cell, cepOpCount** modi
 }
 
 static int cep_cell_append_binding(cepCell* cell, const cepDT* name, uint32_t flags) {
-    if (!cell || !cep_cell_is_normal(cell) || !name || !cep_dt_valid(name)) {
+    if (!cell || !cep_cell_is_normal(cell) || !name || !cep_dt_is_valid(name)) {
         return CEP_ENZYME_FATAL;
     }
 

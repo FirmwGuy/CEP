@@ -136,7 +136,7 @@ typedef struct {
     };
 } cepDT;
 
-#define CEP_DT(p)       ((cepDT*)(p))
+#define CEP_DT_PTR(p)       ((cepDT*)(p))
 
 static inline int cep_dt_compare(const cepDT* restrict key, const cepDT* restrict dt)
 {
@@ -266,7 +266,9 @@ static inline bool cep_id_matches(cepID pattern, cepID observed) {
     return cep_id_is_glob_multi(pattern) || pattern == observed;
 }
 
-#define cep_dt_valid(dt)                ((dt) && cep_id_text_valid((dt)->domain) && cep_id_valid((dt)->tag))
+static inline bool cep_dt_is_valid(const cepDT* dt) {
+    return dt && cep_id_text_valid(dt->domain) && cep_id_valid(dt->tag);
+}
 
 
 // Converting C text strings to/from cepID
@@ -626,7 +628,7 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
                         void** dataloc, void* value, ...  );
 void     cep_data_del(cepData* data);
 void*    cep_data(const cepData* data);
-#define  cep_data_valid(d)                             ((d) && (d)->capacity && cep_dt_valid(&(d)->dt))
+#define  cep_data_valid(d)                             ((d) && (d)->capacity && cep_dt_is_valid(&(d)->dt))
 #define  cep_data_new_value(dt, value, z)              ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, _z, _z);})
 void     cep_data_history_push(cepData* data);
 void     cep_data_history_clear(cepData* data);
@@ -752,7 +754,7 @@ enum _cepCellIndexing {
 cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...);
 void      cep_store_del(cepStore* store);
 void      cep_store_delete_children_hard(cepStore* store);
-#define   cep_store_valid(s)      ((s) && cep_dt_valid(&(s)->dt))
+#define   cep_store_valid(s)      ((s) && cep_dt_is_valid(&(s)->dt))
 
 static inline bool cep_store_is_insertable(cepStore* store)   {assert(cep_store_valid(store));  return (store->indexing == CEP_INDEX_BY_INSERTION);}
 static inline bool cep_store_is_dictionary(cepStore* store)   {assert(cep_store_valid(store));  return (store->indexing == CEP_INDEX_BY_NAME);}
@@ -835,22 +837,22 @@ cepCell* cep_cell_clone_deep(const cepCell* cell);
 #define cep_cell_initialize_value(r, name, dt, value, size, capacity)                cep_cell_initialize(r, CEP_TYPE_NORMAL, name, cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)
 #define cep_cell_initialize_data(r, name, dt, value, size, capacity, destructor)     cep_cell_initialize(r, CEP_TYPE_NORMAL, name, cep_data_new(dt, CEP_DATATYPE_DATA, true, NULL, value, size, capacity, destructor), NULL)
 
-// name -> cell metacell, dt -> store label (record type); keep identity and structure separated.
-#define cep_cell_initialize_list(r, name, dt, storage, ...)                  cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
-#define cep_cell_initialize_dictionary(r, name, dt, storage, ...)            cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
-#define cep_cell_initialize_catalog(r, name, dt, storage, ...)               cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_FUNCTION, ##__VA_ARGS__))
-#define cep_cell_initialize_spatial(r, name, dt, center, subwide, compare)   cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(dt, CEP_STORAGE_OCTREE, CEP_INDEX_BY_FUNCTION, center, subwide, compare))
+// name -> cell metacell, type_dt -> store label (record type); keep identity and structure separated.
+#define cep_cell_initialize_list(r, name, type_dt, storage, ...)                  cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
+#define cep_cell_initialize_dictionary(r, name, type_dt, storage, ...)            cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
+#define cep_cell_initialize_catalog(r, name, type_dt, storage, ...)               cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_FUNCTION, ##__VA_ARGS__))
+#define cep_cell_initialize_spatial(r, name, type_dt, center, subwide, compare)   cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(type_dt, CEP_STORAGE_OCTREE, CEP_INDEX_BY_FUNCTION, center, subwide, compare))
 
 static inline void  cep_cell_set_tag_id(cepCell* cell, cepID id)      {assert(cell && cep_id_valid(id));  CEP_ID_SET(cell->metacell.tag, id);}
 static inline void  cep_cell_set_name(cepCell* cell, cepDT* name)     {
-    assert(cell && cep_dt_valid(name));
+    assert(cell && cep_dt_is_valid(name));
     cell->metacell.domain = name->domain;
     CEP_ID_SET(cell->metacell.tag, name->tag);
 }
 //static inline cepDT cep_cell_get_name(const cepCell* cell)        {assert(cell);  return cell->metacell.name;}
-#define cep_cell_get_tag_id(r)    cep_id(CEP_DT(r)->tag)
+#define cep_cell_get_tag_id(r)    cep_id(CEP_DT_PTR(r)->tag)
 
-#define cep_cell_is_void(r)       (((r)->metacell.type == CEP_TYPE_VOID) || !cep_dt_valid(&(r)->metacell.dt))
+#define cep_cell_is_void(r)       (((r)->metacell.type == CEP_TYPE_VOID) || !cep_dt_is_valid(&(r)->metacell.dt))
 #define cep_cell_is_normal(r)     ((r)->metacell.type == CEP_TYPE_NORMAL)
 #define cep_cell_is_proxy(r)      ((r)->metacell.type == CEP_TYPE_PROXY)
 #define cep_cell_is_link(r)       ((r)->metacell.type == CEP_TYPE_LINK)
@@ -989,7 +991,7 @@ static inline bool cep_cell_data_locked_hierarchy(const cepCell* cell) {
 static inline void  cep_cell_set_autoid(const cepCell* cell, cepID id)  {assert(cep_cell_has_store(cell) && (cell->store->autoid < id)  &&  (id <= CEP_AUTOID_MAX)); cell->store->autoid = id;}
 static inline cepID cep_cell_get_autoid(const cepCell* cell)            {assert(cep_cell_has_store(cell));  return cell->store->autoid;}
 
-#define cep_cell_name_is(cell, name)        (0 == cep_dt_compare(CEP_DT(&(cell)->metacell), CEP_DT(name)))
+#define cep_cell_name_is(cell, name)        (0 == cep_dt_compare(CEP_DT_PTR(&(cell)->metacell), CEP_DT_PTR(name)))
 static inline const cepDT* cep_cell_get_name(const cepCell* cell) {
     assert(cell);
     ((cepCell*)cell)->metacell._reserved = 0;
@@ -1060,9 +1062,9 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child);
 #define cep_cell_add_value(cell, name, context, dt, value, size, capacity)                              cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)
 #define cep_cell_add_data(cell, name, context, dt, value, size, capacity, destructor)                   cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), cep_data_new(dt, CEP_DATATYPE_DATA,  true, NULL, value, size, capacity, destructor), NULL)
 
-#define cep_cell_add_list(cell, name, context, dt, storage, ...)                                        cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, cep_store_new(dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
-#define cep_cell_add_dictionary(cell, name, context, dt, storage, ...)                                  cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, cep_store_new(dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
-#define cep_cell_add_catalog(cell, name, context, dt, storage, ...)                                     cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, cep_store_new(dt, storage, CEP_INDEX_BY_FUNCTION, ##__VA_ARGS__))
+#define cep_cell_add_list(cell, name, context, type_dt, storage, ...)                                        cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
+#define cep_cell_add_dictionary(cell, name, context, type_dt, storage, ...)                                  cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
+#define cep_cell_add_catalog(cell, name, context, type_dt, storage, ...)                                     cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_FUNCTION, ##__VA_ARGS__))
 
 #define cep_cell_add_link(cell, name, context, source)                                                  cep_cell_add_child(cell, CEP_TYPE_LINK, name, (uintptr_t)(context), CEP_P(source), NULL)
 
@@ -1070,9 +1072,9 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child);
 #define cep_dict_add_empty(cell, name)                                                                  cep_cell_add_empty(cell, name, 0)
 #define cep_dict_add_value(cell, name, dt, value, size, capacity)                                       cep_cell_add_value(cell, name, 0, dt, value, size, capacity)
 #define cep_dict_add_data(cell, name, dt, value, size, capacity, destructor)                            cep_cell_add_data(cell, name, 0, dt, value, size, capacity, destructor)
-#define cep_dict_add_list(cell, name, dt, storage, ...)                                                 cep_cell_add_list(cell, name, 0, dt, storage, ##__VA_ARGS__)
-#define cep_dict_add_dictionary(cell, name, dt, storage, ...)                                           cep_cell_add_dictionary(cell, name, 0, dt, storage, ##__VA_ARGS__)
-#define cep_dict_add_catalog(cell, name, dt, storage, ...)                                              cep_cell_add_catalog(cell, name, 0, dt, storage, ##__VA_ARGS__)
+#define cep_dict_add_list(cell, name, type_dt, storage, ...)                                                 cep_cell_add_list(cell, name, 0, type_dt, storage, ##__VA_ARGS__)
+#define cep_dict_add_dictionary(cell, name, type_dt, storage, ...)                                           cep_cell_add_dictionary(cell, name, 0, type_dt, storage, ##__VA_ARGS__)
+#define cep_dict_add_catalog(cell, name, type_dt, storage, ...)                                              cep_cell_add_catalog(cell, name, 0, type_dt, storage, ##__VA_ARGS__)
 #define cep_dict_add_link(cell, name, source)                                                           cep_cell_add_link(cell, name, 0, source)
 
 #define cep_cell_append_child(cell, type, name, prepend, data, store)          \
@@ -1082,9 +1084,9 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child);
 #define cep_cell_append_value(cell, name, dt, value, size, capacity)                                    cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)
 #define cep_cell_append_data(cell, name, dt, value, size, capacity, destructor)                         cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, cep_data_new(dt, CEP_DATATYPE_DATA,  true, NULL, value, size, capacity, destructor), NULL)
 
-#define cep_cell_append_list(cell, name, dt, storage, ...)                                              cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
-#define cep_cell_append_dictionary(cell, name, dt, storage, ...)                                        cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
-#define cep_cell_append_catalog(cell, name, dt, storage, ...)                                           cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_FUNCTION, ##__VA_ARGS__))
+#define cep_cell_append_list(cell, name, type_dt, storage, ...)                                              cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
+#define cep_cell_append_dictionary(cell, name, type_dt, storage, ...)                                        cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
+#define cep_cell_append_catalog(cell, name, type_dt, storage, ...)                                           cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, false, NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_FUNCTION, ##__VA_ARGS__))
 
 #define cep_cell_append_link(cell, name, source)                                                        cep_cell_append_child(cell, CEP_TYPE_LINK, name, false, CEP_P(source), NULL)
 
@@ -1092,9 +1094,9 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child);
 #define cep_cell_prepend_value(cell, name, dt, value, size, capacity)                                   cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)
 #define cep_cell_prepend_data(cell, name, dt, value, size, capacity, destructor)                        cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, cep_data_new(dt, CEP_DATATYPE_DATA,  true, NULL, value, size, capacity, destructor), NULL)
 
-#define cep_cell_prepend_list(cell, name, dt, storage, ...)                                             cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
-#define cep_cell_prepend_dictionary(cell, name, dt, storage, ...)                                       cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
-#define cep_cell_prepend_catalog(cell, name, dt, storage, ...)                                          cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, NULL, cep_store_new(dt, storage, CEP_INDEX_BY_FUNCTION, ##__VA_ARGS__))
+#define cep_cell_prepend_list(cell, name, type_dt, storage, ...)                                             cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_INSERTION, ##__VA_ARGS__))
+#define cep_cell_prepend_dictionary(cell, name, type_dt, storage, ...)                                       cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_NAME, ##__VA_ARGS__))
+#define cep_cell_prepend_catalog(cell, name, type_dt, storage, ...)                                          cep_cell_append_child(cell, CEP_TYPE_NORMAL, name, true, NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_FUNCTION, ##__VA_ARGS__))
 
 #define cep_cell_prepend_link(cell, name, source)                                                       cep_cell_append_child(cell, CEP_TYPE_LINK, name, true, CEP_P(source), NULL)
 

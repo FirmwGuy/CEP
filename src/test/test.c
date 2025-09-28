@@ -37,8 +37,8 @@ MunitTest tests[] = {
         timeout_params             // Parameters.
     },
     {
-        "/dt_naming",
-        test_dt_naming,
+        "/domain_tag_naming",
+        test_domain_tag_naming,
         NULL,                     // Setup
         NULL,                     // Tear_down
         MUNIT_TEST_OPTION_NONE,

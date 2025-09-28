@@ -27,7 +27,7 @@ MunitResult test_traverse(const MunitParameter params[], void* user_data_or_fixt
 void*       test_traverse_setup(const MunitParameter params[], void* user_data);
 void        test_traverse_tear_down(void* fixture);
 
-MunitResult test_dt_naming(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_domain_tag_naming(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_enzyme_setup(const MunitParameter params[], void* user_data);
