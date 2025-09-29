@@ -28,7 +28,7 @@ Transient helpers live beneath `/bonds/*` during the active beat:
 ### Planned C API Surface
 Layer 1 exposes handles that wrap kernel cells but remain replay-friendly:
 - Implementation lives under `src/l1_bond/`, sharing the same `cep_` prefix used by the kernel families.
-- `cep_init(const cepConfig*, cepEnzymeRegistry*)` seeds namespaces, installs default enzymes, and primes caches.
+- `cep_init_l1(const cepConfig*, cepEnzymeRegistry*)` seeds namespaces, installs default enzymes, and primes caches.
 - `cep_being_claim(cepCell* root, const cepDT* name, const cepBeingSpec*, cepBeingHandle*)` either returns an existing being or builds a fresh identity card.
 - `cep_bond_upsert(cepCell* root, const cepBondSpec*, cepBondHandle*)` records pair bonds, stages adjacency deltas, and emits `sig_bond_*` impulses.
 - `cep_context_upsert(cepCell* root, const cepContextSpec*, cepContextHandle*)` creates or updates a simplex, guaranteeing required facets are enqueued.
@@ -64,4 +64,3 @@ Journal entries capture both the incoming spec and the resulting handles so high
 
 - **Can I extend the tag vocabulary?**  
   Yes. Add new entries to `docs/CEP-TAG-LEXICON.md` first so the shared domain stays coherent, then reference them in your facet specs.
-

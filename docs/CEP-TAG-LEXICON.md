@@ -24,15 +24,21 @@ when a new behaviour needs a fresh word before it lands in code.
 | --- | --- | --- |
 | `/` | core | root dictionary mounted during bootstrap. |
 | `agenda` | core | heartbeat agenda ledger for resolved enzymes. |
+| `adjacency` | core | runtime adjacency mirrors rehydrated under `/CEP/bonds/adjacency`. |
 | `beat` | core | heartbeat list storing per-beat runtime entries. |
 | `being` | core | identity cards for long-lived Layer 1 beings. |
+| `beings` | core | Layer 1 being card catalog under `/CEP/data/CEP/L1/beings`. |
 | `cas` | core | content-addressable storage subtree. |
 | `catalog` | core | cell stores using catalog/indexed semantics. |
+| `checkpoints` | core | heartbeat checkpoint ledger under `/CEP/bonds/checkpoints`. |
 | `ctx_*` | ops | simplex contexts maintained by Layer 1 bonds. |
+| `contexts` | core | durable context simplices under `/CEP/data/CEP/L1/contexts`. |
 | `cmp_root` | test | comparison fixtures in traversal/randomised tests. |
 | `data` | core | durable dataset root under `/CEP/data`. |
+| `CEP` | core | namespace hub for CEP-owned layers mounted at `/CEP/data/CEP`. |
 | `dict` | core | shorthand tag used in dynamic dictionary construction tests. |
 | `facet_*` | ops | closure facets derived from Layer 1 contexts. |
+| `facets` | core | derived facet records stored under `/CEP/data/CEP/L1/facets`. |
 | `dictionary` | core | canonical store tag for dictionary nodes. |
 | `domain` | test | validates domain/tag packing in namepool tests. |
 | `env` | core | runtime environment subtree. |
@@ -42,6 +48,7 @@ when a new behaviour needs a fresh word before it lands in code.
 | `inbox` | core | heartbeat inbox log for queued impulses. |
 | `intent` | core | journal entry describing signal intent. |
 | `journal` | core | append-only journaling subtree. |
+| `L1` | core | Layer 1 namespace root anchored at `/CEP/data/CEP/L1`. |
 | `lib` | core | library mount point created during bootstrap. |
 | `lib_payld` | io | payload marker for library-backed streams in tests. |
 | `library` | core | library metadata tag for proxied payloads. |
@@ -62,6 +69,7 @@ when a new behaviour needs a fresh word before it lands in code.
 | `sig_apply` `sig_beta` `sig_broad` `sig_cycle` `sig_dedup` `sig_dup` `sig_empty` `sig_expect` `sig_gamma` `sig_hb` `sig_img` `sig_mask` `sig_match` `sig_nop` `sig_rand` `sig_root` `sig_rty` `sig_skip` `sig_thumb` `sig_tree` | ops | assorted signal tags used by scheduler and unit tests; see signal handling docs for behaviour. |
 | `facet_edlog` | ops | default edit-log facet emitted by `ctx_editssn`. |
 | `facet_prsnc` | ops | presence facet tracking active editors/watchers. |
+| `facet_queue` | core | queued facet work staged at `/CEP/bonds/facet_queue` before enzymes run. |
 | `ctx_editssn` | ops | context describing an edit session between user, document, and tool. |
 | `stage` | core | heartbeat stage ledger for committed work. |
 | `stdio_res` / `stdio_str` | io | tags used by stdio-backed stream adapters. |
@@ -76,6 +84,7 @@ when a new behaviour needs a fresh word before it lands in code.
 | `zip_entry` / `zip_stream` | io | libzip-backed stream descriptors. |
 | `bond_caned` | ops | canonical bond tag “CAN_EDIT” (borrowed by tests). |
 | `bond_*` | ops | bond relationship classes managed by Layer 1. |
+| `bonds` | core | durable bond ledger at `/CEP/data/CEP/L1/bonds` and the runtime `/CEP/bonds` workspace. |
 | `arg_deep` / `arg_pos` / `arg_prepend` | ops | parameter dictionary tags for cell operation requests. |
 | `test_enz_*` (`test_enz_a`, `test_enz_b`, `test_enz_c`, `test_enz_d`, `test_enz_da`, `test_enz_e`, `test_enz_le`, `test_enz_ro`) | test | enzyme dependency graphs in unit tests. |
 | `test_ez_*` (`test_ez_bc`, `test_ez_bd`, … `test_ez_wl`) | test | synthetic descriptor names used by dispatch tests. |

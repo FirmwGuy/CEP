@@ -43,5 +43,6 @@ MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_
 MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fixture);
 #endif
 MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];

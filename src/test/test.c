@@ -100,6 +100,14 @@ MunitTest tests[] = {
         NULL
     },
 #endif
+    {
+        "/l1/init",
+        test_bond,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
 
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL}  // EOL
 };
