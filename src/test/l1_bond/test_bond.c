@@ -2,13 +2,14 @@
  * work to the public domain by waiving all rights to the work worldwide
  * under CC0 1.0. See https://creativecommons.org/publicdomain/zero/1.0/. */
 
-/* Layer 1 bond bootstrap & topology smoke tests. */
+/* Layer 1 bond bootstrap & behaviour tests using the public API. */
 
 #include "test.h"
 
 #include "cep_bond.h"
 #include "cep_cell.h"
 
+#include <string.h>
 
 /* expect_dictionary fetches a named child and asserts the backing store is a dictionary. */
 static cepCell* expect_dictionary(cepCell* parent, const cepDT* name) {
@@ -35,7 +36,18 @@ static cepCell* expect_list(cepCell* parent, const cepDT* name) {
     return child;
 }
 
-/* Bind two beings through a bond, mirror adjacency, schedule a facet, and ensure teardown respects ensure_directories. */
+/* Extract the text payload stored under the requested name on a parent dictionary. */
+static const char* expect_value(cepCell* parent, const cepDT* name) {
+    cepCell* cell = cep_cell_find_by_name(parent, name);
+    assert_not_null(cell);
+    assert_true(cep_cell_is_normal(cell));
+    assert_true(cep_cell_has_data(cell));
+    const char* text = (const char*)cep_cell_data(cell);
+    assert_not_null(text);
+    return text;
+}
+
+/* Bind two beings through a bond, mirror adjacency, schedule facets, and verify topology. */
 MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;
     (void)user_data_or_fixture;
@@ -63,75 +75,146 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
     cepCell* checkpoints_root = expect_dictionary(runtime_bonds_root, CEP_DTAW("CEP", "checkpoints"));
     (void)checkpoints_root;
 
-    /* Seed two beings with lightweight metadata. */
-    cepDT being_a_name = *CEP_DTAW("CEP", "being_a");
-    cepCell* being_a = cep_cell_add_dictionary(beings_root, &being_a_name, 0, CEP_DTAW("CEP", "being"), CEP_STORAGE_RED_BLACK_T);
-    assert_not_null(being_a);
+    /* Claim beings using the public API. */
+    cepBeingHandle user = {0};
+    cepBeingSpec user_spec = {
+        .label = "Alex Solo",
+        .kind = "human",
+        .external_id = "user-001",
+        .metadata = NULL,
+    };
+    rc = cep_being_claim(root, CEP_DTAW("CEP", "being_alx"), &user_spec, &user);
+    assert_int(rc, ==, CEP_L1_OK);
+    assert_not_null(user.cell);
 
-    cepDT being_b_name = *CEP_DTAW("CEP", "being_b");
-    cepCell* being_b = cep_cell_add_dictionary(beings_root, &being_b_name, 0, CEP_DTAW("CEP", "being"), CEP_STORAGE_RED_BLACK_T);
-    assert_not_null(being_b);
+    cepBeingHandle document = {0};
+    cepBeingSpec doc_spec = {
+        .label = "Feature Doc",
+        .kind = "document",
+        .external_id = "doc-2024A",
+        .metadata = NULL,
+    };
+    rc = cep_being_claim(root, CEP_DTAW("CEP", "being_doc"), &doc_spec, &document);
+    assert_int(rc, ==, CEP_L1_OK);
+    assert_not_null(document.cell);
 
-    /* Describe the bond and attach role links. */
-    cepDT bond_name = *CEP_DTAW("CEP", "bond_pair");
-    cepCell* bond = cep_cell_add_dictionary(bonds_root, &bond_name, 0, CEP_DTAW("CEP", "bond_caned"), CEP_STORAGE_LINKED_LIST);
-    assert_not_null(bond);
+    /* Record a bond between the two beings. */
+    cepBondHandle bond_handle = {0};
+    cepBondSpec bond_spec = {
+        .tag = CEP_DTAW("CEP", "bond_caned"),
+        .role_a_tag = CEP_DTAW("CEP", "role_a"),
+        .role_a = user.cell,
+        .role_b_tag = CEP_DTAW("CEP", "role_b"),
+        .role_b = document.cell,
+        .metadata = NULL,
+        .causal_op = 0,
+        .label = "Primary Edit",
+        .note = "shared workspace",
+    };
+    rc = cep_bond_upsert(root, &bond_spec, &bond_handle);
+    assert_int(rc, ==, CEP_L1_OK);
+    assert_not_null(bond_handle.cell);
 
-    cepDT role_a_tag = *CEP_DTAW("CEP", "role_a");
-    cepCell* bond_role_a = cep_cell_add_dictionary(bond, &role_a_tag, 0, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_LINKED_LIST);
-    assert_not_null(bond_role_a);
-    static const char role_a_ref[] = "being_a";
-    cepDT value_tag = *CEP_DTAW("CEP", "value");
-    assert_not_null(cep_cell_add_value(bond_role_a, &value_tag, 0, CEP_DTAW("CEP", "text"), CEP_P(role_a_ref), sizeof role_a_ref, sizeof role_a_ref));
+    /* Describe an editing context requiring two facets. */
+    const cepDT* ctx_role_tags[] = {
+        CEP_DTAW("CEP", "role_source"),
+        CEP_DTAW("CEP", "role_subj"),
+    };
+    const cepCell* ctx_role_targets[] = { user.cell, document.cell };
+    const cepDT* facet_tags[] = {
+        CEP_DTAW("CEP", "facet_edlog"),
+        CEP_DTAW("CEP", "facet_prsnc"),
+    };
+    cepContextHandle context_handle = {0};
+    cepContextSpec context_spec = {
+        .tag = CEP_DTAW("CEP", "ctx_edit"),
+        .role_count = 2,
+        .role_tags = ctx_role_tags,
+        .role_targets = ctx_role_targets,
+        .metadata = NULL,
+        .facet_tags = facet_tags,
+        .facet_count = 2,
+        .causal_op = 0,
+        .label = "First Draft",
+    };
+    rc = cep_context_upsert(root, &context_spec, &context_handle);
+    assert_int(rc, ==, CEP_L1_OK);
+    assert_not_null(context_handle.cell);
 
-    cepDT role_b_tag = *CEP_DTAW("CEP", "role_b");
-    cepCell* bond_role_b = cep_cell_add_dictionary(bond, &role_b_tag, 0, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_LINKED_LIST);
-    assert_not_null(bond_role_b);
-    static const char role_b_ref[] = "being_b";
-    assert_not_null(cep_cell_add_value(bond_role_b, &value_tag, 0, CEP_DTAW("CEP", "text"), CEP_P(role_b_ref), sizeof role_b_ref, sizeof role_b_ref));
+    /* Validate beings carry the advertised metadata. */
+    cepCell* being_alx = cep_cell_find_by_name(beings_root, CEP_DTAW("CEP", "being_alx"));
+    assert_not_null(being_alx);
+    assert_string_equal(expect_value(being_alx, CEP_DTAW("CEP", "being_label")), "Alex Solo");
+    assert_string_equal(expect_value(being_alx, CEP_DTAW("CEP", "being_kind")), "human");
+    assert_string_equal(expect_value(being_alx, CEP_DTAW("CEP", "being_ext")), "user-001");
 
-    /* Instantiate a context referencing both beings and capturing facet obligations. */
-    cepDT context_name = *CEP_DTAW("CEP", "ctx_edit");
-    cepCell* context = cep_cell_add_dictionary(contexts_root, &context_name, 0, CEP_DTAW("CEP", "ctx_editssn"), CEP_STORAGE_LINKED_LIST);
-    assert_not_null(context);
+    cepCell* being_doc = cep_cell_find_by_name(beings_root, CEP_DTAW("CEP", "being_doc"));
+    assert_not_null(being_doc);
+    const char* doc_label = expect_value(being_doc, CEP_DTAW("CEP", "being_label"));
+    assert_string_equal(doc_label, "Feature Doc");
+    assert_string_equal(expect_value(being_doc, CEP_DTAW("CEP", "being_kind")), "document");
+    assert_string_equal(expect_value(being_doc, CEP_DTAW("CEP", "being_ext")), "doc-2024A");
 
-    cepDT role_source_tag = *CEP_DTAW("CEP", "role_source");
-    cepCell* ctx_role_source = cep_cell_add_dictionary(context, &role_source_tag, 0, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_LINKED_LIST);
-    assert_not_null(ctx_role_source);
-    static const char ctx_source_ref[] = "being_a";
-    assert_not_null(cep_cell_add_value(ctx_role_source, &value_tag, 0, CEP_DTAW("CEP", "text"), CEP_P(ctx_source_ref), sizeof ctx_source_ref, sizeof ctx_source_ref));
+    /* Bond record captures role summaries and annotations. */
+    cepCell* bond_node = cep_cell_find_by_name(bonds_root, CEP_DTAW("CEP", "bond_caned"));
+    assert_not_null(bond_node);
+    assert_string_equal(expect_value(bond_node, CEP_DTAW("CEP", "bond_label")), "Primary Edit");
+    assert_string_equal(expect_value(bond_node, CEP_DTAW("CEP", "bond_note")), "shared workspace");
+    cepCell* bond_role_a = expect_dictionary(bond_node, CEP_DTAW("CEP", "role_a"));
+    assert_string_equal(expect_value(bond_role_a, CEP_DTAW("CEP", "value")), "being_doc");
+    cepCell* bond_role_b = expect_dictionary(bond_node, CEP_DTAW("CEP", "role_b"));
+    assert_string_equal(expect_value(bond_role_b, CEP_DTAW("CEP", "value")), "being_alx");
 
-    cepDT role_subj_tag = *CEP_DTAW("CEP", "role_subj");
-    cepCell* ctx_role_subject = cep_cell_add_dictionary(context, &role_subj_tag, 0, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_LINKED_LIST);
-    assert_not_null(ctx_role_subject);
-    static const char ctx_subject_ref[] = "being_b";
-    assert_not_null(cep_cell_add_value(ctx_role_subject, &value_tag, 0, CEP_DTAW("CEP", "text"), CEP_P(ctx_subject_ref), sizeof ctx_subject_ref, sizeof ctx_subject_ref));
+    /* Context node tracks participants and label. */
+    cepCell* context_node = cep_cell_find_by_name(contexts_root, CEP_DTAW("CEP", "ctx_edit"));
+    assert_not_null(context_node);
+    assert_string_equal(expect_value(context_node, CEP_DTAW("CEP", "ctx_label")), "First Draft");
+    assert_string_equal(expect_value(cep_cell_find_by_name(context_node, CEP_DTAW("CEP", "role_source")), CEP_DTAW("CEP", "value")), "being_alx");
+    assert_string_equal(expect_value(cep_cell_find_by_name(context_node, CEP_DTAW("CEP", "role_subj")), CEP_DTAW("CEP", "value")), "being_doc");
 
-    cepDT facet_need_tag = *CEP_DTAW("CEP", "facet_edlog");
-    cepCell* facet_obligation = cep_cell_add_dictionary(context, &facet_need_tag, 0, &facet_need_tag, CEP_STORAGE_LINKED_LIST);
-    assert_not_null(facet_obligation);
+    /* Facet records mark pending state and the queue references the context. */
+    cepCell* facet_edlog = cep_cell_find_by_name(facets_root, CEP_DTAW("CEP", "facet_edlog"));
+    assert_not_null(facet_edlog);
+    assert_string_equal(expect_value(facet_edlog, CEP_DTAW("CEP", "facet_state")), "pending");
+    cepCell* facet_prsnc = cep_cell_find_by_name(facets_root, CEP_DTAW("CEP", "facet_prsnc"));
+    assert_not_null(facet_prsnc);
+    assert_string_equal(expect_value(facet_prsnc, CEP_DTAW("CEP", "facet_state")), "pending");
 
-    /* Materialise the facet output branch. */
-    cepCell* facet_record = cep_cell_add_dictionary(facets_root, &facet_need_tag, 0, &facet_need_tag, CEP_STORAGE_LINKED_LIST);
-    assert_not_null(facet_record);
-    assert_ptr_equal(cep_cell_parent(facet_record), facets_root);
+    cepCell* queue_edlog = cep_cell_find_by_name(facet_queue, CEP_DTAW("CEP", "facet_edlog"));
+    assert_not_null(queue_edlog);
+    assert_string_equal(expect_value(queue_edlog, CEP_DTAW("CEP", "value")), "First Draft");
+    assert_string_equal(expect_value(queue_edlog, CEP_DTAW("CEP", "queue_state")), "pending");
 
-    /* Publish adjacency mirrors for both beings. */
-    cepCell* adjacency_a = cep_cell_add_list(adjacency_root, &being_a_name, 0, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
-    assert_not_null(adjacency_a);
-    static const char adjacency_ctx_ref[] = "ctx_edit";
-    assert_not_null(cep_cell_add_value(adjacency_a, &value_tag, 0, CEP_DTAW("CEP", "text"), CEP_P(adjacency_ctx_ref), sizeof adjacency_ctx_ref, sizeof adjacency_ctx_ref));
+    cepCell* queue_prsnc = cep_cell_find_by_name(facet_queue, CEP_DTAW("CEP", "facet_prsnc"));
+    assert_not_null(queue_prsnc);
+    assert_string_equal(expect_value(queue_prsnc, CEP_DTAW("CEP", "value")), "First Draft");
+    assert_string_equal(expect_value(queue_prsnc, CEP_DTAW("CEP", "queue_state")), "pending");
 
-    cepCell* adjacency_b = cep_cell_add_list(adjacency_root, &being_b_name, 0, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
-    assert_not_null(adjacency_b);
-    assert_not_null(cep_cell_add_value(adjacency_b, &value_tag, 0, CEP_DTAW("CEP", "text"), CEP_P(adjacency_ctx_ref), sizeof adjacency_ctx_ref, sizeof adjacency_ctx_ref));
+    // Adjacency mirrors capture both the bond and the active context for each being.
+    cepCell* adjacency_alx = expect_dictionary(adjacency_root, CEP_DTAW("CEP", "being_alx"));
+    const char* adjacency_alx_bond = expect_value(adjacency_alx, CEP_DTAW("CEP", "bond_caned"));
+    assert_string_equal(adjacency_alx_bond, "bond_caned:doc-2024A");
+    assert_string_equal(expect_value(adjacency_alx, CEP_DTAW("CEP", "ctx_edit")), "ctx_edit:First Draft");
 
-    /* Enqueue facet work in the runtime queue. */
-    cepCell* queue_entry = cep_cell_add_dictionary(facet_queue, &facet_need_tag, 0, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_LINKED_LIST);
-    assert_not_null(queue_entry);
-    assert_not_null(cep_cell_add_value(queue_entry, &value_tag, 0, CEP_DTAW("CEP", "text"), CEP_P(adjacency_ctx_ref), sizeof adjacency_ctx_ref, sizeof adjacency_ctx_ref));
+    cepCell* adjacency_doc = expect_dictionary(adjacency_root, CEP_DTAW("CEP", "being_doc"));
+    const char* adjacency_doc_bond = expect_value(adjacency_doc, CEP_DTAW("CEP", "bond_caned"));
+    assert_string_equal(adjacency_doc_bond, "bond_caned:user-001");
+    assert_string_equal(expect_value(adjacency_doc, CEP_DTAW("CEP", "ctx_edit")), "ctx_edit:First Draft");
 
-    /* Ensure disable-auto-create configuration refuses to backfill topology. */
+    // Counts remain stable after repeat upserts (idempotent behaviour).
+    rc = cep_bond_upsert(root, &bond_spec, &bond_handle);
+    assert_int(rc, ==, CEP_L1_OK);
+    rc = cep_context_upsert(root, &context_spec, &context_handle);
+    assert_int(rc, ==, CEP_L1_OK);
+    assert_size(cep_cell_children(beings_root), ==, 2);
+    assert_size(cep_cell_children(bonds_root), ==, 1);
+    assert_size(cep_cell_children(contexts_root), ==, 1);
+    assert_size(cep_cell_children(facets_root), ==, 2);
+    assert_size(cep_cell_children(adjacency_alx), ==, 2);
+    assert_size(cep_cell_children(adjacency_doc), ==, 2);
+    assert_size(cep_cell_children(facet_queue), ==, 2);
+
+    // Ensure disable-auto-create configuration refuses to backfill topology.
     if (cep_cell_system_initialized()) {
         cep_cell_system_shutdown();
     }
@@ -152,5 +235,6 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
     if (cep_cell_system_initialized()) {
         cep_cell_system_shutdown();
     }
+
     return MUNIT_OK;
 }

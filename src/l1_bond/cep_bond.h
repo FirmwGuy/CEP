@@ -68,6 +68,8 @@ typedef struct {
     const cepCell*      role_b;
     const cepCell*      metadata;
     cepOpCount          causal_op;
+    const char*         label;      /**< Optional note stored on the bond record. */
+    const char*         note;       /**< Optional extra annotation. */
 } cepBondSpec;
 
 
@@ -80,6 +82,7 @@ typedef struct {
     const cepDT* const*     facet_tags;
     size_t                  facet_count;
     cepOpCount              causal_op;
+    const char*             label;      /**< Optional label stored on the context record. */
 } cepContextSpec;
 
 
@@ -91,6 +94,14 @@ typedef struct {
 } cepFacetSpec;
 
 
+
+typedef struct {
+    const char* label;          /**< Friendly display label for the being (optional). */
+    const char* kind;           /**< Classification or type hint (optional). */
+    const char* external_id;    /**< Stable external reference (optional). */
+    const cepCell* metadata;    /**< Dictionary to clone into the being (optional). */
+} cepBeingSpec;
+
 typedef struct {
     cepCell*    root;               /**< Optional override for the global root dictionary. */
     cepCell*    data_root;          /**< Optional override for the durable `/CEP/data` dictionary. */
@@ -101,6 +112,9 @@ typedef struct {
 
 
 cepL1Result cep_init_l1(const cepConfig* config, cepEnzymeRegistry* registry);
+cepL1Result cep_being_claim(cepCell* root, const cepDT* name, const cepBeingSpec* spec, cepBeingHandle* handle);
+cepL1Result cep_bond_upsert(cepCell* root, const cepBondSpec* spec, cepBondHandle* handle);
+cepL1Result cep_context_upsert(cepCell* root, const cepContextSpec* spec, cepContextHandle* handle);
 
 
 #ifdef __cplusplus

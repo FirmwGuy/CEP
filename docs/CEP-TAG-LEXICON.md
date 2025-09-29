@@ -27,17 +27,22 @@ when a new behaviour needs a fresh word before it lands in code.
 | `adjacency` | core | runtime adjacency mirrors rehydrated under `/CEP/bonds/adjacency`. |
 | `beat` | core | heartbeat list storing per-beat runtime entries. |
 | `being` | core | identity cards for long-lived Layer 1 beings. |
+| `being_label` | core | human-readable label attached to a being record. |
+| `being_kind` | core | classification hint stored on a being (e.g., “human”, “document”). |
+| `being_ext` | core | external identifier associated with a being. |
 | `beings` | core | Layer 1 being card catalog under `/CEP/data/CEP/L1/beings`. |
 | `cas` | core | content-addressable storage subtree. |
 | `catalog` | core | cell stores using catalog/indexed semantics. |
 | `checkpoints` | core | heartbeat checkpoint ledger under `/CEP/bonds/checkpoints`. |
 | `ctx_*` | ops | simplex contexts maintained by Layer 1 bonds. |
+| `ctx_label` | core | descriptive label stored on a context record. |
 | `contexts` | core | durable context simplices under `/CEP/data/CEP/L1/contexts`. |
 | `cmp_root` | test | comparison fixtures in traversal/randomised tests. |
 | `data` | core | durable dataset root under `/CEP/data`. |
 | `CEP` | core | namespace hub for CEP-owned layers mounted at `/CEP/data/CEP`. |
 | `dict` | core | shorthand tag used in dynamic dictionary construction tests. |
 | `facet_*` | ops | closure facets derived from Layer 1 contexts. |
+| `facet_state` | core | lifecycle flag for a facet entry (`pending`, `ready`, …). |
 | `facets` | core | derived facet records stored under `/CEP/data/CEP/L1/facets`. |
 | `dictionary` | core | canonical store tag for dictionary nodes. |
 | `domain` | test | validates domain/tag packing in namepool tests. |
@@ -70,6 +75,7 @@ when a new behaviour needs a fresh word before it lands in code.
 | `facet_edlog` | ops | default edit-log facet emitted by `ctx_editssn`. |
 | `facet_prsnc` | ops | presence facet tracking active editors/watchers. |
 | `facet_queue` | core | queued facet work staged at `/CEP/bonds/facet_queue` before enzymes run. |
+| `queue_state` | core | state marker for a facet queue entry (`pending`, `complete`). |
 | `ctx_editssn` | ops | context describing an edit session between user, document, and tool. |
 | `stage` | core | heartbeat stage ledger for committed work. |
 | `stdio_res` / `stdio_str` | io | tags used by stdio-backed stream adapters. |
@@ -83,6 +89,8 @@ when a new behaviour needs a fresh word before it lands in code.
 | `var_leaf` | test | variant selection fixture in unit tests. |
 | `zip_entry` / `zip_stream` | io | libzip-backed stream descriptors. |
 | `bond_caned` | ops | canonical bond tag “CAN_EDIT” (borrowed by tests). |
+| `bond_label` | core | short description stored on a bond record. |
+| `bond_note` | core | free-form annotation attached to a bond record. |
 | `bond_*` | ops | bond relationship classes managed by Layer 1. |
 | `bonds` | core | durable bond ledger at `/CEP/data/CEP/L1/bonds` and the runtime `/CEP/bonds` workspace. |
 | `arg_deep` / `arg_pos` / `arg_prepend` | ops | parameter dictionary tags for cell operation requests. |
