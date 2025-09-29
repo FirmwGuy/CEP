@@ -99,6 +99,9 @@ when a new behaviour needs a fresh word before it lands in code.
 | `test_hb_*` (`test_hb_a`, `test_hb_b`, `test_hb_cn`, `test_hb_r`, `test_hb_rt`) | test | heartbeat test hooks. |
 | `test_img_*` (`test_img_ch`, `test_img_vi`) | test | image stream fixtures in serialization tests. |
 | `test_lck_*` (`test_lck_ch`, `test_lck_in`) | test | lock hierarchy fixtures. |
+| `tst_be*` (`tst_bea`–`tst_bef`) | test | randomized being identifiers used by Layer 1 bond fuzz tests. |
+| `tst_bnd*` (`tst_bnda`–`tst_bndh`) | test | randomized bond tags exercised by Layer 1 bond fuzz tests. |
+| `tst_enz*` (`tst_enza`–`tst_enzr`) | test | randomized enzyme descriptors used by registry fuzz tests. |
 | `tst_*` (`tst_branch`, `tst_child`, `tst_chld`, `tst_data`, `tst_dedup`, `tst_empty`, `tst_leaf`, `tst_mask`, `tst_nop`, `tst_root`, `tst_sig`, `tst_stor`, `tst_tree`, `tst_value`) | test | generic test scaffolding tags. |
 
 ### Usage Notes

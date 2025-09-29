@@ -34,6 +34,7 @@ MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixtur
 void*       test_enzyme_setup(const MunitParameter params[], void* user_data);
 void        test_enzyme_tear_down(void* fixture);
 MunitResult test_cell_operations_enzymes(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_enzyme_randomized(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization(const MunitParameter params[], void* user_data_or_fixture);
@@ -44,5 +45,6 @@ MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fi
 #endif
 MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_bond_randomized(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];

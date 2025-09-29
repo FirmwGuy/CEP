@@ -1,0 +1,236 @@
+# L0 Kernel: Integration & Interop Guide
+
+*How to bind work to data, stream cells over the wire, and plug external resources into the kernel.*
+
+**Audience:** engineers integrating CEP into applications, building adapters/libraries, or wiring data pipelines.
+**Scope:** enzymes & heartbeat dispatch, wire serialization/ingest, proxy & library adapters, naming & namepool, locking & history, and practical recipes with small code sketches.
+
+---
+
+## 0) Reading map
+
+* **Signals → Enzymes → Work**: register, bind, match, and order enzyme callbacks; how impulses get resolved and executed  .
+* **Serialization & Streams**: emit/ingest chunked cell streams; transactions; manifest & payload; proxy snapshots .
+* **Proxies & Libraries**: represent external resources/streams inside cells  .
+* **Naming & Namepool**: compact Domain/Tag IDs, intern/lookup text names  .
+* **Locking, History & “soft” vs “hard”**: data/store locks, append‑only timelines, snapshot traversals  .
+
+---
+
+## 1) Signals, enzymes, and the heartbeat
+
+### 1.1 Enzyme descriptors and registration
+
+An **enzyme** is a user callback that runs when an impulse matches a query. It is described by a `cepEnzymeDescriptor`:
+
+```c
+typedef int (*cepEnzyme)(const cepPath* signal_path, const cepPath* target_path);
+
+typedef struct {
+    cepDT        name;           // stable identity
+    const char*  label;          // optional diagnostic label
+    const cepDT* before; size_t before_count;  // ordering constraints
+    const cepDT* after;  size_t after_count;
+    cepEnzyme    callback;       // your function
+    uint32_t     flags;          // e.g., CEP_ENZYME_FLAG_IDEMPOTENT
+    cepEnzymeMatchPolicy match;  // EXACT or PREFIX
+} cepEnzymeDescriptor;
+```
+
+Register via the **registry**; during a live heartbeat, registrations are staged and **activated on the next beat** to keep the current agenda frozen (see `cep_enzyme_register` and `cep_enzyme_registry_activate_pending`)  . Internally, mid‑beat calls are queued in a *pending* array and promoted later; out of beat, they go straight into the active table and indexes are rebuilt for fast lookup .
+
+**Match policies & wildcards.** A descriptor’s `match` controls how its **query path** is compared: `EXACT` must match the entire `signal_path`, while `PREFIX` matches “starts with” semantics (with **Domain/Tag**–wise globbing possible; `CEP_ID_GLOB_MULTI`, `CEP_ID_GLOB_STAR`, `CEP_ID_GLOB_QUESTION`, and `cep_id_matches`)  .
+
+**Return codes.** Enzymes return `CEP_ENZYME_SUCCESS`, `CEP_ENZYME_RETRY`, or `CEP_ENZYME_FATAL` .
+
+### 1.2 Binding enzymes at cells and collecting effective bindings
+
+You can **bind** enzyme identities into the **data or store timeline** of a cell (e.g., “this subtree accepts X”), with flags to **propagate** to descendants or to **tombstone** (un‑bind) an earlier binding. Effective bindings are collected by walking upward and combining “active” with “masked” sets; only propagated entries flow past the target node, and tombstones remove prior matches. See the binding data structure (`cepEnzymeBinding`) and the collector used by resolve (`cep_enzyme_collect_bindings`)  .
+
+### 1.3 From impulse to ordered agenda
+
+Given an impulse:
+
+```c
+typedef struct {
+    const cepPath* signal_path;
+    const cepPath* target_path;
+} cepImpulse;
+```
+
+the runtime resolves a **set of candidate enzymes** and returns them **in execution order** (`cep_enzyme_resolve`)  :
+
+1. **Collect** target bindings (if any), intersect with signal matches, and **score** candidates by **match strength** (signal+target > single‑sided), **specificity** (non‑wildcard segments), **name ordering**, and **registration order** for tie‑breaks .
+2. Build a **dependency graph** from `before[]`/`after[]`, dedupe edges, compute **indegrees** .
+3. Perform a **stable topological sort** using a preference heap (stronger/more specific candidates surface earlier) and output the agenda .
+
+**Heartbeat staging.** Impulses can be recorded and carried across beats. The queue/record helpers (`cep_heartbeat_impulse_queue_*`) clone `cepPath` entries and manage a compact, resettable buffer for recent signals/targets for diagnostics or deferred execution .
+
+---
+
+## 2) Serialization & streams (wire format)
+
+### 2.1 Chunk framing and the control header
+
+Serialized streams are **chunked**. Each chunk carries a size and ID (class + transaction + sequence). The initial **control header** plants the **magic**, **format version**, **byte order**, and optional **metadata** (`cep_serialization_header_write/read`) . Helpers take care of **big‑endian on the wire** (inline BE conversions) and report exact buffer sizes so you can pre‑allocate (`*_chunk_size`) .
+
+### 2.2 Manifest and payload
+
+`cep_serialization_emit_cell` writes a **header** → **manifest** → **payload** → **end‑of‑transaction control**:
+
+* **Manifest (STRUCTURE)**: captures the cell’s **type**, flags, and **path** segments (Domain/Tag pairs). The path is produced by `cep_cell_path` and stored as an array of `cepPast { cepDT dt; cepOpCount timestamp; }`, typically using timestamp 0 for “latest” at emit time  .
+* **Payload (STRUCTURE + optional BLOBs)**:
+
+  * Normal cells with `VALUE`/`DATA` payloads encode datatype, inlining small payloads and **chunking large blobs** with a caller‑configurable slice size (`blob_payload_bytes`). Each blob chunk carries an **offset + length**; the reader validates order and size before assembly .
+  * **Proxy cells** emit a **LIBRARY** chunk that carries a *snapshot* (bytes and flags). The reader forwards the snapshot to the proxy via `cep_proxy_restore` to reconstruct external state without peeking into proxy internals  .
+
+### 2.3 Reader, transactions, and safety
+
+The **reader** (`cep_serialization_reader_*`) ingests chunks, validates ordering per **transaction/sequence**, stages per‑cell **manifest/data/proxy** parts, and on `commit()` materializes changes into the tree:
+
+* Transactions guard against **out‑of‑order** or mixed chunks; any violation flips the reader to **error** and clears staged state .
+* For data payloads, the reader recomputes the **content hash** (over `{dt, size, payloadHash}`) using the same hash as the kernel (`cep_hash_bytes`) and rejects mismatches before applying the update  .
+* **Structure synthesis:** if the target path doesn’t exist, the reader creates intermediate dictionaries/lists as needed, but will **not** fabricate a proxy where the type doesn’t match—types must line up with the manifest flags .
+
+---
+
+## 3) Proxies & libraries (external resources inside cells)
+
+When your data lives outside the kernel (files, device handles, remote streams), wrap it in a **proxy**:
+
+* A proxy cell is created via `cep_proxy_initialize` with a `cepProxyOps` vtable: `snapshot`, `release`, `restore`, and `finalize`—so the serializer can **snapshot**, carry, and **rebuild** the proxy’s state without kernel‑specific codepaths in your adapter  .
+* The “Library” flavor (`cep_proxy_initialize_handle` / `cep_proxy_initialize_stream`) lazily routes to a `cepLibraryBinding` (your adapter): retain/release handles, map/unmap stream windows, read/write chunks, and snapshot/restore both handles and streams. CEP handles **back‑references** and ensures link/shadow invariants even when proxies are moved or cloned  .
+
+> **Tip:** For **streams**, prefer `stream_map`/`unmap` for large sequential I/O and `stream_snapshot` for “publish and ship” payloads during serialization. The serializer will switch between inline payloads and BLOB slices based on the configured threshold  .
+
+---
+
+## 4) Naming & the namepool
+
+**Domain/Tag** fields are compact `cepID`s with a **naming nibble** that encodes *word*, *acronym*, *reference*, or *numeric*. Helpers convert text ↔ IDs (`cep_text_to_word`, `cep_word_to_text`, `cep_text_to_acronym`, `cep_acronym_to_text`), and wildcard **glob** IDs enable lookup patterns during enzyme dispatch (`cep_id_matches`) .
+
+When you need to interoperate with human text reliably, enable the **namepool** and use:
+
+```c
+bool    cep_namepool_bootstrap(void);
+cepID   cep_namepool_intern(const char* text, size_t length);
+cepID   cep_namepool_intern_cstr(const char* text);
+cepID   cep_namepool_intern_static(const char* text, size_t length); // no copy
+const char* cep_namepool_lookup(cepID id, size_t* length);
+bool    cep_namepool_release(cepID id);
+```
+
+This gives you **stable, interned references** for `CEP_NAMING_REFERENCE` names, with lookup and lifetime management centralized in one place .
+
+---
+
+## 5) Locking, history, and deletion semantics
+
+* **Locks.** You can lock a cell’s **store** (structure) or **data** to guard multi‑step edits (`cep_store_lock/cep_store_unlock`, `cep_data_lock/cep_data_unlock`). Lock predicates are **hierarchical**: if *any* ancestor holds a lock, mutation APIs refuse the operation to maintain consistency under composition  .
+* **Append‑only timelines.** Payload updates push a snapshot node into the **data history chain**, and store re‑index operations capture snapshots of the **store layout**. “Normal” add/append operations keep sibling order stable and rely on **timestamps** as the audit trail (see `cep_data_history_push/clear`, store history helpers) .
+* **Soft vs hard.** *Soft delete* marks `deleted` timestamps; snapshots and “past” APIs (`cep_cell_*_past`) remain valid. *Hard delete* physically removes nodes/children and frees memory immediately (e.g., `cep_store_delete_children_hard`, `cep_cell_remove_hard`)—intended for GC and aborted constructions .
+* **Links & shadows.** Links maintain **back‑references** (“shadow lists”) on targets; CEP keeps those up‑to‑date when assigning links or deleting targets (see `cep_link_set`, shadow attach/detach, and `targetDead` propagation). Cloning a handle/stream turns into a **link** clone (shared resource) rather than attempting to duplicate opaque external state .
+
+---
+
+## 6) Recipes
+
+### A) Register and bind an enzyme
+
+```c
+// 1) Create a registry once.
+cepEnzymeRegistry* R = cep_enzyme_registry_create();
+
+// 2) Describe your enzyme.
+cepEnzymeDescriptor D = {
+  .name  = *CEP_DTWA("sys", "ingest"),  // domain/tag
+  .label = "Ingest CSV rows",
+  .callback = &my_ingest,
+  .flags = CEP_ENZYME_FLAG_IDEMPOTENT,
+  .match = CEP_ENZYME_MATCH_PREFIX,
+};
+
+// 3) Register for signals under /data/imports/...
+cepPath* query = /* build or reuse a cepPath */;
+cep_enzyme_register(R, query, &D);  // pending if a beat is live
+
+// (Later, at safe points) Promote staged registrations:
+cep_enzyme_registry_activate_pending(R);
+
+// 4) Bind to a subtree to make it eligible by name.
+cep_cell_bind_enzyme(someCell, &D.name, /*propagate=*/true);
+```
+
+The resolver will merge **bindings** with **signal‑indexed** candidates and topologically sort by `before`/`after`—preferring stronger/specific matches and respecting registration order ties  .
+
+### B) Emit a cell to bytes and read it back
+
+```c
+// Writer callback
+bool sink(void* ctx, const uint8_t* bytes, size_t n) {
+  FILE* f = ctx; return fwrite(bytes,1,n,f) == n;
+}
+
+cepSerializationHeader hdr = {
+  .byte_order = CEP_SERIAL_ENDIAN_BIG,  // wire choice
+};
+FILE* out = fopen("cell.bin","wb");
+cep_serialization_emit_cell(cell, &hdr, sink, out, /*blob_payload_bytes*/ 64*1024);
+fclose(out);
+
+// Reader side
+cepSerializationReader* rd = cep_serialization_reader_create(root);
+FILE* in = fopen("cell.bin","rb");
+for (;;) {
+  uint64_t size, id;               // read chunk framing...
+  // ...
+  cep_serialization_reader_ingest(rd, chunk, chunk_len);
+  if (cep_serialization_reader_pending(rd)) {
+    cep_serialization_reader_commit(rd); // applies staged manifest/data
+  }
+}
+```
+
+The emitter outputs: **header → manifest → (data inline or BLOB chunks) → end control**. The reader validates **sequence**, reconstructs data, **verifies hashes**, and restores **proxy snapshots** when present .
+
+### C) Wrap a file handle as a proxy
+
+```c
+// Implement a cepLibraryOps with retain/release + stream operations.
+static const cepLibraryOps FILE_OPS = { /* ... */ };
+
+// Build a 'library' cell once:
+cepCell lib = {0};
+cep_library_initialize(&lib, CEP_DTWA("io","fs"), &FILE_OPS, /*ctx*/NULL);
+
+// Create a proxy-backed HANDLE cell referencing an OS handle:
+cepCell fileCell = {0};
+cep_proxy_initialize_handle(&fileCell, CEP_DTWA("io","file"), /*handle*/ resourceCell, &lib);
+
+// Serializer will call snapshot/release; reader will call restore.
+```
+
+The **proxy** keeps your adapter logic isolated. CEP takes care of **shadowing** and **lifecycle** (retain/release around handle/stream pointers) and will serialize a **LIBRARY** chunk with your snapshot bytes for transport   .
+
+---
+
+## 7) API cheatsheet (selected)
+
+* **Paths**: `cep_cell_path`, `cep_cell_find_by_path(_past)`, `cep_cell_find_next_by_path_past`  .
+* **Traversal (latest or past)**: `cep_cell_traverse(_past)`, `cep_cell_deep_traverse(_past)` .
+* **Mutation (append‑only semantics)**: `cep_cell_add`, `cep_cell_append`, `cep_cell_update`, `cep_cell_to_dictionary`, `cep_cell_sort` .
+* **Deletion**: `cep_cell_delete[_hard]`, `cep_store_delete_children_hard`, child `take/pop` variants (soft/hard) .
+* **Locks**: `cep_store_lock/unlock`, `cep_data_lock/unlock`  .
+* **Enzymes**: registry lifecycle, register/unregister, resolve, and binding surface in the public header; see internals for ordering and specificity calculus  .
+* **Serialization**: header read/write; emit cell; reader ingest/commit; BLOB slicing; proxy library chunks .
+* **Namepool**: intern/lookup/release textual names when using reference‑style identifiers .
+
+---
+
+## 8) Integration guidance & gotchas
+
+* **Don’t mutate mid‑beat registrations.** Register enzymes freely, but let CEP **activate** them between beats (`activate_pending`) to avoid agenda drift .
+* **Prefer soft deletes** for observability; reserve hard deletes for GC or error recovery workflows. Past traversals depend on timestamps and history lists .
+* **Respect locks**. Both **data** and **store** locks check the *entire ancestor chain*; if anything is locked above, mutations are denied to keep invariants intact  .
+* **Proxy cloning.** Cloning cells whose payload is a handle/stream produces **links**, not resource copies—by design, to keep a single authoritative resource endpoint .
+* **Hash checks are end‑to‑end.** The reader recomputes the same **content hash** the writer recorded; any mismatch aborts the apply phase before mutating the tree  .

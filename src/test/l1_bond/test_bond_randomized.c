@@ -1,0 +1,216 @@
+/* Randomized bond tests fuzz the Layer 1 public API to confirm adjacency mirrors stay consistent as we shuffle beings and bonds. Each iteration seeds fresh identities, rebuilds the topology, and then validates that runtime mirrors exactly match the expected summaries derived from external identifiers. */
+
+#include "test.h"
+
+#include "cep_bond.h"
+#include "cep_cell.h"
+#include "cep_namepool.h"
+
+#include <stdio.h>
+
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_RANDOM_BEINGS 6
+#define MAX_RANDOM_BONDS  8
+#define RANDOM_BOND_ITERATIONS 18
+
+static cepDT random_being_dt(size_t index) {
+    munit_assert_size(index, <, MAX_RANDOM_BEINGS);
+    switch (index) {
+    case 0: return *CEP_DTAW("CEP", "tst_bea");
+    case 1: return *CEP_DTAW("CEP", "tst_beb");
+    case 2: return *CEP_DTAW("CEP", "tst_bec");
+    case 3: return *CEP_DTAW("CEP", "tst_bed");
+    case 4: return *CEP_DTAW("CEP", "tst_bee");
+    case 5: return *CEP_DTAW("CEP", "tst_bef");
+    default: break;
+    }
+    munit_error("unexpected being index");
+    return (cepDT){0};
+}
+
+static cepDT random_bond_dt(size_t index) {
+    munit_assert_size(index, <, MAX_RANDOM_BONDS);
+    switch (index) {
+    case 0: return *CEP_DTAW("CEP", "tst_bnda");
+    case 1: return *CEP_DTAW("CEP", "tst_bndb");
+    case 2: return *CEP_DTAW("CEP", "tst_bndc");
+    case 3: return *CEP_DTAW("CEP", "tst_bndd");
+    case 4: return *CEP_DTAW("CEP", "tst_bnde");
+    case 5: return *CEP_DTAW("CEP", "tst_bndf");
+    case 6: return *CEP_DTAW("CEP", "tst_bndg");
+    case 7: return *CEP_DTAW("CEP", "tst_bndh");
+    default: break;
+    }
+    munit_error("unexpected bond index");
+    return (cepDT){0};
+}
+
+typedef struct {
+    cepDT           name;
+    cepBeingHandle  handle;
+    char            label[32];
+    char            kind[16];
+    char            external_id[32];
+} RandomBeing;
+
+typedef struct {
+    size_t          a_index;
+    size_t          b_index;
+    cepDT           tag;
+    char            summary_a[64];
+    char            summary_b[64];
+} RandomBond;
+
+/* expect_value_for_name fetches a named child from a dictionary and asserts it carries text data. */
+static const char* expect_value_for_name(cepCell* parent, const cepDT* name) {
+    cepCell* cell = cep_cell_find_by_name(parent, name);
+    munit_assert_not_null(cell);
+    munit_assert_true(cep_cell_is_normal(cell));
+    munit_assert_true(cep_cell_has_data(cell));
+    return (const char*)cep_cell_data(cell);
+}
+
+/* seed_being_spec initialises deterministic but distinct metadata for each random being. */
+static void seed_being_spec(RandomBeing* being, size_t index, cepBeingSpec* spec) {
+    snprintf(being->label, sizeof being->label, "Being %u", (unsigned)index);
+    snprintf(being->kind, sizeof being->kind, "kind%u", (unsigned)(index % 7u));
+    snprintf(being->external_id, sizeof being->external_id, "ext-%u", (unsigned)index);
+
+    *spec = (cepBeingSpec){
+        .label = being->label,
+        .kind = being->kind,
+        .external_id = being->external_id,
+        .metadata = NULL,
+    };
+}
+
+/* build_summary composes the adjacency summary text expected for a bond participant. */
+static void build_summary(const cepDT* bond_tag, const char* partner_id, char buffer[64]) {
+    char tag_text[12] = {0};
+    cep_word_to_text(bond_tag->tag, tag_text);
+    snprintf(buffer, 64u, "%s:%s", tag_text, partner_id);
+}
+
+/* locate_l1_roots resolves the Layer 1 directories under the root cell so the randomized test can inspect them. */
+static void locate_l1_roots(cepCell* root,
+                            cepCell** beings_root,
+                            cepCell** bonds_root,
+                            cepCell** adjacency_root) {
+    cepCell* data_root = cep_cell_find_by_name(root, CEP_DTAW("CEP", "data"));
+    munit_assert_not_null(data_root);
+    cepCell* namespace_root = cep_cell_find_by_name(data_root, CEP_DTAA("CEP", "CEP"));
+    munit_assert_not_null(namespace_root);
+    cepCell* l1_root = cep_cell_find_by_name(namespace_root, CEP_DTAA("CEP", "L1"));
+    munit_assert_not_null(l1_root);
+    *beings_root = cep_cell_find_by_name(l1_root, CEP_DTAW("CEP", "beings"));
+    munit_assert_not_null(*beings_root);
+    *bonds_root = cep_cell_find_by_name(l1_root, CEP_DTAW("CEP", "bonds"));
+    munit_assert_not_null(*bonds_root);
+
+    cepCell* runtime_bonds = cep_cell_find_by_name(root, CEP_DTAW("CEP", "bonds"));
+    munit_assert_not_null(runtime_bonds);
+    *adjacency_root = cep_cell_find_by_name(runtime_bonds, CEP_DTAW("CEP", "adjacency"));
+    munit_assert_not_null(*adjacency_root);
+}
+
+MunitResult test_bond_randomized(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+    (void)user_data_or_fixture;
+
+    if (cep_cell_system_initialized()) {
+        cep_cell_system_shutdown();
+    }
+
+    for (size_t iteration = 0; iteration < RANDOM_BOND_ITERATIONS; ++iteration) {
+        cepL1Result init_rc = cep_init_l1(NULL, NULL);
+        munit_assert_int(init_rc, ==, CEP_L1_OK);
+
+        cepCell* root = cep_root();
+        cepCell* beings_root = NULL;
+        cepCell* bonds_root = NULL;
+        cepCell* adjacency_root = NULL;
+        locate_l1_roots(root, &beings_root, &bonds_root, &adjacency_root);
+
+        size_t being_count = (size_t)munit_rand_int_range(3, MAX_RANDOM_BEINGS);
+        RandomBeing beings[MAX_RANDOM_BEINGS] = {0};
+
+        for (size_t idx = 0; idx < being_count; ++idx) {
+            beings[idx].name = random_being_dt(idx);
+            cepBeingSpec spec = {0};
+            seed_being_spec(&beings[idx], idx, &spec);
+            cepL1Result claim_rc = cep_being_claim(root, &beings[idx].name, &spec, &beings[idx].handle);
+            munit_assert_int(claim_rc, ==, CEP_L1_OK);
+            munit_assert_not_null(beings[idx].handle.cell);
+        }
+
+        RandomBond bonds[MAX_RANDOM_BONDS] = {0};
+        size_t bond_count = 0;
+        for (size_t a = 0; a < being_count && bond_count < MAX_RANDOM_BONDS; ++a) {
+            for (size_t b = a + 1; b < being_count && bond_count < MAX_RANDOM_BONDS; ++b) {
+                int take_pair = munit_rand_int_range(0, 2);
+                if (!take_pair && bond_count > 0) {
+                    continue;
+                }
+
+                RandomBond* bond = &bonds[bond_count];
+                bond->a_index = a;
+                bond->b_index = b;
+                bond->tag = random_bond_dt(bond_count);
+
+                build_summary(&bond->tag, beings[b].external_id, bond->summary_a);
+                build_summary(&bond->tag, beings[a].external_id, bond->summary_b);
+
+                char label[32];
+                snprintf(label, sizeof label, "bond-%u-%u", (unsigned)a, (unsigned)b);
+
+                cepBondSpec spec = {
+                    .tag = &bond->tag,
+                    .role_a_tag = CEP_DTAW("CEP", "role_a"),
+                    .role_a = beings[a].handle.cell,
+                    .role_b_tag = CEP_DTAW("CEP", "role_b"),
+                    .role_b = beings[b].handle.cell,
+                    .metadata = NULL,
+                    .causal_op = 0,
+                    .label = label,
+                    .note = "randomized",
+                };
+
+                cepBondHandle handle = {0};
+                cepL1Result bond_rc = cep_bond_upsert(root, &spec, &handle);
+                munit_assert_int(bond_rc, ==, CEP_L1_OK);
+                munit_assert_not_null(handle.cell);
+                ++bond_count;
+            }
+        }
+
+        munit_assert_size(bond_count, >, 0);
+        munit_assert_size(cep_cell_children(bonds_root), ==, bond_count);
+        for (size_t idx = 0; idx < being_count; ++idx) {
+            cepCell* adjacency_bucket = cep_cell_find_by_name(adjacency_root, &beings[idx].name);
+
+            size_t expected_entries = 0;
+            for (size_t bond_idx = 0; bond_idx < bond_count; ++bond_idx) {
+                const RandomBond* bond = &bonds[bond_idx];
+                if (bond->a_index == idx || bond->b_index == idx) {
+                    munit_assert_not_null(adjacency_bucket);
+                    const char* summary = expect_value_for_name(adjacency_bucket, &bond->tag);
+                    const char* expected = (bond->a_index == idx) ? bond->summary_a : bond->summary_b;
+                    munit_assert_string_equal(summary, expected);
+                    ++expected_entries;
+                }
+            }
+
+            if (expected_entries == 0) {
+                munit_assert_null(adjacency_bucket);
+                continue;
+            }
+            munit_assert_size(cep_cell_children(adjacency_bucket), ==, expected_entries);
+        }
+
+        cep_cell_system_shutdown();
+    }
+
+    return MUNIT_OK;
+}
