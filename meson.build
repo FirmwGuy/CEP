@@ -188,9 +188,27 @@ elif code_map_opt
   warning('code_map option requested but python3 was not found; skipping code map target.')
 endif
 
-if docs_html_opt
-  doxygen = find_program('doxygen', required: true)
-  dot = find_program('dot', required: true)
+doxygen = find_program('doxygen', required: docs_html_opt)
+dot = find_program('dot', required: docs_html_opt)
+
+docs_missing = []
+if not python3.found()
+  docs_missing += ['python3']
+endif
+if not doxygen.found()
+  docs_missing += ['doxygen']
+endif
+if not dot.found()
+  docs_missing += ['graphviz (dot)']
+endif
+
+docs_ready = docs_missing.length() == 0
+
+if docs_html_opt and not docs_ready
+  error('docs_html option requires the following tools: ' + ', '.join(docs_missing) + '.')
+endif
+
+if docs_ready
   dot_path = fs.parent(dot.full_path())
   doc_output_dir = join_paths(meson.current_build_dir(), 'docs')
   main_page = ''
@@ -229,10 +247,6 @@ if docs_html_opt
     configuration: doxy_config,
   )
 
-  if not python3.found()
-    error('docs_html option requires python3 to be available.')
-  endif
-
   doxygen_runner = files('tools/run_doxygen.py')[0]
   git_tag_file = files('tools/git_tag_version.py')[0]
   fix_toc_script = files('tools/fix_doxygen_toc.py')[0]
@@ -251,5 +265,22 @@ if docs_html_opt
     depend_files: [doxygen_runner, git_tag_file, fix_toc_script],
     build_by_default: false,
     build_always_stale: docs_html_opt,
+  )
+else
+  docs_message = 'HTML documentation requires python3, doxygen, and graphviz (dot); missing: ' + ', '.join(docs_missing)
+  fallback_cmd = []
+  if python3.found()
+    fallback_cmd = [
+      python3,
+      '-c',
+      'import sys; sys.stderr.write("' + docs_message.replace('"', '\\"') + '\n"); sys.exit(1)',
+    ]
+  elif host_sys == 'windows'
+    fallback_cmd = ['cmd', '/C', 'echo ' + docs_message.replace('"', '""') + ' & exit 1']
+  else
+    fallback_cmd = ['sh', '-c', 'echo "' + docs_message.replace('"', '\\"') + '" >&2; exit 1']
+  endif
+  run_target('docs_html',
+    command: fallback_cmd,
   )
 endif
