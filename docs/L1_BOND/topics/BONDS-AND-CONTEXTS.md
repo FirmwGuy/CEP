@@ -68,7 +68,7 @@ Contexts follow the same outline but operate over N roles:
 2. **Validate schema** – the helper checks declared role cardinalities and facet requirements.
 3. **Atomically update** – the API hashes the role tuple to select `/contexts/<tag>/<hash>`, refreshes role summaries, and rewrites the `meta/` dictionary when metadata changes.
 4. **Queue facets** – required facets enter `/bonds/facet_queue/<facet-tag>/<hash>` with the context label so retries can hop back to the owning context via a fresh lookup.
-5. **Publish adjacency** – adjacency mirrors record the simplex hash for each participant with summaries like `<ctx_tag>:<ctx_label>`.
+5. **Publish adjacency** – adjacency mirrors record the simplex hash for each participant with summaries like `<ctx_tag>:<ctx_label>`; `cep_tick_l1` later prunes these mirrors when the owning beings retire.
 
 ### Facet Completion
 Facet rules are registered ahead of time:
@@ -80,13 +80,13 @@ typedef struct {
     cepFacetPolicy policy;              /* retry / failure contract */
 } cepFacetSpec;
 ```
-Layer 1 uses these specs to know which enzymes to schedule when a context appears. Work items store the context handle, facet tag, and checkpoint metadata; completion clears the queue entry under `/bonds/facet_queue/<facet-tag>/<context-hash>` and writes the facet cell under `/data/CEP/L1/facets/<facet-tag>/<context-hash>`.
+Layer 1 uses these specs to know which enzymes to schedule when a context appears. Work items store the context handle, facet tag, label, and retry metadata; `cep_facet_dispatch` updates queue state to `pending`, `complete`, or `fatal` and keeps the facet entry in sync under `/data/CEP/L1/facets/<facet-tag>/<context-hash>`.
 
 ### Concurrency and Ordering
 Layer 1 never bypasses the kernel's heartbeat discipline. All helpers:
 - operate within the calling beat and rely on the kernel to commit at N+1.
 - write adjacency mirrors before emitting impulses so readers observe consistent state.
-- respect dependency ordering by resolving L1 facet enzymes through the shared `cepEnzymeRegistry`.
+- respect dependency ordering by resolving L1 facet enzymes through the shared `cepEnzymeRegistry`, with `cep_tick_l1` invoking registered facet handlers after the core agenda resolves.
 
 ## Q&A
 - **How are bond identities generated?**  
@@ -96,7 +96,7 @@ Layer 1 never bypasses the kernel's heartbeat discipline. All helpers:
   Yes, provided the target context already exists or is scheduled earlier in the beat. Layer 1 detects cycles and replaces them with explicit facet obligations so closure remains achievable.
 
 - **What if a facet enzyme fails?**  
-  The queue entry stays queued with a checkpoint; `cep_tick` retries on the next beat, and repeated failures escalate to governance layers through a dedicated signal family.
+  The queue entry stays queued with a checkpoint; `cep_tick_l1` retries on the next beat and marks the queue state (`pending`, `fatal`) so governance layers can escalate through a dedicated signal family.
 
 - **Do adjacency mirrors persist across restarts?**  
   No. They are rebuilt from durable bonds during bootstrap, ensuring warm start reliability without polluting the append-only history.

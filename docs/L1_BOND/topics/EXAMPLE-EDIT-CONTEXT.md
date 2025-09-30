@@ -53,6 +53,7 @@ static int ceptron_on_edit(const cepPath* signal, const cepPath* target) {
         .facet_tags   = ctx_facets,
         .facet_count  = cep_lengthof(ctx_facets),
         .causal_op    = cep_heartbeat_current_op(),
+        .label        = "edit session",
     };
     CEP_CALL(cep_context_upsert(root, &ctx_spec, &session));
 
@@ -65,16 +66,16 @@ static int ceptron_on_edit(const cepPath* signal, const cepPath* target) {
 - `/data/CEP/L1/bonds/bond_caned/<hash>/` now contains the permission bond with two role dictionaries, a `meta/` clone, and a history entry referencing the prior revision.
 - `/data/CEP/L1/contexts/ctx_editssn/<hash>/` records the edit session, the attached metadata payload, and link children for actor, subject, and UI.
 - `/bonds/adjacency/being/<user>/<hash>/value` (and the matching document entry) carry compact summaries for fast local inspection.
-- `/bonds/facet_queue/facet_edlog/<hash>/value` and `/bonds/facet_queue/facet_prsnc/<hash>/value` retain the context label until facet work materialises.
+- `/bonds/facet_queue/facet_edlog/<hash>/value` and `/bonds/facet_queue/facet_prsnc/<hash>/value` retain the context label and queue state until facet work materialises.
 - The journal registers `sig_bond_wr` and `sig_ctx_wr` so higher layers can react deterministically at beat N+1.
 
 ### Closure Enforcement
-When `cep_tick` runs at the end of the beat it:
+When `cep_tick_l1` runs at the end of the beat it:
 1. Feeds the facet queue through the registered facet enzymes (`facet_edlog`, `facet_prsnc`).
 2. Confirms adjacency mirrors and facet outputs match the new context revision.
 3. Writes checkpoints so a restart during processing can resume without double-creating facets.
 
-If a facet enzyme returns `CEP_ENZYME_RETRY`, the queue entry remains with an exponential-backoff schedule stored alongside the checkpoint metadata, ensuring persistent but bounded retries.
+If a facet enzyme returns `CEP_ENZYME_RETRY`, the queue entry remains with an exponential-backoff schedule stored alongside the checkpoint metadata, ensuring persistent but bounded retries while the queue state stays `pending`.
 
 ## Q&A
 - **What if a role target is missing?**  
@@ -87,4 +88,4 @@ If a facet enzyme returns `CEP_ENZYME_RETRY`, the queue entry remains with an ex
   Only if you manage identity contracts yourself. Using the helper guarantees namespace reservations, schema links, and adjacency rebuild markers are applied correctly.
 
 - **How are facet queues drained during bulk imports?**  
-  Import tools run `cep_tick` after each batch, letting the normal heartbeat maintenance clear queues before proceeding to the next chunk.
+  Import tools run `cep_tick_l1` after each batch, letting the normal heartbeat maintenance clear queues before proceeding to the next chunk.

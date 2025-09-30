@@ -24,17 +24,18 @@ Layer 1 keeps every relationship coherent, so a few small choices make a big dif
 
 ### 3) Facet queues and closure plugins
 **What to know**
-- Facet work lives in `/bonds/facet_queue`. Items are small cells with a context pointer, facet tag, and retry counter.
-- Plugins register through `cep_facet_register` and execute under the heartbeat's ordering guarantees.
+- Facet work lives in `/bonds/facet_queue`. Items are small cells with a context pointer, facet tag, and retry counter plus a label copied from the context.
+- Plugins register through `cep_facet_register` and execute under the heartbeat's ordering guarantees via `cep_facet_dispatch`.
+- `cep_tick_l1` dispatches entries and flips the queue state between `pending`, `complete`, and `fatal` so monitoring remains lightweight.
 
 **Tuning tips**
 - Keep facet payloads compact; if you need large computations, store only references and offload heavy work to a higher layer.
-- Use the retry counter to backoff noisy facets. Combine it with a watchdog enzyme that parks unresponsive items into a diagnostic queue.
+- Use the retry counter to backoff noisy facets. Combine it with a watchdog enzyme that parks unresponsive items into a diagnostic queue, and rely on the queue state so operators can see when retries stall.
 
 ### 4) Journaling and checkpoints
 **What to know**
 - Pending impulse checkpoints live in `/bonds/checkpoints`. They prevent duplication when the runtime restarts mid-beat.
-- Every successful `cep_tick_l1` pass acknowledges completed checkpoints while preserving the history chain.
+- Each `cep_tick_l1` pass clears empty checkpoint folders while preserving the latest history entries for audit.
 
 **Tuning tips**
 - On hot systems, flush checkpoint acknowledgements in bursts by running `cep_tick_l1` near the end of your beat agenda.

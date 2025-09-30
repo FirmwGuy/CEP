@@ -64,6 +64,7 @@ l0_srcs = files(
   'src/l1_bond/cep_bond_pair.c',
   'src/l1_bond/cep_bond_context.c',
   'src/l1_bond/cep_bond_facet.c',
+  'src/l1_bond/cep_bond_tick.c',
   'src/enzymes/cep_cell_operations.c',
   'src/l0_kernel/stream/cep_stream_stdio.c',
   'src/l0_kernel/stream/cep_stream_effects.c',

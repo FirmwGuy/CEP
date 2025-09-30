@@ -11,7 +11,7 @@ Adjacency mirrors are the quick-glance indexes that keep relationships browseabl
 
 ### Update pipeline
 - `cep_bond_upsert` (and its helpers) compare the freshly computed summary with the current head. If nothing changes, the mirror stays untouched.
-- When a bond is retired, the heartbeat loop marks the matching adjacency node as inactive. A later sweep prunes the tombstone once both sides agree the edge is gone.
+- When a bond is retired, the heartbeat loop marks the matching adjacency node as inactive. `cep_tick_l1` prunes the tombstone once both sides agree the edge is gone or the owning being is deleted.
 - High-volume updates batch through the heartbeat so a single impulse can stage multiple mirror diffs before the agenda commits them.
 
 ### Reading mirrors safely
@@ -22,4 +22,4 @@ Adjacency mirrors are the quick-glance indexes that keep relationships browseabl
 - **Do mirrors survive restarts?** They live in normal cells, so yes. The append-only log persists them; heartbeat maintenance cleans stale ones after recovery.
 - **What if a mirror gets corrupted?** Rebuild it by replaying the underlying bond records through the heartbeat; the diff logic recreates missing entries deterministically.
 - **Can I add custom summary fields?** Extend the summary payload by adding children such as `meta/` values. Just keep them compact to preserve cache locality.
-- **How do mirrors behave with soft deletes?** Soft-deleted bonds remain visible but flagged; the heartbeat prunes them only after both participants are archived.
+- **How do mirrors behave with soft deletes?** Soft-deleted bonds remain visible but flagged; `cep_tick_l1` prunes them only after both participants are archived or summarised entries go empty.

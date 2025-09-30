@@ -11,15 +11,15 @@ Layer 1 is growing from a focused bond manager into a full coherence service. Th
 | Being lifecycle | ⚙️ Partial | `cep_being_claim` deduplicates identities and tracks external IDs with append-only history. | ⚙️ Add merge helpers for identity reconciliation workflows. |
 | Bond ledger | ⚙️ Partial | `cep_bond_upsert` maintains pair records and adjacency mirrors across retries. | ⚙️ Harden conflict detection for concurrent impulses and expose diff-friendly summaries. |
 | Context engine | ⚙️ Partial | `cep_context_upsert` records simplices and stages facet promises. | ⚙️ Support large role sets with streaming validation rather than in-memory arrays. |
-| Facet orchestration | ⚙️ Partial | `cep_facet_dispatch` invokes registered plugins and retries with backoff. | 📌 Surface per-facet telemetry and deadline guards. |
-| Checkpoint & retry | ⚙️ Partial | `cep_tick_l1` acks completed checkpoints and replays stuck impulses safely. | ⚙️ Add operator hooks to fast-forward or squash long-dead retries. |
+| Facet orchestration | ⚙️ Partial | `cep_facet_register` seeds the registry and `cep_facet_dispatch` retries plugins with backoff during the heartbeat. | 📌 Surface per-facet telemetry and deadline guards. |
+| Checkpoint & retry | ⚙️ Partial | `cep_tick_l1` drains the facet queue, prunes stale adjacency mirrors, and clears empty checkpoints. | ⚙️ Add operator hooks to fast-forward or squash long-dead retries. |
 | Telemetry & tooling | 🚧 Planned | Basic counters exist in `cep_metrics.c`. | 🚧 Export metrics through the same serializers used by Layer 0 for unified dashboards. |
 
 ### Current Foundations
 - ✅ Deterministic hashing keeps bond and context keys stable across replays.
 - ✅ Adjacency mirrors ride on kernel stores, so pruning and history reuse the same invariants as Layer 0.
 - ✅ Unit tests (`test_bond_randomized.c`) exercise randomized permutations of beings, roles, and retries.
-- ✅ The heartbeat loop shares infrastructure with the kernel, minimising scheduling drift.
+- ✅ The heartbeat loop shares infrastructure with the kernel, minimising scheduling drift, and `cep_tick_l1` now handles facet dispatch without bespoke wrappers.
 
 ### Active Focus Areas
 - ⚙️ Build richer policy descriptors so enzymes can declare allowed role combinations without hand-written guards.

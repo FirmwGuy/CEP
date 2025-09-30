@@ -31,9 +31,10 @@ Layer 1 exposes handles that wrap kernel cells but remain replay-friendly:
 - `cep_init_l1(const cepConfig*, cepEnzymeRegistry*)` seeds namespaces, installs default enzymes, and primes caches.
 - `cep_being_claim(cepCell* root, const cepDT* name, const cepBeingSpec*, cepBeingHandle*)` either returns an existing being or builds a fresh identity card.
 - `cep_bond_upsert(cepCell* root, const cepBondSpec*, cepBondHandle*)` records pair bonds, stages adjacency deltas, and emits `sig_bond_*` impulses.
-- `cep_context_upsert(cepCell* root, const cepContextSpec*, cepContextHandle*)` creates or updates a simplex, guaranteeing required facets are enqueued.
+- `cep_context_upsert(cepCell* root, const cepContextSpec*, cepContextHandle*)` creates or updates a simplex, guaranteeing required facets are enqueued with their context labels.
 - `cep_facet_register(const cepFacetSpec*)` lets plugins describe closure rules so the scheduler can materialise derived facts when contexts appear.
-- `cep_tick_l1(cepHeartbeat*, cepRuntime*)` drives per-beat maintenance: replaying facet queues, pruning orphaned adjacency mirrors, and acking checkpoints after journal verification.
+- `cep_facet_dispatch(cepCell*, const cepDT*, const cepDT*)` runs the materialiser for a queued facet, updating queue and facet state according to the enzyme result.
+- `cep_tick_l1(cepHeartbeatRuntime*)` drives per-beat maintenance: replaying facet queues, pruning orphaned adjacency mirrors, and clearing empty checkpoints after journal verification.
 
 These calls follow the kernel's style: return `int` status codes, accept explicit handles, and never mutate caller memory outside documented handles. Layer 1 types (`cepBondHandle`, `cepContextSpec`, etc.) remain POD structs so they can be journaled directly.
 
@@ -42,7 +43,7 @@ These calls follow the kernel's style: return `int` status codes, accept explici
 2. **Layer 1 resolver** – registered L1 enzymes map the signal to a bond/context spec and call the appropriate `cep_*_upsert` helper.
 3. **Adjacency staging** – the helper writes durable data under `/data/CEP/L1/*` and mirrors adjacency under `/bonds/adjacency` for intra-beat queries.
 4. **Facet scheduling** – if a context implies additional records, the helper pushes a work item into `/bonds/facet_queue` and emits `sig_fct_pn`.
-5. **Beat commit** – `cep_tick_l1` runs before the kernel publishes N+1; it verifies that all staged facets either completed or remain queued with checkpoints for retry.
+5. **Beat commit** – `cep_tick_l1` runs before the kernel publishes N+1; it dispatches pending facets, prunes adjacency mirrors for retired beings, and ensures any unfinished work stays checkpointed for retry.
 
 ### Error Handling and Replay
 All helpers must cope with partial retries. On failure they:
@@ -60,7 +61,7 @@ Journal entries capture both the incoming spec and the resulting handles so high
   Most callers interact through enzymes or higher-layer helpers. Direct calls exist for tooling and migrations that need deterministic control.
 
 - **What about garbage collection?**  
-  Layer 1 marks orphaned bonds and contexts during `cep_tick`; the kernel still owns final deletion so history stays intact.
+  Layer 1 marks orphaned bonds and contexts during `cep_tick_l1`; the kernel still owns final deletion so history stays intact.
 
 - **Can I extend the tag vocabulary?**  
   Yes. Add new entries to `docs/CEP-TAG-LEXICON.md` first so the shared domain stays coherent, then reference them in your facet specs.

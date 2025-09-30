@@ -12,6 +12,7 @@
 #include <stddef.h>
 
 #include "cep_enzyme.h"
+#include "cep_heartbeat.h"
 
 
 #ifdef __cplusplus
@@ -117,6 +118,7 @@ cepL1Result cep_bond_upsert(cepCell* root, const cepBondSpec* spec, cepBondHandl
 cepL1Result cep_context_upsert(cepCell* root, const cepContextSpec* spec, cepContextHandle* handle);
 cepL1Result cep_facet_register(const cepFacetSpec* spec);
 cepL1Result cep_facet_dispatch(cepCell* root, const cepDT* facet_tag, const cepDT* context_name);
+cepL1Result cep_tick_l1(cepHeartbeatRuntime* runtime);
 
 
 #ifdef __cplusplus

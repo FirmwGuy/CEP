@@ -7,12 +7,13 @@ Layer 1 plugs social intelligence into the kernel. This guide explains how appli
 ### Layer bring-up checklist
 1. **Seed namespaces.** Call `cep_init_l1` right after the kernel root is bootstrapped so the `/CEP/L1/*` tree exists before any heartbeat runs.
 2. **Install enzymes.** Register the default bond and facet enzymes into the shared registry, then add your own `sig_bond_*`, `sig_ctx_*`, and `sig_fct_*` hooks for domain-specific reactions.
-3. **Prime queues.** Ensure the heartbeat agenda includes `cep_tick_l1` (or your wrapper) so per-beat maintenance drains facet queues, prunes adjacency mirrors, and checkpoints retries.
+3. **Register facets.** Call `cep_facet_register` for every facet plugin you ship so the dispatcher knows which materialiser to invoke for each context tag.
+4. **Prime queues.** Ensure the heartbeat agenda includes `cep_tick_l1` (or your wrapper) so per-beat maintenance drains facet queues, prunes adjacency mirrors, and clears empty checkpoints.
 
 ### Working with beings, bonds, and contexts
 - **Being handles.** Use `cep_being_claim` to look up or lazily create identity cards. Callers provide deterministic DT names or text keys that were interned through the namepool at a higher layer.
 - **Bond upserts.** Run `cep_bond_upsert` inside your enzyme once both participants are known. The call computes the canonical hash for `(tag, roles, beings)`, emits adjacency deltas into `/bonds/adjacency`, and queues follow-up impulses when role summaries change.
-- **Context orchestration.** Invoke `cep_context_upsert` with a `cepContextSpec` describing every role and its participant. Required closure facets are declared alongside the context so they can be enqueued automatically.
+- **Context orchestration.** Invoke `cep_context_upsert` with a `cepContextSpec` describing every role and its participant. Required closure facets are declared alongside the context so they can be enqueued automatically with a friendly label used by the heartbeat when reporting progress.
 
 ### Feeding external systems
 - **Journal replay.** When importing historical relationships, stream the original impulses through the heartbeat so Layer 1 can rebuild caches incrementally. Avoid writing directly into `/data/CEP/L1/*`; you will bypass adjacency tracking.
@@ -21,8 +22,8 @@ Layer 1 plugs social intelligence into the kernel. This guide explains how appli
 
 ### Guardrails and observability
 - **Policy enforcement.** Guard your enzymes with explicit role and facet policies before calling into the bond APIs. Shared helpers under `src/l1_bond/policy` normalise the checks.
-- **Monitoring.** Mirror heartbeat counters (`sig_bond_*` rate, facet backlog depth, adjacency churn) into analytics cells or telemetry sinks so you can spot stalled closures before they bite consumers.
-- **Failure recovery.** If an enzyme aborts after staging adjacency deltas, the heartbeat will retry when the impulse is reissued. Keep retries idempotent by re-reading the target cells rather than carrying cached handles across beats.
+- **Monitoring.** Mirror heartbeat counters (`sig_bond_*` rate, facet backlog depth, adjacency churn) into analytics cells or telemetry sinks so you can spot stalled closures before they bite consumers. `cep_tick_l1` already bubbles up queue state changes (`pending`, `complete`, `fatal`) so you can scrape them during the same beat.
+- **Failure recovery.** If an enzyme aborts after staging adjacency deltas, the heartbeat will retry when the impulse is reissued. Keep retries idempotent by re-reading the target cells rather than carrying cached handles across beats, and rely on `cep_tick_l1` to dispatch any facets that remain pending after the next beat.
 
 ## Q&A
 - **Do I have to call Layer 1 APIs from inside a heartbeat?** Yes. Running them inside enzymes ensures adjacency mirrors, checkpoints, and facet queues move in lock-step with the kernel's op counts.

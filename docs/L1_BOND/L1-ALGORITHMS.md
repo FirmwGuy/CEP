@@ -11,7 +11,7 @@ Layer 1 wraps the kernel's append-only core with algorithms that guarantee socia
 - `cep_being_claim` hashes the caller's `cepDT` name and optional external IDs to look up or create the being card. When a fresh card is needed, it clones metadata into `meta/` and stamps timestamps for audit replay.
 - Backfilling or replaying a journal reuses the same function, so deterministic hashes guarantee the same beings appear without collisions.
 
-**Where to look.** Implementation resides in `src/l1_bond/cep_being.c`; unit coverage lands in `src/test/l1_bond/test_bond_randomized.c`.
+**Where to look.** Implementation resides in `src/l1_bond/cep_bond_being.c`; unit coverage lands in `src/test/l1_bond/test_bond_randomized.c`.
 
 ### Bond key synthesis and adjacency updates
 **Purpose.** Keep pairwise relationships indexed for fast lookup and historical auditing.
@@ -21,17 +21,17 @@ Layer 1 wraps the kernel's append-only core with algorithms that guarantee socia
 - The same call stages adjacency mirrors by inserting summaries under `/bonds/adjacency/being/<id>/<key>`.
 - A lightweight diff detects whether role payloads changed; only then do adjacency mirrors receive updates, keeping history tidy.
 
-**Where to look.** Algorithms live in `src/l1_bond/cep_bond.c`; adjacency queue helpers are under `src/l1_bond/cep_adjacency.c`.
+**Where to look.** Algorithms live in `src/l1_bond/cep_bond_pair.c`; adjacency helpers share utilities in `src/l1_bond/cep_bond_common.c`.
 
 ### Context closure and facet scheduling
 **Purpose.** Guarantee that multi-party contexts always produce the derived records they promise.
 
 **How it works.**
 - `cep_context_upsert` normalises role arrays, hashes them to a context key, and updates the context record.
-- Required facets are stored alongside the context. Each missing facet results in an enqueue operation in `/bonds/facet_queue` via `cep_facet_enqueue_missing`.
+- Required facets are stored alongside the context. Each missing facet results in an enqueue operation in `/bonds/facet_queue` with the context label so diagnostics stay human-friendly.
 - During the heartbeat, `cep_tick_l1` pops pending facet work, invokes registered plugins (`cep_facet_dispatch`), and requeues items with exponential backoff on failure.
 
-**Where to look.** Core code sits in `src/l1_bond/cep_context.c` and `src/l1_bond/cep_facet.c`.
+**Where to look.** Core code sits in `src/l1_bond/cep_bond_context.c` and `src/l1_bond/cep_bond_facet.c`.
 
 ### Heartbeat maintenance loop
 **Purpose.** Keep the transient caches in sync with durable state while respecting append-only semantics.
@@ -41,7 +41,7 @@ Layer 1 wraps the kernel's append-only core with algorithms that guarantee socia
 - The same loop sweeps checkpoints, acknowledging finished impulses and leaving history nodes in place for replay.
 - Metrics emitted during the pass feed optional telemetry enzymes so operators can observe backlog depth and retry health.
 
-**Where to look.** Heartbeat helpers live in `src/l1_bond/cep_tick.c`; telemetry shims are in `src/l1_bond/cep_metrics.c`.
+**Where to look.** Heartbeat helpers live in `src/l1_bond/cep_bond_tick.c`; future telemetry shims will extend this file or land alongside it.
 
 ## Q&A
 - **Why not store adjacency directly inside each bond?** Mirrors give O(1) lookups for clients that only need summaries. They also let you prune stale edges lazily without rewriting the authoritative history.

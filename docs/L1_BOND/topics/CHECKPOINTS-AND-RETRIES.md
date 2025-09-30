@@ -11,11 +11,11 @@ When work pauses mid-beat, checkpoints make sure the bond layer resumes exactly 
 
 ### Retry flow
 - When an enzyme fails, it writes diagnostic metadata onto the checkpoint entry and yields. The heartbeat leaves the entry pending while other work continues.
-- On the next beat, `cep_tick_l1` revisits pending checkpoints. If prerequisites look healthy, the impulse is reissued to the original handler.
-- Successful retries append an acknowledgement node and mark the checkpoint for pruning.
+- On the next beat, `cep_tick_l1` revisits pending checkpoints. If prerequisites look healthy, the impulse is reissued to the original handler or kept in place for another pass depending on the stored policy.
+- Successful retries append an acknowledgement node; once the folder is empty, `cep_tick_l1` removes the shell so stale directories do not accumulate.
 
 ### Cleanup strategy
-- `cep_tick_l1` prunes acknowledged checkpoints after a configurable grace period so operators can audit recent recoveries.
+- `cep_tick_l1` prunes empty checkpoint folders each beat, keeping the tree tidy while leaving the most recent history intact for audits.
 - Long-lived failures bubble into `/bonds/checkpoints/stalled` with rich metadata, making them easy to inspect through tooling.
 - Operators can force-complete a checkpoint by writing a resolution tag; the heartbeat will skip the retry and record the override in history.
 
