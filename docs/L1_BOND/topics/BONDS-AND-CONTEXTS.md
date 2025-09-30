@@ -1,4 +1,4 @@
-# L1 Bonds & Coherence: Bonds and Contexts
+# L1 Topic: Bonds and Contexts
 
 ## Introduction
 Bonds explain how beings relate; contexts capture multi-party situations in one breath. This guide walks through how Layer 1 represents those relationships, which tags it relies on, and how the upcoming C API keeps everything deterministic.

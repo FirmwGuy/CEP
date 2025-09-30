@@ -1,4 +1,4 @@
-# L1 Bonds & Coherence: Overview
+# L1 Bond Layer: A Quick Overview
 
 ## Introduction
 Layer 1 is CEP's social sense: it keeps track of who and what are connected so the rest of the stack can reason safely. Think of it as a concierge that remembers every relationship, nudges implied facts into existence, and double-checks that nothing drifts out of sync while the kernel keeps beating.
@@ -33,7 +33,7 @@ Layer 1 exposes handles that wrap kernel cells but remain replay-friendly:
 - `cep_bond_upsert(cepCell* root, const cepBondSpec*, cepBondHandle*)` records pair bonds, stages adjacency deltas, and emits `sig_bond_*` impulses.
 - `cep_context_upsert(cepCell* root, const cepContextSpec*, cepContextHandle*)` creates or updates a simplex, guaranteeing required facets are enqueued.
 - `cep_facet_register(const cepFacetSpec*)` lets plugins describe closure rules so the scheduler can materialise derived facts when contexts appear.
-- `cep_tick(cepHeartbeat*, cepRuntime*)` drives per-beat maintenance: replaying facet queues, pruning orphaned adjacency mirrors, and acking checkpoints after journal verification.
+- `cep_tick_l1(cepHeartbeat*, cepRuntime*)` drives per-beat maintenance: replaying facet queues, pruning orphaned adjacency mirrors, and acking checkpoints after journal verification.
 
 These calls follow the kernel's style: return `int` status codes, accept explicit handles, and never mutate caller memory outside documented handles. Layer 1 types (`cepBondHandle`, `cepContextSpec`, etc.) remain POD structs so they can be journaled directly.
 
@@ -42,7 +42,7 @@ These calls follow the kernel's style: return `int` status codes, accept explici
 2. **Layer 1 resolver** – registered L1 enzymes map the signal to a bond/context spec and call the appropriate `cep_*_upsert` helper.
 3. **Adjacency staging** – the helper writes durable data under `/data/CEP/L1/*` and mirrors adjacency under `/bonds/adjacency` for intra-beat queries.
 4. **Facet scheduling** – if a context implies additional records, the helper pushes a work item into `/bonds/facet_queue` and emits `sig_fct_pn`.
-5. **Beat commit** – `cep_tick` runs before the kernel publishes N+1; it verifies that all staged facets either completed or remain queued with checkpoints for retry.
+5. **Beat commit** – `cep_tick_l1` runs before the kernel publishes N+1; it verifies that all staged facets either completed or remain queued with checkpoints for retry.
 
 ### Error Handling and Replay
 All helpers must cope with partial retries. On failure they:

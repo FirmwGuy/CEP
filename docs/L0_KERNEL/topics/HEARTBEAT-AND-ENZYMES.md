@@ -1,4 +1,4 @@
-# L0 Kernel: Heartbeat, Signals, and Enzymes
+# L0 Topic: Heartbeat, Signals, and Enzymes
 
 ## Introduction
 

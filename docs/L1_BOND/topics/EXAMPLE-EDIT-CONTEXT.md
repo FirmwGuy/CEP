@@ -1,4 +1,4 @@
-# L1 Bonds & Coherence: Example – Editing Context
+# L1 Topic: Example – Editing Context
 
 ## Introduction
 To illustrate how Layer 1 will feel in practice, this walkthrough shows an enzyme responding to a document edit impulse. It claims the right beings, assembles a context describing the edit, and lets Layer 1 guarantee that all closure facets stay healthy.

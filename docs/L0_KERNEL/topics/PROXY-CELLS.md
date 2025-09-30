@@ -1,4 +1,4 @@
-# L0 Kernel: Proxy Cells
+# L0 Topic: Proxy Cells
 
 Proxy cells let CEP show information that lives elsewhere without copying it into the kernel. Think of them as a skylight: you still see the sky through the cell, but the air stays outside so the house remains tidy.
 

@@ -1,4 +1,4 @@
-# L0 Kernel: Overview
+# L0 Kernel: A Quick Overview
 
 Below is a practical, developer‑oriented overview of what this API enables, why it’s special, and how to put it to work.
 

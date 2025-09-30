@@ -1,4 +1,4 @@
-# L0 Kernel: Native Types
+# L0 Topic: Native Types
 
 This note defines how native data works in CEP Layer 0 (Kernel). At L0, a value is only bytes plus a tiny label. The real meaning of those bytes lives above the kernel, where you can describe and evolve types as normal CEP cells.
 

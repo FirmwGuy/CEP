@@ -25,7 +25,7 @@
 - Familiar: methods with before/after hooks; overriding; triggers in SQL.
 - In CEP:
   - Enzymes are the executable units. They react to impulses (signals) scheduled across deterministic heartbeats.
-  - Cell‑bound enzymes (see `docs/L0_KERNEL/CELL-BOUND-ENZYME-BINDINGS.md`) attach to cells, aggregate across ancestors, and deduplicate per impulse.
+  - Cell‑bound enzymes (see `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md`) attach to cells, aggregate across ancestors, and deduplicate per impulse.
   - “Override” → layering and precedence: bindings collected along the tree resolve into an agenda; you can stage before/after behavior by ordering and dependency edges.
   - “Triggers” → impulses emitted on write; enzymes subscribed by target/signal run next beat, with full journaling.
 
@@ -40,7 +40,7 @@
 - Familiar: ACID transactions; commit log; upsert/idempotent operations.
 - In CEP:
   - Beats are the commit boundary. Outputs from beat N appear at beat N+1, giving deterministic ordering and replayability.
-  - Append‑only semantics and tombstones preserve history. Mutations are modeled as new facts with timestamps; helpers enforce idempotency by design. See `docs/L0_KERNEL/APPEND-ONLY-AND-IDEMPOTENCY.md`.
+  - Append‑only semantics and tombstones preserve history. Mutations are modeled as new facts with timestamps; helpers enforce idempotency by design. See `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md`.
   - Journaling and serialization capture exact bytes sent/received for audit and replay.
 
 ### 6) Querying and Views
@@ -54,7 +54,7 @@
 - Familiar: migrations; evolving table schemas; feature flags.
 - In CEP:
   - Cells evolve organically: dictionary fields can be added without central schema changes.
-  - L1+ can document rich types as regular cells (schemas) linked from data (see `docs/L0_KERNEL/NATIVE-TYPES.md`).
+  - L1+ can document rich types as regular cells (schemas) linked from data (see `docs/L0_KERNEL/topics/NATIVE-TYPES.md`).
   - Governance and reforms (L4) formalize change control for larger systems while keeping history intact.
 
 ### 8) Concrete Mappings at a Glance
@@ -84,10 +84,10 @@ void add_can_edit(cepCell* root, cepCell* actor, cepCell* object) {
 - Links normalize and update backlinks; reads resolve via `cep_link_pull`.
 
 ### 10) Where to Dive Next
-- L0 cells, links, and shadowing: `docs/L0_KERNEL/LINKS-AND-SHADOWING.md`
-- Beats, impulses, and enzymes: `docs/L0_KERNEL/HEARTBEAT-AND-ENZYMES.md`
-- Append‑only and idempotency: `docs/L0_KERNEL/APPEND-ONLY-AND-IDEMPOTENCY.md`
-- L1 bonds, contexts, and example: `docs/L1_BOUND/OVERVIEW.md`, `docs/L1_BOUND/BONDS-AND-CONTEXTS.md`, `docs/L1_BOUND/EXAMPLE-EDIT-CONTEXT.md`
+- L0 cells, links, and shadowing: `docs/L0_KERNEL/topics/LINKS-AND-SHADOWING.md`
+- Beats, impulses, and enzymes: `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md`
+- Append‑only and idempotency: `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md`
+- L1 bonds, contexts, and example: `docs/L1_BOND/L1-OVERVIEW.md`, `docs/L1_BOND/topics/BONDS-AND-CONTEXTS.md`, `docs/L1_BOND/topics/EXAMPLE-EDIT-CONTEXT.md`
 - Conceptual overview: `docs/CEP.md`
 
 ## Q&A
