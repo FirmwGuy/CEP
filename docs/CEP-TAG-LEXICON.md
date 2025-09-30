@@ -1,7 +1,7 @@
 # CEP Tag Lexicon
 
 ## Introduction
-The CEP runtime now speaks with a single voice: every domain/tag pair exposed by
+The CEP runtime speaks with a single voice: every domain/tag pair exposed by
 Layer 0 uses the `CEP` domain and a shared vocabulary of short tags. This
 lexicon is the pocket dictionary for that vocabulary. It keeps engineers and
 tools aligned, avoids improvised sigils or ad-hoc prefixes, and makes it obvious

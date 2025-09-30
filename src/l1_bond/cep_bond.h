@@ -115,6 +115,8 @@ cepL1Result cep_init_l1(const cepConfig* config, cepEnzymeRegistry* registry);
 cepL1Result cep_being_claim(cepCell* root, const cepDT* name, const cepBeingSpec* spec, cepBeingHandle* handle);
 cepL1Result cep_bond_upsert(cepCell* root, const cepBondSpec* spec, cepBondHandle* handle);
 cepL1Result cep_context_upsert(cepCell* root, const cepContextSpec* spec, cepContextHandle* handle);
+cepL1Result cep_facet_register(const cepFacetSpec* spec);
+cepL1Result cep_facet_dispatch(cepCell* root, const cepDT* facet_tag, const cepDT* context_name);
 
 
 #ifdef __cplusplus
