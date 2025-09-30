@@ -22,6 +22,7 @@
     - Target with children: backlinks stored in the target’s `store` union as either a single `linked` pointer or a `shadow` aggregate.
   - The metacell’s `shadowing` bits summarize state: none, single, or multiple.
   - The `shadow` aggregate contains a small header and an array of `cepCell*` linking cells.
+  - Re-attaching an already registered link is a no-op; the bookkeeping ignores duplicates so repeated upserts remain idempotent while new links are still tracked.
 
 - Link lifecycle
   - Create: initialize a cell with type `LINK`, then set its target (`cep_link_set`). The target’s shadowing metadata/backlinks update accordingly.
@@ -67,4 +68,3 @@
 
 - Do links change identity or naming of the target?
   - No. Links add a reference edge; the target’s own name, data, and children remain authoritative.
-

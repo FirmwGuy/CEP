@@ -59,6 +59,7 @@ typedef struct {
     size_t          a_index;
     size_t          b_index;
     cepDT           tag;
+    cepDT           key;
     char            summary_a[64];
     char            summary_b[64];
 } RandomBond;
@@ -181,12 +182,32 @@ MunitResult test_bond_randomized(const MunitParameter params[], void* user_data_
                 cepL1Result bond_rc = cep_bond_upsert(root, &spec, &handle);
                 munit_assert_int(bond_rc, ==, CEP_L1_OK);
                 munit_assert_not_null(handle.cell);
+
+                const cepDT digest[] = {
+                    *spec.tag,
+                    *spec.role_a_tag,
+                    *cep_cell_get_name(beings[a].handle.cell),
+                    *spec.role_b_tag,
+                    *cep_cell_get_name(beings[b].handle.cell),
+                };
+                uint64_t hash = cep_hash_bytes(digest, sizeof digest);
+                bond->key.domain = CEP_ACRO("CEP");
+                bond->key.tag = cep_id_to_numeric((cepID)(hash & CEP_NAME_MAXVAL));
                 ++bond_count;
             }
         }
 
         munit_assert_size(bond_count, >, 0);
-        munit_assert_size(cep_cell_children(bonds_root), ==, bond_count);
+        size_t total_instances = 0;
+        for (cepCell* family = cep_cell_first(bonds_root);
+             family;
+             family = cep_cell_next(bonds_root, family)) {
+            if (!cep_cell_is_dictionary(family)) {
+                continue;
+            }
+            total_instances += cep_cell_children(family);
+        }
+        munit_assert_size(total_instances, ==, bond_count);
         for (size_t idx = 0; idx < being_count; ++idx) {
             cepCell* adjacency_bucket = cep_cell_find_by_name(adjacency_root, &beings[idx].name);
 
@@ -195,7 +216,9 @@ MunitResult test_bond_randomized(const MunitParameter params[], void* user_data_
                 const RandomBond* bond = &bonds[bond_idx];
                 if (bond->a_index == idx || bond->b_index == idx) {
                     munit_assert_not_null(adjacency_bucket);
-                    const char* summary = expect_value_for_name(adjacency_bucket, &bond->tag);
+                    cepCell* entry = cep_cell_find_by_name(adjacency_bucket, &bond->key);
+                    munit_assert_not_null(entry);
+                    const char* summary = expect_value_for_name(entry, CEP_DTAW("CEP", "value"));
                     const char* expected = (bond->a_index == idx) ? bond->summary_a : bond->summary_b;
                     munit_assert_string_equal(summary, expected);
                     ++expected_entries;

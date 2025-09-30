@@ -15,14 +15,14 @@ Layer 1 achieves this by extending the kernel API with a narrow C interface that
 
 ### Storage Shape
 Durable records live beneath `/data/CEP/L1/`:
-- `beings/` retains identity cards (`being` payloads and metadata links).
-- `bonds/` stores pair relations with role-labelled links (`role_a`, `role_b`).
-- `contexts/` materialise multi-party simplices where each role resolves to a link child.
-- `facets/` contains derived records promised by contexts (closure obligations).
+- `beings/` retains identity cards; each entry owns a `meta/` dictionary that clones caller-supplied metadata alongside friendly labels.
+- `bonds/<tag>/<key>` stores pair relations keyed by a hash of `(tag, role_a, being_a, role_b, being_b)` with role-labelled sub-dictionaries that retain participant identifiers and short summaries.
+- `contexts/<tag>/<key>` materialise multi-party simplices keyed the same way (hashing the tag and role tuple). Each role keeps the participant identifier and the record keeps a `meta/` dictionary for ancillary data.
+- `facets/<facet-tag>/<context-key>` contains derived records promised by contexts, each retaining lifecycle state for the owning simplex.
 
 Transient helpers live beneath `/bonds/*` during the active beat:
-- `adjacency/being/<id>` mirrors outgoing relations for quick lookups.
-- `facet_queue/` holds contexts awaiting facet completion enzymes.
+- `adjacency/being/<id>/<key>` mirrors outgoing relations with hashed entries so lookups can read summaries without chasing the main ledger.
+- `facet_queue/<facet-tag>/<context-key>` holds work items awaiting facet completion enzymes and retains the context label for retries.
 - `checkpoints/` records impulse cursors so retry logic can resume safely.
 
 ### Planned C API Surface

@@ -62,9 +62,10 @@ static int ceptron_on_edit(const cepPath* signal, const cepPath* target) {
 `CEP_CALL` is the standard macro that converts non-zero returns into retry or fatal codes. The helper leaves adjacency mirrors staged, facet work queued, and journal entries ready for commit.
 
 ### Beat Outcomes
-- `/data/CEP/L1/bonds/<hash>/` now contains the permission bond with two link children and a history entry referencing the prior revision.
-- `/data/CEP/L1/contexts/<hash>/` records the edit session, the attached metadata payload, and link children for each participant.
-- `/bonds/facet_queue/` holds two work items keyed by `session` and `facet_edlog` / `facet_prsnc`.
+- `/data/CEP/L1/bonds/bond_caned/<hash>/` now contains the permission bond with two role dictionaries, a `meta/` clone, and a history entry referencing the prior revision.
+- `/data/CEP/L1/contexts/ctx_editssn/<hash>/` records the edit session, the attached metadata payload, and link children for actor, subject, and UI.
+- `/bonds/adjacency/being/<user>/<hash>/value` (and the matching document entry) carry compact summaries for fast local inspection.
+- `/bonds/facet_queue/facet_edlog/<hash>/value` and `/bonds/facet_queue/facet_prsnc/<hash>/value` retain the context label until facet work materialises.
 - The journal registers `sig_bond_wr` and `sig_ctx_wr` so higher layers can react deterministically at beat N+1.
 
 ### Closure Enforcement
@@ -87,4 +88,3 @@ If a facet enzyme returns `CEP_ENZYME_RETRY`, the queue entry remains with an ex
 
 - **How are facet queues drained during bulk imports?**  
   Import tools run `cep_tick` after each batch, letting the normal heartbeat maintenance clear queues before proceeding to the next chunk.
-

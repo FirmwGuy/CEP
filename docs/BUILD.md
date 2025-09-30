@@ -23,6 +23,28 @@ CEP is a C library with a small test executable. You can build it on Windows (MS
 - Library: `cep` built from sources under `src/l0_kernel/` (e.g., `cep_cell.c`).
 - Executable: the unit test harness under `src/test/` builds a single program named `cep_tests` in the `build/` folder, linked against the library.
 
+## Meson Configuration Options
+
+The Meson project defines these switches (see `meson_options.txt`):
+
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `asan` | boolean | `false` | Enable Address/Undefined sanitizers (great with Clang). |
+| `code_map` | boolean | `false` | Generate ctags/cscope symbol maps (`meson compile -C build code_map`). |
+| `docs_html` | boolean | `false` | Build the Doxygen/Graphviz HTML docs (`meson compile -C build docs_html`). |
+| `tests` | feature | `enabled` | Build the unit tests (`enabled`, `disabled`, `auto`). |
+| `server` | feature | `disabled` | Build the standalone CEP server (requires `src/server/main.c`). |
+| `both_libs` | boolean | `false` | Produce both static and shared `libcep`. |
+| `zip` | feature | `auto` | Toggle the libzip-backed stream adapter (`enabled`, `disabled`, `auto`). |
+
+Set options during `meson setup` or after the fact with `meson configure`:
+
+```bash
+meson setup build -Dasan=true -Dtests=enabled
+# …or later
+meson configure build -Dcode_map=true
+```
+
 ## Developer Details
 
 - Compiler flags
@@ -79,27 +101,23 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
 
 ## Build Variants and Options
 
-- Static vs Shared library
-  - Default is static: `meson setup build`.
-  - Shared only: `meson setup build -Ddefault_library=shared`.
-  - Both: `meson setup build -Dboth_libs=true` (produces static and shared).
+- Static vs shared library
+  - Default build is static; use `-Dboth_libs=true` to emit both variants or `-Ddefault_library=shared` for a shared-only build.
 
-- Tests on/off
-  - Disable: `meson setup build -Dtests=disabled`.
-  - Enable (default): `meson setup build -Dtests=enabled`.
+- Tests
+  - Disable the harness with `-Dtests=disabled`; keep it on (default) for routine development.
 
-- Optional CEP server (standalone)
-  - Enable: `meson setup build -Dserver=enabled`.
-  - Meson expects a `src/server/main.c` entry point; if it’s missing, the build prints a warning and skips the server.
-- Code map generation (ctags + cscope)
-  - Enable during configuration: `meson setup build -Dcode_map=true`.
-  - Or trigger later: `meson compile -C build code_map`.
-  - Outputs land in the build tree (e.g., `build/code_map_ctags.json`, `build/code_map_cscope_callers.tsv`, `build/code_map_cscope_callees.tsv`).
-- HTML documentation (Doxygen + Graphviz)
-  - Enable during configuration: `meson setup build -Ddocs_html=true`.
-  - Or run ad hoc: `meson compile -C build docs_html`.
-  - Generated site lives in `build/docs/html/` (open `index.html`).
-  - Only the public kernel and manual docs are included; test harness sources (munit) are excluded.
+- CEP server
+  - Opt in with `-Dserver=enabled`. Meson warns (and skips it) if `src/server/main.c` is absent.
+
+- Code maps
+  - Flip `-Dcode_map=true` to install the tooling rules. Invoke with `meson compile -C build code_map` and inspect the `build/code_map_*` artefacts.
+
+- HTML docs
+  - `-Ddocs_html=true` wires the target; run `meson compile -C build docs_html` to generate `build/docs/html/index.html`.
+
+- Libzip adapter
+  - Force on/off with `-Dzip=enabled|disabled`. The default `auto` builds when `libzip` is detected.
 
 ## Offline Fallback (No Meson/Ninja)
 

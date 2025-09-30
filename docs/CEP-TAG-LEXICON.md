@@ -57,6 +57,7 @@ when a new behaviour needs a fresh word before it lands in code.
 | `lib` | core | library mount point created during bootstrap. |
 | `lib_payld` | io | payload marker for library-backed streams in tests. |
 | `library` | core | library metadata tag for proxied payloads. |
+| `meta` | core | cloned metadata dictionary attached to beings, bonds, and contexts. |
 | `list` | core | list-based store tag. |
 | `log` | core | heartbeat log entry list. |
 | `namepool` | core | backing catalog for identifier interning. |

@@ -156,50 +156,79 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
     assert_string_equal(expect_value(being_doc, CEP_DTAW("CEP", "being_ext")), "doc-2024A");
 
     /* Bond record captures role summaries and annotations. */
-    cepCell* bond_node = cep_cell_find_by_name(bonds_root, CEP_DTAW("CEP", "bond_caned"));
-    assert_not_null(bond_node);
+    cepCell* bond_family = expect_dictionary(bonds_root, CEP_DTAW("CEP", "bond_caned"));
+    const cepDT bond_digest[] = {
+        *bond_spec.tag,
+        *bond_spec.role_a_tag,
+        *cep_cell_get_name(user.cell),
+        *bond_spec.role_b_tag,
+        *cep_cell_get_name(document.cell),
+    };
+    uint64_t bond_hash = cep_hash_bytes(bond_digest, sizeof bond_digest);
+    cepDT bond_key = {
+        .domain = CEP_ACRO("CEP"),
+        .tag = cep_id_to_numeric((cepID)(bond_hash & CEP_NAME_MAXVAL)),
+    };
+    cepCell* bond_node = expect_dictionary(bond_family, &bond_key);
     assert_string_equal(expect_value(bond_node, CEP_DTAW("CEP", "bond_label")), "Primary Edit");
     assert_string_equal(expect_value(bond_node, CEP_DTAW("CEP", "bond_note")), "shared workspace");
     cepCell* bond_role_a = expect_dictionary(bond_node, CEP_DTAW("CEP", "role_a"));
-    assert_string_equal(expect_value(bond_role_a, CEP_DTAW("CEP", "value")), "being_doc");
+    assert_string_equal(expect_value(bond_role_a, CEP_DTAW("CEP", "value")), "bond_caned:doc-2024A");
     cepCell* bond_role_b = expect_dictionary(bond_node, CEP_DTAW("CEP", "role_b"));
-    assert_string_equal(expect_value(bond_role_b, CEP_DTAW("CEP", "value")), "being_alx");
+    assert_string_equal(expect_value(bond_role_b, CEP_DTAW("CEP", "value")), "bond_caned:user-001");
 
     /* Context node tracks participants and label. */
-    cepCell* context_node = cep_cell_find_by_name(contexts_root, CEP_DTAW("CEP", "ctx_edit"));
-    assert_not_null(context_node);
+    cepCell* context_family = expect_dictionary(contexts_root, CEP_DTAW("CEP", "ctx_edit"));
+    size_t ctx_digest_len = 1u + (context_spec.role_count * 2u);
+    cepDT* ctx_digest = cep_malloc(ctx_digest_len * sizeof *ctx_digest);
+    assert_not_null(ctx_digest);
+    size_t idx = 0u;
+    ctx_digest[idx++] = *context_spec.tag;
+    for (size_t i = 0; i < context_spec.role_count; ++i) {
+        ctx_digest[idx++] = *context_spec.role_tags[i];
+        ctx_digest[idx++] = *cep_cell_get_name(context_spec.role_targets[i]);
+    }
+    uint64_t ctx_hash = cep_hash_bytes(ctx_digest, ctx_digest_len * sizeof *ctx_digest);
+    cep_free(ctx_digest);
+    cepDT ctx_key = {
+        .domain = CEP_ACRO("CEP"),
+        .tag = cep_id_to_numeric((cepID)(ctx_hash & CEP_NAME_MAXVAL)),
+    };
+    cepCell* context_node = expect_dictionary(context_family, &ctx_key);
     assert_string_equal(expect_value(context_node, CEP_DTAW("CEP", "ctx_label")), "First Draft");
-    assert_string_equal(expect_value(cep_cell_find_by_name(context_node, CEP_DTAW("CEP", "role_source")), CEP_DTAW("CEP", "value")), "being_alx");
-    assert_string_equal(expect_value(cep_cell_find_by_name(context_node, CEP_DTAW("CEP", "role_subj")), CEP_DTAW("CEP", "value")), "being_doc");
+    assert_string_equal(expect_value(expect_dictionary(context_node, CEP_DTAW("CEP", "role_source")), CEP_DTAW("CEP", "value")), "user-001");
+    assert_string_equal(expect_value(expect_dictionary(context_node, CEP_DTAW("CEP", "role_subj")), CEP_DTAW("CEP", "value")), "doc-2024A");
 
     /* Facet records mark pending state and the queue references the context. */
-    cepCell* facet_edlog = cep_cell_find_by_name(facets_root, CEP_DTAW("CEP", "facet_edlog"));
-    assert_not_null(facet_edlog);
+    cepCell* facet_edlog_family = expect_dictionary(facets_root, CEP_DTAW("CEP", "facet_edlog"));
+    cepCell* facet_edlog = expect_dictionary(facet_edlog_family, &ctx_key);
     assert_string_equal(expect_value(facet_edlog, CEP_DTAW("CEP", "facet_state")), "pending");
-    cepCell* facet_prsnc = cep_cell_find_by_name(facets_root, CEP_DTAW("CEP", "facet_prsnc"));
-    assert_not_null(facet_prsnc);
+    cepCell* facet_prsnc_family = expect_dictionary(facets_root, CEP_DTAW("CEP", "facet_prsnc"));
+    cepCell* facet_prsnc = expect_dictionary(facet_prsnc_family, &ctx_key);
     assert_string_equal(expect_value(facet_prsnc, CEP_DTAW("CEP", "facet_state")), "pending");
 
-    cepCell* queue_edlog = cep_cell_find_by_name(facet_queue, CEP_DTAW("CEP", "facet_edlog"));
-    assert_not_null(queue_edlog);
+    cepCell* queue_edlog_family = expect_dictionary(facet_queue, CEP_DTAW("CEP", "facet_edlog"));
+    cepCell* queue_edlog = expect_dictionary(queue_edlog_family, &ctx_key);
     assert_string_equal(expect_value(queue_edlog, CEP_DTAW("CEP", "value")), "First Draft");
     assert_string_equal(expect_value(queue_edlog, CEP_DTAW("CEP", "queue_state")), "pending");
 
-    cepCell* queue_prsnc = cep_cell_find_by_name(facet_queue, CEP_DTAW("CEP", "facet_prsnc"));
-    assert_not_null(queue_prsnc);
+    cepCell* queue_prsnc_family = expect_dictionary(facet_queue, CEP_DTAW("CEP", "facet_prsnc"));
+    cepCell* queue_prsnc = expect_dictionary(queue_prsnc_family, &ctx_key);
     assert_string_equal(expect_value(queue_prsnc, CEP_DTAW("CEP", "value")), "First Draft");
     assert_string_equal(expect_value(queue_prsnc, CEP_DTAW("CEP", "queue_state")), "pending");
 
     // Adjacency mirrors capture both the bond and the active context for each being.
     cepCell* adjacency_alx = expect_dictionary(adjacency_root, CEP_DTAW("CEP", "being_alx"));
-    const char* adjacency_alx_bond = expect_value(adjacency_alx, CEP_DTAW("CEP", "bond_caned"));
-    assert_string_equal(adjacency_alx_bond, "bond_caned:doc-2024A");
-    assert_string_equal(expect_value(adjacency_alx, CEP_DTAW("CEP", "ctx_edit")), "ctx_edit:First Draft");
+    cepCell* adjacency_alx_bond = expect_dictionary(adjacency_alx, &bond_key);
+    assert_string_equal(expect_value(adjacency_alx_bond, CEP_DTAW("CEP", "value")), "bond_caned:doc-2024A");
+    cepCell* adjacency_alx_ctx = expect_dictionary(adjacency_alx, &ctx_key);
+    assert_string_equal(expect_value(adjacency_alx_ctx, CEP_DTAW("CEP", "value")), "ctx_edit:First Draft");
 
     cepCell* adjacency_doc = expect_dictionary(adjacency_root, CEP_DTAW("CEP", "being_doc"));
-    const char* adjacency_doc_bond = expect_value(adjacency_doc, CEP_DTAW("CEP", "bond_caned"));
-    assert_string_equal(adjacency_doc_bond, "bond_caned:user-001");
-    assert_string_equal(expect_value(adjacency_doc, CEP_DTAW("CEP", "ctx_edit")), "ctx_edit:First Draft");
+    cepCell* adjacency_doc_bond = expect_dictionary(adjacency_doc, &bond_key);
+    assert_string_equal(expect_value(adjacency_doc_bond, CEP_DTAW("CEP", "value")), "bond_caned:user-001");
+    cepCell* adjacency_doc_ctx = expect_dictionary(adjacency_doc, &ctx_key);
+    assert_string_equal(expect_value(adjacency_doc_ctx, CEP_DTAW("CEP", "value")), "ctx_edit:First Draft");
 
     // Counts remain stable after repeat upserts (idempotent behaviour).
     rc = cep_bond_upsert(root, &bond_spec, &bond_handle);

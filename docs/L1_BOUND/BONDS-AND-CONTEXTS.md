@@ -6,12 +6,12 @@ Bonds explain how beings relate; contexts capture multi-party situations in one 
 ## Technical Details
 ### Core Records
 Layer 1 introduces persistent records, all stored as regular dictionary cells beneath `/data/CEP/L1/`:
-- **Being cards** (`being`): identity cells containing descriptive metadata, canonical tags, and optional schema links.
-- **Bonds** (`bond_*`): pair relationships that always expose two role links (`role_a`, `role_b`).
-- **Contexts** (`ctx_*`): higher-order simplices keyed by a context tag and populated with arbitrarily many role links (`role_<name>`).
-- **Facets** (`facet_*`): closure artefacts promised by a context (e.g., type hierarchies, derived adjacency summaries).
+- **Being cards** (`being`): identity cells containing descriptive metadata, canonical tags, and a `meta/` dictionary that clones any caller-provided annotations.
+- **Bonds** (`bond_*`): pair relationships stored under `/bonds/<tag>/<key>` where `<key>` is a numeric name derived from hashing `<tag, role_a, being_a, role_b, being_b>`. Each record keeps `role_*` dictionaries that capture participant identifiers, short partner summaries, a `meta/` dictionary, and optional `bond_label`/`bond_note` values.
+- **Contexts** (`ctx_*`): higher-order simplices keyed by the context tag and a hash over the supplied role tuple. Role dictionaries retain participant identifiers, new metadata lives under `meta/`, and the main record exposes `ctx_label` for diagnostics.
+- **Facets** (`facet_*`): closure artefacts promised by a context. Entries live under `/facets/<facet-tag>/<context-key>` and record lifecycle state for the owning context.
 
-All records keep their append-only history. When an update occurs, Layer 1 writes a new revision that points to the prior digest so replay can reproduce the same state graph.
+All records keep their append-only history. When an update lands, the kernel timestamps the revised children so replay can reconstruct the previous shape without cloning entire trees.
 
 ### Tagging Discipline
 Layer 1 extends the shared lexicon with predictable patterns:
@@ -20,6 +20,7 @@ Layer 1 extends the shared lexicon with predictable patterns:
 - `ctx_*` – ops tags for contexts (`ctx_edit`, `ctx_member`).
 - `facet_*` – ops tags naming closure obligations.
 - `sig_bond_*`, `sig_ctx_*`, `sig_fct_*` – signal families emitted during processing.
+- `meta` – core tag for metadata dictionaries cloned into beings, bonds, and contexts.
 
 Each pattern must be registered in the lexicon before use so tooling can validate domain/tag pairs at bootstrap.
 
@@ -50,12 +51,14 @@ typedef struct {
 
 Specs never contain mutable pointers owned by the API. Callers allocate arrays, populate them, and remain responsible for lifetime until the call returns. Results arrive via small handles (opaque structs containing cell pointers and revision ids) so subsequent writes can detect divergence.
 
+Layer 1 hashes the tuple encoded in each spec to derive the per-record numeric key. Changing metadata alone rewrites the `meta/` dictionary in place, while changing any role or tag produces a new hashed entry alongside the existing history.
+
 ### Lifecycle of a Bond
 1. **Collect roles** – an enzyme or tool resolves the being cells that should appear on either side.
 2. **Produce `cepBondSpec`** – the caller selects the bond tag (`CEP:bond_caned`) and optional metadata.
-3. **Call `cep_bond_upsert`** – Layer 1 finds an existing bond with the same ordered tuple or creates a new dictionary cell with two link children.
-4. **Mirror adjacency** – the helper updates `/bonds/adjacency/<being>` with forward/back references so reads remain O(1) during the beat.
-5. **Emit signals** – the helper records journal entries and emits `sig_bond_wr` pointing at the new cell; higher layers may respond next beat.
+3. **Call `cep_bond_upsert`** – Layer 1 hashes the tuple, reuses the existing record if the hash matches, or creates a fresh dictionary under `/bonds/<tag>/<hash>` with role summaries and cloned metadata.
+4. **Mirror adjacency** – the helper updates `/bonds/adjacency/<being>/<hash>` with a short summary so reads remain O(1) during the beat.
+5. **Emit signals** – the helper records journal entries and emits `sig_bond_wr` pointing at the record; higher layers may respond next beat.
 
 Bonds are idempotent by design: the same spec results in the same durable cell revision. When metadata changes, a new revision is appended, but the canonical adjacency path remains stable.
 
@@ -63,9 +66,9 @@ Bonds are idempotent by design: the same spec results in the same durable cell r
 Contexts follow the same outline but operate over N roles:
 1. **Resolve participants** – each `role_tag` maps to a being or nested context.
 2. **Validate schema** – the helper checks declared role cardinalities and facet requirements.
-3. **Atomically update** – the API writes the context cell and ensures links carry canonical ordering so replay stays deterministic.
-4. **Queue facets** – required facets enter `/bonds/facet_queue`; if one already exists, the queue entry upgrades a revision instead of duplicating work.
-5. **Publish adjacency** – adjacency mirrors record the simplex ID for each participant so caches and queries stay in sync.
+3. **Atomically update** – the API hashes the role tuple to select `/contexts/<tag>/<hash>`, refreshes role summaries, and rewrites the `meta/` dictionary when metadata changes.
+4. **Queue facets** – required facets enter `/bonds/facet_queue/<facet-tag>/<hash>` with the context label so retries can hop back to the owning context via a fresh lookup.
+5. **Publish adjacency** – adjacency mirrors record the simplex hash for each participant with summaries like `<ctx_tag>:<ctx_label>`.
 
 ### Facet Completion
 Facet rules are registered ahead of time:
@@ -77,7 +80,7 @@ typedef struct {
     cepFacetPolicy policy;              /* retry / failure contract */
 } cepFacetSpec;
 ```
-Layer 1 uses these specs to know which enzymes to schedule when a context appears. Work items store the context handle, facet tag, and checkpoint metadata; completion clears the queue entry and writes the facet cell under `/data/CEP/L1/facets`.
+Layer 1 uses these specs to know which enzymes to schedule when a context appears. Work items store the context handle, facet tag, and checkpoint metadata; completion clears the queue entry under `/bonds/facet_queue/<facet-tag>/<context-hash>` and writes the facet cell under `/data/CEP/L1/facets/<facet-tag>/<context-hash>`.
 
 ### Concurrency and Ordering
 Layer 1 never bypasses the kernel's heartbeat discipline. All helpers:
@@ -87,7 +90,7 @@ Layer 1 never bypasses the kernel's heartbeat discipline. All helpers:
 
 ## Q&A
 - **How are bond identities generated?**  
-  By hashing the ordered tuple of role DTs plus participant cell IDs. The hash becomes the dictionary key under `/data/CEP/L1/bonds`, guaranteeing idempotent upserts.
+  Layer 1 hashes the ordered tuple of role DTs plus participant cell IDs. The numeric hash becomes the child name under `/data/CEP/L1/bonds/<tag>/<hash>`, guaranteeing idempotent upserts.
 
 - **Can contexts reference other contexts?**  
   Yes, provided the target context already exists or is scheduled earlier in the beat. Layer 1 detects cycles and replaces them with explicit facet obligations so closure remains achievable.
@@ -97,4 +100,3 @@ Layer 1 never bypasses the kernel's heartbeat discipline. All helpers:
 
 - **Do adjacency mirrors persist across restarts?**  
   No. They are rebuilt from durable bonds during bootstrap, ensuring warm start reliability without polluting the append-only history.
-

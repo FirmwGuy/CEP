@@ -1108,7 +1108,9 @@ static void cep_shadow_attach(cepCell* target, cepCell* link)
 
       case CEP_SHADOW_SINGLE: {
         cepCell* existing = *singleSlot;
-        assert(existing && existing != link);
+        assert(existing);
+        if (existing == link)
+            return;
 
         cepShadow* shadow = cep_shadow_reserve(NULL, 2U);
         shadow->count = 0U;
@@ -1126,7 +1128,8 @@ static void cep_shadow_attach(cepCell* target, cepCell* link)
         assert(shadow);
 
         for (unsigned i = 0; i < shadow->count; i++)
-            assert(shadow->cell[i] != link);
+            if (shadow->cell[i] == link)
+                return;
 
         shadow = cep_shadow_reserve(shadow, shadow->count + 1U);
         shadow->cell[shadow->count++] = link;

@@ -18,6 +18,7 @@ TARGET := $(BIN_DIR)/cep_tests
 CC ?= gcc
 CFLAGS ?= -g -Wall -D_GNU_SOURCE -fplan9-extensions \
           -I$(SRCDIR)/l0_kernel -I$(SRCDIR)/l0_kernel/storage \
+          -I$(SRCDIR)/l1_bond \
           -I$(SRCDIR)/test
 ifeq ($(OS),Windows_NT)
 CFLAGS += -D__STDC_NO_ATOMICS__
@@ -34,6 +35,7 @@ SRC := $(SRCDIR)/l0_kernel/cep_cell.c \
        $(SRCDIR)/l0_kernel/cep_heartbeat_queue.c \
        $(SRCDIR)/l0_kernel/cep_namepool.c \
        $(SRCDIR)/l0_kernel/cep_serialization.c \
+       $(SRCDIR)/l1_bond/cep_bond.c \
        $(SRCDIR)/l0_kernel/stream/cep_stream_effects.c \
        $(SRCDIR)/l0_kernel/stream/cep_stream_stdio.c \
        $(wildcard $(SRCDIR)/test/*.c) \

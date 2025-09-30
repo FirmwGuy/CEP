@@ -34,18 +34,21 @@ static bool                    CEP_BOND_READY;
 static cepEnzymeRegistry*      CEP_BOND_REGISTRY;
 
 
-static cepCell* cep_bond_prepare_dictionary(cepCell* parent, const cepDT* name, bool ensure, cepL1Result* status);
-static cepCell* cep_bond_prepare_list(cepCell* parent, const cepDT* name, bool ensure, cepL1Result* status);
-static bool     cep_bond_register_default_enzymes(cepEnzymeRegistry* registry);
+static cepCell*    cep_bond_prepare_dictionary(cepCell* parent, const cepDT* name, bool ensure, cepL1Result* status);
+static cepCell*    cep_bond_prepare_list(cepCell* parent, const cepDT* name, bool ensure, cepL1Result* status);
+static bool        cep_bond_register_default_enzymes(cepEnzymeRegistry* registry);
 static cepL1Result cep_bond_require_ready(void);
-static bool     cep_bond_match_root(cepCell* root);
-static cepCell* cep_bond_ensure_dictionary_cell(cepCell* parent, const cepDT* name, const cepDT* type_dt, unsigned storage);
+static bool        cep_bond_match_root(cepCell* root);
+static cepCell*    cep_bond_ensure_dictionary_cell(cepCell* parent, const cepDT* name, const cepDT* type_dt, unsigned storage);
 static cepL1Result cep_bond_set_text(cepCell* parent, const cepDT* name, const char* text);
-static cepL1Result cep_bond_clone_children(cepCell* target, const cepCell* source);
-static void     cep_bond_tag_text(const cepDT* tag, char buffer[12]);
-static void     cep_bond_being_name(const cepCell* being, char buffer[12]);
+static cepL1Result cep_bond_apply_metadata(cepCell* target, const cepCell* source);
+static cepDT       cep_bond_numeric_name(uint64_t key);
+static uint64_t    cep_bond_compute_pair_key(const cepBondSpec* spec);
+static uint64_t    cep_context_compute_key(const cepContextSpec* spec);
+static void        cep_bond_tag_text(const cepDT* tag, char buffer[12]);
+static void        cep_bond_being_name(const cepCell* being, char buffer[12]);
 static cepL1Result cep_bond_annotate_adjacency(const cepCell* being, const cepDT* entry_name, const char* summary);
-static void     cep_bond_being_identifier_text(const cepCell* being, char buffer[32]);
+static void        cep_bond_being_identifier_text(const cepCell* being, char buffer[32]);
 
 
 /** Prime Layer 1 by wiring the expected directory layout under `/data` and
@@ -301,13 +304,27 @@ static cepL1Result cep_bond_set_text(cepCell* parent, const cepDT* name, const c
 }
 
 
-static cepL1Result cep_bond_clone_children(cepCell* target, const cepCell* source) {
+static cepL1Result cep_bond_apply_metadata(cepCell* target, const cepCell* source) {
     if (!target || !source) {
         return CEP_L1_ERR_ARGUMENT;
     }
 
     if (!cep_cell_is_normal(source) || !cep_cell_children(source)) {
         return CEP_L1_OK;
+    }
+
+    cepDT meta_tag = *CEP_DTAW("CEP", "meta");
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepCell* bucket = cep_bond_ensure_dictionary_cell(target, &meta_tag, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!bucket) {
+        return CEP_L1_ERR_MEMORY;
+    }
+
+    if (bucket->store) {
+        bool writable = bucket->store->writable;
+        bucket->store->writable = true;
+        cep_store_delete_children_hard(bucket->store);
+        bucket->store->writable = writable;
     }
 
     size_t count = cep_cell_children(source);
@@ -322,7 +339,7 @@ static cepL1Result cep_bond_clone_children(cepCell* target, const cepCell* sourc
             return CEP_L1_ERR_MEMORY;
         }
 
-        cepCell* inserted = cep_cell_add(target, 0, clone);
+        cepCell* inserted = cep_cell_add(bucket, 0, clone);
         if (!inserted) {
             cep_free(clone);
             return CEP_L1_ERR_MEMORY;
@@ -333,6 +350,65 @@ static cepL1Result cep_bond_clone_children(cepCell* target, const cepCell* sourc
 
     return CEP_L1_OK;
 }
+
+
+static cepDT cep_bond_numeric_name(uint64_t key) {
+    cepDT dt = {0};
+    dt.domain = CEP_ACRO("CEP");
+    dt.tag = cep_id_to_numeric((cepID)(key & CEP_NAME_MAXVAL));
+    return dt;
+}
+
+
+static uint64_t cep_bond_compute_pair_key(const cepBondSpec* spec) {
+    assert(spec);
+
+    const cepDT* role_a_name = cep_cell_get_name(spec->role_a);
+    const cepDT* role_b_name = cep_cell_get_name(spec->role_b);
+    if (!role_a_name || !role_b_name) {
+        return 0u;
+    }
+
+    const cepDT digest[] = {
+        *spec->tag,
+        *spec->role_a_tag,
+        *role_a_name,
+        *spec->role_b_tag,
+        *role_b_name,
+    };
+
+    return cep_hash_bytes(digest, sizeof digest);
+}
+
+
+static uint64_t cep_context_compute_key(const cepContextSpec* spec) {
+    assert(spec);
+
+    size_t digest_len = 1u + (spec->role_count * 2u);
+    cepDT* digest = cep_malloc(digest_len * sizeof *digest);
+    if (!digest) {
+        return 0u;
+    }
+
+    size_t index = 0u;
+    digest[index++] = *spec->tag;
+
+    for (size_t i = 0; i < spec->role_count; ++i) {
+        const cepDT* role_tag = spec->role_tags[i];
+        const cepDT* role_name = cep_cell_get_name(spec->role_targets[i]);
+        if (!role_tag || !role_name) {
+            cep_free(digest);
+            return 0u;
+        }
+        digest[index++] = *role_tag;
+        digest[index++] = *role_name;
+    }
+
+    uint64_t hash = cep_hash_bytes(digest, digest_len * sizeof *digest);
+    cep_free(digest);
+    return hash;
+}
+
 
 
 static void cep_bond_tag_text(const cepDT* tag, char buffer[12]) {
@@ -431,10 +507,26 @@ static cepL1Result cep_bond_annotate_adjacency(const cepCell* being, const cepDT
         return CEP_L1_ERR_MEMORY;
     }
 
-    return cep_bond_set_text(bucket, entry_name, summary);
+    cepCell* entry = cep_bond_ensure_dictionary_cell(bucket, entry_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!entry) {
+        return CEP_L1_ERR_MEMORY;
+    }
+
+    if (summary && *summary) {
+        cepDT value_tag = *CEP_DTAW("CEP", "value");
+        cepL1Result rc = cep_bond_set_text(entry, &value_tag, summary);
+        if (rc != CEP_L1_OK) {
+            return rc;
+        }
+    }
+
+    return CEP_L1_OK;
 }
 
 
+/* Claim or create a Layer 1 being so callers always land on the same identity
+   card, updating friendly labels and metadata while keeping the record rooted in
+   the CEP:L1/beings dictionary for append-only history. */
 cepL1Result cep_being_claim(cepCell* root, const cepDT* name, const cepBeingSpec* spec, cepBeingHandle* handle) {
     cepL1Result ready = cep_bond_require_ready();
     if (ready != CEP_L1_OK) {
@@ -455,21 +547,12 @@ cepL1Result cep_being_claim(cepCell* root, const cepDT* name, const cepBeingSpec
     }
 
     cepCell* being = cep_cell_find_by_name(beings_root, name);
-    bool created = false;
     if (!being) {
         cepDT name_copy = *name;
         cepDT being_type = *CEP_DTAW("CEP", "being");
         being = cep_cell_add_dictionary(beings_root, &name_copy, 0, &being_type, CEP_STORAGE_RED_BLACK_T);
         if (!being) {
             return CEP_L1_ERR_MEMORY;
-        }
-        created = true;
-
-        if (spec && spec->metadata) {
-            cepL1Result meta_rc = cep_bond_clone_children(being, spec->metadata);
-            if (meta_rc != CEP_L1_OK) {
-                return meta_rc;
-            }
         }
     }
 
@@ -492,8 +575,11 @@ cepL1Result cep_being_claim(cepCell* root, const cepDT* name, const cepBeingSpec
             return rc;
         }
 
-        if (!created && spec->metadata) {
-            /* Preserve existing structure; metadata cloning only happens on new records. */
+        if (spec->metadata) {
+            cepL1Result meta_rc = cep_bond_apply_metadata(being, spec->metadata);
+            if (meta_rc != CEP_L1_OK) {
+                return meta_rc;
+            }
         }
     }
 
@@ -503,6 +589,9 @@ cepL1Result cep_being_claim(cepCell* root, const cepDT* name, const cepBeingSpec
 }
 
 
+/* Record or refresh a pairwise bond by hashing the ordered role tuple into a
+   stable cell name, wiring role links, labels, and adjacency mirrors so future
+   beats can reason about the relationship deterministically. */
 cepL1Result cep_bond_upsert(cepCell* root, const cepBondSpec* spec, cepBondHandle* handle) {
     cepL1Result ready = cep_bond_require_ready();
     if (ready != CEP_L1_OK) {
@@ -531,85 +620,107 @@ cepL1Result cep_bond_upsert(cepCell* root, const cepBondSpec* spec, cepBondHandl
         return CEP_L1_ERR_ARGUMENT;
     }
 
-    cepCell* bond = cep_cell_find_by_name(bonds_root, spec->tag);
-    if (!bond) {
-        cepDT bond_name = *spec->tag;
-        cepDT bond_type = *spec->tag;
-        bond = cep_cell_add_dictionary(bonds_root, &bond_name, 0, &bond_type, CEP_STORAGE_LINKED_LIST);
-        if (!bond) {
+    cepCell* family = cep_cell_find_by_name(bonds_root, spec->tag);
+    if (!family) {
+        cepDT family_name = *spec->tag;
+        cepDT family_type = *spec->tag;
+        family = cep_cell_add_dictionary(bonds_root, &family_name, 0, &family_type, CEP_STORAGE_RED_BLACK_T);
+        if (!family) {
             return CEP_L1_ERR_MEMORY;
         }
+    }
 
-        if (spec->metadata) {
-            cepL1Result meta_rc = cep_bond_clone_children(bond, spec->metadata);
-            if (meta_rc != CEP_L1_OK) {
-                return meta_rc;
-            }
+    uint64_t pair_key = cep_bond_compute_pair_key(spec);
+    if (!pair_key) {
+        return CEP_L1_ERR_STATE;
+    }
+
+    cepDT record_name = cep_bond_numeric_name(pair_key);
+    cepCell* record = cep_cell_find_by_name(family, &record_name);
+    if (!record) {
+        cepDT record_type = *spec->tag;
+        record = cep_cell_add_dictionary(family, &record_name, 0, &record_type, CEP_STORAGE_RED_BLACK_T);
+        if (!record) {
+            return CEP_L1_ERR_MEMORY;
         }
     }
 
-    cepDT role_a_tag = *spec->role_a_tag;
-    cepDT role_b_tag = *spec->role_b_tag;
-    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    if (spec->metadata) {
+        cepL1Result meta_rc = cep_bond_apply_metadata(record, spec->metadata);
+        if (meta_rc != CEP_L1_OK) {
+            return meta_rc;
+        }
+    }
 
-    cepCell* role_a_entry = cep_bond_ensure_dictionary_cell(bond, &role_a_tag, &dict_type, CEP_STORAGE_LINKED_LIST);
-    cepCell* role_b_entry = cep_bond_ensure_dictionary_cell(bond, &role_b_tag, &dict_type, CEP_STORAGE_LINKED_LIST);
-    if (!role_a_entry || !role_b_entry) {
+    char tag_text[12] = {0};
+    cep_bond_tag_text(spec->tag, tag_text);
+
+    char partner_identifier[32] = {0};
+    cepL1Result rc_status = CEP_L1_OK;
+
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepDT value_tag = *CEP_DTAW("CEP", "value");
+
+    cepCell* role_entry_a = cep_bond_ensure_dictionary_cell(record, spec->role_a_tag, &dict_type, CEP_STORAGE_LINKED_LIST);
+    if (!role_entry_a) {
         return CEP_L1_ERR_MEMORY;
     }
-
-    char partner_text[12] = {0};
-    cep_bond_being_name(spec->role_b, partner_text);
-    cepL1Result rc = cep_bond_set_text(role_a_entry, CEP_DTAW("CEP", "value"), partner_text);
-    if (rc != CEP_L1_OK) {
-        return rc;
+    cep_bond_being_identifier_text(spec->role_b, partner_identifier);
+    char summary[96] = {0};
+    snprintf(summary, sizeof summary, "%s:%s", tag_text, partner_identifier);
+    rc_status = cep_bond_set_text(role_entry_a, &value_tag, summary);
+    if (rc_status != CEP_L1_OK) {
+        return rc_status;
     }
 
-    cep_bond_being_name(spec->role_a, partner_text);
-    rc = cep_bond_set_text(role_b_entry, CEP_DTAW("CEP", "value"), partner_text);
-    if (rc != CEP_L1_OK) {
-        return rc;
+    cepCell* role_entry_b = cep_bond_ensure_dictionary_cell(record, spec->role_b_tag, &dict_type, CEP_STORAGE_LINKED_LIST);
+    if (!role_entry_b) {
+        return CEP_L1_ERR_MEMORY;
+    }
+    cep_bond_being_identifier_text(spec->role_a, partner_identifier);
+    snprintf(summary, sizeof summary, "%s:%s", tag_text, partner_identifier);
+    rc_status = cep_bond_set_text(role_entry_b, &value_tag, summary);
+    if (rc_status != CEP_L1_OK) {
+        return rc_status;
     }
 
     cepDT bond_label_tag = *CEP_DTAW("CEP", "bond_label");
     cepDT bond_note_tag = *CEP_DTAW("CEP", "bond_note");
-    rc = cep_bond_set_text(bond, &bond_label_tag, spec->label);
-    if (rc != CEP_L1_OK) {
-        return rc;
+    rc_status = cep_bond_set_text(record, &bond_label_tag, spec->label);
+    if (rc_status != CEP_L1_OK) {
+        return rc_status;
     }
-    rc = cep_bond_set_text(bond, &bond_note_tag, spec->note);
-    if (rc != CEP_L1_OK) {
-        return rc;
+    rc_status = cep_bond_set_text(record, &bond_note_tag, spec->note);
+    if (rc_status != CEP_L1_OK) {
+        return rc_status;
     }
 
-    char tag_text[12] = {0};
-    char summary[96] = {0};
-    cep_bond_tag_text(spec->tag, tag_text);
-
-    char partner_identifier[32] = {0};
     cep_bond_being_identifier_text(spec->role_b, partner_identifier);
     snprintf(summary, sizeof summary, "%s:%s", tag_text, partner_identifier);
-    rc = cep_bond_annotate_adjacency(spec->role_a, spec->tag, summary);
-    if (rc != CEP_L1_OK) {
-        return rc;
+    rc_status = cep_bond_annotate_adjacency(spec->role_a, &record_name, summary);
+    if (rc_status != CEP_L1_OK) {
+        return rc_status;
     }
 
     cep_bond_being_identifier_text(spec->role_a, partner_identifier);
     snprintf(summary, sizeof summary, "%s:%s", tag_text, partner_identifier);
-    rc = cep_bond_annotate_adjacency(spec->role_b, spec->tag, summary);
-    if (rc != CEP_L1_OK) {
-        return rc;
+    rc_status = cep_bond_annotate_adjacency(spec->role_b, &record_name, summary);
+    if (rc_status != CEP_L1_OK) {
+        return rc_status;
     }
 
     if (handle) {
-        handle->cell = bond;
-        handle->revision = cep_cell_latest_timestamp(bond);
+        handle->cell = record;
+        handle->revision = cep_cell_latest_timestamp(record);
     }
 
     return CEP_L1_OK;
 }
 
 
+/* Materialise a multi-party context as a keyed simplex, linking every role
+   back to its being, mirroring adjacency summaries, and queueing the required
+   facets so orchestration stays consistent across beats. */
 cepL1Result cep_context_upsert(cepCell* root, const cepContextSpec* spec, cepContextHandle* handle) {
     cepL1Result ready = cep_bond_require_ready();
     if (ready != CEP_L1_OK) {
@@ -638,42 +749,50 @@ cepL1Result cep_context_upsert(cepCell* root, const cepContextSpec* spec, cepCon
         }
     }
 
-    cepCell* context = cep_cell_find_by_name(contexts_root, spec->tag);
-    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepCell* family = cep_cell_find_by_name(contexts_root, spec->tag);
+    if (!family) {
+        cepDT family_name = *spec->tag;
+        cepDT family_type = *spec->tag;
+        family = cep_cell_add_dictionary(contexts_root, &family_name, 0, &family_type, CEP_STORAGE_RED_BLACK_T);
+        if (!family) {
+            return CEP_L1_ERR_MEMORY;
+        }
+    }
+
+    uint64_t context_key = cep_context_compute_key(spec);
+    if (!context_key) {
+        return CEP_L1_ERR_STATE;
+    }
+
+    cepDT context_name = cep_bond_numeric_name(context_key);
+    cepCell* context = cep_cell_find_by_name(family, &context_name);
     if (!context) {
-        cepDT name_copy = *spec->tag;
-        cepDT type_copy = *spec->tag;
-        context = cep_cell_add_dictionary(contexts_root, &name_copy, 0, &type_copy, CEP_STORAGE_LINKED_LIST);
+        cepDT context_type = *spec->tag;
+        context = cep_cell_add_dictionary(family, &context_name, 0, &context_type, CEP_STORAGE_RED_BLACK_T);
         if (!context) {
             return CEP_L1_ERR_MEMORY;
         }
     }
 
-    if (!context->store) {
-        return CEP_L1_ERR_STATE;
-    }
-
-    cep_store_delete_children_hard(context->store);
-
     if (spec->metadata) {
-        cepL1Result meta_rc = cep_bond_clone_children(context, spec->metadata);
+        cepL1Result meta_rc = cep_bond_apply_metadata(context, spec->metadata);
         if (meta_rc != CEP_L1_OK) {
             return meta_rc;
         }
     }
 
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
     cepDT value_tag = *CEP_DTAW("CEP", "value");
     for (size_t i = 0; i < spec->role_count; ++i) {
-        cepDT role_tag = *spec->role_tags[i];
-        cepCell* role_entry = cep_bond_ensure_dictionary_cell(context, &role_tag, &dict_type, CEP_STORAGE_LINKED_LIST);
+        cepCell* role_entry = cep_bond_ensure_dictionary_cell(context, spec->role_tags[i], &dict_type, CEP_STORAGE_LINKED_LIST);
         if (!role_entry) {
             return CEP_L1_ERR_MEMORY;
         }
-        char being_name[12] = {0};
-        cep_bond_being_name(spec->role_targets[i], being_name);
-        cepL1Result rc = cep_bond_set_text(role_entry, &value_tag, being_name);
-        if (rc != CEP_L1_OK) {
-            return rc;
+        char being_identifier[32] = {0};
+        cep_bond_being_identifier_text(spec->role_targets[i], being_identifier);
+        cepL1Result rc_local = cep_bond_set_text(role_entry, &value_tag, being_identifier);
+        if (rc_local != CEP_L1_OK) {
+            return rc_local;
         }
     }
 
@@ -687,17 +806,15 @@ cepL1Result cep_context_upsert(cepCell* root, const cepContextSpec* spec, cepCon
     cep_bond_tag_text(spec->tag, ctx_tag_text);
     const char* ctx_label = spec->label ? spec->label : ctx_tag_text;
 
-    /* Update adjacency mirrors. */
-    char summary[64] = {0};
+    char summary[96] = {0};
     for (size_t i = 0; i < spec->role_count; ++i) {
         snprintf(summary, sizeof summary, "%s:%s", ctx_tag_text, ctx_label);
-        rc = cep_bond_annotate_adjacency(spec->role_targets[i], spec->tag, summary);
+        rc = cep_bond_annotate_adjacency(spec->role_targets[i], &context_name, summary);
         if (rc != CEP_L1_OK) {
             return rc;
         }
     }
 
-    /* Ensure facets exist and mark them pending. */
     const char* pending = "pending";
     cepDT facet_state_tag = *CEP_DTAW("CEP", "facet_state");
     cepDT queue_state_tag = *CEP_DTAW("CEP", "queue_state");
@@ -707,8 +824,12 @@ cepL1Result cep_context_upsert(cepCell* root, const cepContextSpec* spec, cepCon
             continue;
         }
 
-        cepDT facet_name = *facet_tag;
-        cepCell* facet_record = cep_bond_ensure_dictionary_cell(facets_root, &facet_name, &facet_name, CEP_STORAGE_LINKED_LIST);
+        cepCell* facet_family = cep_bond_ensure_dictionary_cell(facets_root, facet_tag, facet_tag, CEP_STORAGE_RED_BLACK_T);
+        if (!facet_family) {
+            return CEP_L1_ERR_MEMORY;
+        }
+
+        cepCell* facet_record = cep_bond_ensure_dictionary_cell(facet_family, &context_name, &dict_type, CEP_STORAGE_LINKED_LIST);
         if (!facet_record) {
             return CEP_L1_ERR_MEMORY;
         }
@@ -717,7 +838,11 @@ cepL1Result cep_context_upsert(cepCell* root, const cepContextSpec* spec, cepCon
             return rc;
         }
 
-        cepCell* queue_entry = cep_bond_ensure_dictionary_cell(facet_queue_root, &facet_name, &dict_type, CEP_STORAGE_LINKED_LIST);
+        cepCell* queue_family = cep_bond_ensure_dictionary_cell(facet_queue_root, facet_tag, &dict_type, CEP_STORAGE_LINKED_LIST);
+        if (!queue_family) {
+            return CEP_L1_ERR_MEMORY;
+        }
+        cepCell* queue_entry = cep_bond_ensure_dictionary_cell(queue_family, &context_name, &dict_type, CEP_STORAGE_LINKED_LIST);
         if (!queue_entry) {
             return CEP_L1_ERR_MEMORY;
         }
