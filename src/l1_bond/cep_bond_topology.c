@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "cep_bond_internal.h"
+#include "../enzymes/cep_bond_operations.h"
 
 static cepCell*    cep_bond_prepare_dictionary(cepCell* parent, const cepDT* name, bool ensure, cepL1Result* status);
 static cepCell*    cep_bond_prepare_list(cepCell* parent, const cepDT* name, bool ensure, cepL1Result* status);
@@ -192,6 +193,8 @@ static cepCell* cep_bond_prepare_list(cepCell* parent, const cepDT* name, bool e
 }
 
 static bool cep_bond_register_default_enzymes(cepEnzymeRegistry* registry) {
-    (void)registry;
-    return true;
+    if (!registry) {
+        return true;
+    }
+    return cep_bond_operations_register(registry);
 }

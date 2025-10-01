@@ -48,6 +48,7 @@ when a new behaviour needs a fresh word before it lands in code.
 | `domain` | test | validates domain/tag packing in namepool tests. |
 | `env` | core | runtime environment subtree. |
 | `enz_add` / `enz_cln` / `enz_del` / `enz_mov` / `enz_upd` | ops | descriptor identities for the cell operation enzymes. |
+| `enz_beclm` / `enz_bdupst` / `enz_ctxupst` / `enz_fctdsp` / `enz_fctreg` / `enz_l1tick` | ops | descriptor identities for the Layer 1 bond/context/facet/tick enzymes. |
 | `enzymes` | core | metadata dictionary exposing registered enzymes. |
 | `hash` | core | hash-indexed store label. |
 | `inbox` | core | heartbeat inbox log for queued impulses. |
@@ -67,10 +68,10 @@ when a new behaviour needs a fresh word before it lands in code.
 | `sig_ctx_*` | ops | signal family for context lifecycle events. |
 | `sig_fct_*` | ops | signal family for facet scheduling and completion. |
 | `oct_root` / `oct_space` | test | octree storage fixtures. |
-| `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | ops | signal namespace for cell mutations. |
+| `op_add` / `op_claim` / `op_clone` / `op_delete` / `op_disp` / `op_move` / `op_reg` / `op_tick` / `op_upd` / `op_upsert` | ops | signal namespace for kernel and Layer 1 operations. |
 | `outcome` | core | heartbeat execution outcome records. |
 | `pq_buffer` / `pq_root` | test | packed-queue testing fixtures. |
-| `role_a` / `role_b` / `role_entry` / `role_parnt` / `role_source` / `role_subj` / `role_templ` | ops | shared vocabulary for multi-party roles in bonds/contexts. |
+| `role_a` / `role_a_tag` / `role_b` / `role_b_tag` / `role_entry` / `role_parnt` / `role_source` / `role_subj` / `role_templ` | ops | shared vocabulary for multi-party roles in bonds/contexts. |
 | `rt` | core | runtime staging subtree name. |
 | `ser_child` / `ser_dict` / `ser_root` | io | serialization fixtures validating tree walkers. |
 | `sig_cell` | ops | signal family for cell operations, previously `/sig/cell`. |
@@ -96,7 +97,7 @@ when a new behaviour needs a fresh word before it lands in code.
 | `bond_note` | core | free-form annotation attached to a bond record. |
 | `bond_*` | ops | bond relationship classes managed by Layer 1. |
 | `bonds` | core | durable bond ledger at `/data/CEP/L1/bonds` and the runtime `/bonds` workspace. |
-| `arg_deep` / `arg_pos` / `arg_prepend` | ops | parameter dictionary tags for cell operation requests. |
+| `arg_causal` / `arg_ctx` / `arg_deep` / `arg_facets` / `arg_mat` / `arg_name` / `arg_policy` / `arg_pos` / `arg_prepend` / `arg_roles` / `arg_root` / `arg_runtime` / `arg_tag` | ops | parameter dictionary tags for enzyme request payloads. |
 | `test_enz_*` (`test_enz_a`, `test_enz_b`, `test_enz_c`, `test_enz_d`, `test_enz_da`, `test_enz_e`, `test_enz_le`, `test_enz_ro`) | test | enzyme dependency graphs in unit tests. |
 | `test_ez_*` (`test_ez_bc`, `test_ez_bd`, … `test_ez_wl`) | test | synthetic descriptor names used by dispatch tests. |
 | `test_hb_*` (`test_hb_a`, `test_hb_b`, `test_hb_cn`, `test_hb_r`, `test_hb_rt`) | test | heartbeat test hooks. |
