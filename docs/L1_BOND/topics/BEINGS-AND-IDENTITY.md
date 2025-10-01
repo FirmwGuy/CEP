@@ -1,26 +1,26 @@
 # L1 Topic: Being Cards and Identity Hygiene
 
 ## Introduction
-Being cards are Layer 1's identity badges. They help the runtime remember who a record belongs to, track friendly labels, and keep external IDs glued to their canonical counterpart. This topic explains how they fit together and how to keep them clean over time.
+Being cards give Layer 1 a stable identity record for each participant. They centralise friendly labels, classification hints, and external references so the rest of the system can point at a single cell when talking about a person, service, or asset.
 
 ## Technical Details
-### What a being owns
-- **Canonical tag.** Each being lives under `/data/CEP/L1/beings/<tag>/<key>`, where `<tag>` marks the class (person, system, asset) and `<key>` is a deterministic hash of the caller's identifier.
-- **Role dictionary.** The being cell keeps `id/`, `labels/`, and `meta/` sub-dictionaries that carry external identifiers, user-friendly names, and arbitrary metadata copies.
-- **History trail.** Edits append children with fresh timestamps; old values remain reachable for audits via heartbeat queries.
+### Structure
+- **Path**: `/data/CEP/CEP/L1/beings/<name>` where `<name>` is the exact `cepDT` you pass to `cep_being_claim` (no extra hashing or tagging happens automatically).
+- **Fields**: three optional text children—`being_label`, `being_kind`, `being_ext`—plus a `meta/` dictionary cloned from any metadata you supply. Additional children are allowed but should obey the shared tag lexicon.
+- **History**: every update advances the cell’s timestamp. Because helper functions rewrite the same child nodes, the revision history lives in the timestamp trail rather than separate append-only nodes.
 
-### Claiming and updating beings
-- **Claim flow.** `cep_being_claim` accepts a `cepBeingSpec` with desired tags, identifiers, and metadata. It looks for an existing match and only creates a new cell if nothing matches.
-- **Merging hints.** When duplicate records surface, mark the losing being with a `meta/merge_target` tag and call the dedicated merge helper to retarget bonds and contexts.
-- **External references.** Keep stable handles by storing upstream IDs in `id/external` slots; enzymes can resolve them later without recomputing hashes.
+### Claiming a being
+1. Build a `cepBeingSpec` with whichever fields you want to populate (all are optional).
+2. Call `cep_being_claim(root, name, &spec, &handle)` from inside an enzyme or controlled section. The helper validates `root` and either returns the existing card or creates a new dictionary tagged `CEP:being`.
+3. Inspect `handle.revision` if you want to detect concurrent edits later.
 
-### Guarding data quality
-- **Policy hooks.** Guard rails check for required fields (for example, labels or classification) before a claim is accepted.
-- **Audit fields.** Record provenance such as `meta/source_system` or `meta/import_batch` so later investigations can trace edits.
-- **Expiry.** Soft-delete outdated beings using the kernel's lifetime flags; Layer 1 retains history, and adjacency pruning will clean up mirrors once no bonds refer to the record.
+### Keeping records clean
+- **Consistency**: reuse the same `cepDT` names throughout your application. Namepool helpers in Layer 0 help turn external IDs into deterministic tags.
+- **Metadata size**: large metadata trees are deep-cloned on every update. Store big documents elsewhere (e.g., `/cas`) and link them from the metadata dictionary if needed.
+- **Retirement**: deleting a being marks it as deleted via the kernel API. Run `cep_tick_l1` afterward so adjacency mirrors referencing the being are pruned.
 
 ## Q&A
-- **Can two beings share the same external ID?** Not once the policy hooks are in place. Duplicate claims will return the existing record and log a warning via the telemetry enzyme.
-- **How do I store personally identifiable information safely?** Keep raw PII in encrypted external stores and store only references or pseudonyms in the being metadata.
-- **What happens when a being is deleted?** The kernel marks it with a `deleted` timestamp. Layer 1 enzymes treat it as retired and prune dependent bonds during heartbeat maintenance.
-- **Do I need migrations for new metadata fields?** No. Append the values into `meta/` with new tags; history already keeps previous revisions intact.
+- **Can I merge two beings?** Not automatically. You need to retarget bonds/contexts manually and then remove the redundant being. Merge helpers are on the roadmap.
+- **What stops duplicate external IDs?** Nothing yet. Add your own validation in the caller before invoking `cep_being_claim` if duplicates matter.
+- **Do I have to provide label/kind/external values every time?** No. Pass `NULL` to leave the existing value untouched. Non-empty strings overwrite the previous value.
+- **How do I attach arbitrary metadata?** Create a dictionary cell with the desired children and pass it via `spec.metadata`. The helper clones it under `meta/` so the being card has its own copy.

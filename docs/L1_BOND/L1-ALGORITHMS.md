@@ -1,50 +1,66 @@
 # L1 Bond Layer: Algorithms Report
 
 ## Introduction
-Layer 1 wraps the kernel's append-only core with algorithms that guarantee social coherence. This report focuses on the routines that cut across naming, caching, heartbeat scheduling, and facet closure so you know where the moving parts live.
+This report highlights the concrete routines that ship with Layer 1 today. Each section pinpoints the code, the problem it solves, and the behaviour you can rely on when wiring higher-level features.
 
 ## Technical Details
-### Identity resolution and deduplication
-**Purpose.** Map external identifiers to canonical beings without duplicates while preserving history.
+### Identity lookup (`cep_being_claim`)
+**Goal** Keep being cards deterministic and append-only while letting callers refresh labels or metadata.
 
-**How it works.**
-- `cep_being_claim` hashes the caller's `cepDT` name and optional external IDs to look up or create the being card. When a fresh card is needed, it clones metadata into `meta/` and stamps timestamps for audit replay.
-- Backfilling or replaying a journal reuses the same function, so deterministic hashes guarantee the same beings appear without collisions.
+**How it works**
+- Looks up `name` under `/data/CEP/CEP/L1/beings`. On a cache miss it creates a dictionary child tagged as `CEP:being`.
+- Updates three well-known text fields when provided: `being_label`, `being_kind`, and `being_ext`.
+- Replaces the existing `meta/` dictionary with a deep clone of the caller-supplied metadata cell so updates are atomic.
 
-**Where to look.** Implementation resides in `src/l1_bond/cep_bond_being.c`; unit coverage lands in `src/test/l1_bond/test_bond_randomized.c`.
+**Source** `src/l1_bond/cep_bond_being.c`
 
-### Bond key synthesis and adjacency updates
-**Purpose.** Keep pairwise relationships indexed for fast lookup and historical auditing.
+### Pair bond materialisation (`cep_bond_upsert`)
+**Goal** Record pairwise relationships without duplicating entries and keep adjacency mirrors in sync.
 
-**How it works.**
-- `cep_bond_upsert` builds a stable hash from `(tag, role_a, being_a, role_b, being_b)`. The function updates or appends the bond record under `/data/CEP/L1/bonds/<tag>/<key>`.
-- The same call stages adjacency mirrors by inserting summaries under `/bonds/adjacency/being/<id>/<key>`.
-- A lightweight diff detects whether role payloads changed; only then do adjacency mirrors receive updates, keeping history tidy.
+**How it works**
+- Validates that both role cells are direct children of the beings root.
+- Hashes `(tag, role_a_tag, role_a_name, role_b_tag, role_b_name)` to produce the numeric key for `/bonds/<tag>/<hash>`.
+- Ensures two role dictionaries exist, writes summary strings (`<tag_text>:<partner_identifier>`), and refreshes optional `bond_label`, `bond_note`, and metadata.
+- Calls `cep_bond_annotate_adjacency` for each participant so `/bonds/adjacency/<being>/<hash>` mirrors the same summary value. Existing text is replaced in place when it changes.
 
-**Where to look.** Algorithms live in `src/l1_bond/cep_bond_pair.c`; adjacency helpers share utilities in `src/l1_bond/cep_bond_common.c`.
+**Source** `src/l1_bond/cep_bond_pair.c` (hashing helpers in `cep_bond_common.c`)
 
-### Context closure and facet scheduling
-**Purpose.** Guarantee that multi-party contexts always produce the derived records they promise.
+### Context + facet scheduling (`cep_context_upsert`)
+**Goal** Capture N-ary relationships and guarantee that promised facets appear in the queue.
 
-**How it works.**
-- `cep_context_upsert` normalises role arrays, hashes them to a context key, and updates the context record.
-- Required facets are stored alongside the context. Each missing facet results in an enqueue operation in `/bonds/facet_queue` with the context label so diagnostics stay human-friendly.
-- During the heartbeat, `cep_tick_l1` pops pending facet work, invokes registered plugins (`cep_facet_dispatch`), and requeues items with exponential backoff on failure.
+**How it works**
+- Requires every role target to be a being. Hashes `(tag, role_tags[], role_names[])` to pick the context dictionary under `/contexts/<tag>/<hash>`.
+- Writes one child per role with the participant identifier stored as a text payload, sets `ctx_label` when provided, and clones metadata.
+- Mirrors adjacency summaries for every participant using the same `<tag_text>:<label>` format.
+- For each facet tag, ensures a placeholder record exists at `/facets/<facet>/<hash>` with `facet_state=pending` and pushes an entry into `/bonds/facet_queue/<facet>/<hash>` with `value=<ctx_label>` and `queue_state=pending`.
 
-**Where to look.** Core code sits in `src/l1_bond/cep_bond_context.c` and `src/l1_bond/cep_bond_facet.c`.
+**Source** `src/l1_bond/cep_bond_context.c`
 
-### Heartbeat maintenance loop
-**Purpose.** Keep the transient caches in sync with durable state while respecting append-only semantics.
+### Facet dispatch (`cep_facet_register`, `cep_facet_dispatch`)
+**Goal** Route queued facet work to deterministic callbacks.
 
-**How it works.**
-- `cep_tick_l1` scans the adjacency mirrors for tombstoned bonds and prunes them once both participants are retired.
-- The same loop sweeps checkpoints, acknowledging finished impulses and leaving history nodes in place for replay.
-- Metrics emitted during the pass feed optional telemetry enzymes so operators can observe backlog depth and retry health.
+**How it works**
+- `cep_facet_register` stores `(facet_tag, source_context_tag, enzyme, policy)` in a growable array. Duplicate registrations return `CEP_L1_ERR_DUPLICATE`.
+- `cep_facet_dispatch` finds the queue entry, resolves the context, looks up the registry entry, and calls the enzyme with synthetic paths that point at the queue node and facet record.
+- The return code decides the outcome:
+  - `CEP_ENZYME_SUCCESS` → facet record `facet_state=complete`, queue entry `queue_state=complete`, and the queue entry is removed on the next tick.
+  - `CEP_ENZYME_RETRY` → both remain `pending` for the next pass.
+  - `CEP_ENZYME_FATAL` or missing plugin → facet record gets `failed`, queue entry becomes `fatal` (`missing` when no plugin is registered).
 
-**Where to look.** Heartbeat helpers live in `src/l1_bond/cep_bond_tick.c`; future telemetry shims will extend this file or land alongside it.
+**Source** `src/l1_bond/cep_bond_facet.c`
+
+### Heartbeat maintenance (`cep_tick_l1`)
+**Goal** Keep transient queues tidy and mirrors aligned with durable state at the end of each beat.
+
+**How it works**
+- Iterates every facet queue family, invokes `cep_facet_dispatch` per entry, removes entries whose `queue_state` toggled to `complete`, and drops empty facet families.
+- Scans adjacency buckets, deleting empty entries or whole buckets whose owning being has been hard-finalised.
+- Deletes empty folders under `/bonds/checkpoints` (no retry metadata is written yet, but the hook keeps the tree clean).
+
+**Source** `src/l1_bond/cep_bond_tick.c`
 
 ## Q&A
-- **Why not store adjacency directly inside each bond?** Mirrors give O(1) lookups for clients that only need summaries. They also let you prune stale edges lazily without rewriting the authoritative history.
-- **Can multiple contexts share the same facet queue entry?** No. Each context–facet pair enqueues its own cell so retries remain isolated and audit logs stay precise.
-- **How do plugins stay deterministic?** Plugins receive only POD specs and operate inside the heartbeat. They must avoid global state and record any derived cells through the documented APIs so history is reproducible.
-- **Where should I patch bugs first?** Start with the unit tests noted above. They exercise randomized permutations that catch ordering and dedup edge cases quickly.
+- **Where are the exponential backoff and retry counters?** Not implemented yet. Queue entries only track the label and state string; higher layers can extend the structure once policies land.
+- **Do facet policies influence dispatch?** The policy field is stored but unused. The callback’s return code is the only signal that affects queue state today.
+- **How do I observe adjacency churn?** Mirrors are just dictionaries. Read them directly or layer a telemetry enzyme that inspects `/bonds/adjacency` after `cep_tick_l1` runs.
+- **What keeps hashes stable?** Both bond and context helpers rely on `cep_hash_bytes` over deterministic `cepDT` values. As long as role tags and participant names stay the same, the key stays stable across runs.

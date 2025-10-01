@@ -154,6 +154,12 @@ Let’s trace a single action—Alice pressing **Save**—through the layers:
 
 See [`docs/CEP.md`](./docs/CEP.md) for the full conceptual framework, glossary, and worked examples.
 
+
+## Current Implementation Snapshot
+- **L0 Kernel** – Deterministic heartbeats, append-only cell stores, serialization, and stream adapters ship under `src/l0_kernel`.
+- **L1 Bonds & Coherence** – Public helpers (beings, bonds, contexts, facets, `cep_tick_l1`) manage hashes, adjacency mirrors, and facet queues in `src/l1_bond`.
+- **Layers 2–5** – Concepts are documented in `docs/CEP.md`; concrete code is still in planning.
+
 ---
 
 ## 🧭 Roadmap
@@ -161,7 +167,7 @@ See [`docs/CEP.md`](./docs/CEP.md) for the full conceptual framework, glossary, 
 | Layer | Status | Notes |
 | --- | --- | --- |
 | L0 Kernel | ✅ Implemented | Core heartbeat and data persistence are already shipping. |
-| L1 Bonds & Coherence | 🛠️ In progress | Relationship tracking and consistency guards are being assembled. |
+| L1 Bonds & Coherence | ✅ Shipping | Deterministic API for beings/bonds/contexts plus facet queue and adjacency; policy hooks are next. |
 | L2 Ecology of Flows | 🕒 Planned | Parallel strategy orchestration is on deck after coherence lands. |
 | L3 Cognition | 🕒 Planned | Pattern recognition and scoring will build on the earlier layers. |
 | L4 Society | 🕒 Planned | Governance workflows arrive once cognition can suggest reforms. |

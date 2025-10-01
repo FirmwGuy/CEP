@@ -1,48 +1,31 @@
 # L1 Bond Layer: Performance & Tuning Notes
 
 ## Introduction
-Layer 1 keeps every relationship coherent, so a few small choices make a big difference in responsiveness. These notes highlight the levers you can pull to keep bonds, contexts, and facets lean while still enjoying the kernel's audit trail.
+The current Layer 1 implementation is small but already benefits from a few careful choices. These notes highlight the levers you can pull today to keep the bond layer responsive as data grows.
 
 ## Technical Details
-### 1) Identity and hashing discipline
-**What to know**
-- Bond and context keys are deterministic hashes over `(tag, roles, beings)`. The hash buffers live in packed queues so churned relationships recycle space efficiently.
-- Role tags and being identifiers should already be interned DTs; converting fresh strings during hot paths will slow you down.
+### 1) Name and hash hygiene
+- **What matters**: Bond and context keys are hashes over `cepDT` values. Reusing the same `cepDT` instances (or caching their words/acronyms) saves conversions and guarantees key stability.
+- **Tuning tips**: Predeclare the tags you use most often (role tags, facet tags) as `static const cepDT` values. Avoid on-the-fly text-to-tag conversions in hot loops; if you must turn strings into `cepDT`, intern them via the namepool beforehand.
 
-**Tuning tips**
-- Cache common `cepDT` literals in static const tables so enzymes avoid recomputing them on every impulse.
-- When importing data, group by bond tag before streaming into the heartbeat; batches with identical tags reuse cached hash state and reduce allocator churn.
+### 2) Metadata cloning
+- **What happens**: `cep_being_claim`, `cep_bond_upsert`, and `cep_context_upsert` clone metadata dictionaries wholesale. Large, deeply nested metadata cells incur a deep copy on each update.
+- **Tuning tips**: Keep metadata dictionaries compact and push heavyweight blobs into `/cas` or separate trees. When replaying imports, reuse the same metadata cell if it has not changed to avoid unnecessary cloning.
 
-### 2) Adjacency mirrors
-**What to know**
-- `/bonds/adjacency` mirrors are stored in array-backed stores sized to the number of active connections per being.
-- Each append also updates a short summary payload used for UI and analytics reads.
+### 3) Adjacency mirrors
+- **What happens**: Mirrors live in red-black dictionaries. Each update replaces the existing summary text if it differs.
+- **Tuning tips**: Shorten summaries (for example `bond_caned:user-001` already fits) to keep allocations small. Schedule `cep_tick_l1` regularly so deleted beings drop their buckets promptly.
 
-**Tuning tips**
-- For high-degree beings, prefer hash-backed child stores (`CEP_STORE_HASH`) so lookups stay O(1) even as thousands of links accumulate.
-- Periodically call `cep_tick_l1` with a custom budget to prune mirrors for beings that have not changed in recent beats.
+### 4) Facet queue health
+- **What happens**: `/bonds/facet_queue` is a linked list sized to the number of pending facet jobs. Entries carry only the context label and current state.
+- **Tuning tips**: Run `cep_tick_l1` every beat (or more often during bulk imports) to keep the queue bounded. If a facet enzyme performs long work, move heavy lifting into higher layers and leave the facet callback to publish a lightweight record.
 
-### 3) Facet queues and closure plugins
-**What to know**
-- Facet work lives in `/bonds/facet_queue`. Items are small cells with a context pointer, facet tag, and retry counter plus a label copied from the context.
-- Plugins register through `cep_facet_register` and execute under the heartbeat's ordering guarantees via `cep_facet_dispatch`.
-- `cep_tick_l1` dispatches entries and flips the queue state between `pending`, `complete`, and `fatal` so monitoring remains lightweight.
-
-**Tuning tips**
-- Keep facet payloads compact; if you need large computations, store only references and offload heavy work to a higher layer.
-- Use the retry counter to backoff noisy facets. Combine it with a watchdog enzyme that parks unresponsive items into a diagnostic queue, and rely on the queue state so operators can see when retries stall.
-
-### 4) Journaling and checkpoints
-**What to know**
-- Pending impulse checkpoints live in `/bonds/checkpoints`. They prevent duplication when the runtime restarts mid-beat.
-- Each `cep_tick_l1` pass clears empty checkpoint folders while preserving the latest history entries for audit.
-
-**Tuning tips**
-- On hot systems, flush checkpoint acknowledgements in bursts by running `cep_tick_l1` near the end of your beat agenda.
-- Mirror checkpoint metrics into `/telemetry` or an external sink to confirm that retries are draining.
+### 5) Checkpoints
+- **What happens**: The checkpoints dictionary exists but the current code only removes empty folders.
+- **Tuning tips**: If you add retry metadata, namespace it predictably (for example `checkpoints/pending/<id>`). `cep_tick_l1` already cleans up empty families for you.
 
 ## Q&A
-- **Does storing adjacency twice double memory?** Mirrors hold compact pointers and summaries; the authoritative relationship still lives under `/data/CEP/L1/*`, so total overhead stays modest even for dense graphs.
-- **Can I skip facet queues if my application is synchronous?** No. Facets enforce closure promises; skipping the queue would leave derived records stale and violates the layer contract.
-- **How can I reduce hash collisions for bond keys?** Keep role tags consistent and interned, and avoid cramming high-cardinality attributes into the tag itself. When in doubt, add a dedicated `meta/` value rather than baking data into the tag.
-- **What helps during backfills?** Replay historical impulses in chronological order and run the heartbeat with a reduced agenda so facet queues drain gradually without starving live traffic.
+- **Do I need to choose between list or hash stores for adjacency?** Not right now; the helpers always provision red-black trees. If you need a different store, extend `cep_bond_ensure_dictionary_cell` so the choice remains centralised.
+- **How can I measure queue pressure?** Count the children under `/bonds/facet_queue` after `cep_tick_l1`. A simple monitoring enzyme can emit those counts into a perspective or external metrics system.
+- **Is cloning metadata safe for concurrent writers?** Yes, but it is still a full copy. Coordinate imports so you do not repeatedly rewrite the same large dictionaries in back-to-back beats.
+- **Can I skip adjacency mirrors to save memory?** Not without modifying the code. Every bond/context update refreshes the mirror. If memory becomes a concern, compress the summary strings or strip optional labels until you introduce a smarter cache.

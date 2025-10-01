@@ -1,67 +1,53 @@
 # L1 Bond Layer: A Quick Overview
 
 ## Introduction
-Layer 1 is CEP's social sense: it keeps track of who and what are connected so the rest of the stack can reason safely. Think of it as a concierge that remembers every relationship, nudges implied facts into existence, and double-checks that nothing drifts out of sync while the kernel keeps beating.
+Layer 1 gives CEP a shared way to talk about people, assets, and the relationships between them. The kernel already handles cells, history, and heartbeats; the bond layer builds on that by offering typed helpers for beings, bonds, contexts, and facets that behave deterministically across replays.
 
 ## Technical Details
-### Responsibilities and Scope
-Layer 1 sits on top of the append-only kernel and specialises in four duties:
-1. **Identity** – map deterministic `cepDT` names to long-lived beings, facets, and contexts under `/CEP/L1/*`.
-2. **Relationships** – produce, mutate, and retire bond and context cells while preserving closure across all implied roles.
-3. **Coherence** – schedule follow-up impulses when relationships drift, guaranteeing adjacency caches and derived facets stay consistent.
-4. **Safety Rails** – guard writes with declared policies (read/write domains, role cardinality, facet completion) so higher layers inherit predictable invariants.
+### Responsibilities today
+1. **Bootstrap** – `cep_init_l1` wires the `/data/CEP/CEP/L1/*` dictionaries and the runtime `/bonds/*` workspace so higher layers can rely on a stable tree.
+2. **Beings** – `cep_being_claim` returns (or creates) identity cards keyed by a deterministic `cepDT` name and keeps friendly labels, kinds, external IDs, and cloned metadata in one place.
+3. **Bonds** – `cep_bond_upsert` records pair relationships, updates role summaries, and mirrors compact adjacency notes beneath `/bonds/adjacency/<being>/<hash>`.
+4. **Contexts** – `cep_context_upsert` materialises N-ary simplices whose participants are existing beings, clones metadata, stages adjacency summaries for each participant, and seeds required facets as pending work.
+5. **Facets** – `cep_facet_register` and `cep_facet_dispatch` link facet tags to enzyme callbacks; `cep_tick_l1` pulls pending entries from `/bonds/facet_queue` and marks them complete, pending, or failed based on the callback result.
 
-Layer 1 achieves this by extending the kernel API with a narrow C interface that orchestrates bonds, contexts, and adjacency caches without letting callers bypass the deterministic heartbeat model. Engine code lives next to the kernel, but all durable state is written as normal cells so existing tooling keeps working.
+### Storage shape
+Durable data lives under `/data/CEP/CEP/L1`:
+- `beings/<name>` – dictionary cell that stores `being_label`, `being_kind`, `being_ext`, and an optional `meta/` dictionary cloned from the caller.
+- `bonds/<tag>/<hash>` – dictionary containing two role dictionaries (`role_a`, `role_b`) with summary `value` payloads plus optional `bond_label`, `bond_note`, and `meta/` entries.
+- `contexts/<tag>/<hash>` – dictionary with one child per role (`role_*`), a `ctx_label` text payload, and cloned metadata. All role targets must live under the beings dictionary.
+- `facets/<facet>/<hash>` – dictionary tracking `facet_state` (`pending`, `complete`, `failed`, `fatal`, `missing`) and a `value` that mirrors the context label.
 
-### Storage Shape
-Durable records live beneath `/data/CEP/L1/`:
-- `beings/` retains identity cards; each entry owns a `meta/` dictionary that clones caller-supplied metadata alongside friendly labels.
-- `bonds/<tag>/<key>` stores pair relations keyed by a hash of `(tag, role_a, being_a, role_b, being_b)` with role-labelled sub-dictionaries that retain participant identifiers and short summaries.
-- `contexts/<tag>/<key>` materialise multi-party simplices keyed the same way (hashing the tag and role tuple). Each role keeps the participant identifier and the record keeps a `meta/` dictionary for ancillary data.
-- `facets/<facet-tag>/<context-key>` contains derived records promised by contexts, each retaining lifecycle state for the owning simplex.
+Transient helpers sit under the runtime `/bonds` dictionary:
+- `adjacency/<being>/<hash>` – summaries like `ctx_editssn:First Draft` or `bond_caned:user-001` for quick lookups.
+- `facet_queue/<facet>/<hash>` – linked-list entries with `value` (context label) and `queue_state` (`pending`, `complete`, `fatal`, `missing`).
+- `checkpoints/` – reserved for future retry metadata; the current code only prunes empty shells.
 
-Transient helpers live beneath `/bonds/*` during the active beat:
-- `adjacency/being/<id>/<key>` mirrors outgoing relations with hashed entries so lookups can read summaries without chasing the main ledger.
-- `facet_queue/<facet-tag>/<context-key>` holds work items awaiting facet completion enzymes and retains the context label for retries.
-- `checkpoints/` records impulse cursors so retry logic can resume safely.
+### Public API surface
+The exported functions are all in `cep_bond.h` and operate on plain structs so results can be journaled.
+- `cep_init_l1(const cepConfig*, cepEnzymeRegistry*)` – prepares topology and resets the facet registry. It does not auto-install enzymes beyond registering the built-in cell operation helpers.
+- `cep_being_claim(...)` – ensures a being cell exists, rewrites label/kind/external text when present, and clones metadata dictionaries wholesale.
+- `cep_bond_upsert(...)` – validates that both participants live under the beings dictionary, writes summaries, and refreshes adjacency mirrors.
+- `cep_context_upsert(...)` – hashes the role tuple, updates per-role summaries, clones metadata, enqueues facets, and mirrors adjacency for every participant.
+- `cep_facet_register(...)` – stores the `(facet_tag, source_context_tag) → enzyme` mapping and optional policy.
+- `cep_facet_dispatch(...)` – runs the registered enzyme, updates facet/queue state, and copies the queue label onto the facet record.
+- `cep_tick_l1(cepHeartbeatRuntime*)` – drains the facet queue (invoking `cep_facet_dispatch`), prunes empty adjacency buckets, and removes empty checkpoint folders.
 
-### Planned C API Surface
-Layer 1 exposes handles that wrap kernel cells but remain replay-friendly:
-- Implementation lives under `src/l1_bond/`, sharing the same `cep_` prefix used by the kernel families.
-- `cep_init_l1(const cepConfig*, cepEnzymeRegistry*)` seeds namespaces, installs default enzymes, and primes caches.
-- `cep_being_claim(cepCell* root, const cepDT* name, const cepBeingSpec*, cepBeingHandle*)` either returns an existing being or builds a fresh identity card.
-- `cep_bond_upsert(cepCell* root, const cepBondSpec*, cepBondHandle*)` records pair bonds, stages adjacency deltas, and emits `sig_bond_*` impulses.
-- `cep_context_upsert(cepCell* root, const cepContextSpec*, cepContextHandle*)` creates or updates a simplex, guaranteeing required facets are enqueued with their context labels.
-- `cep_facet_register(const cepFacetSpec*)` lets plugins describe closure rules so the scheduler can materialise derived facts when contexts appear.
-- `cep_facet_dispatch(cepCell*, const cepDT*, const cepDT*)` runs the materialiser for a queued facet, updating queue and facet state according to the enzyme result.
-- `cep_tick_l1(cepHeartbeatRuntime*)` drives per-beat maintenance: replaying facet queues, pruning orphaned adjacency mirrors, and clearing empty checkpoints after journal verification.
+### Execution flow
+1. Callers invoke `cep_being_claim`, `cep_bond_upsert`, or `cep_context_upsert` inside an enzyme or tool that already holds the heartbeat lock.
+2. Each helper writes normal cells; the kernel timestamps them so history stays append-only.
+3. Facet requirements cause queue entries to appear under `/bonds/facet_queue` and placeholder facet records under `/data/CEP/CEP/L1/facets`.
+4. `cep_tick_l1` (usually called near the end of a beat) walks the queue, dispatches registered facet enzymes, marks state, and cleans up completed entries.
+5. Adjacency mirrors reflect the current summaries until the owning being is deleted. The prune pass removes empty buckets or buckets whose beings have been hard-finalised.
 
-These calls follow the kernel's style: return `int` status codes, accept explicit handles, and never mutate caller memory outside documented handles. Layer 1 types (`cepBondHandle`, `cepContextSpec`, etc.) remain POD structs so they can be journaled directly.
-
-### Execution Flow
-1. **Impulse arrives** – a kernel enzyme records a raw fact and emits a signal (e.g., `sig_cell`).
-2. **Layer 1 resolver** – registered L1 enzymes map the signal to a bond/context spec and call the appropriate `cep_*_upsert` helper.
-3. **Adjacency staging** – the helper writes durable data under `/data/CEP/L1/*` and mirrors adjacency under `/bonds/adjacency` for intra-beat queries.
-4. **Facet scheduling** – if a context implies additional records, the helper pushes a work item into `/bonds/facet_queue` and emits `sig_fct_pn`.
-5. **Beat commit** – `cep_tick_l1` runs before the kernel publishes N+1; it dispatches pending facets, prunes adjacency mirrors for retired beings, and ensures any unfinished work stays checkpointed for retry.
-
-### Error Handling and Replay
-All helpers must cope with partial retries. On failure they:
-- leave durable records untouched (append-only semantics).
-- emit detailed `CEP_ENZYME_FATAL` or `CEP_ENZYME_RETRY` codes.
-- record checkpoints so a future beat resumes with the same spec.
-
-Journal entries capture both the incoming spec and the resulting handles so higher layers can reconstruct decisions without bespoke logs.
+### Error signalling and replay
+- All helpers return `cepL1Result`. `CEP_L1_ERR_ARGUMENT` covers null pointers or invalid roots, `CEP_L1_ERR_STATE` indicates missing topology or facet registrations, and `CEP_L1_ERR_MEMORY` surfaces allocation failures.
+- The APIs never mutate caller-managed memory. Handles (`cepBeingHandle`, `cepBondHandle`, `cepContextHandle`) contain the created cell pointer plus its latest timestamp so tooling can detect divergent revisions.
+- `cepFacetPolicy` values are stored but not yet consulted; the dispatcher currently only honours the enzyme's return code (`CEP_ENZYME_SUCCESS`, `CEP_ENZYME_RETRY`, `CEP_ENZYME_FATAL`).
 
 ## Q&A
-- **Why add a new runtime instead of more enzymes?**  
-  The kernel keeps facts consistent, but it doesn't understand relational closure. Layer 1 packages that logic so every app can rely on the same discipline.
-
-- **Do I have to use the API directly?**  
-  Most callers interact through enzymes or higher-layer helpers. Direct calls exist for tooling and migrations that need deterministic control.
-
-- **What about garbage collection?**  
-  Layer 1 marks orphaned bonds and contexts during `cep_tick_l1`; the kernel still owns final deletion so history stays intact.
-
-- **Can I extend the tag vocabulary?**  
-  Yes. Add new entries to `docs/CEP-TAG-LEXICON.md` first so the shared domain stays coherent, then reference them in your facet specs.
+- **Does `cep_init_l1` install default enzymes?** Not yet. It only makes sure the directories exist and the internal facet registry is empty. Applications still need to register their own descriptors.
+- **How many times can I call the init routine?** It is idempotent. Subsequent calls reuse the cached topology and keep existing data intact.
+- **What happens if a facet enzyme is missing?** `cep_facet_dispatch` marks the queue entry as `missing` and leaves the facet record untouched. The queue entry stays in place so operators can diagnose the gap.
+- **Do adjacency mirrors keep history?** Mirrors are ordinary dictionaries. `cep_bond_set_text` rewrites their summary value in place, so history consists of the cell revision timestamps rather than one entry per change.
+- **Can contexts reference other contexts?** Not with the current API. Role targets must already live under the beings dictionary, so higher layers need to project any context-to-context links through beings or derived facets.

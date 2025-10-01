@@ -1,32 +1,33 @@
 # L1 Bond Layer: Integration & Interop Guide
 
 ## Introduction
-Layer 1 plugs social intelligence into the kernel. This guide explains how applications bind their own heartbeat work to the bond layer, how to feed it data from journals or services, and how to keep foreign systems in sync without breaking the deterministic rules that keep CEP tidy.
+This guide walks through the practical steps for wiring the bond layer into your heartbeat loops, tools, and importers. The focus is on what works today so you can build against a stable contract.
 
 ## Technical Details
-### Layer bring-up checklist
-1. **Seed namespaces.** Call `cep_init_l1` right after the kernel root is bootstrapped so the `/CEP/L1/*` tree exists before any heartbeat runs.
-2. **Install enzymes.** Register the default bond and facet enzymes into the shared registry, then add your own `sig_bond_*`, `sig_ctx_*`, and `sig_fct_*` hooks for domain-specific reactions.
-3. **Register facets.** Call `cep_facet_register` for every facet plugin you ship so the dispatcher knows which materialiser to invoke for each context tag.
-4. **Prime queues.** Ensure the heartbeat agenda includes `cep_tick_l1` (or your wrapper) so per-beat maintenance drains facet queues, prunes adjacency mirrors, and clears empty checkpoints.
+### Bring-up checklist
+1. **Bootstrap the kernel** – run `cep_heartbeat_bootstrap` (or `cep_heartbeat_configure`) so the root directories exist.
+2. **Initialise Layer 1** – call `cep_init_l1(&config, registry)` once. Pass `ensure_directories=true` unless you already created the `/data/CEP/CEP/L1/*` and `/bonds/*` nodes yourself.
+3. **Install facet handlers** – register your facet enzymes with `cep_facet_register`. The registry is empty after `cep_init_l1`.
+4. **Schedule maintenance** – invoke `cep_tick_l1` near the end of every beat to drain facet queues and prune adjacency mirrors.
 
-### Working with beings, bonds, and contexts
-- **Being handles.** Use `cep_being_claim` to look up or lazily create identity cards. Callers provide deterministic DT names or text keys that were interned through the namepool at a higher layer.
-- **Bond upserts.** Run `cep_bond_upsert` inside your enzyme once both participants are known. The call computes the canonical hash for `(tag, roles, beings)`, emits adjacency deltas into `/bonds/adjacency`, and queues follow-up impulses when role summaries change.
-- **Context orchestration.** Invoke `cep_context_upsert` with a `cepContextSpec` describing every role and its participant. Required closure facets are declared alongside the context so they can be enqueued automatically with a friendly label used by the heartbeat when reporting progress.
+### Working with the API
+- **Beings** – Resolve or create identity cards via `cep_being_claim`. The function accepts optional label/kind/external-id strings and a metadata dictionary to clone. Cache the returned `cepBeingHandle` if you need the revision timestamp for later verification.
+- **Bonds** – Call `cep_bond_upsert` after both participants are known. Ensure the `role_a` and `role_b` cells you pass are the `cepCell*` pointers returned by `cep_being_claim`; anything outside the beings dictionary is rejected.
+- **Contexts** – Build `cepContextSpec` arrays with pointers to being cells, facet tag pointers, and optional metadata. After `cep_context_upsert` runs you will see the hash entry under `/contexts`, placeholder facet records, and queue entries ready for dispatch.
+- **Facets** – Register each `(facet_tag, context_tag)` pair with the enzyme that will materialise it. Inside your enzyme, write to the paths passed by `cep_facet_dispatch`; return `CEP_ENZYME_SUCCESS` once the record is complete, or `CEP_ENZYME_RETRY` to keep the queue entry pending.
 
-### Feeding external systems
-- **Journal replay.** When importing historical relationships, stream the original impulses through the heartbeat so Layer 1 can rebuild caches incrementally. Avoid writing directly into `/data/CEP/L1/*`; you will bypass adjacency tracking.
-- **Proxy bindings.** If a foreign service owns the canonical roster, wrap its API in a proxy that emits `sig_bond_sync` or `sig_ctx_sync` impulses. The kernel heartbeat will batch these into deterministic revisions while the proxy reports drift.
-- **Serialization.** The bond layer rides on top of the kernel's serialization format. When you export or import a sub-tree, include `/data/CEP/L1/*` and the transient `/bonds/*` queues together so adjacency mirrors stay coherent.
+### Syncing external systems
+- **Replay first** – When you ingest historical data, drive it through the public APIs inside a heartbeat so adjacency and facet queues stay coherent.
+- **Handle ownership** – If another service is authoritative, resolve being IDs to `cepDT` names (or load them through the namepool) and let the bond/context helpers produce the deterministic hash keys for you.
+- **Serialisation** – Use the kernel serializer on the namespace roots you care about (`/data/CEP/CEP/L1`, `/bonds/adjacency`, `/bonds/facet_queue`). Avoid hand-editing the JSON-like fragments inside those directories; the helpers expect the exact layout they produce.
 
 ### Guardrails and observability
-- **Policy enforcement.** Guard your enzymes with explicit role and facet policies before calling into the bond APIs. Shared helpers under `src/l1_bond/policy` normalise the checks.
-- **Monitoring.** Mirror heartbeat counters (`sig_bond_*` rate, facet backlog depth, adjacency churn) into analytics cells or telemetry sinks so you can spot stalled closures before they bite consumers. `cep_tick_l1` already bubbles up queue state changes (`pending`, `complete`, `fatal`) so you can scrape them during the same beat.
-- **Failure recovery.** If an enzyme aborts after staging adjacency deltas, the heartbeat will retry when the impulse is reissued. Keep retries idempotent by re-reading the target cells rather than carrying cached handles across beats, and rely on `cep_tick_l1` to dispatch any facets that remain pending after the next beat.
+- Layer 1 does not ship policy enforcement yet. Add your own validation in the enzymes that call the API (for example, check role combinations before calling `cep_bond_upsert`).
+- To observe health, inspect `/bonds/facet_queue` after `cep_tick_l1`; items stuck in `pending`, `fatal`, or `missing` state deserve follow-up. You can surface the same counts via a monitoring enzyme.
+- Adjacency mirrors reflect current relationships only. If you delete a being, run `cep_tick_l1` to prune its bucket once all entries vanish.
 
 ## Q&A
-- **Do I have to call Layer 1 APIs from inside a heartbeat?** Yes. Running them inside enzymes ensures adjacency mirrors, checkpoints, and facet queues move in lock-step with the kernel's op counts.
-- **Can I mutate `/data/CEP/L1/*` directly for migrations?** Only through the documented APIs. Direct writes look fast but skip adjacency bookkeeping and will leave shards of stale state behind.
-- **How do I sync identities with a directory service?** Wrap the upstream events into a proxy enzyme that emits `sig_being_sync` impulses, call `cep_being_claim` with the authoritative metadata, and let Layer 1 coalesce revisions before exposing them to the rest of the tree.
-- **What if a facet plugin fails repeatedly?** The heartbeat keeps the work item parked in `/bonds/facet_queue`. Record failures into the context's `meta/` dictionary or escalate through telemetry so operators can remediate without dropping history.
+- **Do I need to hold heartbeat locks?** Yes. Call these helpers from inside an enzyme or controlled section where the heartbeat runtime is active; they assume deterministic sequencing.
+- **Can I write directly into `/data/CEP/CEP/L1`?** Not safely. Bypass the helpers and you will miss adjacency updates and facet queue entries.
+- **What happens if `ensure_directories` is false and the folders are missing?** `cep_init_l1` returns `CEP_L1_ERR_STATE`. Either create the directories beforehand or allow it to do so once.
+- **How do I run Layer 1 without facets?** Simply avoid registering any facet tags. `cep_context_upsert` still writes placeholder facet records and queue entries; without registrations `cep_tick_l1` marks them `missing`, giving you a visible reminder to install handlers later.

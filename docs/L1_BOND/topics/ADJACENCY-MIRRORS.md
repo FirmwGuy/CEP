@@ -1,25 +1,29 @@
 # L1 Topic: Adjacency Mirrors and Summaries
 
 ## Introduction
-Adjacency mirrors are the quick-glance indexes that keep relationships browseable without scanning the full bond ledger. They live inside Layer 1's transient workspace and let UIs and services answer "who is connected to this being?" instantly.
+Adjacency mirrors answer a simple question quickly: “who is this being connected to right now?” They live in the Layer 1 runtime workspace so reads stay cheap while the authoritative history remains in the bond and context ledgers.
 
 ## Technical Details
-### Mirror layout
-- Mirrors live under `/bonds/adjacency/being/<id>/<key>` where `<id>` is the owning being's deterministic name.
-- Each entry stores a short summary payload containing the partner's tag, hash key, and optional label strings for display.
-- Entries share the kernel's append-only semantics; replacing a summary adds a new child instead of rewriting the old one.
+### Layout
+- **Location**: `/bonds/adjacency/<being>/<hash>`.
+- **Key**: `<being>` is the deterministic `cepDT` name of the being. `<hash>` matches the bond or context hash written under `/data/CEP/CEP/L1/(bonds|contexts)`.
+- **Payload**: the entry stores a single `value` text cell such as `bond_caned:user-001` or `ctx_editssn:First Draft`. The helpers overwrite this value when the summary changes.
 
-### Update pipeline
-- `cep_bond_upsert` (and its helpers) compare the freshly computed summary with the current head. If nothing changes, the mirror stays untouched.
-- When a bond is retired, the heartbeat loop marks the matching adjacency node as inactive. `cep_tick_l1` prunes the tombstone once both sides agree the edge is gone or the owning being is deleted.
-- High-volume updates batch through the heartbeat so a single impulse can stage multiple mirror diffs before the agenda commits them.
+### Update flow
+1. `cep_bond_upsert` or `cep_context_upsert` produces a summary string (`tag_text:partner_or_label`).
+2. The helper calls `cep_bond_annotate_adjacency`, which ensures the bucket and entry exist (using red-black dictionaries) and writes the summary text.
+3. No diffing or append-only history is kept inside the mirror. History lives in the timestamps on the entry itself and in the source bond/context record.
+
+### Pruning
+- `cep_tick_l1` walks every adjacency bucket each beat. Empty entries vanish; buckets disappear once they are empty or the owning being has been hard-finalised.
+- You can trigger pruning manually by calling `cep_tick_l1` after deleting beings or tearing down large batches of bonds/contexts.
 
 ### Reading mirrors safely
-- Clients may read mirrors directly for dashboards or heuristics, but mutations must still go through the bond APIs.
-- When you need strong consistency, pair a mirror read with the authoritative bond entry and compare timestamps. A mismatch signals that a follow-up sweep is still in flight.
+- Reads are cheap dictionary lookups. If you need more than summary text, follow the hash back to the durable bond or context record.
+- Treat mirrors as caches. Do not write to them directly; let the helper functions keep them aligned with the authoritative data.
 
 ## Q&A
-- **Do mirrors survive restarts?** They live in normal cells, so yes. The append-only log persists them; heartbeat maintenance cleans stale ones after recovery.
-- **What if a mirror gets corrupted?** Rebuild it by replaying the underlying bond records through the heartbeat; the diff logic recreates missing entries deterministically.
-- **Can I add custom summary fields?** Extend the summary payload by adding children such as `meta/` values. Just keep them compact to preserve cache locality.
-- **How do mirrors behave with soft deletes?** Soft-deleted bonds remain visible but flagged; `cep_tick_l1` prunes them only after both participants are archived or summarised entries go empty.
+- **Do mirrors survive restarts?** Yes. They are normal cells. The prune pass keeps them tidy after you replay work.
+- **How do I tell whether a summary is stale?** Compare the entry’s timestamp to the bond/context record’s timestamp. If they differ, schedule a cleanup or rerun the helper.
+- **Can I add richer metadata?** Not yet. The helper only writes the summary text. You can extend it to store additional child cells, but keep them compact to avoid degrading traversal speed.
+- **What if I want a different storage engine?** Update `cep_bond_ensure_dictionary_cell` to pick the store you need (for example, hashed buckets) and the change will apply everywhere mirrors are created.
