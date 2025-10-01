@@ -15,6 +15,38 @@
 #define MAX_RANDOM_BONDS  8
 #define RANDOM_BOND_ITERATIONS 18
 
+typedef struct {
+    cepCell* dictionary;
+    cepDT    entry_tag;
+    char     expected[48];
+} MetadataFixture;
+
+static MetadataFixture metadata_fixture(cepCell* arena, cepID base, const char* value) {
+    munit_assert_not_null(arena);
+    munit_assert_not_null(value);
+
+    MetadataFixture fixture = {0};
+
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepDT dict_name = {0};
+    dict_name.domain = CEP_ACRO("CEP");
+    dict_name.tag = cep_id_to_numeric(base);
+    fixture.dictionary = cep_cell_add_dictionary(arena, &dict_name, 0, &dict_type, CEP_STORAGE_LINKED_LIST);
+    munit_assert_not_null(fixture.dictionary);
+
+    fixture.entry_tag.domain = CEP_ACRO("CEP");
+    fixture.entry_tag.tag = cep_id_to_numeric(base + 1u);
+
+    size_t len = strlen(value);
+    munit_assert_size(len, <, sizeof fixture.expected);
+    cepDT text_type = *CEP_DTAW("CEP", "text");
+    cepCell* entry = cep_cell_add_value(fixture.dictionary, &fixture.entry_tag, 0, &text_type, (void*)value, len + 1u, len + 1u);
+    munit_assert_not_null(entry);
+
+    memcpy(fixture.expected, value, len + 1u);
+    return fixture;
+}
+
 static cepDT random_being_dt(size_t index) {
     munit_assert_size(index, <, MAX_RANDOM_BEINGS);
     switch (index) {
@@ -53,6 +85,7 @@ typedef struct {
     char            label[32];
     char            kind[16];
     char            external_id[32];
+    MetadataFixture metadata;
 } RandomBeing;
 
 typedef struct {
@@ -62,6 +95,7 @@ typedef struct {
     cepDT           key;
     char            summary_a[64];
     char            summary_b[64];
+    MetadataFixture metadata;
 } RandomBond;
 
 /* expect_value_for_name fetches a named child from a dictionary and asserts it carries text data. */
@@ -74,16 +108,20 @@ static const char* expect_value_for_name(cepCell* parent, const cepDT* name) {
 }
 
 /* seed_being_spec initialises deterministic but distinct metadata for each random being. */
-static void seed_being_spec(RandomBeing* being, size_t index, cepBeingSpec* spec) {
+static void seed_being_spec(cepCell* root, RandomBeing* being, size_t index, cepBeingSpec* spec) {
     snprintf(being->label, sizeof being->label, "Being %u", (unsigned)index);
     snprintf(being->kind, sizeof being->kind, "kind%u", (unsigned)(index % 7u));
     snprintf(being->external_id, sizeof being->external_id, "ext-%u", (unsigned)index);
+
+    char meta_text[32];
+    snprintf(meta_text, sizeof meta_text, "meta-being-%u", (unsigned)index);
+    being->metadata = metadata_fixture(root, CEP_ID(0x600u + (cepID)(index * 4u)), meta_text);
 
     *spec = (cepBeingSpec){
         .label = being->label,
         .kind = being->kind,
         .external_id = being->external_id,
-        .metadata = NULL,
+        .metadata = being->metadata.dictionary,
     };
 }
 
@@ -140,7 +178,7 @@ MunitResult test_bond_randomized(const MunitParameter params[], void* user_data_
         for (size_t idx = 0; idx < being_count; ++idx) {
             beings[idx].name = random_being_dt(idx);
             cepBeingSpec spec = {0};
-            seed_being_spec(&beings[idx], idx, &spec);
+            seed_being_spec(root, &beings[idx], idx, &spec);
             cepL1Result claim_rc = cep_being_claim(root, &beings[idx].name, &spec, &beings[idx].handle);
             munit_assert_int(claim_rc, ==, CEP_L1_OK);
             munit_assert_not_null(beings[idx].handle.cell);
@@ -165,6 +203,9 @@ MunitResult test_bond_randomized(const MunitParameter params[], void* user_data_
 
                 char label[32];
                 snprintf(label, sizeof label, "bond-%u-%u", (unsigned)a, (unsigned)b);
+                char meta_text[32];
+                snprintf(meta_text, sizeof meta_text, "meta-bond-%u", (unsigned)bond_count);
+                bond->metadata = metadata_fixture(root, CEP_ID(0x700u + (cepID)(bond_count * 4u)), meta_text);
 
                 cepBondSpec spec = {
                     .tag = &bond->tag,
@@ -172,7 +213,7 @@ MunitResult test_bond_randomized(const MunitParameter params[], void* user_data_
                     .role_a = beings[a].handle.cell,
                     .role_b_tag = CEP_DTAW("CEP", "role_b"),
                     .role_b = beings[b].handle.cell,
-                    .metadata = NULL,
+                    .metadata = bond->metadata.dictionary,
                     .causal_op = 0,
                     .label = label,
                     .note = "randomized",
@@ -225,11 +266,30 @@ MunitResult test_bond_randomized(const MunitParameter params[], void* user_data_
                 }
             }
 
+            cepCell* being_record = cep_cell_find_by_name(beings_root, &beings[idx].name);
+            munit_assert_not_null(being_record);
+            cepCell* being_meta = cep_cell_find_by_name(being_record, CEP_DTAW("CEP", "meta"));
+            munit_assert_not_null(being_meta);
+            const char* being_meta_value = expect_value_for_name(being_meta, &beings[idx].metadata.entry_tag);
+            munit_assert_string_equal(being_meta_value, beings[idx].metadata.expected);
+
             if (expected_entries == 0) {
                 munit_assert_null(adjacency_bucket);
                 continue;
             }
             munit_assert_size(cep_cell_children(adjacency_bucket), ==, expected_entries);
+        }
+
+        for (size_t bond_idx = 0; bond_idx < bond_count; ++bond_idx) {
+            const RandomBond* bond = &bonds[bond_idx];
+            cepCell* bond_family = cep_cell_find_by_name(bonds_root, &bond->tag);
+            munit_assert_not_null(bond_family);
+            cepCell* bond_record = cep_cell_find_by_name(bond_family, &bond->key);
+            munit_assert_not_null(bond_record);
+            cepCell* bond_meta = cep_cell_find_by_name(bond_record, CEP_DTAW("CEP", "meta"));
+            munit_assert_not_null(bond_meta);
+            const char* bond_meta_value = expect_value_for_name(bond_meta, &bond->metadata.entry_tag);
+            munit_assert_string_equal(bond_meta_value, bond->metadata.expected);
         }
 
         cep_cell_system_shutdown();

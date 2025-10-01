@@ -11,6 +11,39 @@
 
 #include <string.h>
 
+typedef struct {
+    cepCell* dictionary;
+    cepDT    entry_tag;
+    char     expected[48];
+} MetadataFixture;
+
+/* metadata_fixture stages a scratch dictionary and value pair for reuse across being, bond, or context specs. */
+static MetadataFixture metadata_fixture(cepCell* arena, cepID base, const char* value) {
+    assert_not_null(arena);
+    assert_not_null(value);
+
+    MetadataFixture fixture = {0};
+
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepDT dict_name = {0};
+    dict_name.domain = CEP_ACRO("CEP");
+    dict_name.tag = cep_id_to_numeric(base);
+    fixture.dictionary = cep_cell_add_dictionary(arena, &dict_name, 0, &dict_type, CEP_STORAGE_LINKED_LIST);
+    assert_not_null(fixture.dictionary);
+
+    fixture.entry_tag.domain = CEP_ACRO("CEP");
+    fixture.entry_tag.tag = cep_id_to_numeric(base + 1u);
+
+    size_t len = strlen(value);
+    assert_size(len, <, sizeof fixture.expected);
+    cepDT text_type = *CEP_DTAW("CEP", "text");
+    cepCell* entry = cep_cell_add_value(fixture.dictionary, &fixture.entry_tag, 0, &text_type, (void*)value, len + 1u, len + 1u);
+    assert_not_null(entry);
+
+    memcpy(fixture.expected, value, len + 1u);
+    return fixture;
+}
+
 /* expect_dictionary fetches a named child and asserts the backing store is a dictionary. */
 static cepCell* expect_dictionary(cepCell* parent, const cepDT* name) {
     assert_not_null(parent);
@@ -75,13 +108,18 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
     cepCell* checkpoints_root = expect_dictionary(runtime_bonds_root, CEP_DTAW("CEP", "checkpoints"));
     (void)checkpoints_root;
 
+    MetadataFixture user_meta = metadata_fixture(root, CEP_ID(0x500u), "prefers-dark");
+    MetadataFixture doc_meta = metadata_fixture(root, CEP_ID(0x520u), "doc-secret");
+    MetadataFixture bond_meta = metadata_fixture(root, CEP_ID(0x540u), "review-window");
+    MetadataFixture context_meta = metadata_fixture(root, CEP_ID(0x560u), "session-phase");
+
     /* Claim beings using the public API. */
     cepBeingHandle user = {0};
     cepBeingSpec user_spec = {
         .label = "Alex Solo",
         .kind = "human",
         .external_id = "user-001",
-        .metadata = NULL,
+        .metadata = user_meta.dictionary,
     };
     rc = cep_being_claim(root, CEP_DTAW("CEP", "being_alx"), &user_spec, &user);
     assert_int(rc, ==, CEP_L1_OK);
@@ -92,7 +130,7 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
         .label = "Feature Doc",
         .kind = "document",
         .external_id = "doc-2024A",
-        .metadata = NULL,
+        .metadata = doc_meta.dictionary,
     };
     rc = cep_being_claim(root, CEP_DTAW("CEP", "being_doc"), &doc_spec, &document);
     assert_int(rc, ==, CEP_L1_OK);
@@ -106,7 +144,7 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
         .role_a = user.cell,
         .role_b_tag = CEP_DTAW("CEP", "role_b"),
         .role_b = document.cell,
-        .metadata = NULL,
+        .metadata = bond_meta.dictionary,
         .causal_op = 0,
         .label = "Primary Edit",
         .note = "shared workspace",
@@ -127,11 +165,11 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
     };
     cepContextHandle context_handle = {0};
     cepContextSpec context_spec = {
-        .tag = CEP_DTAW("CEP", "ctx_edit"),
+        .tag = CEP_DTAW("CEP", "ctx_editssn"),
         .role_count = 2,
         .role_tags = ctx_role_tags,
         .role_targets = ctx_role_targets,
-        .metadata = NULL,
+        .metadata = context_meta.dictionary,
         .facet_tags = facet_tags,
         .facet_count = 2,
         .causal_op = 0,
@@ -155,6 +193,11 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
     assert_string_equal(expect_value(being_doc, CEP_DTAW("CEP", "being_kind")), "document");
     assert_string_equal(expect_value(being_doc, CEP_DTAW("CEP", "being_ext")), "doc-2024A");
 
+    cepCell* user_meta_bucket = expect_dictionary(being_alx, CEP_DTAW("CEP", "meta"));
+    assert_string_equal(expect_value(user_meta_bucket, &user_meta.entry_tag), user_meta.expected);
+    cepCell* doc_meta_bucket = expect_dictionary(being_doc, CEP_DTAW("CEP", "meta"));
+    assert_string_equal(expect_value(doc_meta_bucket, &doc_meta.entry_tag), doc_meta.expected);
+
     /* Bond record captures role summaries and annotations. */
     cepCell* bond_family = expect_dictionary(bonds_root, CEP_DTAW("CEP", "bond_caned"));
     const cepDT bond_digest[] = {
@@ -176,9 +219,11 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
     assert_string_equal(expect_value(bond_role_a, CEP_DTAW("CEP", "value")), "bond_caned:doc-2024A");
     cepCell* bond_role_b = expect_dictionary(bond_node, CEP_DTAW("CEP", "role_b"));
     assert_string_equal(expect_value(bond_role_b, CEP_DTAW("CEP", "value")), "bond_caned:user-001");
+    cepCell* bond_meta_bucket = expect_dictionary(bond_node, CEP_DTAW("CEP", "meta"));
+    assert_string_equal(expect_value(bond_meta_bucket, &bond_meta.entry_tag), bond_meta.expected);
 
     /* Context node tracks participants and label. */
-    cepCell* context_family = expect_dictionary(contexts_root, CEP_DTAW("CEP", "ctx_edit"));
+    cepCell* context_family = expect_dictionary(contexts_root, CEP_DTAW("CEP", "ctx_editssn"));
     size_t ctx_digest_len = 1u + (context_spec.role_count * 2u);
     cepDT* ctx_digest = cep_malloc(ctx_digest_len * sizeof *ctx_digest);
     assert_not_null(ctx_digest);
@@ -198,6 +243,8 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
     assert_string_equal(expect_value(context_node, CEP_DTAW("CEP", "ctx_label")), "First Draft");
     assert_string_equal(expect_value(expect_dictionary(context_node, CEP_DTAW("CEP", "role_source")), CEP_DTAW("CEP", "value")), "user-001");
     assert_string_equal(expect_value(expect_dictionary(context_node, CEP_DTAW("CEP", "role_subj")), CEP_DTAW("CEP", "value")), "doc-2024A");
+    cepCell* context_meta_bucket = expect_dictionary(context_node, CEP_DTAW("CEP", "meta"));
+    assert_string_equal(expect_value(context_meta_bucket, &context_meta.entry_tag), context_meta.expected);
 
     /* Facet records mark pending state and the queue references the context. */
     cepCell* facet_edlog_family = expect_dictionary(facets_root, CEP_DTAW("CEP", "facet_edlog"));
@@ -222,13 +269,13 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
     cepCell* adjacency_alx_bond = expect_dictionary(adjacency_alx, &bond_key);
     assert_string_equal(expect_value(adjacency_alx_bond, CEP_DTAW("CEP", "value")), "bond_caned:doc-2024A");
     cepCell* adjacency_alx_ctx = expect_dictionary(adjacency_alx, &ctx_key);
-    assert_string_equal(expect_value(adjacency_alx_ctx, CEP_DTAW("CEP", "value")), "ctx_edit:First Draft");
+    assert_string_equal(expect_value(adjacency_alx_ctx, CEP_DTAW("CEP", "value")), "ctx_editssn:First Draft");
 
     cepCell* adjacency_doc = expect_dictionary(adjacency_root, CEP_DTAW("CEP", "being_doc"));
     cepCell* adjacency_doc_bond = expect_dictionary(adjacency_doc, &bond_key);
     assert_string_equal(expect_value(adjacency_doc_bond, CEP_DTAW("CEP", "value")), "bond_caned:user-001");
     cepCell* adjacency_doc_ctx = expect_dictionary(adjacency_doc, &ctx_key);
-    assert_string_equal(expect_value(adjacency_doc_ctx, CEP_DTAW("CEP", "value")), "ctx_edit:First Draft");
+    assert_string_equal(expect_value(adjacency_doc_ctx, CEP_DTAW("CEP", "value")), "ctx_editssn:First Draft");
 
     // Counts remain stable after repeat upserts (idempotent behaviour).
     rc = cep_bond_upsert(root, &bond_spec, &bond_handle);
@@ -242,6 +289,8 @@ MunitResult test_bond(const MunitParameter params[], void* user_data_or_fixture)
     assert_size(cep_cell_children(adjacency_alx), ==, 2);
     assert_size(cep_cell_children(adjacency_doc), ==, 2);
     assert_size(cep_cell_children(facet_queue), ==, 2);
+    assert_string_equal(expect_value(expect_dictionary(bond_node, CEP_DTAW("CEP", "meta")), &bond_meta.entry_tag), bond_meta.expected);
+    assert_string_equal(expect_value(expect_dictionary(context_node, CEP_DTAW("CEP", "meta")), &context_meta.entry_tag), context_meta.expected);
 
     // Ensure disable-auto-create configuration refuses to backfill topology.
     if (cep_cell_system_initialized()) {
