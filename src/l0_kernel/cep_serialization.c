@@ -6,6 +6,7 @@
 
 #include "cep_serialization.h"
 #include "cep_cell.h"
+#include "cep_heartbeat.h"
 
 #include <string.h>
 
@@ -33,9 +34,32 @@ static inline uint64_t cep_serial_from_be64(uint64_t value) {
     return __builtin_bswap64(value);
 }
 
+typedef struct {
+    uint64_t beat;
+    uint8_t  flags;
+    uint8_t  reserved[7];
+} cepSerializationJournalMetadata;
+
+enum {
+    CEP_SERIALIZATION_JOURNAL_FLAG_DECISION = 0x01u,
+    CEP_SERIALIZATION_JOURNAL_METADATA_BYTES = 16u,
+};
+
+static size_t cep_serialization_effective_metadata_length(const cepSerializationHeader* header) {
+    if (!header) {
+        return 0u;
+    }
+
+    if (header->metadata_length) {
+        return header->metadata_length;
+    }
+
+    return header->journal_metadata_present ? CEP_SERIALIZATION_JOURNAL_METADATA_BYTES : 0u;
+}
+
 static size_t cep_serialization_header_payload_size(const cepSerializationHeader* header) {
     assert(header);
-    return CEP_SERIALIZATION_HEADER_BASE + (size_t) header->metadata_length;
+    return CEP_SERIALIZATION_HEADER_BASE + cep_serialization_effective_metadata_length(header);
 }
 
 /** Compute the number of bytes required to serialise @p header into a chunk so
@@ -70,7 +94,11 @@ bool cep_serialization_header_write(const cepSerializationHeader* header,
     if (order != CEP_SERIAL_ENDIAN_BIG && order != CEP_SERIAL_ENDIAN_LITTLE)
         return false;
 
-    size_t payload = cep_serialization_header_payload_size(header);
+    if (header->metadata_length && !header->metadata)
+        return false;
+
+    size_t metadata_len = cep_serialization_effective_metadata_length(header);
+    size_t payload = CEP_SERIALIZATION_HEADER_BASE + metadata_len;
     size_t required = payload + CEP_SERIALIZATION_CHUNK_OVERHEAD;
     if (capacity < required)
         return false;
@@ -98,13 +126,29 @@ bool cep_serialization_header_write(const cepSerializationHeader* header,
     *p++ = order;
     *p++ = header->flags;
 
-    uint32_t metadata_len_be = cep_serial_to_be32(header->metadata_length);
+    uint32_t metadata_len_be = cep_serial_to_be32((uint32_t)metadata_len);
     memcpy(p, &metadata_len_be, sizeof metadata_len_be);
     p += sizeof metadata_len_be;
 
-    if (header->metadata_length) {
-        memcpy(p, header->metadata, header->metadata_length);
-        p += header->metadata_length;
+    if (metadata_len) {
+        if (header->metadata_length) {
+            memcpy(p, header->metadata, metadata_len);
+            p += metadata_len;
+        } else if (header->journal_metadata_present) {
+            cepSerializationJournalMetadata meta = {
+                .beat = header->journal_beat,
+                .flags = header->journal_decision_replay ? CEP_SERIALIZATION_JOURNAL_FLAG_DECISION : 0u,
+                .reserved = {0},
+            };
+
+            uint64_t beat_be = cep_serial_to_be64(meta.beat);
+            memcpy(p, &beat_be, sizeof beat_be);
+            p += sizeof beat_be;
+
+            *p++ = meta.flags;
+            memset(p, 0, sizeof meta.reserved);
+            p += sizeof meta.reserved;
+        }
     }
 
     if (out_size)
@@ -180,6 +224,19 @@ bool cep_serialization_header_read(const uint8_t* chunk,
     header->flags = flags;
     header->metadata_length = metadata_len;
     header->metadata = metadata;
+    header->journal_metadata_present = false;
+    header->journal_decision_replay = false;
+    header->journal_beat = 0u;
+
+    if (metadata && metadata_len == CEP_SERIALIZATION_JOURNAL_METADATA_BYTES) {
+        uint64_t beat_be = 0u;
+        memcpy(&beat_be, metadata, sizeof beat_be);
+        const uint8_t* cursor = metadata + sizeof beat_be;
+
+        header->journal_beat = cep_serial_from_be64(beat_be);
+        header->journal_decision_replay = ((*cursor) & CEP_SERIALIZATION_JOURNAL_FLAG_DECISION) != 0;
+        header->journal_metadata_present = true;
+    }
 
     return true;
 }
@@ -469,6 +526,10 @@ bool cep_serialization_emit_cell(const cepCell* cell,
         return false;
 
     cepSerializationHeader local = header ? *header : (cepSerializationHeader){0};
+    if (!local.metadata_length && !local.journal_metadata_present) {
+        local.journal_metadata_present = true;
+        local.journal_beat = cep_beat_index();
+    }
     if (!local.magic)
         local.magic = CEP_SERIALIZATION_MAGIC;
     if (!local.version)

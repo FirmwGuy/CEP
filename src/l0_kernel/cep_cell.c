@@ -3099,6 +3099,136 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child) {
 }
 
 
+/** Populate the provenance bucket for @p derived so recorded cells remember the
+    parents they were derived from. The helper ensures `meta/parents` exists,
+    clears any previous entries, and then appends link cells that reference each
+    supplied parent. Returns the number of attached parents or -1 when
+    allocation fails. */
+int cep_cell_add_parents(cepCell* derived, cepCell* const* parents, size_t count) {
+    if (!derived || (count && !parents)) {
+        return -1;
+    }
+
+    derived = cep_link_pull(derived);
+    if (!derived || !cep_cell_is_normal(derived)) {
+        return -1;
+    }
+
+    cepCell* meta = cep_cell_find_by_name(derived, CEP_DTAW("CEP", "meta"));
+    if (!meta) {
+        cepDT meta_name = *CEP_DTAW("CEP", "meta");
+        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+        meta = cep_cell_add_dictionary(derived, &meta_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        if (!meta) {
+            return -1;
+        }
+    }
+
+    bool meta_writable = true;
+    if (meta->store) {
+        meta_writable = meta->store->writable;
+        meta->store->writable = true;
+    }
+
+    cepCell* bucket = cep_cell_find_by_name(meta, CEP_DTAW("CEP", "parents"));
+    if (!bucket) {
+        cepDT parents_name = *CEP_DTAW("CEP", "parents");
+        cepDT list_type = *CEP_DTAW("CEP", "list");
+        bucket = cep_cell_add_list(meta, &parents_name, 0, &list_type, CEP_STORAGE_LINKED_LIST);
+        if (!bucket) {
+            if (meta->store) {
+                meta->store->writable = meta_writable;
+            }
+            return -1;
+        }
+    }
+
+    if (meta->store) {
+        meta->store->writable = meta_writable;
+    }
+
+    if (bucket->store) {
+        bool writable = bucket->store->writable;
+        bucket->store->writable = true;
+        cep_store_delete_children_hard(bucket->store);
+        bucket->store->writable = writable;
+    }
+
+    int attached = 0;
+    for (size_t i = 0; i < count; ++i) {
+        cepCell* parent = parents[i];
+        if (!parent) {
+            continue;
+        }
+
+        cepCell* canonical = cep_link_pull(parent);
+        if (!canonical || cep_cell_is_void(canonical)) {
+            continue;
+        }
+
+        cepDT parent_tag = *CEP_DTAW("CEP", "parent");
+        cepCell* link = cep_cell_append_link(bucket, &parent_tag, canonical);
+        if (!link) {
+            return -1;
+        }
+
+        if (attached == INT_MAX) {
+            return -1;
+        }
+
+        attached += 1;
+    }
+
+    return attached;
+}
+
+
+/** Compute and persist the payload hash for @p cell so optional integrity
+    checks align with CEP's internal data node. Non-value payloads and empty
+    cells return zero, letting callers skip hash-aware flows when they are not
+    applicable. */
+uint64_t cep_cell_content_hash(cepCell* cell) {
+    if (!cell) {
+        return 0u;
+    }
+
+    cell = cep_link_pull(cell);
+    if (!cell || !cep_cell_is_normal(cell) || !cep_cell_has_data(cell)) {
+        return 0u;
+    }
+
+    cepData* data = cell->data;
+    if (!data || (data->datatype != CEP_DATATYPE_VALUE && data->datatype != CEP_DATATYPE_DATA)) {
+        return 0u;
+    }
+
+    uint64_t hash = cep_data_compute_hash(data);
+    data->hash = hash;
+    return hash;
+}
+
+
+/** Override the stored payload hash with an externally supplied checksum so
+    replay tools can carry authoritative digests without mutating the payload
+    itself. Reports 0 on success or -1 when the cell lacks hashable data. */
+int cep_cell_set_content_hash(cepCell* cell, uint64_t hash) {
+    if (!cell) {
+        return -1;
+    }
+
+    cell = cep_link_pull(cell);
+    if (!cell || !cep_cell_is_normal(cell) || !cep_cell_has_data(cell)) {
+        return -1;
+    }
+
+    cepData* data = cell->data;
+    if (!data || (data->datatype != CEP_DATATYPE_VALUE && data->datatype != CEP_DATATYPE_DATA)) {
+        return -1;
+    }
+
+    data->hash = hash;
+    return 0;
+}
 
 
 /* Fetch the live payload pointer for a cell. Follow links to the concrete 

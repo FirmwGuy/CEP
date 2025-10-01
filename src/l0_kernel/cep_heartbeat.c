@@ -22,6 +22,8 @@
 
 static cepHeartbeatRuntime CEP_RUNTIME = {
     .current = CEP_BEAT_INVALID,
+    .phase   = CEP_BEAT_CAPTURE,
+    .deferred_activations = 0u,
 };
 
 static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
@@ -964,6 +966,7 @@ bool cep_heartbeat_startup(void) {
     CEP_RUNTIME.running = true;
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
+    cep_beat_begin_capture();
     return true;
 }
 
@@ -984,6 +987,7 @@ bool cep_heartbeat_restart(void) {
     CEP_RUNTIME.running = true;
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
+    cep_beat_begin_capture();
     return true;
 }
 
@@ -1002,6 +1006,7 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
     CEP_RUNTIME.running = true;
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
+    cep_beat_begin_capture();
     return true;
 }
 
@@ -1015,6 +1020,8 @@ bool cep_heartbeat_resolve_agenda(void) {
     if (!CEP_RUNTIME.running) {
         return false;
     }
+
+    cep_beat_begin_compute();
 
     if (CEP_RUNTIME.registry) {
         cep_enzyme_registry_activate_pending(CEP_RUNTIME.registry);
@@ -1043,6 +1050,8 @@ bool cep_heartbeat_stage_commit(void) {
     if (!CEP_RUNTIME.running) {
         return false;
     }
+
+    cep_beat_begin_commit();
 
     if (!cep_stream_commit_pending())
         return false;
@@ -1077,7 +1086,71 @@ bool cep_heartbeat_stage_commit(void) {
     cep_heartbeat_impulse_queue_swap(&CEP_RUNTIME.inbox_current, &CEP_RUNTIME.inbox_next);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
 
+    cep_beat_begin_capture();
     return true;
+}
+
+
+/** Publish the beat index without exposing the runtime structure so callers can
+    tag journal entries or error messages with a stable counter. During
+    bootstrap the heartbeat number is undefined, therefore the helper reports
+    zero until the scheduler advances at least once. */
+cepOpCount cep_beat_index(void) {
+    return (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : (cepOpCount)CEP_RUNTIME.current;
+}
+
+
+/** Report which heartbeat phase is currently active so Layer 0 services can
+    gate actions (for example, ingest vs. compute mutations) without tracking
+    scheduler calls manually. The value reflects the most recent *_begin_* hook
+    that ran. */
+cepBeatPhase cep_beat_phase(void) {
+    return CEP_RUNTIME.phase;
+}
+
+
+/** Surface how many enzyme registrations were deferred into this beat so tests
+    and diagnostics can assert the agenda freeze contract stays intact during
+    mid-cycle registrations. The value resets when the next Capture phase
+    begins. */
+size_t cep_beat_deferred_activation_count(void) {
+    return CEP_RUNTIME.deferred_activations;
+}
+
+
+/** Accumulate the number of enzymes promoted out of the pending queue so the
+    debug counter reflects mid-beat registrations that will only execute on the
+    next cycle. Callers pass zero when nothing was promoted to avoid touching the
+    counter unnecessarily. */
+void cep_beat_note_deferred_activation(size_t count) {
+    if (!count) {
+        return;
+    }
+
+    CEP_RUNTIME.deferred_activations += count;
+}
+
+
+/** Mark the beginning of the capture phase so ingestion helpers can freeze
+    inputs deterministically. The helper also clears the deferred activation
+    counter because a fresh beat will tally its own promotions. */
+void cep_beat_begin_capture(void) {
+    CEP_RUNTIME.phase = CEP_BEAT_CAPTURE;
+    CEP_RUNTIME.deferred_activations = 0u;
+}
+
+
+/** Switch the runtime into the compute phase so enzyme resolution and
+    execution can proceed while asserts keep an eye on phase transitions. */
+void cep_beat_begin_compute(void) {
+    CEP_RUNTIME.phase = CEP_BEAT_COMPUTE;
+}
+
+
+/** Enter the commit phase so staging helpers can flush writes and diagnostics
+    can confirm that agenda execution reached the last step for the beat. */
+void cep_beat_begin_commit(void) {
+    CEP_RUNTIME.phase = CEP_BEAT_COMMIT;
 }
 
 

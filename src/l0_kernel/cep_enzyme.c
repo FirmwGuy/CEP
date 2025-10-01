@@ -753,6 +753,8 @@ void cep_enzyme_registry_activate_pending(cepEnzymeRegistry* registry) {
         }
     }
 
+    size_t promoted = 0u;
+
     for (size_t i = 0; i < registry->pending_count; ++i) {
         cepEnzymeEntry* pending = &registry->pending_entries[i];
         if (!pending->query || !pending->descriptor.callback) {
@@ -764,11 +766,13 @@ void cep_enzyme_registry_activate_pending(cepEnzymeRegistry* registry) {
         *entry = *pending;
         entry->registration_order = registry->next_registration_order++;
         CEP_0(pending);
+        promoted++;
     }
 
     registry->pending_count = 0u;
 
     (void)cep_enzyme_registry_rebuild_indexes(registry);
+    cep_beat_note_deferred_activation(promoted);
 }
 
 

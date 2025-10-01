@@ -1101,6 +1101,11 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child);
 #define cep_cell_prepend_link(cell, name, source)                                                       cep_cell_append_child(cell, CEP_TYPE_LINK, name, true, CEP_P(source), NULL)
 
 
+int      cep_cell_add_parents(cepCell* derived, cepCell* const* parents, size_t count);
+uint64_t cep_cell_content_hash(cepCell* cell);
+int      cep_cell_set_content_hash(cepCell* cell, uint64_t hash);
+
+
 // Constructs the full path (sequence of ids) for a given cell, returning the depth
 bool cep_cell_path(const cepCell* cell, cepPath** path);
 
@@ -1302,6 +1307,15 @@ void cep_cell_system_initiate(void);
 void cep_cell_system_shutdown(void);
 bool cep_cell_system_initialized(void);
 void cep_cell_system_ensure(void);
+
+
+// Namepool helpers (mirrored for convenience)
+bool        cep_namepool_bootstrap(void);
+cepID       cep_namepool_intern(const char* text, size_t length);
+cepID       cep_namepool_intern_cstr(const char* text);
+cepID       cep_namepool_intern_static(const char* text, size_t length);
+const char* cep_namepool_lookup(cepID id, size_t* length);
+bool        cep_namepool_release(cepID id);
 
 
 #ifdef __cplusplus

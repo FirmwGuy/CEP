@@ -31,6 +31,16 @@ typedef uint64_t cepBeatNumber;
 
 
 /**
+ * @brief Enumerates the three-phase heartbeat contract (Capture -> Compute -> Commit).
+ */
+typedef enum {
+    CEP_BEAT_CAPTURE = 0,
+    CEP_BEAT_COMPUTE = 1,
+    CEP_BEAT_COMMIT  = 2,
+} cepBeatPhase;
+
+
+/**
  * @struct cepHeartbeatTopology
  * @brief Logical directories that compose the CEP runtime tree.
  */
@@ -128,6 +138,7 @@ typedef struct {
  */
 typedef struct {
     cepBeatNumber             current;
+    cepBeatPhase              phase;
     cepHeartbeatTopology      topology;
     cepHeartbeatPolicy        policy;
     cepEnzymeRegistry*        registry;
@@ -135,6 +146,7 @@ typedef struct {
     cepHeartbeatImpulseQueue  inbox_next;
     cepHeartbeatScratch       scratch;
     bool                      running;
+    size_t                    deferred_activations;
 } cepHeartbeatRuntime;
 
 
@@ -148,6 +160,15 @@ bool  cep_heartbeat_execute_agenda(void);
 bool  cep_heartbeat_stage_commit(void);
 bool  cep_heartbeat_step(void);
 void  cep_heartbeat_shutdown(void);
+
+
+cepOpCount   cep_beat_index(void);
+cepBeatPhase cep_beat_phase(void);
+size_t       cep_beat_deferred_activation_count(void);
+void         cep_beat_note_deferred_activation(size_t count);
+void         cep_beat_begin_capture(void);
+void         cep_beat_begin_compute(void);
+void         cep_beat_begin_commit(void);
 
 
 cepBeatNumber               cep_heartbeat_current(void);

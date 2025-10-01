@@ -66,6 +66,30 @@ the runtime resolves a **set of candidate enzymes** and returns them **in execut
 
 **Heartbeat staging.** Impulses can be recorded and carried across beats. The queue/record helpers (`cep_heartbeat_impulse_queue_*`) clone `cepPath` entries and manage a compact, resettable buffer for recent signals/targets for diagnostics or deferred execution .
 
+### 1.4 Beat phase helpers
+
+Heartbeat loops now announce each phase so dashboards and tests can narrate the rhythm without reverse-engineering scheduler internals.
+
+**Technical details**
+
+- `cep_beat_begin_capture()`, `cep_beat_begin_compute()`, and `cep_beat_begin_commit()` mark the active phase; the default loop invokes them right before resolve/execute/commit.
+- `cep_beat_index()` exposes the monotonic beat number (returns `0` until the scheduler advances), and `cep_beat_phase()` returns the current `cepBeatPhase` enum.
+- `cep_beat_deferred_activation_count()` reports how many pending enzymes were promoted for the next beat, helping you assert that mid-beat registrations stay frozen.
+- Phase helpers are read-only signals—no locks or timers—so you can safely call them from logging or lightweight assertions.
+
+```c
+if (cep_beat_phase() == CEP_BEAT_COMPUTE) {
+    diag_log("beat %" PRIu64 ": %zu enzymes deferred",
+             (unsigned long long)cep_beat_index(),
+             cep_beat_deferred_activation_count());
+}
+```
+
+**Q&A**
+
+- *Do I need to call the phase helpers manually?* No. They are wired into `cep_heartbeat_resolve_agenda()` and `cep_heartbeat_stage_commit()`. Manual calls are only for bespoke schedulers.
+- *What happens to mid-beat registrations?* They are counted and deferred; the agenda for the current beat never mutates.
+
 ---
 
 ## 2) Serialization & streams (wire format)
@@ -86,11 +110,27 @@ Serialized streams are **chunked**. Each chunk carries a size and ID (class + tr
 
 ### 2.3 Reader, transactions, and safety
 
-The **reader** (`cep_serialization_reader_*`) ingests chunks, validates ordering per **transaction/sequence**, stages per‑cell **manifest/data/proxy** parts, and on `commit()` materializes changes into the tree:
+The **reader** (`cep_serialization_reader_*`) ingests chunks, validates ordering per **transaction/sequence**, stages per-cell **manifest/data/proxy** parts, and on `commit()` materializes changes into the tree:
 
-* Transactions guard against **out‑of‑order** or mixed chunks; any violation flips the reader to **error** and clears staged state .
+* Transactions guard against **out-of-order** or mixed chunks; any violation flips the reader to **error** and clears staged state .
 * For data payloads, the reader recomputes the **content hash** (over `{dt, size, payloadHash}`) using the same hash as the kernel (`cep_hash_bytes`) and rejects mismatches before applying the update  .
 * **Structure synthesis:** if the target path doesn’t exist, the reader creates intermediate dictionaries/lists as needed, but will **not** fabricate a proxy where the type doesn’t match—types must line up with the manifest flags .
+
+### 2.4 Journal metadata helpers
+
+Control headers now carry a tiny record of “which beat emitted this?” so downstream systems can file serialized batches without guessing.
+
+**Technical details**
+
+- `cepSerializationHeader` gained `journal_metadata_present`, `journal_beat`, and `journal_decision_replay` fields. Set the boolean to `true` to request metadata; leave it `false` if you supply your own `metadata` buffer.
+- `cep_serialization_emit_cell()` auto-populates `journal_beat` with `cep_beat_index()` when you pass `NULL` for the header (or leave the boolean unset), so ordinary emitters get beat stamps for free.
+- During write, the header encodes a 16-byte metadata block: beat (big-endian `uint64_t`), a flag byte (`0x01` for decision replay), and padding. Readers parse it back and set the struct fields when `metadata_length` matches the pattern.
+- You can still inject arbitrary metadata: provide `metadata_length`/`metadata` and leave `journal_metadata_present` `false`; the serializer simply copies your payload.
+
+**Q&A**
+
+- *How do I disable the automatic beat stamp?* Either supply your own `cepSerializationHeader` with `journal_metadata_present = false` and a custom `metadata`, or set the boolean to `false` before calling `cep_serialization_emit_cell()`.
+- *What toggles `journal_decision_replay`?* Higher layers set it when replaying stored decisions; the kernel treats the flag as advisory and preserves it during round-trips.
 
 ---
 
@@ -130,6 +170,22 @@ This gives you **stable, interned references** for `CEP_NAMING_REFERENCE` names,
 * **Append‑only timelines.** Payload updates push a snapshot node into the **data history chain**, and store re‑index operations capture snapshots of the **store layout**. “Normal” add/append operations keep sibling order stable and rely on **timestamps** as the audit trail (see `cep_data_history_push/clear`, store history helpers) .
 * **Soft vs hard.** *Soft delete* marks `deleted` timestamps; snapshots and “past” APIs (`cep_cell_*_past`) remain valid. *Hard delete* physically removes nodes/children and frees memory immediately (e.g., `cep_store_delete_children_hard`, `cep_cell_remove_hard`)—intended for GC and aborted constructions .
 * **Links & shadows.** Links maintain **back‑references** (“shadow lists”) on targets; CEP keeps those up‑to‑date when assigning links or deleting targets (see `cep_link_set`, shadow attach/detach, and `targetDead` propagation). Cloning a handle/stream turns into a **link** clone (shared resource) rather than attempting to duplicate opaque external state .
+
+### 5.1 Provenance helpers
+
+When you emit derived facts it helps to record “came from these parents” and a quick checksum, so auditors and replay tools have anchors with zero extra schema work.
+
+**Technical details**
+
+- `cep_cell_add_parents(derived, parents, count)` ensures there is a `meta/parents` list, clears previous entries, and appends link cells to every parent you pass. Null entries are skipped; errors surface as `-1`.
+- `cep_cell_content_hash(cell)` recomputes the payload hash (using the kernel’s FNV‑1a) and stores it on the live `cepData` node, returning the 64-bit value for logs.
+- `cep_cell_set_content_hash(cell, hash)` lets you stamp an externally computed checksum without touching the payload.
+- Both helpers follow links to canonical cells and refuse to operate on proxies/handles where a value hash would be meaningless.
+
+**Q&A**
+
+- *Do parent links survive hard deletes?* They are regular links, so removing the parent turns them into shadow entries flagged via the existing link lifecycle (helpful when diagnosing stale references).
+- *Should I hash huge blobs this way?* The helper is quick but not cryptographic; use it for integrity hints. For stronger guarantees, store your own hash alongside the payload and treat this field as advisory.
 
 ---
 

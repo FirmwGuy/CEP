@@ -58,6 +58,8 @@ when a new behaviour needs a fresh word before it lands in code.
 | `lib_payld` | io | payload marker for library-backed streams in tests. |
 | `library` | core | library metadata tag for proxied payloads. |
 | `meta` | core | cloned metadata dictionary attached to beings, bonds, and contexts. |
+| `parent` | core | provenance entry in `meta/parents` pointing at a source cell. |
+| `parents` | core | list bucket under a cell's metadata capturing provenance links. |
 | `list` | core | list-based store tag. |
 | `log` | core | heartbeat log entry list. |
 | `namepool` | core | backing catalog for identifier interning. |

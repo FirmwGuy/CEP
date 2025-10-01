@@ -13,6 +13,7 @@
  */
 
 #include "cep_molecule.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -58,6 +59,9 @@ typedef struct {
     uint8_t      flags;
     uint32_t     metadata_length;
     const uint8_t* metadata;
+    uint64_t     journal_beat;
+    bool         journal_metadata_present;
+    bool         journal_decision_replay;
 } cepSerializationHeader;
 
 static inline uint64_t cep_serialization_chunk_id(uint16_t chunk_class, uint32_t transaction, uint16_t sequence) {
