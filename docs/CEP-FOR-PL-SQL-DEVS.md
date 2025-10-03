@@ -18,8 +18,8 @@
 - In CEP:
   - Link cells (`CEP_TYPE_LINK`) are typed edges between cells. `cep_link_set` updates backlinks (shadowing) on the target, so the target knows who points at it.
   - Safety: finalizing a target with backlinks asserts; you remove or retarget linkers first. Soft-delete propagates a `targetDead` hint to linkers.
-  - L1 Bonds: pair relations (`bond:*` with `a`/`b` roles) and n‑ary contexts (`ctx:*` with role‑named links). Contexts generalize join rows to multi‑party facts.
-  - L1 Facets: implied sub‑relations written explicitly, so queries don’t depend on inference.
+  - L1 Bonds: durable records under `/data/coh/bond/{id}` with `src` and `dst` links (plus an optional `directed` flag); contexts live under `/data/coh/context/{id}` with `roles/{role}` links. Contexts generalize join rows to multi‑party facts.
+  - L1 Facets: scoped under each context and mirrored in `/data/coh/facet/{ctx}:{type}`, so queries don’t depend on inference.
 
 ### 3) Methods, Triggers, and Overriding
 - Familiar: methods with before/after hooks; overriding; triggers in SQL.
@@ -87,7 +87,7 @@ void add_can_edit(cepCell* root, cepCell* actor, cepCell* object) {
 - L0 cells, links, and shadowing: `docs/L0_KERNEL/topics/LINKS-AND-SHADOWING.md`
 - Beats, impulses, and enzymes: `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md`
 - Append‑only and idempotency: `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md`
-- L1 bonds, contexts, and example: `docs/L1_BOND/L1-OVERVIEW.md`, `docs/L1_BOND/topics/BONDS-AND-CONTEXTS.md`, `docs/L1_BOND/topics/EXAMPLE-EDIT-CONTEXT.md`
+- L1 coherence ledgers and enzymes: `docs/L1_COHERENCE/L1-OVERVIEW.md`, `docs/L1_COHERENCE/L1-ALGORITHMS.md`, `docs/L1_COHERENCE/L1-INTEGRATION-GUIDE.md`
 - Conceptual overview: `docs/CEP.md`
 
 ## Q&A

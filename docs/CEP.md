@@ -48,7 +48,7 @@ Beings and Bonds (durable identity and relations)
 Contexts (N-ary) and Facets (closure)
 - A Context ties several Beings with role-typed positions (for example, user <-> widget <-> document).
 - Facets are the smaller truths implied by a Context. Layer 1 guarantees closure by materializing required Facets or recording a deterministic debt to finish them.
-- Adjacency mirrors are transient caches that speed neighborhood queries; the durable ledger under /data/CEP/L1/* remains authoritative.
+- Adjacency mirrors are transient caches that speed neighborhood queries; the durable ledger under `/data/coh/*` remains authoritative.
 
 ### 2.3 Flow Layer: A Small, Deterministic VM
 
