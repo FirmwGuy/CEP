@@ -13,7 +13,7 @@ fs = import('fs')
 python_mod = import('python')
 
 # Includes
-inc = include_directories('src/l0_kernel', 'src/test')
+inc = include_directories('src/l0_kernel', 'src/test', 'src/enzymes')
 
 # Global compile args to mirror Makefile
 common_args = []
@@ -59,6 +59,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_cell_stream.c',
   'src/l0_kernel/cep_cell_system.c',
   'src/enzymes/cep_cell_operations.c',
+  'src/enzymes/cep_l1_coherence.c',
   'src/l0_kernel/stream/cep_stream_stdio.c',
   'src/l0_kernel/stream/cep_stream_effects.c',
   'src/l0_kernel/cep_enzyme_bindings.c',
