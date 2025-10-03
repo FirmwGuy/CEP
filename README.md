@@ -157,7 +157,7 @@ See [`docs/CEP.md`](./docs/CEP.md) for the full conceptual framework, glossary, 
 
 ## Current Implementation Snapshot
 - **L0 Kernel** – Deterministic heartbeats, append-only cell stores, serialization, and stream adapters ship under `src/l0_kernel`.
-- **L1 Bonds & Coherence** – Public helpers (beings, bonds, contexts, facets, `cep_tick_l1`) manage hashes, adjacency mirrors, and facet queues in `src/l1_bond`.
+- **L1 Coherence** – The enzyme pack in `src/enzymes/cep_l1_coherence.*` manages beings, bonds, contexts, closure debts, indexes, and adjacency mirrors. Reference docs live under `docs/L1_COHERENCE`.
 - **Layers 2–5** – Concepts are documented in `docs/CEP.md`; concrete code is still in planning.
 
 ---

@@ -56,6 +56,85 @@ static cepCell* coh_debt_root(void) {
     return coh_ledger("debt");
 }
 
+static cepCell* coh_index_branch(const char* name) {
+    cepCell* data = coh_find_mandatory(cep_root(), CEP_DTAW("CEP", "data"));
+    cepCell* coh = coh_find_mandatory(data, CEP_DTAW("CEP", "coh"));
+    cepCell* index_root = coh_find_mandatory(coh, CEP_DTAW("CEP", "index"));
+    cepDT branch_dt = dt_word_from(name);
+    cepCell* branch = cep_cell_find_by_name(index_root, &branch_dt);
+    munit_assert_not_null(branch);
+    return branch;
+}
+
+static cepDT coh_namepool_key(const char* text) {
+    cepID tag = cep_namepool_intern_cstr(text);
+    munit_assert_uint64(tag, !=, 0u);
+    cepDT dt = {
+        .domain = CEP_ACRO("CEP"),
+        .tag = tag,
+    };
+    return dt;
+}
+
+static cepDT coh_bo_pair_key(const char* src,
+                             const char* dst,
+                             const char* type,
+                             bool directed) {
+    char key_buf[96];
+    snprintf(key_buf, sizeof key_buf, "%s:%s:%s:%c", src, dst, type, directed ? '1' : '0');
+    return coh_namepool_key(key_buf);
+}
+
+static cepDT coh_context_facet_key(const char* ctx_id, const char* facet) {
+    char key_buf[72];
+    snprintf(key_buf, sizeof key_buf, "%s:%s", ctx_id, facet);
+    return coh_namepool_key(key_buf);
+}
+
+static cepCell* coh_adj_root(void) {
+    cepCell* tmp = coh_find_mandatory(cep_root(), CEP_DTAW("CEP", "tmp"));
+    cepCell* coh_tmp = coh_find_mandatory(tmp, CEP_DTAW("CEP", "coh"));
+    cepCell* adj = coh_find_mandatory(coh_tmp, CEP_DTAW("CEP", "adj"));
+    return coh_find_mandatory(adj, CEP_DTAW("CEP", "by_being"));
+}
+
+static cepCell* coh_adj_bucket(const char* being_id) {
+    cepDT id_dt = dt_word_from(being_id);
+    return cep_cell_find_by_name(coh_adj_root(), &id_dt);
+}
+
+static bool coh_adj_bond_contains(const char* being_id, const char* dict_name, const char* bond_id) {
+    cepCell* bucket = coh_adj_bucket(being_id);
+    if (!bucket) {
+        return false;
+    }
+    cepCell* dict = cep_cell_find_by_name(bucket, CEP_DTAW("CEP", dict_name));
+    if (!dict) {
+        return false;
+    }
+    cepDT bond_dt = dt_word_from(bond_id);
+    return cep_cell_find_by_name(dict, &bond_dt) != NULL;
+}
+
+static bool coh_adj_ctx_role_contains(const char* being_id, const char* role_name, const char* ctx_id) {
+    cepCell* bucket = coh_adj_bucket(being_id);
+    if (!bucket) {
+        return false;
+    }
+    cepCell* ctx_by_role = cep_cell_find_by_name(bucket, CEP_DTAW("CEP", "ctx_by_role"));
+    if (!ctx_by_role) {
+        return false;
+    }
+    cepDT role_dt = dt_word_from(role_name);
+    cepCell* role_bucket = cep_cell_find_by_name(ctx_by_role, &role_dt);
+    if (!role_bucket) {
+        return false;
+    }
+    cepDT ctx_dt = dt_word_from(ctx_id);
+    cepCell* link = cep_cell_find_by_name(role_bucket, &ctx_dt);
+    return link && cep_cell_is_link(link);
+}
+
 static cepCell* coh_append_dictionary(cepCell* parent, const cepDT* name) {
     cepCell* existing = cep_cell_find_by_name(parent, name);
     if (existing) {
@@ -278,6 +357,11 @@ static void decorate_facets_with_target(cepCell* request, void* user) {
     cepCell* facet = coh_append_dictionary(facets, &facet_dt);
     coh_add_link_field(facet, "target", target);
     coh_set_bool_field(facet, "required", true);
+}
+
+static void decorate_facets_empty(cepCell* request, void* user) {
+    (void)user;
+    (void)coh_append_dictionary(request, CEP_DTAW("CEP", "facets"));
 }
 
 static const char* coh_extract_enzyme_label(const char* message) {
@@ -512,6 +596,138 @@ MunitResult test_coh_link_lifecycle(const MunitParameter params[], void* fixture
     return MUNIT_OK;
 }
 
+MunitResult test_coh_indexes_and_adjacency(const MunitParameter params[], void* fixture_ptr) {
+    (void)params;
+    (void)fixture_ptr;
+
+    coh_submit_being("txn_be_idx_a1", "be_idxa", "agent");
+    coh_submit_being("txn_be_idx_b1", "be_idxb", "agent");
+    coh_submit_being("txn_be_idx_c1", "be_idxc", "agent");
+
+    cepCell* retyped = coh_submit_being("txn_be_idx_a2", "be_idxa", "speaker");
+    munit_assert_string_equal(coh_outcome(retyped), "ok");
+
+    cepCell* be_kind = coh_index_branch("be_kind");
+    cepDT alice_dt = dt_word_from("be_idxa");
+    cepDT agent_dt = dt_word_from("agent");
+    cepCell* agent_bucket = cep_cell_find_by_name(be_kind, &agent_dt);
+    if (agent_bucket) {
+        munit_assert_null(cep_cell_find_by_name(agent_bucket, &alice_dt));
+    }
+    cepDT speaker_dt = dt_word_from("speaker");
+    cepCell* speaker_bucket = coh_find_mandatory(be_kind, &speaker_dt);
+    munit_assert_not_null(cep_cell_find_by_name(speaker_bucket, &alice_dt));
+
+    cepCell* src_be = coh_being_cell("be_idxa");
+    cepCell* dst_be = coh_being_cell("be_idxb");
+    cepCell* new_dst_be = coh_being_cell("be_idxc");
+    munit_assert_not_null(src_be);
+    munit_assert_not_null(dst_be);
+    munit_assert_not_null(new_dst_be);
+
+    coh_submit_bond("txn_bond_idx_a", "bond_idx", "mentor", src_be, dst_be, false);
+    cepCell* bond = coh_bond_cell("bond_idx");
+    munit_assert_not_null(bond);
+
+    cepCell* bo_pair = coh_index_branch("bo_pair");
+    cepDT pair_initial = coh_bo_pair_key("be_idxa", "be_idxb", "mentor", false);
+    cepCell* pair_entry = coh_find_mandatory(bo_pair, &pair_initial);
+    munit_assert_ptr_equal(cep_link_pull(pair_entry), bond);
+
+    munit_assert_true(coh_adj_bond_contains("be_idxa", "out_bonds", "bond_idx"));
+    munit_assert_true(coh_adj_bond_contains("be_idxb", "in_bonds", "bond_idx"));
+
+    cepCell* rebond = coh_submit_bond("txn_bond_idx_b", "bond_idx", "mentor", src_be, new_dst_be, false);
+    munit_assert_string_equal(coh_outcome(rebond), "ok");
+
+    cepCell* old_pair = cep_cell_find_by_name(bo_pair, &pair_initial);
+    munit_assert_null(old_pair);
+    cepDT pair_updated = coh_bo_pair_key("be_idxa", "be_idxc", "mentor", false);
+    cepCell* updated_entry = coh_find_mandatory(bo_pair, &pair_updated);
+    munit_assert_ptr_equal(cep_link_pull(updated_entry), bond);
+
+    munit_assert_true(coh_adj_bond_contains("be_idxa", "out_bonds", "bond_idx"));
+    munit_assert(!coh_adj_bond_contains("be_idxb", "in_bonds", "bond_idx"));
+    munit_assert_true(coh_adj_bond_contains("be_idxc", "in_bonds", "bond_idx"));
+
+    struct {
+        const char* role_name;
+        cepCell* target;
+    } role_initial = {
+        .role_name = "owner",
+        .target = new_dst_be,
+    };
+
+    cepCell* ctx_request = coh_submit_context("txn_ctx_idx_a",
+                                             "ctx_idx",
+                                             "session",
+                                             decorate_roles_word,
+                                             &role_initial);
+    decorate_facets_with_target(ctx_request, bond);
+    coh_run_single_beat();
+
+    cepCell* ctx = coh_context_cell("ctx_idx");
+    munit_assert_not_null(ctx);
+
+    cepCell* ctx_type = coh_index_branch("ctx_type");
+    cepDT session_dt = dt_word_from("session");
+    cepCell* session_bucket = coh_find_mandatory(ctx_type, &session_dt);
+    cepDT ctx_dt = dt_word_from("ctx_idx");
+    munit_assert_not_null(cep_cell_find_by_name(session_bucket, &ctx_dt));
+
+    cepCell* fa_ctx = coh_index_branch("fa_ctx");
+    cepCell* fa_bucket = coh_find_mandatory(fa_ctx, &ctx_dt);
+    cepDT facet_dt = dt_word_from("confirm");
+    cepCell* fa_entry = coh_find_mandatory(fa_bucket, &facet_dt);
+    munit_assert_ptr_equal(cep_link_pull(fa_entry), bond);
+
+    cepCell* facets_global = coh_ledger("facet");
+    cepDT mirror_dt = coh_context_facet_key("ctx_idx", "confirm");
+    cepCell* mirror_link = coh_find_mandatory(facets_global, &mirror_dt);
+    munit_assert_ptr_equal(cep_link_pull(mirror_link), bond);
+
+    munit_assert_true(coh_adj_ctx_role_contains("be_idxc", "owner", "ctx_idx"));
+
+    struct {
+        const char* role_name;
+        cepCell* target;
+    } role_update = {
+        .role_name = "owner",
+        .target = src_be,
+    };
+
+    cepCell* ctx_update = coh_submit_context("txn_ctx_idx_b",
+                                            "ctx_idx",
+                                            "meeting",
+                                            decorate_roles_word,
+                                            &role_update);
+    decorate_facets_empty(ctx_update, NULL);
+    coh_run_single_beat();
+
+    munit_assert_null(cep_cell_find_by_name(session_bucket, &ctx_dt));
+    cepDT meeting_dt = dt_word_from("meeting");
+    cepCell* meeting_bucket = coh_find_mandatory(ctx_type, &meeting_dt);
+    munit_assert_not_null(cep_cell_find_by_name(meeting_bucket, &ctx_dt));
+
+    fa_bucket = cep_cell_find_by_name(fa_ctx, &ctx_dt);
+    if (fa_bucket) {
+        munit_assert_size(cep_cell_children(fa_bucket), ==, 0u);
+    }
+
+    munit_assert_null(cep_cell_find_by_name(facets_global, &mirror_dt));
+
+    cepCell* debt_root = coh_debt_root();
+    cepCell* debt_bucket = cep_cell_find_by_name(debt_root, &ctx_dt);
+    if (debt_bucket) {
+        munit_assert_null(cep_cell_find_by_name(debt_bucket, &facet_dt));
+    }
+
+    munit_assert(!coh_adj_ctx_role_contains("be_idxc", "owner", "ctx_idx"));
+    munit_assert_true(coh_adj_ctx_role_contains("be_idxa", "owner", "ctx_idx"));
+
+    return MUNIT_OK;
+}
+
 MunitResult test_coh_agenda_order(const MunitParameter params[], void* fixture_ptr) {
     (void)params;
     (void)fixture_ptr;
@@ -603,6 +819,14 @@ static MunitTest coherence_tests[] = {
     {
         "/coherence/link_lifecycle",
         test_coh_link_lifecycle,
+        coh_setup,
+        coh_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        NULL,
+    },
+    {
+        "/coherence/indexes_and_adjacency",
+        test_coh_indexes_and_adjacency,
         coh_setup,
         coh_teardown,
         MUNIT_TEST_OPTION_NONE,
