@@ -13,7 +13,7 @@ fs = import('fs')
 python_mod = import('python')
 
 # Includes
-inc = include_directories('src/l0_kernel', 'src/l1_bond', 'src/test')
+inc = include_directories('src/l0_kernel', 'src/test')
 
 # Global compile args to mirror Makefile
 common_args = []
@@ -58,15 +58,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
   'src/l0_kernel/cep_cell_stream.c',
   'src/l0_kernel/cep_cell_system.c',
-  'src/l1_bond/cep_bond_topology.c',
-  'src/l1_bond/cep_bond_common.c',
-  'src/l1_bond/cep_bond_being.c',
-  'src/l1_bond/cep_bond_pair.c',
-  'src/l1_bond/cep_bond_context.c',
-  'src/l1_bond/cep_bond_facet.c',
-  'src/l1_bond/cep_bond_tick.c',
   'src/enzymes/cep_cell_operations.c',
-  'src/enzymes/cep_bond_operations.c',
   'src/l0_kernel/stream/cep_stream_stdio.c',
   'src/l0_kernel/stream/cep_stream_effects.c',
   'src/l0_kernel/cep_enzyme_bindings.c',
@@ -117,10 +109,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_cell_mutations.c',
     'src/test/l0_kernel/test_traverse.c',
     'src/test/enzymes/test_cell_operations.c',
-    'src/test/enzymes/test_bond_operations.c',
     'src/test/enzymes/test_enzyme_randomized.c',
-    'src/test/l1_bond/test_bond.c',
-    'src/test/l1_bond/test_bond_randomized.c',
     'src/test/l0_kernel/test_domain_tag_naming.c',
     'src/test/l0_kernel/test_enzyme.c',
     'src/test/l0_kernel/test_heartbeat.c',

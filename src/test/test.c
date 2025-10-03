@@ -67,14 +67,6 @@ MunitTest tests[] = {
         timeout_params
     },
     {
-        "/enzyme/bond_ops",
-        test_bond_operations_enzymes,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        timeout_params
-    },
-    {
         "/heartbeat",
         test_heartbeat,
         NULL,
@@ -116,22 +108,6 @@ MunitTest tests[] = {
         NULL
     },
 #endif
-    {
-        "/l1/init",
-        test_bond,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        NULL
-    },
-    {
-        "/l1/bonds/randomized",
-        test_bond_randomized,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        NULL
-    },
 
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL}  // EOL
 };
