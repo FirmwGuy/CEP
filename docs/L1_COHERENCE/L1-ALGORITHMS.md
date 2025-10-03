@@ -13,8 +13,8 @@ If you want to customize behavior or reason about performance, this is the place
 2. **`coh_ing_bo`** – Ensures `src` and `dst` links resolve, writes `type` and `directed` flags, and reuses existing ledger nodes to stay idempotent. Both endpoints are treated as hard requirements.
 3. **`coh_ing_ctx`** – Builds or updates context nodes, enforces 11-character word rules on role names and facet identifiers, attaches links, and records debts for required-but-missing facets.
 4. **`coh_closure`** – Mirrors satisfied facets into `/data/coh/facet`, persists decisions for multi-candidate matches, and refreshes the debt tree. It relies on the namepool to build stable `{ctx}:{facet}` keys.
-5. **`coh_index`** – Recomputes secondary indexes: beings by kind, bonds by endpoint tuple, contexts by type, facets by context. Each bucket currently appends links; TODO markers in the code highlight where stale entries will be cleared in future work.
-6. **`coh_adj`** – Rebuilds transient adjacency mirrors under `/tmp/coh/adj` by copying bonds and contexts into near-neighbor buckets. Like the indexes, TODO markers note that stale entries still need pruning before final polish.
+5. **`coh_index`** – Recomputes secondary indexes: beings by kind, bonds by endpoint tuple, contexts by type, facets by context. Before relinking, it purges outdated entries so the catalog always reflects the latest ledger facts.
+6. **`coh_adj`** – Rebuilds transient adjacency mirrors under `/tmp/coh/adj` by copying bonds and contexts into near-neighbor buckets. Old references are removed first, so caches never accumulate stale links when identities move.
 
 ### Locking discipline
 - Ledger modifications take store locks around dictionary updates and data locks when mutating values. Locks are released as soon as the mutation completes to keep contention low.
@@ -30,7 +30,7 @@ If you want to customize behavior or reason about performance, this is the place
 - Both systems attach the originating intent as a parent link so auditors can trace why a decision or debt exists.
 
 ### Transient structures
-- Adjacency mirrors maintain three dictionaries per being bucket: `out_bonds`, `in_bonds`, and `ctx_by_role`. Currently the enzyme only appends links; TODO comments flag where stale entries should be removed once change detection lands.
+- Adjacency mirrors maintain three dictionaries per being bucket: `out_bonds`, `in_bonds`, and `ctx_by_role`. Each rebuild clears existing references to the touched bond or context before recreating the links.
 - Because they live under `/tmp`, deleting the whole subtree is safe. The next heartbeat rebuilds whatever is required for the touched entities.
 
 ---
@@ -40,12 +40,11 @@ If you want to customize behavior or reason about performance, this is the place
 **Q: Why does the pipeline enforce this specific enzyme order?**  
 A: Each step feeds the next—contexts rely on beings and bonds, closure relies on contexts, indexes rely on closure, and adjacency relies on indexes. Changing the order would break deterministic replay.
 
-**Q: Are the TODO comments blocking correctness?**  
-A: No. They only affect cache hygiene. Ledgers remain authoritative, and stale index or adjacency entries simply point to items that may no longer match the latest state.
+**Q: What if an entity changes kind or endpoints between beats?**  
+A: Indexes and adjacency buckets remove stale entries before relinking, so the caches always match the current ledger state. Ledgers remain the source of truth, but the mirrors now stay clean automatically.
 
 **Q: Can I replace the storage engines used by the ledgers?**  
 A: Yes. The bootstrap routine currently uses red-black trees for determinism, but you can reindex or swap engines later as long as you respect append-only semantics.
 
 **Q: How expensive is closure?**  
 A: It scales with the number of facets per context. Each facet requires a lookup, optional decision ledger check, and potential debt update. Use facets judiciously and monitor the debt tree to catch hot spots.
-

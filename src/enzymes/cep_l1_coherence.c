@@ -709,6 +709,35 @@ static bool cep_l1_decision_clear(const cepDT* ctx_id, const cepDT* facet_id) {
     return true;
 }
 
+static void cep_l1_facet_mirror_clear_ctx_locked(cepCell* mirror,
+                                                 const char* ctx_text,
+                                                 size_t ctx_len) {
+    if (!mirror || !ctx_text || !ctx_len) {
+        return;
+    }
+
+    for (cepCell* entry = cep_cell_first(mirror); entry;) {
+        cepCell* next = cep_cell_next(mirror, entry);
+        const cepDT* entry_name = cep_cell_get_name(entry);
+        if (!entry_name) {
+            entry = next;
+            continue;
+        }
+
+        char key_buf[96];
+        if (!cep_l1_dt_to_text(entry_name, key_buf, sizeof key_buf)) {
+            entry = next;
+            continue;
+        }
+
+        if (strncmp(key_buf, ctx_text, ctx_len) == 0 && key_buf[ctx_len] == ':') {
+            cep_cell_child_take_hard(mirror, entry);
+        }
+
+        entry = next;
+    }
+}
+
 static cepCell* cep_l1_ensure_adj_bucket(const cepDT* id_dt) {
     cepL1StoreLock root_lock = {0};
     cepL1StoreLock bucket_lock = {0};
@@ -760,36 +789,56 @@ static bool cep_l1_index_being(cepCell* being, const cepDT* id_dt, const char* k
         return false;
     }
     cepCell* be_kind = cep_l1_ensure_dictionary(index_root, dt_be_kind(), CEP_STORAGE_RED_BLACK_T);
-    cep_l1_store_unlock(&root_lock);
     if (!be_kind) {
-        goto done;
+        goto done_root;
     }
 
     cepDT kind_dt;
     if (!cep_l1_word_dt(kind, &kind_dt)) {
-        goto done;
+        goto done_root;
     }
 
     if (!cep_l1_store_lock(be_kind, &kind_lock)) {
-        goto done;
+        goto done_root;
     }
+
     cepCell* bucket = cep_l1_ensure_dictionary(be_kind, &kind_dt, CEP_STORAGE_RED_BLACK_T);
-    cep_l1_store_unlock(&kind_lock);
     if (!bucket) {
-        goto done;
+        goto done_kind;
+    }
+
+    /* Purge this being from all buckets before relinking. */
+    for (cepCell* kind_bucket = cep_cell_first(be_kind); kind_bucket; kind_bucket = cep_cell_next(be_kind, kind_bucket)) {
+        if (!cep_cell_has_store(kind_bucket)) {
+            continue;
+        }
+
+        cepCell* entry = NULL;
+        cepL1StoreLock bucket_purge_lock = {0};
+        if (!cep_l1_store_lock(kind_bucket, &bucket_purge_lock)) {
+            goto done_kind;
+        }
+
+        entry = cep_cell_find_by_name(kind_bucket, id_dt);
+        if (entry) {
+            cep_cell_child_take_hard(kind_bucket, entry);
+        }
+
+        cep_l1_store_unlock(&bucket_purge_lock);
     }
 
     if (!cep_l1_store_lock(bucket, &bucket_lock)) {
-        goto done;
+        goto done_kind;
     }
 
-    /* TODO: align with L1 plan by clearing stale entries before relinking. */
     cepDT id_copy = *id_dt;
     success = cep_l1_link_child(bucket, &id_copy, being);
 
-done:
+done_kind:
     cep_l1_store_unlock(&bucket_lock);
     cep_l1_store_unlock(&kind_lock);
+
+done_root:
     cep_l1_store_unlock(&root_lock);
     return success;
 }
@@ -832,7 +881,15 @@ static bool cep_l1_index_bond(cepCell* bond, const cepDT* id_dt, cepCell* src, c
         goto done;
     }
 
-    /* TODO: drop outdated pair keys so the index truly rebuilds each beat. */
+    /* Remove links that no longer match this bond before inserting the new key. */
+    for (cepCell* pair_entry = cep_cell_first(pairs); pair_entry; ) {
+        cepCell* next = cep_cell_next(pairs, pair_entry);
+        if (cep_cell_is_link(pair_entry) && cep_link_pull(pair_entry) == bond) {
+            cep_cell_child_take_hard(pairs, pair_entry);
+        }
+        pair_entry = next;
+    }
+
     success = cep_l1_link_child(pairs, &key_dt, bond);
 
 done:
@@ -856,36 +913,54 @@ static bool cep_l1_index_context(cepCell* ctx, const cepDT* id_dt, const char* t
         return false;
     }
     cepCell* ctx_type_root = cep_l1_ensure_dictionary(index_root, dt_ctx_type(), CEP_STORAGE_RED_BLACK_T);
-    cep_l1_store_unlock(&root_lock);
     if (!ctx_type_root) {
-        goto done;
+        goto done_root;
     }
 
     cepDT type_dt;
     if (!cep_l1_word_dt(type_text, &type_dt)) {
-        goto done;
+        goto done_root;
     }
 
     if (!cep_l1_store_lock(ctx_type_root, &type_root_lock)) {
-        goto done;
+        goto done_root;
     }
+
     cepCell* bucket = cep_l1_ensure_dictionary(ctx_type_root, &type_dt, CEP_STORAGE_RED_BLACK_T);
-    cep_l1_store_unlock(&type_root_lock);
     if (!bucket) {
-        goto done;
+        goto done_type_root;
+    }
+
+    for (cepCell* type_bucket = cep_cell_first(ctx_type_root); type_bucket; type_bucket = cep_cell_next(ctx_type_root, type_bucket)) {
+        if (!cep_cell_has_store(type_bucket)) {
+            continue;
+        }
+
+        cepL1StoreLock purge_lock = {0};
+        if (!cep_l1_store_lock(type_bucket, &purge_lock)) {
+            goto done_type_root;
+        }
+
+        cepCell* entry = cep_cell_find_by_name(type_bucket, id_dt);
+        if (entry) {
+            cep_cell_child_take_hard(type_bucket, entry);
+        }
+
+        cep_l1_store_unlock(&purge_lock);
     }
 
     if (!cep_l1_store_lock(bucket, &bucket_lock)) {
-        goto done;
+        goto done_type_root;
     }
 
-    /* TODO: purge previous context ids before repopulating the type bucket. */
     cepDT id_copy = *id_dt;
     success = cep_l1_link_child(bucket, &id_copy, ctx);
 
-done:
+done_type_root:
     cep_l1_store_unlock(&bucket_lock);
     cep_l1_store_unlock(&type_root_lock);
+
+done_root:
     cep_l1_store_unlock(&root_lock);
     return success;
 }
@@ -954,9 +1029,61 @@ static bool cep_l1_adj_being(cepCell* being, const cepDT* id_dt) {
     return cep_l1_ensure_adj_bucket(id_dt) != NULL;
 }
 
+static bool cep_l1_adjacency_purge_bond(const cepDT* id_dt) {
+    cepCell* adj_root = cep_l1_adj_root();
+    if (!adj_root || !id_dt) {
+        return true;
+    }
+
+    cepL1StoreLock root_lock = {0};
+    if (!cep_l1_store_lock(adj_root, &root_lock)) {
+        return false;
+    }
+
+    bool ok = true;
+    for (cepCell* bucket = cep_cell_first(adj_root); bucket && ok; bucket = cep_cell_next(adj_root, bucket)) {
+        if (!cep_cell_has_store(bucket)) {
+            continue;
+        }
+
+        cepL1StoreLock bucket_lock = {0};
+        if (!cep_l1_store_lock(bucket, &bucket_lock)) {
+            ok = false;
+            break;
+        }
+
+        cepCell* out_dict = cep_cell_find_by_name(bucket, dt_out_bonds());
+        cepCell* in_dict  = cep_cell_find_by_name(bucket, dt_in_bonds());
+
+        if (out_dict && cep_cell_has_store(out_dict)) {
+            cepCell* existing = cep_cell_find_by_name(out_dict, id_dt);
+            if (existing) {
+                cep_cell_child_take_hard(out_dict, existing);
+            }
+        }
+
+        if (in_dict && cep_cell_has_store(in_dict)) {
+            cepCell* existing = cep_cell_find_by_name(in_dict, id_dt);
+            if (existing) {
+                cep_cell_child_take_hard(in_dict, existing);
+            }
+        }
+
+        cep_l1_store_unlock(&bucket_lock);
+    }
+
+    cep_l1_store_unlock(&root_lock);
+    return ok;
+}
+
 static bool cep_l1_adj_bond(cepCell* bond, const cepDT* id_dt, cepCell* src, cepCell* dst) {
     (void)id_dt;
     if (!bond || !src || !dst) {
+        return false;
+    }
+
+    const cepDT* bond_name_ptr = cep_cell_get_name(bond);
+    if (!cep_l1_adjacency_purge_bond(bond_name_ptr)) {
         return false;
     }
 
@@ -972,14 +1099,13 @@ static bool cep_l1_adj_bond(cepCell* bond, const cepDT* id_dt, cepCell* src, cep
         return false;
     }
 
-    cepDT bond_name = *cep_cell_get_name(bond);
+    cepDT bond_name = *bond_name_ptr;
     cepL1StoreLock out_lock = {0};
     cepL1StoreLock in_lock = {0};
 
     if (!cep_l1_store_lock(out_dict, &out_lock)) {
         return false;
     }
-    /* TODO: remove outdated adjacency entries before adding new ones. */
     bool out_ok = cep_l1_link_child(out_dict, &bond_name, bond);
     cep_l1_store_unlock(&out_lock);
     if (!out_ok) {
@@ -994,8 +1120,64 @@ static bool cep_l1_adj_bond(cepCell* bond, const cepDT* id_dt, cepCell* src, cep
     return in_ok;
 }
 
+static bool cep_l1_adjacency_purge_context(const cepDT* ctx_id) {
+    cepCell* adj_root = cep_l1_adj_root();
+    if (!adj_root || !ctx_id) {
+        return true;
+    }
+
+    cepL1StoreLock root_lock = {0};
+    if (!cep_l1_store_lock(adj_root, &root_lock)) {
+        return false;
+    }
+
+    bool ok = true;
+    for (cepCell* bucket = cep_cell_first(adj_root); bucket && ok; bucket = cep_cell_next(adj_root, bucket)) {
+        if (!cep_cell_has_store(bucket)) {
+            continue;
+        }
+
+        cepL1StoreLock bucket_lock = {0};
+        if (!cep_l1_store_lock(bucket, &bucket_lock)) {
+            ok = false;
+            break;
+        }
+
+        cepCell* ctx_by_role_root = cep_cell_find_by_name(bucket, dt_ctx_by_role());
+        if (ctx_by_role_root && cep_cell_has_store(ctx_by_role_root)) {
+            for (cepCell* role_bucket = cep_cell_first(ctx_by_role_root); role_bucket; role_bucket = cep_cell_next(ctx_by_role_root, role_bucket)) {
+                if (!cep_cell_has_store(role_bucket)) {
+                    continue;
+                }
+
+                cepL1StoreLock role_lock = {0};
+                if (!cep_l1_store_lock(role_bucket, &role_lock)) {
+                    ok = false;
+                    break;
+                }
+
+                cepCell* existing = cep_cell_find_by_name(role_bucket, ctx_id);
+                if (existing) {
+                    cep_cell_child_take_hard(role_bucket, existing);
+                }
+
+                cep_l1_store_unlock(&role_lock);
+            }
+        }
+
+        cep_l1_store_unlock(&bucket_lock);
+    }
+
+    cep_l1_store_unlock(&root_lock);
+    return ok;
+}
+
 static bool cep_l1_adj_context(cepCell* ctx, const cepDT* id_dt) {
     if (!ctx || !id_dt) {
+        return false;
+    }
+
+    if (!cep_l1_adjacency_purge_context(id_dt)) {
         return false;
     }
 
@@ -1036,7 +1218,6 @@ static bool cep_l1_adj_context(cepCell* ctx, const cepDT* id_dt) {
             return false;
         }
 
-        /* TODO: clear the role bucket so adjacency mirrors stay in sync. */
         cepDT ctx_name = *id_dt;
         bool ok = cep_l1_link_child(role_bucket, &ctx_name, ctx);
         cep_l1_store_unlock(&role_lock);
@@ -1739,6 +1920,8 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
             goto done;
         }
 
+        cep_l1_facet_mirror_clear_ctx_locked(mirror, id_buf, strlen(id_buf));
+
         for (cepCell* facet = cep_cell_first(facets_dst); facet; facet = cep_cell_next(facets_dst, facet)) {
             const cepDT* facet_name = cep_cell_get_name(facet);
             cepCell* facet_target = cep_link_pull(facet);
@@ -1756,7 +1939,6 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
             cepID key_id = cep_namepool_intern_cstr(key_buf);
             cepDT key_dt = {.domain = cep_domain_cep(), .tag = key_id};
 
-            /* TODO: prune mirror entries when facets disappear from contexts. */
             if (!cep_l1_link_child(mirror, &key_dt, facet_target)) {
                 goto done;
             }
