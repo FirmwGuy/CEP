@@ -62,6 +62,7 @@ when a new behaviour needs a fresh word before it lands in code.
 | `bond` | core | ledger entry for bonds. |
 | `context` | core | ledger entry for contexts. |
 | `facet` | core | global facet mirror keyed by `ctxId:facet`. |
+| `attrs` | core | attribute dictionary reserved for beings or context extras. |
 | `index` | core | dictionary of durable secondary indexes. |
 | `debt` | core | placeholder bucket for closure debts. |
 | `inbox` | core | intent inbox for coherence enzymes. |

@@ -68,8 +68,87 @@ static const cepDT* dt_out_bonds(void)   { return CEP_DTAW("CEP", "out_bonds"); 
 static const cepDT* dt_in_bonds(void)    { return CEP_DTAW("CEP", "in_bonds"); }
 static const cepDT* dt_ctx_by_role(void) { return CEP_DTAW("CEP", "ctx_by_role"); }
 static const cepDT* dt_required(void)    { return CEP_DTAW("CEP", "required"); }
+static const cepDT* dt_attrs(void)       { return CEP_DTAW("CEP", "attrs"); }
+
+typedef struct {
+    cepCell*    cell;
+    cepLockToken token;
+    bool         locked;
+} cepL1StoreLock;
+
+typedef struct {
+    cepCell*    cell;
+    cepLockToken token;
+    bool         locked;
+} cepL1DataLock;
+
+static void cep_l1_store_unlock(cepL1StoreLock* guard);
+static void cep_l1_data_unlock(cepL1DataLock* guard);
+
+static bool cep_l1_store_lock(cepCell* cell, cepL1StoreLock* guard) {
+    if (!guard) {
+        return false;
+    }
+
+    guard->cell = NULL;
+    guard->locked = false;
+
+    if (!cell || !cep_cell_has_store(cell)) {
+        return false;
+    }
+
+    if (!cep_store_lock(cell, &guard->token)) {
+        return false;
+    }
+
+    guard->cell = cell;
+    guard->locked = true;
+    return true;
+}
+
+static void cep_l1_store_unlock(cepL1StoreLock* guard) {
+    if (!guard || !guard->locked || !guard->cell) {
+        return;
+    }
+    cep_store_unlock(guard->cell, &guard->token);
+    guard->cell = NULL;
+    guard->locked = false;
+}
+
+static bool cep_l1_data_lock(cepCell* cell, cepL1DataLock* guard) {
+    if (!guard) {
+        return false;
+    }
+
+    guard->cell = NULL;
+    guard->locked = false;
+
+    if (!cell || !cep_cell_has_data(cell)) {
+        return false;
+    }
+
+    if (!cep_data_lock(cell, &guard->token)) {
+        return false;
+    }
+
+    guard->cell = cell;
+    guard->locked = true;
+    return true;
+}
+
+static void cep_l1_data_unlock(cepL1DataLock* guard) {
+    if (!guard || !guard->locked || !guard->cell) {
+        return;
+    }
+    cep_data_unlock(guard->cell, &guard->token);
+    guard->cell = NULL;
+    guard->locked = false;
+}
 
 static bool cep_l1_dt_to_text(const cepDT* dt, char* buffer, size_t cap);
+static void cep_l1_mark_outcome_error(cepCell* request, const char* code);
+static bool cep_l1_word_dt_guard(const char* text, cepDT* out, cepCell* request, const char* code);
+static bool cep_l1_require_role_name(const cepDT* role_name, cepCell* request);
 
 /* ------------------------------------------------------------------------- */
 /*  Small helpers                                                            */
@@ -125,7 +204,17 @@ static bool cep_l1_set_value_bytes(cepCell* parent, const cepDT* name, const cep
             return true;
         }
 
-        cep_cell_update(existing, size, size, (void*)bytes, false);
+        cepL1DataLock data_lock;
+        if (!cep_l1_data_lock(existing, &data_lock)) {
+            return false;
+        }
+
+        cepCell* updated = cep_cell_update(existing, size, size, (void*)bytes, false);
+        cep_l1_data_unlock(&data_lock);
+        if (!updated) {
+            return false;
+        }
+
         cep_cell_content_hash(existing);
         return true;
     }
@@ -148,6 +237,32 @@ static bool cep_l1_set_string_value(cepCell* parent, const cepDT* name, const ch
 static bool cep_l1_set_bool_value(cepCell* parent, const cepDT* name, bool flag) {
     uint8_t payload = flag ? 1u : 0u;
     return cep_l1_set_value_bytes(parent, name, dt_text(), &payload, sizeof payload);
+}
+
+static void cep_l1_mark_outcome_error(cepCell* request, const char* code) {
+    if (!request) {
+        return;
+    }
+    if (!code) {
+        code = "error";
+    }
+    cep_l1_set_string_value(request, dt_outcome(), code);
+}
+
+static bool cep_l1_word_dt_guard(const char* text, cepDT* out, cepCell* request, const char* code) {
+    if (!cep_l1_word_dt(text, out)) {
+        cep_l1_mark_outcome_error(request, code ? code : "invalid-word");
+        return false;
+    }
+    return true;
+}
+
+static bool cep_l1_require_role_name(const cepDT* role_name, cepCell* request) {
+    if (!role_name || !cep_id_is_word(role_name->tag)) {
+        cep_l1_mark_outcome_error(request, "invalid-role");
+        return false;
+    }
+    return true;
 }
 
 static cepCell* cep_l1_ensure_dictionary(cepCell* parent, const cepDT* name, unsigned storage) {
@@ -395,73 +510,116 @@ static bool cep_l1_link_child(cepCell* parent, const cepDT* name, cepCell* targe
 }
 
 static cepCell* cep_l1_ensure_adj_bucket(const cepDT* id_dt) {
+    cepL1StoreLock root_lock = {0};
+    cepL1StoreLock bucket_lock = {0};
+
     cepCell* adj_root = cep_l1_adj_root();
     if (!adj_root) {
         return NULL;
     }
 
+    if (!cep_l1_store_lock(adj_root, &root_lock)) {
+        return NULL;
+    }
     cepCell* bucket = cep_l1_ensure_dictionary(adj_root, id_dt, CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&root_lock);
     if (!bucket) {
         return NULL;
     }
 
-    if (!cep_l1_ensure_dictionary(bucket, dt_out_bonds(), CEP_STORAGE_RED_BLACK_T)) {
-        return NULL;
-    }
-    if (!cep_l1_ensure_dictionary(bucket, dt_in_bonds(), CEP_STORAGE_RED_BLACK_T)) {
-        return NULL;
-    }
-    if (!cep_l1_ensure_dictionary(bucket, dt_ctx_by_role(), CEP_STORAGE_RED_BLACK_T)) {
+    if (!cep_l1_store_lock(bucket, &bucket_lock)) {
         return NULL;
     }
 
-    return bucket;
+    bool ok = true;
+    if (!cep_l1_ensure_dictionary(bucket, dt_out_bonds(), CEP_STORAGE_RED_BLACK_T)) {
+        ok = false;
+    } else if (!cep_l1_ensure_dictionary(bucket, dt_in_bonds(), CEP_STORAGE_RED_BLACK_T)) {
+        ok = false;
+    } else if (!cep_l1_ensure_dictionary(bucket, dt_ctx_by_role(), CEP_STORAGE_RED_BLACK_T)) {
+        ok = false;
+    }
+
+    cep_l1_store_unlock(&bucket_lock);
+
+    return ok ? bucket : NULL;
 }
 
 static bool cep_l1_index_being(cepCell* being, const cepDT* id_dt, const char* kind) {
+    cepL1StoreLock root_lock = {0};
+    cepL1StoreLock kind_lock = {0};
+    cepL1StoreLock bucket_lock = {0};
+    bool success = false;
+
     cepCell* index_root = cep_l1_index_root();
     if (!index_root || !being || !id_dt || !kind) {
         return false;
     }
 
-    cepCell* be_kind = cep_l1_ensure_dictionary(index_root, dt_be_kind(), CEP_STORAGE_RED_BLACK_T);
-    if (!be_kind) {
+    if (!cep_l1_store_lock(index_root, &root_lock)) {
         return false;
+    }
+    cepCell* be_kind = cep_l1_ensure_dictionary(index_root, dt_be_kind(), CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&root_lock);
+    if (!be_kind) {
+        goto done;
     }
 
     cepDT kind_dt;
     if (!cep_l1_word_dt(kind, &kind_dt)) {
-        return false;
+        goto done;
     }
 
+    if (!cep_l1_store_lock(be_kind, &kind_lock)) {
+        goto done;
+    }
     cepCell* bucket = cep_l1_ensure_dictionary(be_kind, &kind_dt, CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&kind_lock);
     if (!bucket) {
-        return false;
+        goto done;
+    }
+
+    if (!cep_l1_store_lock(bucket, &bucket_lock)) {
+        goto done;
     }
 
     cepDT id_copy = *id_dt;
-    return cep_l1_link_child(bucket, &id_copy, being);
+    success = cep_l1_link_child(bucket, &id_copy, being);
+
+done:
+    cep_l1_store_unlock(&bucket_lock);
+    cep_l1_store_unlock(&kind_lock);
+    cep_l1_store_unlock(&root_lock);
+    return success;
 }
 
 static bool cep_l1_index_bond(cepCell* bond, const cepDT* id_dt, cepCell* src, cepCell* dst, const char* type_text, bool directed) {
     (void)id_dt;
+    cepL1StoreLock root_lock = {0};
+    cepL1StoreLock pairs_lock = {0};
+    bool success = false;
+
     cepCell* index_root = cep_l1_index_root();
     if (!index_root || !bond || !id_dt || !src || !dst || !type_text) {
         return false;
     }
 
-    cepCell* pairs = cep_l1_ensure_dictionary(index_root, dt_bo_pair(), CEP_STORAGE_RED_BLACK_T);
-    if (!pairs) {
+    if (!cep_l1_store_lock(index_root, &root_lock)) {
         return false;
+    }
+    cepCell* pairs = cep_l1_ensure_dictionary(index_root, dt_bo_pair(), CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&root_lock);
+    if (!pairs) {
+        goto done;
     }
 
     char src_buf[32];
     char dst_buf[32];
     if (!cep_l1_dt_to_text(cep_cell_get_name(src), src_buf, sizeof src_buf)) {
-        return false;
+        goto done;
     }
     if (!cep_l1_dt_to_text(cep_cell_get_name(dst), dst_buf, sizeof dst_buf)) {
-        return false;
+        goto done;
     }
 
     char key_buf[96];
@@ -469,35 +627,72 @@ static bool cep_l1_index_bond(cepCell* bond, const cepDT* id_dt, cepCell* src, c
     cepID key_id = cep_namepool_intern_cstr(key_buf);
     cepDT key_dt = {.domain = cep_domain_cep(), .tag = key_id};
 
-    return cep_l1_link_child(pairs, &key_dt, bond);
+    if (!cep_l1_store_lock(pairs, &pairs_lock)) {
+        goto done;
+    }
+
+    success = cep_l1_link_child(pairs, &key_dt, bond);
+
+done:
+    cep_l1_store_unlock(&pairs_lock);
+    cep_l1_store_unlock(&root_lock);
+    return success;
 }
 
 static bool cep_l1_index_context(cepCell* ctx, const cepDT* id_dt, const char* type_text) {
+    cepL1StoreLock root_lock = {0};
+    cepL1StoreLock type_root_lock = {0};
+    cepL1StoreLock bucket_lock = {0};
+    bool success = false;
+
     cepCell* index_root = cep_l1_index_root();
     if (!index_root || !ctx || !id_dt || !type_text) {
         return false;
     }
 
-    cepCell* ctx_type_root = cep_l1_ensure_dictionary(index_root, dt_ctx_type(), CEP_STORAGE_RED_BLACK_T);
-    if (!ctx_type_root) {
+    if (!cep_l1_store_lock(index_root, &root_lock)) {
         return false;
+    }
+    cepCell* ctx_type_root = cep_l1_ensure_dictionary(index_root, dt_ctx_type(), CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&root_lock);
+    if (!ctx_type_root) {
+        goto done;
     }
 
     cepDT type_dt;
     if (!cep_l1_word_dt(type_text, &type_dt)) {
-        return false;
+        goto done;
     }
 
+    if (!cep_l1_store_lock(ctx_type_root, &type_root_lock)) {
+        goto done;
+    }
     cepCell* bucket = cep_l1_ensure_dictionary(ctx_type_root, &type_dt, CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&type_root_lock);
     if (!bucket) {
-        return false;
+        goto done;
+    }
+
+    if (!cep_l1_store_lock(bucket, &bucket_lock)) {
+        goto done;
     }
 
     cepDT id_copy = *id_dt;
-    return cep_l1_link_child(bucket, &id_copy, ctx);
+    success = cep_l1_link_child(bucket, &id_copy, ctx);
+
+done:
+    cep_l1_store_unlock(&bucket_lock);
+    cep_l1_store_unlock(&type_root_lock);
+    cep_l1_store_unlock(&root_lock);
+    return success;
 }
 
 static bool cep_l1_index_facets(cepCell* ctx, const cepDT* id_dt) {
+    cepL1StoreLock root_lock = {0};
+    cepL1StoreLock fa_ctx_lock = {0};
+    cepL1StoreLock bucket_lock = {0};
+    bool success = false;
+
     if (!ctx || !id_dt) {
         return false;
     }
@@ -512,26 +707,43 @@ static bool cep_l1_index_facets(cepCell* ctx, const cepDT* id_dt) {
         return false;
     }
 
-    cepCell* fa_ctx_root = cep_l1_ensure_dictionary(index_root, dt_fa_ctx(), CEP_STORAGE_RED_BLACK_T);
-    if (!fa_ctx_root) {
+    if (!cep_l1_store_lock(index_root, &root_lock)) {
         return false;
     }
+    cepCell* fa_ctx_root = cep_l1_ensure_dictionary(index_root, dt_fa_ctx(), CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&root_lock);
+    if (!fa_ctx_root) {
+        goto done;
+    }
 
+    if (!cep_l1_store_lock(fa_ctx_root, &fa_ctx_lock)) {
+        goto done;
+    }
     cepCell* ctx_bucket = cep_l1_ensure_dictionary(fa_ctx_root, id_dt, CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&fa_ctx_lock);
     if (!ctx_bucket) {
-        return false;
+        goto done;
+    }
+
+    if (!cep_l1_store_lock(ctx_bucket, &bucket_lock)) {
+        goto done;
     }
 
     cep_l1_clear_children(ctx_bucket);
 
-    for (cepCell* facet = cep_cell_first(facets); facet; facet = cep_cell_next(facets, facet)) {
+    success = true;
+    for (cepCell* facet = cep_cell_first(facets); facet && success; facet = cep_cell_next(facets, facet)) {
         cepDT facet_name = *cep_cell_get_name(facet);
         if (!cep_l1_link_child(ctx_bucket, &facet_name, facet)) {
-            return false;
+            success = false;
         }
     }
 
-    return true;
+done:
+    cep_l1_store_unlock(&bucket_lock);
+    cep_l1_store_unlock(&fa_ctx_lock);
+    cep_l1_store_unlock(&root_lock);
+    return success;
 }
 
 static bool cep_l1_adj_being(cepCell* being, const cepDT* id_dt) {
@@ -558,14 +770,24 @@ static bool cep_l1_adj_bond(cepCell* bond, const cepDT* id_dt, cepCell* src, cep
     }
 
     cepDT bond_name = *cep_cell_get_name(bond);
-    if (!cep_l1_link_child(out_dict, &bond_name, bond)) {
+    cepL1StoreLock out_lock = {0};
+    cepL1StoreLock in_lock = {0};
+
+    if (!cep_l1_store_lock(out_dict, &out_lock)) {
         return false;
     }
-    if (!cep_l1_link_child(in_dict, &bond_name, bond)) {
+    bool out_ok = cep_l1_link_child(out_dict, &bond_name, bond);
+    cep_l1_store_unlock(&out_lock);
+    if (!out_ok) {
         return false;
     }
 
-    return true;
+    if (!cep_l1_store_lock(in_dict, &in_lock)) {
+        return false;
+    }
+    bool in_ok = cep_l1_link_child(in_dict, &bond_name, bond);
+    cep_l1_store_unlock(&in_lock);
+    return in_ok;
 }
 
 static bool cep_l1_adj_context(cepCell* ctx, const cepDT* id_dt) {
@@ -595,13 +817,25 @@ static bool cep_l1_adj_context(cepCell* ctx, const cepDT* id_dt) {
             return false;
         }
 
+        cepL1StoreLock ctx_by_role_lock = {0};
+        if (!cep_l1_store_lock(ctx_by_role_root, &ctx_by_role_lock)) {
+            return false;
+        }
         cepCell* role_bucket = cep_l1_ensure_dictionary(ctx_by_role_root, role_name, CEP_STORAGE_RED_BLACK_T);
+        cep_l1_store_unlock(&ctx_by_role_lock);
         if (!role_bucket) {
             return false;
         }
 
+        cepL1StoreLock role_lock = {0};
+        if (!cep_l1_store_lock(role_bucket, &role_lock)) {
+            return false;
+        }
+
         cepDT ctx_name = *id_dt;
-        if (!cep_l1_link_child(role_bucket, &ctx_name, ctx)) {
+        bool ok = cep_l1_link_child(role_bucket, &ctx_name, ctx);
+        cep_l1_store_unlock(&role_lock);
+        if (!ok) {
             return false;
         }
     }
@@ -610,14 +844,30 @@ static bool cep_l1_adj_context(cepCell* ctx, const cepDT* id_dt) {
 }
 
 static bool cep_l1_record_debt(const cepDT* ctx_id, const cepDT* facet_id, cepCell* request) {
+    cepL1StoreLock debt_lock = {0};
+    cepL1StoreLock ctx_lock = {0};
+    cepL1StoreLock facet_lock = {0};
+    bool success = false;
+
     cepCell* debt_root = cep_l1_debt_root();
     if (!debt_root || !ctx_id || !facet_id) {
         return false;
     }
 
+    if (!cep_l1_store_lock(debt_root, &debt_lock)) {
+        cep_l1_mark_outcome_error(request, "debt-lock");
+        goto done;
+    }
+
     cepCell* ctx_bucket = cep_l1_ensure_dictionary(debt_root, ctx_id, CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&debt_lock);
     if (!ctx_bucket) {
-        return false;
+        goto done;
+    }
+
+    if (!cep_l1_store_lock(ctx_bucket, &ctx_lock)) {
+        cep_l1_mark_outcome_error(request, "debt-lock");
+        goto done;
     }
 
     cepCell* facet_bucket = cep_cell_find_by_name(ctx_bucket, facet_id);
@@ -626,15 +876,29 @@ static bool cep_l1_record_debt(const cepDT* ctx_id, const cepDT* facet_id, cepCe
         cepDT dict_type = *dt_dictionary();
         facet_bucket = cep_dict_add_dictionary(ctx_bucket, &facet_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
     }
+    cep_l1_store_unlock(&ctx_lock);
     if (!facet_bucket) {
-        return false;
+        goto done;
     }
 
-    cep_l1_set_bool_value(facet_bucket, dt_required(), true);
+    if (!cep_l1_store_lock(facet_bucket, &facet_lock)) {
+        cep_l1_mark_outcome_error(request, "debt-lock");
+        goto done;
+    }
+
+    if (!cep_l1_set_bool_value(facet_bucket, dt_required(), true)) {
+        goto done;
+    }
     if (request) {
         cep_l1_attach_request_parent(facet_bucket, request);
     }
-    return true;
+    success = true;
+
+done:
+    cep_l1_store_unlock(&facet_lock);
+    cep_l1_store_unlock(&ctx_lock);
+    cep_l1_store_unlock(&debt_lock);
+    return success;
 }
 
 static void cep_l1_clear_debt(const cepDT* ctx_id, const cepDT* facet_id) {
@@ -648,13 +912,28 @@ static void cep_l1_clear_debt(const cepDT* ctx_id, const cepDT* facet_id) {
         return;
     }
 
+    cepL1StoreLock ctx_lock = {0};
+    if (!cep_l1_store_lock(ctx_bucket, &ctx_lock)) {
+        return;
+    }
+
     cepCell* facet_bucket = cep_cell_find_by_name(ctx_bucket, facet_id);
     if (facet_bucket) {
         cep_cell_child_take_hard(ctx_bucket, facet_bucket);
     }
 
-    if (!cep_cell_children(ctx_bucket)) {
-        cep_cell_child_take_hard(debt_root, ctx_bucket);
+    bool empty_after = cep_cell_children(ctx_bucket) == 0u;
+    cep_l1_store_unlock(&ctx_lock);
+
+    if (empty_after) {
+        cepL1StoreLock debt_lock = {0};
+        if (cep_l1_store_lock(debt_root, &debt_lock)) {
+            cepCell* ctx_check = cep_cell_find_by_name(debt_root, ctx_id);
+            if (ctx_check && !cep_cell_children(ctx_check)) {
+                cep_cell_child_take_hard(debt_root, ctx_check);
+            }
+            cep_l1_store_unlock(&debt_lock);
+        }
     }
 }
 
@@ -844,6 +1123,10 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
 static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l1_enzyme_ingest_be(const cepPath* signal_path, const cepPath* target_path) {
     (void)signal_path;
+    int result = CEP_ENZYME_FATAL;
+    cepL1StoreLock ledger_lock = {0};
+    cepL1StoreLock being_lock = {0};
+
     cepCell* request = cep_l1_resolve_request(target_path);
     if (!cep_l1_request_guard(request, dt_be_create())) {
         return CEP_ENZYME_SUCCESS;
@@ -852,37 +1135,72 @@ static int cep_l1_enzyme_ingest_be(const cepPath* signal_path, const cepPath* ta
     char id_buf[32];
     char kind_buf[32];
     if (!cep_l1_request_word_field(request, dt_id(), id_buf, sizeof id_buf)) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-id");
+        goto done;
     }
     if (!cep_l1_request_word_field(request, dt_kind(), kind_buf, sizeof kind_buf)) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-kind");
+        goto done;
     }
 
     cepDT id_dt;
-    if (!cep_l1_word_dt(id_buf, &id_dt)) {
-        return CEP_ENZYME_FATAL;
+    if (!cep_l1_word_dt_guard(id_buf, &id_dt, request, "invalid-id")) {
+        goto done;
+    }
+
+    cepDT kind_dt_tmp;
+    if (!cep_l1_word_dt_guard(kind_buf, &kind_dt_tmp, request, "invalid-kind")) {
+        goto done;
     }
 
     cepCell* ledger = cep_l1_being_ledger();
     if (!ledger) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-ledger");
+        goto done;
+    }
+
+    if (!cep_l1_store_lock(ledger, &ledger_lock)) {
+        cep_l1_mark_outcome_error(request, "ledger-lock");
+        goto done;
     }
 
     cepCell* being = cep_l1_ensure_dictionary(ledger, &id_dt, CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&ledger_lock);
     if (!being) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "create-failed");
+        goto done;
+    }
+
+    if (!cep_l1_store_lock(being, &being_lock)) {
+        cep_l1_mark_outcome_error(request, "being-lock");
+        goto done;
     }
 
     if (!cep_l1_set_string_value(being, dt_kind(), kind_buf)) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "set-kind");
+        goto done;
+    }
+
+    if (!cep_l1_ensure_dictionary(being, dt_attrs(), CEP_STORAGE_RED_BLACK_T)) {
+        cep_l1_mark_outcome_error(request, "attrs");
+        goto done;
     }
 
     cep_l1_attach_request_parent(being, request);
     cep_l1_mark_outcome_ok(request);
-    return CEP_ENZYME_SUCCESS;
+    result = CEP_ENZYME_SUCCESS;
+
+done:
+    cep_l1_store_unlock(&being_lock);
+    cep_l1_store_unlock(&ledger_lock);
+    return result;
 }
 static int cep_l1_enzyme_ingest_bo(const cepPath* signal_path, const cepPath* target_path) {
     (void)signal_path;
+    int result = CEP_ENZYME_FATAL;
+    cepL1StoreLock ledger_lock = {0};
+    cepL1StoreLock bond_lock = {0};
+
     cepCell* request = cep_l1_resolve_request(target_path);
     if (!cep_l1_request_guard(request, dt_bo_upsert())) {
         return CEP_ENZYME_SUCCESS;
@@ -891,55 +1209,82 @@ static int cep_l1_enzyme_ingest_bo(const cepPath* signal_path, const cepPath* ta
     char id_buf[32];
     char type_buf[32];
     if (!cep_l1_request_word_field(request, dt_id(), id_buf, sizeof id_buf)) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-id");
+        goto done;
     }
     if (!cep_l1_request_word_field(request, dt_type(), type_buf, sizeof type_buf)) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-type");
+        goto done;
     }
 
     cepCell* src = cep_l1_request_link_field(request, dt_src());
     cepCell* dst = cep_l1_request_link_field(request, dt_dst());
     if (!src || !dst) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-endpoint");
+        goto done;
     }
 
     bool directed = false;
     (void)cep_l1_request_bool_field(request, dt_directed(), &directed);
 
     cepDT id_dt;
-    if (!cep_l1_word_dt(id_buf, &id_dt)) {
-        return CEP_ENZYME_FATAL;
+    if (!cep_l1_word_dt_guard(id_buf, &id_dt, request, "invalid-id")) {
+        goto done;
+    }
+
+    cepDT type_dt_tmp;
+    if (!cep_l1_word_dt_guard(type_buf, &type_dt_tmp, request, "invalid-type")) {
+        goto done;
     }
 
     cepCell* ledger = cep_l1_bond_ledger();
     if (!ledger) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-ledger");
+        goto done;
+    }
+
+    if (!cep_l1_store_lock(ledger, &ledger_lock)) {
+        cep_l1_mark_outcome_error(request, "ledger-lock");
+        goto done;
     }
 
     cepCell* bond = cep_l1_ensure_dictionary(ledger, &id_dt, CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&ledger_lock);
     if (!bond) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "create-failed");
+        goto done;
     }
 
-    if (!cep_l1_set_string_value(bond, dt_type(), type_buf)) {
-        return CEP_ENZYME_FATAL;
+    if (!cep_l1_store_lock(bond, &bond_lock)) {
+        cep_l1_mark_outcome_error(request, "bond-lock");
+        goto done;
     }
-    if (!cep_l1_set_link_field(bond, dt_src(), src)) {
-        return CEP_ENZYME_FATAL;
-    }
-    if (!cep_l1_set_link_field(bond, dt_dst(), dst)) {
-        return CEP_ENZYME_FATAL;
-    }
-    if (!cep_l1_set_bool_value(bond, dt_directed(), directed)) {
-        return CEP_ENZYME_FATAL;
+
+    if (!cep_l1_set_string_value(bond, dt_type(), type_buf)
+        || !cep_l1_set_link_field(bond, dt_src(), src)
+        || !cep_l1_set_link_field(bond, dt_dst(), dst)
+        || !cep_l1_set_bool_value(bond, dt_directed(), directed)) {
+        cep_l1_mark_outcome_error(request, "bond-update");
+        goto done;
     }
 
     cep_l1_attach_request_parent(bond, request);
     cep_l1_mark_outcome_ok(request);
-    return CEP_ENZYME_SUCCESS;
+    result = CEP_ENZYME_SUCCESS;
+
+done:
+    cep_l1_store_unlock(&bond_lock);
+    cep_l1_store_unlock(&ledger_lock);
+    return result;
 }
 static int cep_l1_enzyme_ingest_ctx(const cepPath* signal_path, const cepPath* target_path) {
     (void)signal_path;
+    int result = CEP_ENZYME_FATAL;
+    cepL1StoreLock ledger_lock = {0};
+    cepL1StoreLock ctx_lock = {0};
+    cepL1StoreLock roles_lock = {0};
+    cepL1StoreLock facets_lock = {0};
+
     cepCell* request = cep_l1_resolve_request(target_path);
     if (!cep_l1_request_guard(request, dt_ctx_upsert())) {
         return CEP_ENZYME_SUCCESS;
@@ -948,80 +1293,147 @@ static int cep_l1_enzyme_ingest_ctx(const cepPath* signal_path, const cepPath* t
     char id_buf[32];
     char type_buf[32];
     if (!cep_l1_request_word_field(request, dt_id(), id_buf, sizeof id_buf)) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-id");
+        goto done;
     }
     if (!cep_l1_request_word_field(request, dt_type(), type_buf, sizeof type_buf)) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-type");
+        goto done;
     }
 
     cepDT id_dt;
-    if (!cep_l1_word_dt(id_buf, &id_dt)) {
-        return CEP_ENZYME_FATAL;
+    if (!cep_l1_word_dt_guard(id_buf, &id_dt, request, "invalid-id")) {
+        goto done;
+    }
+
+    cepDT type_dt_tmp;
+    if (!cep_l1_word_dt_guard(type_buf, &type_dt_tmp, request, "invalid-type")) {
+        goto done;
     }
 
     cepCell* ledger = cep_l1_context_ledger();
     if (!ledger) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-ledger");
+        goto done;
+    }
+
+    if (!cep_l1_store_lock(ledger, &ledger_lock)) {
+        cep_l1_mark_outcome_error(request, "ledger-lock");
+        goto done;
     }
 
     cepCell* ctx = cep_l1_ensure_dictionary(ledger, &id_dt, CEP_STORAGE_RED_BLACK_T);
+    cep_l1_store_unlock(&ledger_lock);
     if (!ctx) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "create-failed");
+        goto done;
     }
 
     if (!cep_l1_set_string_value(ctx, dt_type(), type_buf)) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "ctx-type");
+        goto done;
     }
 
     cepCell* roles_req = cep_cell_find_by_name(request, dt_roles());
     if (roles_req && cep_cell_has_store(roles_req)) {
-        cepCell* roles_dst = cep_l1_ensure_dictionary(ctx, dt_roles(), CEP_STORAGE_RED_BLACK_T);
-        if (!roles_dst) {
-            return CEP_ENZYME_FATAL;
+        if (!cep_l1_store_lock(ctx, &ctx_lock)) {
+            cep_l1_mark_outcome_error(request, "ctx-lock");
+            goto done;
         }
+        cepCell* roles_dst = cep_l1_ensure_dictionary(ctx, dt_roles(), CEP_STORAGE_RED_BLACK_T);
+        cep_l1_store_unlock(&ctx_lock);
+        if (!roles_dst) {
+            cep_l1_mark_outcome_error(request, "roles");
+            goto done;
+        }
+
+        if (!cep_l1_store_lock(roles_dst, &roles_lock)) {
+            cep_l1_mark_outcome_error(request, "roles-lock");
+            goto done;
+        }
+
         cep_l1_clear_children(roles_dst);
         for (cepCell* role = cep_cell_first(roles_req); role; role = cep_cell_next(roles_req, role)) {
             const cepDT* role_name = cep_cell_get_name(role);
-            if (!cep_id_is_word(role_name->tag)) {
-                return CEP_ENZYME_FATAL;
+            if (!cep_l1_require_role_name(role_name, request)) {
+                goto done;
             }
             cepCell* target = cep_link_pull(role);
             if (!target) {
-                return CEP_ENZYME_FATAL;
+                cep_l1_mark_outcome_error(request, "role-target");
+                goto done;
             }
             cepDT role_copy = *role_name;
-            cep_dict_add_link(roles_dst, &role_copy, target);
+            if (!cep_l1_link_child(roles_dst, &role_copy, target)) {
+                cep_l1_mark_outcome_error(request, "role-link");
+                goto done;
+            }
         }
+
+        cep_l1_store_unlock(&roles_lock);
     }
 
     cepCell* facets_req = cep_cell_find_by_name(request, dt_facets());
     if (facets_req && cep_cell_has_store(facets_req)) {
-        cepCell* facets_dst = cep_l1_ensure_dictionary(ctx, dt_facets(), CEP_STORAGE_RED_BLACK_T);
-        if (!facets_dst) {
-            return CEP_ENZYME_FATAL;
+        if (!cep_l1_store_lock(ctx, &ctx_lock)) {
+            cep_l1_mark_outcome_error(request, "ctx-lock");
+            goto done;
         }
+        cepCell* facets_dst = cep_l1_ensure_dictionary(ctx, dt_facets(), CEP_STORAGE_RED_BLACK_T);
+        cep_l1_store_unlock(&ctx_lock);
+        if (!facets_dst) {
+            cep_l1_mark_outcome_error(request, "facets");
+            goto done;
+        }
+
+        if (!cep_l1_store_lock(facets_dst, &facets_lock)) {
+            cep_l1_mark_outcome_error(request, "facets-lock");
+            goto done;
+        }
+
         cep_l1_clear_children(facets_dst);
         for (cepCell* facet = cep_cell_first(facets_req); facet; facet = cep_cell_next(facets_req, facet)) {
             cepDT facet_name_copy = *cep_cell_get_name(facet);
             cepCell* facet_target = NULL;
             bool facet_required = false;
             if (!cep_l1_parse_facet_request(facet, &facet_target, &facet_required)) {
-                return CEP_ENZYME_FATAL;
+                cep_l1_mark_outcome_error(request, "facet-parse");
+                goto done;
             }
             if (facet_target) {
                 if (!cep_l1_link_child(facets_dst, &facet_name_copy, facet_target)) {
-                    return CEP_ENZYME_FATAL;
+                    cep_l1_mark_outcome_error(request, "facet-link");
+                    goto done;
+                }
+                if (facet_required) {
+                    cep_l1_clear_debt(&id_dt, &facet_name_copy);
+                }
+            } else if (facet_required) {
+                if (!cep_l1_record_debt(&id_dt, &facet_name_copy, request)) {
+                    goto done;
                 }
             }
         }
+
+        cep_l1_store_unlock(&facets_lock);
     }
 
     cep_l1_attach_request_parent(ctx, request);
     cep_l1_mark_outcome_ok(request);
-    return CEP_ENZYME_SUCCESS;
+    result = CEP_ENZYME_SUCCESS;
+
+done:
+    cep_l1_store_unlock(&facets_lock);
+    cep_l1_store_unlock(&roles_lock);
+    cep_l1_store_unlock(&ctx_lock);
+    cep_l1_store_unlock(&ledger_lock);
+    return result;
 }
 static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* target_path) {
     (void)signal_path;
+    int result = CEP_ENZYME_FATAL;
+    cepL1StoreLock mirror_lock = {0};
+
     cepCell* request = cep_l1_resolve_request(target_path);
     if (!cep_l1_request_guard(request, dt_ctx_upsert())) {
         return CEP_ENZYME_SUCCESS;
@@ -1029,24 +1441,29 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
 
     char id_buf[32];
     if (!cep_l1_request_word_field(request, dt_id(), id_buf, sizeof id_buf)) {
-        return CEP_ENZYME_FATAL;
+        cep_l1_mark_outcome_error(request, "missing-id");
+        goto done;
     }
 
     cepDT id_dt;
-    if (!cep_l1_word_dt(id_buf, &id_dt)) {
-        return CEP_ENZYME_FATAL;
+    if (!cep_l1_word_dt_guard(id_buf, &id_dt, request, "invalid-id")) {
+        goto done;
     }
 
     cepCell* ctx = cep_cell_find_by_name(cep_l1_context_ledger(), &id_dt);
     if (!ctx) {
-        return CEP_ENZYME_FATAL;
+        goto done;
     }
 
     cepCell* facets_dst = cep_cell_find_by_name(ctx, dt_facets());
     if (facets_dst && cep_cell_has_store(facets_dst)) {
         cepCell* mirror = cep_l1_facet_mirror();
         if (!mirror) {
-            return CEP_ENZYME_FATAL;
+            goto done;
+        }
+        if (!cep_l1_store_lock(mirror, &mirror_lock)) {
+            cep_l1_mark_outcome_error(request, "facet-lock");
+            goto done;
         }
 
         for (cepCell* facet = cep_cell_first(facets_dst); facet; facet = cep_cell_next(facets_dst, facet)) {
@@ -1058,7 +1475,7 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
 
             char facet_buf[32];
             if (!cep_l1_dt_to_text(facet_name, facet_buf, sizeof facet_buf)) {
-                return CEP_ENZYME_FATAL;
+                goto done;
             }
 
             char key_buf[72];
@@ -1067,9 +1484,11 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
             cepDT key_dt = {.domain = cep_domain_cep(), .tag = key_id};
 
             if (!cep_l1_link_child(mirror, &key_dt, facet_target)) {
-                return CEP_ENZYME_FATAL;
+                goto done;
             }
         }
+
+        cep_l1_store_unlock(&mirror_lock);
     }
 
     cepCell* facets_req = cep_cell_find_by_name(request, dt_facets());
@@ -1079,7 +1498,7 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
             cepCell* facet_target = NULL;
             bool facet_required = false;
             if (!cep_l1_parse_facet_request(facet_req, &facet_target, &facet_required)) {
-                return CEP_ENZYME_FATAL;
+                goto done;
             }
 
             bool satisfied = false;
@@ -1092,7 +1511,7 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
 
             if (facet_required && !satisfied) {
                 if (!cep_l1_record_debt(&id_dt, facet_name, request)) {
-                    return CEP_ENZYME_FATAL;
+                    goto done;
                 }
             } else {
                 cep_l1_clear_debt(&id_dt, facet_name);
@@ -1101,11 +1520,15 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
     }
 
     if (!cep_l1_index_facets(ctx, &id_dt)) {
-        return CEP_ENZYME_FATAL;
+        goto done;
     }
 
     cep_l1_mark_outcome_ok(request);
-    return CEP_ENZYME_SUCCESS;
+    result = CEP_ENZYME_SUCCESS;
+
+done:
+    cep_l1_store_unlock(&mirror_lock);
+    return result;
 }
 static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target_path) {
     (void)signal_path;
