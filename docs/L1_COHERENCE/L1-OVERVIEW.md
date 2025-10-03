@@ -13,6 +13,13 @@ L1’s goal is simple: keep the coherence story straight every heartbeat. It cap
 - Secondary indexes under `/data/coh/index` mirror fast lookup patterns (beings by kind, bonds by endpoint tuple, contexts by type, facets by context). These are rebuilt deterministically after every ingest beat.
 - Transient adjacency mirrors live under `/tmp/coh/adj`. They are drop-and-rebuild caches for “who is near this node?” queries and can be wiped between sessions without losing truth.
 
+### How beings, bonds, contexts, and facets fit together
+- **Beings** (`/data/coh/being/{id}`) hold long-lived identities and a free-form `attrs` dictionary. You link everything else to these anchors.
+- **Bonds** (`/data/coh/bond/{id}`) connect exactly two beings with a `type`, `src`, `dst`, and optional `directed` flag. They model pairwise relations such as “owns” or “mentors”.
+- **Contexts** (`/data/coh/context/{id}`) gather multiple beings under named `roles/{role}` links and carry scoped `facets/{facet}` children that either link to resolved facts or describe a required-but-missing piece.
+- **Facets** materialize the implications of a context. When the closure enzyme finds a facet link it mirrors it into `/data/coh/facet/{ctx}:{facetType}` so global queries can scan a flat index instead of traversing every context.
+- **Debts** (`/data/coh/debt/{ctx}/{facet}`) act as IOUs. When a required facet has no link yet, the closure enzyme records the debt and clears it once a matching fact appears, keeping the closure contract honest.
+
 ### Intent workflow
 - Clients write intents to `/data/coh/inbox/{be_create|bo_upsert|ctx_upsert}/{txn}`. Payloads are plain dictionaries—no hidden APIs.
 - Kernel heartbeats emit `CEP:sig_cell/op_add` when intents arrive. Registry bindings route those signals into the six coherence enzymes in a fixed order.
@@ -43,4 +50,3 @@ A: `coh_closure` writes a decision entry the first time it chooses a candidate. 
 
 **Q: Can I extend the ledgers with custom fields?**  
 A: Yes. Each being, bond, and context node exposes an `attrs` dictionary. Copy anything you like there—just keep tags within the lexicon rules.
-

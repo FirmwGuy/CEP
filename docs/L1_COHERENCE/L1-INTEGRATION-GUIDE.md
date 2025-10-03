@@ -37,6 +37,14 @@ In short: bootstrap once, register the enzymes, enqueue intents as cells, and le
 - **Decisions** under `/data/coh/decision` record tie-breaks. You generally do not write to this subtree; the closure enzyme maintains it so replays stay deterministic.
 - **Monitoring**: treat both areas as metrics. A growing debt tree means contexts are missing required facets; a large decision ledger means business rules are branching frequently.
 
+### Example: Project onboarding with beings, bonds, and contexts
+1. **Create beings** – enqueue two `be_create` intents (`/data/coh/inbox/be_create/tx-alice`, `tx-bot`) with `id`=`alice`, `bothelper` and `kind`=`human`, `agent`. After the heartbeat, ledger entries appear at `/data/coh/being/alice` and `/data/coh/being/bothelper` with `outcome="ok"` on each intent.
+2. **Link them with a bond** – enqueue `/data/coh/inbox/bo_upsert/tx-alice-bot` containing `id`=`mentor`, `type`=`mentoring`, `src`→being `alice`, `dst`→being `bothelper`, `directed`=`1`. The bond ledger now records the relation and `coh_index` writes an entry under `/data/coh/index/bo_pair/{alice:bothelper:mentoring:1}`.
+3. **Describe a shared context** – enqueue `/data/coh/inbox/ctx_upsert/tx-onboard` with `id`=`onboard1`, `type`=`project`, `roles/lead`→`alice`, `roles/assistant`→`bothelper`, and a `facets/review_plan` child containing a link to an existing plan (or a placeholder dictionary with `required` flag set). The ingest enzyme copies role links, the closure enzyme mirrors any resolved facet under `/data/coh/facet/onboard1:review_plan`, and records `/data/coh/debt/onboard1/review_plan` if the facet was required but absent.
+4. **Observe caches** – after the beat, adjacency mirrors record the new relationships under `/tmp/coh/adj/by_being/alice/{out_bonds,ctx_by_role}` and `/tmp/coh/adj/by_being/bothelper/...`, giving neighborhood queries a ready-made cache.
+
+The three intents illustrate the pattern: write to the inbox, let the enzyme pack populate ledgers, and rely on closure/index/adjacency passes to keep derived structures aligned with the source facts.
+
 ---
 
 ## Q&A
@@ -52,4 +60,3 @@ A: Create links inside `roles/{role}` that point to the target being cells. The 
 
 **Q: What happens if my application replays the same intent cell?**  
 A: The enzymes are idempotent. They will update the ledger with the same values, refresh indexes, and return `outcome="ok"` again without duplicating records.
-
