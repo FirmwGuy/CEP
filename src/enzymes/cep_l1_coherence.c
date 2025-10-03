@@ -44,6 +44,7 @@ static const cepDT* dt_bond(void)        { return CEP_DTAW("CEP", "bond"); }
 static const cepDT* dt_context(void)     { return CEP_DTAW("CEP", "context"); }
 static const cepDT* dt_facet_root(void)  { return CEP_DTAW("CEP", "facet"); }
 static const cepDT* dt_debt(void)        { return CEP_DTAW("CEP", "debt"); }
+static const cepDT* dt_decision(void)    { return CEP_DTAW("CEP", "decision"); }
 static const cepDT* dt_index(void)       { return CEP_DTAW("CEP", "index"); }
 static const cepDT* dt_coh(void)         { return CEP_DTAW("CEP", "coh"); }
 static const cepDT* dt_data_root(void)   { return CEP_DTAW("CEP", "data"); }
@@ -239,6 +240,8 @@ static bool cep_l1_set_bool_value(cepCell* parent, const cepDT* name, bool flag)
     return cep_l1_set_value_bytes(parent, name, dt_text(), &payload, sizeof payload);
 }
 
+/* Copy the `attrs` dictionary from the request into the ledger node so callers
+   can persist arbitrary attributes alongside beings without poking internals. */
 static void cep_l1_mark_outcome_error(cepCell* request, const char* code) {
     if (!request) {
         return;
@@ -289,6 +292,59 @@ static void cep_l1_clear_children(cepCell* cell) {
     cell->store->writable = true;
     cep_store_delete_children_hard(cell->store);
     cell->store->writable = writable;
+}
+
+/* Copy the `attrs` dictionary from the request into the ledger node so callers
+   can persist arbitrary attributes alongside beings without poking internals. */
+static bool cep_l1_apply_attrs_from_request(cepCell* request, cepCell* attrs_dst) {
+    if (!request || !attrs_dst) {
+        return false;
+    }
+
+    cepCell* attrs_req = cep_cell_find_by_name(request, dt_attrs());
+    if (!attrs_req || !cep_cell_has_store(attrs_req)) {
+        return true;
+    }
+
+    cepL1StoreLock attrs_lock = {0};
+    if (!cep_l1_store_lock(attrs_dst, &attrs_lock)) {
+        cep_l1_mark_outcome_error(request, "attrs-lock");
+        return false;
+    }
+
+    bool success = true;
+    cep_l1_clear_children(attrs_dst);
+
+    for (cepCell* attr = cep_cell_first(attrs_req); attr && success; attr = cep_cell_next(attrs_req, attr)) {
+        const cepDT* attr_name = cep_cell_get_name(attr);
+        if (!attr_name) {
+            cep_l1_mark_outcome_error(request, "attrs-name");
+            success = false;
+            break;
+        }
+
+        if (!cep_cell_has_data(attr)) {
+            cep_l1_mark_outcome_error(request, "attrs-data");
+            success = false;
+            break;
+        }
+
+        const cepData* data = attr->data;
+        if (data->datatype != CEP_DATATYPE_VALUE || data->size == 0u) {
+            cep_l1_mark_outcome_error(request, "attrs-value");
+            success = false;
+            break;
+        }
+
+        if (!cep_l1_set_value_bytes(attrs_dst, attr_name, &data->dt, data->value, data->size)) {
+            cep_l1_mark_outcome_error(request, "attrs-copy");
+            success = false;
+            break;
+        }
+    }
+
+    cep_l1_store_unlock(&attrs_lock);
+    return success;
 }
 
 static void cep_l1_mark_outcome_ok(cepCell* request) {
@@ -420,6 +476,9 @@ bool cep_l1_coherence_bootstrap(void) {
     if (!cep_l1_ensure_dictionary(coh, dt_debt(), CEP_STORAGE_RED_BLACK_T)) {
         return false;
     }
+    if (!cep_l1_ensure_dictionary(coh, dt_decision(), CEP_STORAGE_RED_BLACK_T)) {
+        return false;
+    }
 
     if (!cep_l1_bootstrap_indexes(coh)) {
         return false;
@@ -475,6 +534,9 @@ static cepCell* cep_l1_debt_root(void) {
     return coh ? cep_cell_find_by_name(coh, dt_debt()) : NULL;
 }
 
+/* This helper composes a stable `ctx:facet` key for mirrors and decisions so we
+   rely on the namepool instead of ad-hoc buffers spread across the code. */
+
 static cepCell* cep_l1_adj_root(void) {
     cepCell* tmp = cep_cell_find_by_name(cep_root(), dt_tmp());
     if (!tmp) {
@@ -507,6 +569,144 @@ static bool cep_l1_link_child(cepCell* parent, const cepDT* name, cepCell* targe
 
     cepDT name_copy = *name;
     return cep_dict_add_link(parent, &name_copy, target) != NULL;
+}
+
+/* This helper composes a stable `ctx:facet` key for mirrors and decisions so we
+   rely on the namepool instead of ad-hoc buffers spread across the code. */
+static bool cep_l1_compose_key(const cepDT* lhs, const cepDT* rhs, cepDT* out_key) {
+    if (!lhs || !rhs || !out_key) {
+        return false;
+    }
+
+    char lhs_buf[32];
+    char rhs_buf[32];
+    if (!cep_l1_dt_to_text(lhs, lhs_buf, sizeof lhs_buf)) {
+        return false;
+    }
+    if (!cep_l1_dt_to_text(rhs, rhs_buf, sizeof rhs_buf)) {
+        return false;
+    }
+
+    char key_buf[72];
+    int written = snprintf(key_buf, sizeof key_buf, "%s:%s", lhs_buf, rhs_buf);
+    if (written < 0 || (size_t)written >= sizeof key_buf) {
+        return false;
+    }
+
+    cepID key_id = cep_namepool_intern_cstr(key_buf);
+    if (!key_id) {
+        return false;
+    }
+
+    out_key->domain = cep_domain_cep();
+    out_key->tag = key_id;
+    return true;
+}
+
+/* The decision ledger keeps track of tie-breaks for replay, mirroring how facet
+   mirrors hang off the coherence root. */
+static cepCell* cep_l1_decision_ledger(void) {
+    cepCell* coh = cep_l1_coh_root();
+    return coh ? cep_cell_find_by_name(coh, dt_decision()) : NULL;
+}
+
+/* Quickly locate a decision entry for a given context+facet pair so the
+   selection logic can reuse existing choices when they exist. */
+static cepCell* cep_l1_decision_entry(const cepDT* ctx_id, const cepDT* facet_id) {
+    cepCell* ledger = cep_l1_decision_ledger();
+    if (!ledger) {
+        return NULL;
+    }
+
+    cepDT key_dt = {0};
+    if (!cep_l1_compose_key(ctx_id, facet_id, &key_dt)) {
+        return NULL;
+    }
+
+    return cep_cell_find_by_name(ledger, &key_dt);
+}
+
+/* Resolve the target stored in the decision ledger, returning NULL if no
+   decision or link is present. */
+static cepCell* cep_l1_decision_target(const cepDT* ctx_id, const cepDT* facet_id) {
+    cepCell* entry = cep_l1_decision_entry(ctx_id, facet_id);
+    if (!entry || !cep_cell_is_link(entry)) {
+        return NULL;
+    }
+    return cep_link_pull(entry);
+}
+
+/* Persist the chosen candidate for a facet so deterministic replays can
+   consult the same tie-break without relying on incidental ordering. */
+static bool cep_l1_decision_record(const cepDT* ctx_id,
+                                   const cepDT* facet_id,
+                                   cepCell* target,
+                                   cepCell* request) {
+    if (!ctx_id || !facet_id || !target) {
+        return false;
+    }
+
+    cepCell* ledger = cep_l1_decision_ledger();
+    if (!ledger) {
+        return false;
+    }
+
+    cepDT key_dt = {0};
+    if (!cep_l1_compose_key(ctx_id, facet_id, &key_dt)) {
+        return false;
+    }
+
+    cepL1StoreLock ledger_lock = {0};
+    if (!cep_l1_store_lock(ledger, &ledger_lock)) {
+        return false;
+    }
+
+    bool ok = cep_l1_link_child(ledger, &key_dt, target);
+    cepCell* entry = NULL;
+    if (ok) {
+        entry = cep_cell_find_by_name(ledger, &key_dt);
+        ok = entry != NULL;
+    }
+    cep_l1_store_unlock(&ledger_lock);
+    if (!ok) {
+        return false;
+    }
+
+    if (request && entry) {
+        cep_l1_attach_request_parent(entry, request);
+    }
+    return true;
+}
+
+/* Remove a persisted decision once the tie is gone so the ledger only carries
+   active tie-breaks. */
+static bool cep_l1_decision_clear(const cepDT* ctx_id, const cepDT* facet_id) {
+    if (!ctx_id || !facet_id) {
+        return false;
+    }
+
+    cepCell* ledger = cep_l1_decision_ledger();
+    if (!ledger) {
+        return false;
+    }
+
+    cepDT key_dt = {0};
+    if (!cep_l1_compose_key(ctx_id, facet_id, &key_dt)) {
+        return false;
+    }
+
+    cepL1StoreLock ledger_lock = {0};
+    if (!cep_l1_store_lock(ledger, &ledger_lock)) {
+        return false;
+    }
+
+    cepCell* entry = cep_cell_find_by_name(ledger, &key_dt);
+    if (entry) {
+        cep_cell_child_take_hard(ledger, entry);
+    }
+
+    cep_l1_store_unlock(&ledger_lock);
+    return true;
 }
 
 static cepCell* cep_l1_ensure_adj_bucket(const cepDT* id_dt) {
@@ -583,6 +783,7 @@ static bool cep_l1_index_being(cepCell* being, const cepDT* id_dt, const char* k
         goto done;
     }
 
+    /* TODO: align with L1 plan by clearing stale entries before relinking. */
     cepDT id_copy = *id_dt;
     success = cep_l1_link_child(bucket, &id_copy, being);
 
@@ -631,6 +832,7 @@ static bool cep_l1_index_bond(cepCell* bond, const cepDT* id_dt, cepCell* src, c
         goto done;
     }
 
+    /* TODO: drop outdated pair keys so the index truly rebuilds each beat. */
     success = cep_l1_link_child(pairs, &key_dt, bond);
 
 done:
@@ -677,6 +879,7 @@ static bool cep_l1_index_context(cepCell* ctx, const cepDT* id_dt, const char* t
         goto done;
     }
 
+    /* TODO: purge previous context ids before repopulating the type bucket. */
     cepDT id_copy = *id_dt;
     success = cep_l1_link_child(bucket, &id_copy, ctx);
 
@@ -776,6 +979,7 @@ static bool cep_l1_adj_bond(cepCell* bond, const cepDT* id_dt, cepCell* src, cep
     if (!cep_l1_store_lock(out_dict, &out_lock)) {
         return false;
     }
+    /* TODO: remove outdated adjacency entries before adding new ones. */
     bool out_ok = cep_l1_link_child(out_dict, &bond_name, bond);
     cep_l1_store_unlock(&out_lock);
     if (!out_ok) {
@@ -832,6 +1036,7 @@ static bool cep_l1_adj_context(cepCell* ctx, const cepDT* id_dt) {
             return false;
         }
 
+        /* TODO: clear the role bucket so adjacency mirrors stay in sync. */
         cepDT ctx_name = *id_dt;
         bool ok = cep_l1_link_child(role_bucket, &ctx_name, ctx);
         cep_l1_store_unlock(&role_lock);
@@ -937,27 +1142,69 @@ static void cep_l1_clear_debt(const cepDT* ctx_id, const cepDT* facet_id) {
     }
 }
 
-static bool cep_l1_parse_facet_request(cepCell* node, cepCell** out_target, bool* out_required) {
+static bool cep_l1_parse_facet_request(const cepDT* ctx_id,
+                                       const cepDT* facet_id,
+                                       cepCell* request,
+                                       cepCell* node,
+                                       cepCell** out_target,
+                                       bool* out_required,
+                                       bool* out_multi) {
     if (!out_target || !out_required) {
         return false;
     }
 
     *out_target = NULL;
     *out_required = false;
+    if (out_multi) {
+        *out_multi = false;
+    }
 
     if (!node) {
+        if (ctx_id && facet_id) {
+            if (!cep_l1_decision_clear(ctx_id, facet_id)) {
+                if (request) {
+                    cep_l1_mark_outcome_error(request, "decision-ledger");
+                }
+                return false;
+            }
+        }
         return true;
     }
 
     if (cep_cell_is_link(node)) {
         *out_target = cep_link_pull(node);
+        if (ctx_id && facet_id) {
+            if (!cep_l1_decision_clear(ctx_id, facet_id)) {
+                if (request) {
+                    cep_l1_mark_outcome_error(request, "decision-ledger");
+                }
+                return false;
+            }
+        }
         return true;
     }
 
+    cepCell* decision_choice = NULL;
+    if (ctx_id && facet_id) {
+        decision_choice = cep_l1_decision_target(ctx_id, facet_id);
+    }
+
+    size_t candidate_count = 0u;
+    cepCell* chosen = NULL;
+
     if (cep_cell_has_store(node)) {
         for (cepCell* child = cep_cell_first(node); child; child = cep_cell_next(node, child)) {
-            if (cep_cell_is_link(child) && !*out_target) {
-                *out_target = cep_link_pull(child);
+            if (cep_cell_is_link(child)) {
+                cepCell* candidate = cep_link_pull(child);
+                if (!candidate) {
+                    continue;
+                }
+                ++candidate_count;
+                if (decision_choice && candidate == decision_choice) {
+                    chosen = candidate;
+                } else if (!chosen) {
+                    chosen = candidate;
+                }
             } else if (cep_cell_name_is(child, dt_required()) && cep_cell_has_data(child)) {
                 const cepData* data = child->data;
                 if (data->datatype == CEP_DATATYPE_VALUE && data->size > 0u) {
@@ -965,17 +1212,37 @@ static bool cep_l1_parse_facet_request(cepCell* node, cepCell** out_target, bool
                 }
             }
         }
-        return true;
-    }
-
-    if (cep_cell_has_data(node) && cep_cell_name_is(node, dt_required())) {
+    } else if (cep_cell_has_data(node) && cep_cell_name_is(node, dt_required())) {
         const cepData* data = node->data;
         if (data->datatype == CEP_DATATYPE_VALUE && data->size > 0u) {
             *out_required = data->value[0] != 0u;
         }
     }
 
-    return true;
+    if (!chosen) {
+        chosen = decision_choice;
+    }
+
+    *out_target = chosen;
+    if (out_multi) {
+        *out_multi = candidate_count > 1u;
+    }
+
+    if (!ctx_id || !facet_id) {
+        return true;
+    }
+
+    bool ok = true;
+    if (candidate_count > 1u && chosen) {
+        ok = cep_l1_decision_record(ctx_id, facet_id, chosen, request);
+    } else {
+        ok = cep_l1_decision_clear(ctx_id, facet_id);
+    }
+
+    if (!ok && request) {
+        cep_l1_mark_outcome_error(request, "decision-ledger");
+    }
+    return ok;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1181,8 +1448,13 @@ static int cep_l1_enzyme_ingest_be(const cepPath* signal_path, const cepPath* ta
         goto done;
     }
 
-    if (!cep_l1_ensure_dictionary(being, dt_attrs(), CEP_STORAGE_RED_BLACK_T)) {
+    cepCell* attrs = cep_l1_ensure_dictionary(being, dt_attrs(), CEP_STORAGE_RED_BLACK_T);
+    if (!attrs) {
         cep_l1_mark_outcome_error(request, "attrs");
+        goto done;
+    }
+
+    if (!cep_l1_apply_attrs_from_request(request, attrs)) {
         goto done;
     }
 
@@ -1393,10 +1665,11 @@ static int cep_l1_enzyme_ingest_ctx(const cepPath* signal_path, const cepPath* t
 
         cep_l1_clear_children(facets_dst);
         for (cepCell* facet = cep_cell_first(facets_req); facet; facet = cep_cell_next(facets_req, facet)) {
-            cepDT facet_name_copy = *cep_cell_get_name(facet);
+            const cepDT* facet_name = cep_cell_get_name(facet);
+            cepDT facet_name_copy = *facet_name;
             cepCell* facet_target = NULL;
             bool facet_required = false;
-            if (!cep_l1_parse_facet_request(facet, &facet_target, &facet_required)) {
+            if (!cep_l1_parse_facet_request(&id_dt, facet_name, request, facet, &facet_target, &facet_required, NULL)) {
                 cep_l1_mark_outcome_error(request, "facet-parse");
                 goto done;
             }
@@ -1483,6 +1756,7 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
             cepID key_id = cep_namepool_intern_cstr(key_buf);
             cepDT key_dt = {.domain = cep_domain_cep(), .tag = key_id};
 
+            /* TODO: prune mirror entries when facets disappear from contexts. */
             if (!cep_l1_link_child(mirror, &key_dt, facet_target)) {
                 goto done;
             }
@@ -1497,7 +1771,8 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
             const cepDT* facet_name = cep_cell_get_name(facet_req);
             cepCell* facet_target = NULL;
             bool facet_required = false;
-            if (!cep_l1_parse_facet_request(facet_req, &facet_target, &facet_required)) {
+            bool facet_multi = false;
+            if (!cep_l1_parse_facet_request(&id_dt, facet_name, request, facet_req, &facet_target, &facet_required, &facet_multi)) {
                 goto done;
             }
 
@@ -1510,10 +1785,20 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
             }
 
             if (facet_required && !satisfied) {
+                if (facet_multi && facet_target) {
+                    if (!cep_l1_decision_record(&id_dt, facet_name, facet_target, request)) {
+                        cep_l1_mark_outcome_error(request, "decision-ledger");
+                        goto done;
+                    }
+                }
                 if (!cep_l1_record_debt(&id_dt, facet_name, request)) {
                     goto done;
                 }
             } else {
+                if (!facet_multi && !cep_l1_decision_clear(&id_dt, facet_name)) {
+                    cep_l1_mark_outcome_error(request, "decision-ledger");
+                    goto done;
+                }
                 cep_l1_clear_debt(&id_dt, facet_name);
             }
         }

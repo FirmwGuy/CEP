@@ -2,10 +2,10 @@
 
 ## Introduction
 The CEP runtime speaks with a single voice: every domain/tag pair exposed by
-Layer 0 uses the `CEP` domain and a shared vocabulary of short tags. This
+different layers uses the `CEP` domain and a shared vocabulary of short tags. This
 lexicon is the pocket dictionary for that vocabulary. It keeps engineers and
 tools aligned, avoids improvised sigils or ad-hoc prefixes, and makes it obvious
-when a new behaviour needs a fresh word before it lands in code.
+when a new behavior needs a fresh word before it lands in code.
 
 ## Technical Details
 - **Domain:** fixed to the uppercase acronym `CEP` for all kernel-provided data.
@@ -65,6 +65,7 @@ when a new behaviour needs a fresh word before it lands in code.
 | `attrs` | core | attribute dictionary reserved for beings or context extras. |
 | `index` | core | dictionary of durable secondary indexes. |
 | `debt` | core | placeholder bucket for closure debts. |
+| `decision` | core | ledger of recorded tie-break decisions for replay. |
 | `inbox` | core | intent inbox for coherence enzymes. |
 | `be_kind` | core | index mapping kind -> beings. |
 | `bo_pair` | core | index mapping `{src,dst,type,dir}` -> bond. |
@@ -142,5 +143,5 @@ when a new behaviour needs a fresh word before it lands in code.
 - **How do tests add fixtures?** Follow the existing patterns (`test_*`,
   `tst_*`, etc.) and document the new pattern on this table. This keeps the test
   namespace vast but contained.
-- **Can application layers invent their own domains?** Yes—outside Layer 0 the
+- **Can application layers invent their own domains?** Yes—outside CEP the
   lexicon is advisory. The contract here only governs CEP's built-in runtime.
