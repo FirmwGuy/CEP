@@ -132,6 +132,36 @@ when a new behavior needs a fresh word before it lands in code.
 | `value` | test | generic payload tag for value-type fixtures. |
 | `var_leaf` | test | variant selection fixture in unit tests. |
 
+#### Layer 2 Flow VM Tags
+| Tag / Pattern | Status | Purpose |
+| --- | --- | --- |
+| `flow` | core | L2 flow root created under `/data`. |
+| `program` | core | ledger storing compiled flow programs. |
+| `policy` | core | ledger of decision policies used by flows. |
+| `variant` | core | compiled flow variants linked to programs. |
+| `niche` | core | routing maps that bind contexts to variants. |
+| `guardian` | core | declarative invariant rules enforced by flows. |
+| `instance` | core | runtime instances tracking VM state. |
+| `decision` | core | immutable decision cells recorded for replay. |
+| `index` | core | durable indexes mirroring flow lookups. |
+| `inbox` | core | intent ingress namespace for L2. |
+| `adj` | core | transient adjacency/cache namespace under `/tmp`. |
+| `fl_upsert` | ops | intent envelope for program/policy/variant/guardian upserts. |
+| `ni_upsert` | ops | intent envelope for niche updates. |
+| `inst_start` | ops | intent envelope for starting flow instances. |
+| `inst_event` | ops | intent envelope for external instance events. |
+| `inst_ctrl` | ops | intent envelope for instance control actions. |
+| `fl_ing` | ops | enzyme descriptor for ingesting flow definitions. |
+| `ni_ing` | ops | enzyme descriptor for ingesting niche intents. |
+| `inst_ing` | ops | enzyme descriptor for ingesting instance intents. |
+| `fl_wake` | ops | enzyme descriptor for correlating events to waits. |
+| `fl_step` | ops | enzyme descriptor for executing VM steps. |
+| `fl_index` | ops | enzyme descriptor for rebuilding L2 indexes. |
+| `fl_adj` | ops | enzyme descriptor for refreshing transient caches. |
+| `fl_*` (`fl_ing`, `fl_wake`, `fl_step`, `fl_index`, `fl_adj`, `fl_upsert`) | ops | reserved prefix for flow enzymes/intents. |
+| `inst_*` (`inst_ing`, `inst_start`, `inst_event`, `inst_ctrl`) | ops | reserved prefix for flow instance enzymes/intents. |
+| `ni_*` (`ni_ing`, `ni_upsert`) | ops | reserved prefix for niche enzymes/intents. |
+
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor
   declarations. Emitting them outside the heartbeat dispatcher is undefined.
