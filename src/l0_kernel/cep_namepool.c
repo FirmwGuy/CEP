@@ -32,6 +32,7 @@ typedef struct {
     cepCell*    cell;
     uint32_t    refcount;
     bool        is_static;
+    bool        glob;
 } cepNamePoolEntry;
 
 typedef struct {
@@ -53,21 +54,6 @@ static size_t               name_bucket_count = 0u;
 static size_t               name_bucket_threshold = 0u;
 
 static cepCell*             namepool_root     = NULL;
-
-static CEP_CONST_FUNC bool cep_namepool_contains_glob(const char* text, size_t length) {
-    if (!text) {
-        return false;
-    }
-
-    for (size_t i = 0; i < length; ++i) {
-        char c = text[i];
-        if (c == '*' || c == '?') {
-            return true;
-        }
-    }
-
-    return false;
-}
 
 static cepID cep_namepool_try_compact(const char* text, size_t length) {
     if (!text || length == 0u) {
@@ -249,6 +235,7 @@ static void cep_namepool_clear_entry(cepNamePoolEntry* entry) {
     entry->cell = NULL;
     entry->refcount = 0;
     entry->is_static = false;
+    entry->glob = false;
 }
 
 static void cep_namepool_remove_bucket(size_t index) {
@@ -347,7 +334,7 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
     return entry->bytes != NULL;
 }
 
-static cepNamePoolEntry* cep_namepool_new_entry(uint64_t hash, const char* text, size_t length, bool is_static) {
+static cepNamePoolEntry* cep_namepool_new_entry(uint64_t hash, const char* text, size_t length, bool is_static, bool glob) {
     size_t page_index = 0u;
     uint32_t slot_index = 0u;
 
@@ -382,6 +369,7 @@ SLOT_FOUND:
     entry->slot = slot_index;
     entry->hash = hash;
     entry->length = length;
+    entry->glob = glob;
 
     if (is_static) {
         entry->bytes = text;
@@ -397,6 +385,67 @@ SLOT_FOUND:
 
     entry->id = cep_namepool_make_id(page_index, slot_index);
     return entry;
+}
+
+static cepID cep_namepool_intern_common(const char* text, size_t length, bool is_static, bool mark_glob) {
+    if (!text || length == 0u || length > CEP_NAMEPOOL_MAX_LENGTH) {
+        return 0;
+    }
+
+    if (!mark_glob) {
+        cepID compact = cep_namepool_try_compact(text, length);
+        if (compact) {
+            return compact;
+        }
+    }
+
+    if (!cep_namepool_bootstrap()) {
+        return 0;
+    }
+
+    if (name_bucket_cap == 0u) {
+        if (!cep_namepool_reserve_buckets(CEP_NAMEPOOL_INITIAL_BUCKETS)) {
+            return 0;
+        }
+    }
+
+    uint64_t hash = cep_hash_bytes(text, length);
+    bool glob_hint = mark_glob;
+
+    if (name_bucket_count >= name_bucket_threshold) {
+        if (!cep_namepool_reserve_buckets(name_bucket_cap ? (name_bucket_cap << 1u) : CEP_NAMEPOOL_INITIAL_BUCKETS)) {
+            return 0;
+        }
+    }
+
+    size_t mask = name_bucket_cap - 1u;
+    size_t index = (size_t)hash & mask;
+
+    while (true) {
+        cepNamePoolBucket* bucket = &name_buckets[index];
+        if (!bucket->entry) {
+            cepNamePoolEntry* entry = cep_namepool_new_entry(hash, text, length, is_static, glob_hint);
+            if (!entry) {
+                return 0;
+            }
+            bucket->hash = hash;
+            bucket->entry = entry;
+            name_bucket_count += 1u;
+            return entry->id;
+        }
+
+        if (bucket->hash == hash) {
+            cepNamePoolEntry* entry = bucket->entry;
+            if (entry && entry->glob == glob_hint && entry->length == length && memcmp(entry->bytes, text, length) == 0) {
+                if (!entry->is_static && entry->refcount < UINT32_MAX) {
+                    entry->refcount += 1u;
+                }
+                return entry->id;
+            }
+        }
+
+        index = (index + 1u) & mask;
+    }
 }
 
 static cepNamePoolEntry* cep_namepool_lookup_entry(cepID id) {
@@ -467,65 +516,7 @@ bool cep_namepool_bootstrap(void) {
     encoding to word/acronym/numeric when possible before falling back to the
     pool. */
 cepID cep_namepool_intern(const char* text, size_t length) {
-    if (!text || length == 0u || length > CEP_NAMEPOOL_MAX_LENGTH) {
-        return 0;
-    }
-
-    if (cep_namepool_contains_glob(text, length)) {
-        return 0;
-    }
-
-    cepID compact = cep_namepool_try_compact(text, length);
-    if (compact) {
-        return compact;
-    }
-
-    if (!cep_namepool_bootstrap()) {
-        return 0;
-    }
-
-    if (name_bucket_cap == 0u) {
-        if (!cep_namepool_reserve_buckets(CEP_NAMEPOOL_INITIAL_BUCKETS)) {
-            return 0;
-        }
-    }
-
-    uint64_t hash = cep_hash_bytes(text, length);
-
-    if (name_bucket_count >= name_bucket_threshold) {
-        if (!cep_namepool_reserve_buckets(name_bucket_cap ? (name_bucket_cap << 1u) : CEP_NAMEPOOL_INITIAL_BUCKETS)) {
-            return 0;
-        }
-    }
-
-    size_t mask = name_bucket_cap - 1u;
-    size_t index = (size_t)hash & mask;
-
-    while (true) {
-        cepNamePoolBucket* bucket = &name_buckets[index];
-        if (!bucket->entry) {
-            cepNamePoolEntry* entry = cep_namepool_new_entry(hash, text, length, false);
-            if (!entry) {
-                return 0;
-            }
-            bucket->hash = hash;
-            bucket->entry = entry;
-            name_bucket_count += 1u;
-            return entry->id;
-        }
-
-        if (bucket->hash == hash) {
-            cepNamePoolEntry* entry = bucket->entry;
-            if (entry && entry->length == length && memcmp(entry->bytes, text, length) == 0) {
-                if (!entry->is_static && entry->refcount < UINT32_MAX) {
-                    entry->refcount += 1u;
-                }
-                return entry->id;
-            }
-        }
-
-        index = (index + 1u) & mask;
-    }
+    return cep_namepool_intern_common(text, length, false, false);
 }
 
 /** Convenience wrapper around cep_namepool_intern for null-terminated strings. */
@@ -539,62 +530,28 @@ cepID cep_namepool_intern_cstr(const char* text) {
 /** Register a static caller-owned string without copying it into the pool so
     adapters can reference compile-time text cheaply. */
 cepID cep_namepool_intern_static(const char* text, size_t length) {
-    if (!text || length == 0u || length > CEP_NAMEPOOL_MAX_LENGTH) {
+    return cep_namepool_intern_common(text, length, true, false);
+}
+
+/** Offer the wildcard-friendly variant of namepool interning so call sites can
+    request glob semantics explicitly while still reusing the shared storage. */
+cepID cep_namepool_intern_pattern(const char* text, size_t length) {
+    return cep_namepool_intern_common(text, length, false, true);
+}
+
+/** Null-terminated helper that mirrors cep_namepool_intern_pattern for callers
+    who build pattern strings at runtime without separately tracking lengths. */
+cepID cep_namepool_intern_pattern_cstr(const char* text) {
+    if (!text) {
         return 0;
     }
+    return cep_namepool_intern_common(text, strlen(text), false, true);
+}
 
-    if (cep_namepool_contains_glob(text, length)) {
-        return 0;
-    }
-
-    cepID compact = cep_namepool_try_compact(text, length);
-    if (compact) {
-        return compact;
-    }
-
-    if (!cep_namepool_bootstrap()) {
-        return 0;
-    }
-
-    if (name_bucket_cap == 0u) {
-        if (!cep_namepool_reserve_buckets(CEP_NAMEPOOL_INITIAL_BUCKETS)) {
-            return 0;
-        }
-    }
-
-    uint64_t hash = cep_hash_bytes(text, length);
-
-    if (name_bucket_count >= name_bucket_threshold) {
-        if (!cep_namepool_reserve_buckets(name_bucket_cap ? (name_bucket_cap << 1u) : CEP_NAMEPOOL_INITIAL_BUCKETS)) {
-            return 0;
-        }
-    }
-
-    size_t mask = name_bucket_cap - 1u;
-    size_t index = (size_t)hash & mask;
-
-    while (true) {
-        cepNamePoolBucket* bucket = &name_buckets[index];
-        if (!bucket->entry) {
-            cepNamePoolEntry* entry = cep_namepool_new_entry(hash, text, length, true);
-            if (!entry) {
-                return 0;
-            }
-            bucket->hash = hash;
-            bucket->entry = entry;
-            name_bucket_count += 1u;
-            return entry->id;
-        }
-
-        if (bucket->hash == hash) {
-            cepNamePoolEntry* entry = bucket->entry;
-            if (entry && entry->length == length && memcmp(entry->bytes, text, length) == 0) {
-                return entry->id;
-            }
-        }
-
-        index = (index + 1u) & mask;
-    }
+/** Static counterpart for pattern strings so compile-time constants can be
+    registered once and reused without copying the underlying bytes. */
+cepID cep_namepool_intern_pattern_static(const char* text, size_t length) {
+    return cep_namepool_intern_common(text, length, true, true);
 }
 
 /** Resolve a reference ID back into its stored bytes, returning the length when
@@ -661,4 +618,14 @@ bool cep_namepool_release(cepID id) {
     }
 
     return true;
+}
+
+/** Report whether the given reference identifier carries the glob intent flag
+    so pattern-aware lookups can defer to text matching only when requested. */
+bool cep_namepool_reference_is_glob(cepID id) {
+    cepNamePoolEntry* entry = cep_namepool_lookup_entry(id);
+    if (!entry) {
+        return false;
+    }
+    return entry->glob;
 }

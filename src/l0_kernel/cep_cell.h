@@ -270,6 +270,8 @@ static inline bool cep_id_is_glob_question(cepID id) {
 size_t cep_word_to_text(cepID coded, char s[12]);
 size_t cep_acronym_to_text(cepID acro, char s[10]);
 
+bool cep_namepool_reference_is_glob(cepID id);
+
 #define CEP_WORD_GLOB_SENTINEL    31u
 
 static inline bool cep_id_has_glob_char(cepID id) {
@@ -297,6 +299,10 @@ static inline bool cep_id_has_glob_char(cepID id) {
         }
 
         return false;
+    }
+
+    if (cep_id_is_reference(id)) {
+        return cep_namepool_reference_is_glob(id);
     }
 
     return false;
@@ -1426,8 +1432,12 @@ bool        cep_namepool_bootstrap(void);
 cepID       cep_namepool_intern(const char* text, size_t length);
 cepID       cep_namepool_intern_cstr(const char* text);
 cepID       cep_namepool_intern_static(const char* text, size_t length);
+cepID       cep_namepool_intern_pattern(const char* text, size_t length);
+cepID       cep_namepool_intern_pattern_cstr(const char* text);
+cepID       cep_namepool_intern_pattern_static(const char* text, size_t length);
 const char* cep_namepool_lookup(cepID id, size_t* length);
 bool        cep_namepool_release(cepID id);
+bool        cep_namepool_reference_is_glob(cepID id);
 
 
 #ifdef __cplusplus

@@ -147,7 +147,7 @@ When your data lives outside the kernel (files, device handles, remote streams),
 
 ## 4) Naming & the namepool
 
-**Domain/Tag** fields are compact `cepID`s with a **naming nibble** that encodes *word*, *acronym*, *reference*, or *numeric*. Helpers convert text ↔ IDs (`cep_text_to_word`, `cep_word_to_text`, `cep_text_to_acronym`, `cep_acronym_to_text`). Word **and acronym** IDs may contain `*`; the kernel records a glob bit so helpers such as `cep_id_matches` can expand the wildcard transparently, while the reference sentinels still cover whole-domain globs.
+**Domain/Tag** fields are compact `cepID`s with a **naming nibble** that encodes *word*, *acronym*, *reference*, or *numeric*. Helpers convert text ↔ IDs (`cep_text_to_word`, `cep_word_to_text`, `cep_text_to_acronym`, `cep_acronym_to_text`). Word **and acronym** IDs may contain `*`; the kernel records a glob bit so helpers such as `cep_id_matches` can expand the wildcard transparently, while the reference sentinels still cover whole-domain globs. Reference tags pick up the same glob awareness when you intern them through the pattern helpers (`cep_namepool_intern_pattern*`), leaving literal references untouched unless you opt in.
 
 When you need to interoperate with human text reliably, enable the **namepool** and use:
 
@@ -156,11 +156,16 @@ bool    cep_namepool_bootstrap(void);
 cepID   cep_namepool_intern(const char* text, size_t length);
 cepID   cep_namepool_intern_cstr(const char* text);
 cepID   cep_namepool_intern_static(const char* text, size_t length); // no copy
+cepID   cep_namepool_intern_pattern(const char* text, size_t length);
+cepID   cep_namepool_intern_pattern_cstr(const char* text);
+cepID   cep_namepool_intern_pattern_static(const char* text, size_t length);
 const char* cep_namepool_lookup(cepID id, size_t* length);
 bool    cep_namepool_release(cepID id);
 ```
 
 This gives you **stable, interned references** for `CEP_NAMING_REFERENCE` names, with lookup and lifetime management centralized in one place .
+
+`cep_namepool_intern_pattern*` mirrors the regular helpers but marks the resulting references as glob patterns. Literal references keep their original semantics even if the underlying text includes `*`; only the pattern helpers set the glob hint that propagates into every `cepDT`.
 
 ---
 

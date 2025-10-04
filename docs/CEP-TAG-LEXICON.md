@@ -18,6 +18,10 @@ when a new behavior needs a fresh word before it lands in code.
   characters from space through underscore) and cannot be all digits. Both forms
   permit `*` when the identifier is used as a glob pattern; the runtime marks
   those tags with the `glob` hint automatically.
+- **Reference tags:** `CEP_NAMING_REFERENCE` IDs come from the namepool; use
+  `cep_namepool_intern_pattern*` when you want the stored string to behave as a
+  glob. Plain interning leaves the text literal so existing names keep their
+  current semantics.
 - **Patterns:** Several entries describe a whole family of tags (e.g.
   `sig_*`). Only the patterns listed here are valid; collisions must be resolved
   by extending the table first.
