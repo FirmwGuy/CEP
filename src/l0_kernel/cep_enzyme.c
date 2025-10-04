@@ -603,10 +603,10 @@ static size_t cep_enzyme_path_specificity(const cepPath* pattern) {
     size_t specificity = 0u;
     for (unsigned i = 0; i < pattern->length; ++i) {
         const cepDT* dt = &pattern->past[i].dt;
-        if (!cep_id_is_glob_multi(dt->domain)) {
+        if (!cep_id_is_glob_multi(dt->domain) && !cep_id_is_glob_star(dt->domain) && !cep_id_is_glob_question(dt->domain)) {
             specificity++;
         }
-        if (!cep_id_is_glob_multi(dt->tag) && !dt->glob) {
+        if (!cep_id_is_glob_multi(dt->tag) && !cep_id_is_glob_star(dt->tag) && !cep_id_is_glob_question(dt->tag) && !dt->glob) {
             specificity++;
         }
     }

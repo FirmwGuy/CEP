@@ -23,7 +23,8 @@ L1’s goal is simple: keep the coherence story straight every heartbeat. It cap
 ### Intent workflow
 - Clients write intents to `/data/coh/inbox/{be_create|bo_upsert|ctx_upsert}/{txn}`. Payloads are plain dictionaries—no hidden APIs.
 - Kernel heartbeats emit `CEP:sig_cell/op_add` when intents arrive. Registry bindings route those signals into the six coherence enzymes in a fixed order.
-- Each ingest enzyme validates word IDs (≤ 11 chars), materializes ledgers, copies free-form attributes, and records `outcome` status back onto the intent cell.
+- Identifier fields now accept any text that can be interned by the namepool; short values compact to CEP words/acronyms, and longer phrases are stored as stable references without truncation.
+- Each ingest enzyme materializes ledgers, copies free-form attributes, and records `outcome` status back onto the intent cell.
 
 ### Closure and replay guarantees
 - `coh_closure` mirrors resolved facets into `/data/coh/facet` and raises debts when a required facet has no target yet. Debts live under `/data/coh/debt/{ctxId}/{facet}` and clear automatically once satisfied.
@@ -43,10 +44,13 @@ L1’s goal is simple: keep the coherence story straight every heartbeat. It cap
 A: No. They are scratch structures rebuilt by `coh_adj`. If they are missing or corrupted, the enzyme will recreate them on the next heartbeat.
 
 **Q: What happens if an intent uses a word longer than 11 characters?**  
-A: The ingest enzymes reject it, mark the intent with `outcome="invalid-*"`, and skip any ledger writes. Shorten the word and resend.
+A: L1 now interns the full string through the namepool. If it cannot compact to a word/acronym it stores a `CEP_NAMING_REFERENCE`, so the intent succeeds without truncation.
 
 **Q: How does L1 stay deterministic when multiple facets could link to the same context?**  
 A: `coh_closure` writes a decision entry the first time it chooses a candidate. Later beats reuse the stored decision so replays take the same branch every time.
 
 **Q: Can I extend the ledgers with custom fields?**  
 A: Yes. Each being, bond, and context node exposes an `attrs` dictionary. Copy anything you like there—just keep tags within the lexicon rules.
+
+**Q: Are identifiers still limited to 11 characters?**  
+A: No. L1 now routes every identifier through the namepool. Short names still compact to CEP words/acronyms, while longer phrases become stable references, so callers can use their own lexicon without truncation.

@@ -11,7 +11,7 @@ If you want to customize behavior or reason about performance, this is the place
 ### Enzyme pipeline
 1. **`coh_ing_be`** – Validates `id` and `kind`, copies free-form attributes, and records provenance. Locks the target ledger entry while updating, then hashes the content for history tracking.
 2. **`coh_ing_bo`** – Ensures `src` and `dst` links resolve, writes `type` and `directed` flags, and reuses existing ledger nodes to stay idempotent. Both endpoints are treated as hard requirements.
-3. **`coh_ing_ctx`** – Builds or updates context nodes, enforces 11-character word rules on role names and facet identifiers, attaches links, and records debts for required-but-missing facets.
+3. **`coh_ing_ctx`** – Builds or updates context nodes, validates role/facet identifiers via the namepool, attaches links, and records debts for required-but-missing facets.
 4. **`coh_closure`** – Mirrors satisfied facets into `/data/coh/facet`, persists decisions for multi-candidate matches, and refreshes the debt tree. It relies on the namepool to build stable `{ctx}:{facet}` keys.
 5. **`coh_index`** – Recomputes secondary indexes: beings by kind, bonds by endpoint tuple, contexts by type, facets by context. Before relinking, it purges outdated entries so the catalog always reflects the latest ledger facts.
 6. **`coh_adj`** – Rebuilds transient adjacency mirrors under `/tmp/coh/adj` by copying bonds and contexts into near-neighbor buckets. Old references are removed first, so caches never accumulate stale links when identities move.
@@ -20,9 +20,10 @@ If you want to customize behavior or reason about performance, this is the place
 - Ledger modifications take store locks around dictionary updates and data locks when mutating values. Locks are released as soon as the mutation completes to keep contention low.
 - Closure and indexing work under coarse-grained store locks to provide snapshot semantics. Because the heartbeat is deterministic, the order of locks is consistent across runs, preventing replay divergence.
 
-### Word-ID enforcement
-- Static tags rely on `CEP_DTAW("CEP", "tag")`. Runtime values use `cep_text_to_word` and reject inputs above 11 characters. Helper routines such as `cep_l1_word_dt_guard` report failures back into the originating intent’s `outcome` field.
-- Roles and facet types are validated before being copied into ledger nodes. If a client sends an invalid name, the entire intent is marked as an error and the ledger remains unchanged.
+### Identifier handling
+- Static tags still lean on `CEP_DTAW("CEP", "tag")`, but runtime identifiers now flow through the namepool. The ingest helpers try to compact short strings into CEP words/acronyms and store everything else as `CEP_NAMING_REFERENCE` entries, so nothing is truncated.
+- Numeric-only identifiers survive intact (the namepool emits numeric IDs) and glob hints are honored when callers pre-intern pattern references.
+- Roles and facet names must resolve to a valid word, acronym, reference, or numeric ID. If a client supplies an empty or malformed string, the intent is marked invalid and no ledger mutation happens.
 
 ### Decision and debt management
 - Decisions prefer previously recorded choices. When multiple links could satisfy a facet, the closure enzyme consults `/data/coh/decision` and picks the stored target if available. Otherwise it uses the first candidate, records it, and stays with that choice on replays.

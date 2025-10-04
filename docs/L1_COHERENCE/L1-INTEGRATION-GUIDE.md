@@ -19,7 +19,7 @@ In short: bootstrap once, register the enzymes, enqueue intents as cells, and le
   - `be_create`: `id`, `kind`, optional `attrs/*` values.
   - `bo_upsert`: `id`, `type`, `src` link, `dst` link, optional `directed` flag.
   - `ctx_upsert`: `id`, `type`, optional `roles/{role}` links, optional `facets/{facet}` link sets or requirements.
-- **Word guard**: validate client input before enqueueing. L1 strictly enforces ≤ 11 character words via `cep_text_to_word` and will mark overlong inputs as invalid.
+- **Identifier guard**: any UTF-8 string can be supplied. L1 automatically runs it through the namepool, producing a compact word/acronym when possible and falling back to a reference otherwise. Empty strings still raise `invalid-*` outcomes.
 - **Provenance**: you do not need to add metadata links—the enzymes attach the intent as a parent on every ledger entry they touch.
 
 ### 3) Observing outcomes
@@ -60,3 +60,6 @@ A: Create links inside `roles/{role}` that point to the target being cells. The 
 
 **Q: What happens if my application replays the same intent cell?**  
 A: The enzymes are idempotent. They will update the ledger with the same values, refresh indexes, and return `outcome="ok"` again without duplicating records.
+
+**Q: Do I need to shorten identifiers before enqueueing intents?**  
+A: No. Pass the full string. L1 will compact it to a word or acronym when possible and otherwise record a namepool reference so the exact text survives replays.
