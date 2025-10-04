@@ -183,7 +183,7 @@ typedef struct {
 } DeepTraverseFixture;
 
 static void deep_traverse_fixture_init(DeepTraverseFixture* fixture) {
-    assert(fixture);
+    assert(fixture != NULL);
     memset(fixture, 0, sizeof *fixture);
 
     fixture->root = cep_cell_add_list(cep_root(),

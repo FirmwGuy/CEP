@@ -40,7 +40,7 @@ Imagine putting a sticky note on a folder that says “run these helpers here.�
 - Wildcard registry (target and signal):
   - Per-domain trie keyed by path segments, with literal children and wildcard drawers stored separately.
   - Each node keeps vectors of binding records plus tombstones in registration order, carrying the same flags as literal nodes.
-  - `cepID` segments are canonicalised: literal children cache the namepool `cepID` for the exact segment, while wildcard drawers use reserved glob sentinels (`CEP_ID_GLOB_MULTI` today, with `CEP_ID_GLOB_STAR`/`CEP_ID_GLOB_QUESTION` reserved for future single-segment matches) so lookup stays O(1) and identifiers remain inspectable. Nodes retain the original pattern text for debugging, but the resolver relies on the precomputed glob kind.
+  - `cepID` segments are canonicalised: literal children cache the namepool `cepID` for the exact segment, domain-wide globs still use the reserved `CEP_ID_GLOB_*` sentinels, and tag-level globbing relies on the segment’s `glob` bit (set when the word includes `*`) so lookup stays O(1) and identifiers remain inspectable. Nodes retain the original pattern text for debugging, but the resolver relies on the precomputed glob kind.
   - Traversal metadata precomputes segment matchers so resolve-time checks avoid repeated parsing.
   - Domain/tag awareness is encoded in the segment keys so `cepData` vs `cepStore` bindings never collide.
 - Inheritance masking:

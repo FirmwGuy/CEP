@@ -309,7 +309,7 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[2].data, capture.chunks[2].size));
     munit_assert_true(cep_serialization_reader_ingest(reader, capture.chunks[3].data, capture.chunks[3].size));
 
-    cepDT expected_name = {.domain = expected_domain, .tag = expected_tag};
+    cepDT expected_name = cep_dt_make(expected_domain, expected_tag);
     munit_assert_null(cep_cell_find_by_name(cep_root(), &expected_name));
     munit_assert_true(cep_serialization_reader_pending(reader));
     munit_assert_true(cep_serialization_reader_commit(reader));

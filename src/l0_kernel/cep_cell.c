@@ -442,6 +442,7 @@ void cep_data_history_clear(cepData* data) {
 cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
                         void** dataloc, void* value, ...  ) {
     assert(cep_dt_is_valid(type) && (datatype < CEP_DATATYPE_COUNT));
+    assert(!type->glob && "Glob tags are not legal for data descriptors");
 
     cepData* data;
     void*    address;
@@ -544,6 +545,7 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
 
     data->domain    = type->domain;
     data->tag       = type->tag;
+    data->glob      = type->glob;
     data->datatype  = datatype;
     data->writable  = writable;
     data->lock      = 0u;
@@ -1435,7 +1437,7 @@ static bool cep_data_structural_equal(const cepData* existing, const cepData* in
           used; for CEP_INDEX_BY_INSERTION no comparator is needed.
 */
 cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
-    assert(cep_dt_is_valid(dt) && (storage < CEP_STORAGE_COUNT) && (indexing < CEP_INDEX_COUNT));
+    assert(cep_dt_is_valid(dt) && !dt->glob && (storage < CEP_STORAGE_COUNT) && (indexing < CEP_INDEX_COUNT));
 
     cepStore* store;
     va_list  args;
@@ -1492,6 +1494,7 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
 
     store->domain   = dt->domain;
     store->tag      = dt->tag;
+    store->glob     = dt->glob;
     store->storage  = storage;
     store->indexing = indexing;
     store->writable = true;
@@ -1620,6 +1623,7 @@ void cep_store_delete_children_hard(cepStore* store) {
 static inline void store_check_auto_id(cepStore* store, cepCell* child) {
     if (cep_cell_id_is_pending(child)) {
         child->metacell.tag = cep_id_to_numeric(store->autoid++);
+        child->metacell.glob = 0;
         return;
     }
 
@@ -2856,11 +2860,13 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
     for insertion without additional bookkeeping. */
 void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* data, cepStore* store) {
     assert(cell && cep_dt_is_valid(name) && (type && type < CEP_TYPE_COUNT));
+    assert(!name->glob && "Glob tags are not legal for concrete cell names");
     bool isLink = (type == CEP_TYPE_LINK);
     assert(isLink? (!store): ((data? cep_data_valid(data): true)  &&  (store? cep_store_valid(store): true)));
 
     cell->metacell.domain    = name->domain;
     cell->metacell.tag       = name->tag;
+    cell->metacell.glob      = name->glob;
     cell->metacell.type      = type;
     cell->metacell.shadowing = CEP_SHADOW_NONE;
 
@@ -3444,6 +3450,7 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
         cepPast* segment = &tempPath->past[tempPath->capacity - tempPath->length - 1];
         segment->dt.domain = current->metacell.domain;
         segment->dt.tag    = current->metacell.tag;
+        segment->dt.glob   = current->metacell.glob;
         segment->timestamp = 0;
 
         tempPath->length++;
@@ -3476,6 +3483,7 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
             cepPast* segment = &tempPath->past[tempPath->length++];
             segment->dt.domain = leaf->data->dt.domain;
             segment->dt.tag = leaf->data->dt.tag;
+            segment->dt.glob = leaf->data->dt.glob;
             segment->timestamp = 0u;
         }
 
@@ -3499,6 +3507,7 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
             cepPast* segment = &tempPath->past[tempPath->length++];
             segment->dt.domain = store->dt.domain;
             segment->dt.tag = store->dt.tag;
+            segment->dt.glob = store->dt.glob;
             segment->timestamp = 0u;
         }
     }
@@ -4310,7 +4319,7 @@ size_t cep_word_to_text(cepID word, char s[12]) {
     assert(cep_id_text_valid(word));
     cepID coded = cep_id(word);
 
-    const char* translation_table = ":_-./";    // Reverse translation table for values 27-31.
+    const char* translation_table = ":_-.*";    // Reverse translation table for values 27-31.
     unsigned length;
     for (length = 0; length < CEP_WORD_MAX_CHARS; length++) {
         uint8_t encoded_char = (coded >> (5 * ((CEP_WORD_MAX_CHARS - 1) - length))) & 0x1F; // Extract each 5-bit segment, starting from the most significant bits.

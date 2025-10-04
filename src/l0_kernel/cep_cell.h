@@ -131,7 +131,8 @@ typedef struct {
                         domain:     CEP_NAME_BITS;
     };
     struct {
-        cepID           _sysbits2:  6,  /**< Used by other parts of CEP system. */
+        cepID           _sysbits2:  5,  /**< Used by other parts of CEP system. */
+                        glob:       1,  /**< Glob character present. */
                         tag:        CEP_NAME_BITS;
     };
 } cepDT;
@@ -175,7 +176,8 @@ typedef struct {
                 domain:     CEP_NAME_BITS;
       };
       struct {
-        cepID   _reserved:  6,
+        cepID   _reserved:  5,
+                glob:       1,    /**< Glob character present. */
                 tag:        CEP_NAME_BITS;
       };
     };
@@ -262,12 +264,98 @@ static inline bool cep_id_is_glob_question(cepID id) {
     return cep_id_is_reference(id) && cep_id(id) == (CEP_AUTOID_MAXVAL - 2u);
 }
 
+/* Word character chart (ASCII upper set):
+ H \  0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
+ - -  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+6x \ [SP] a   b   c   d   e   f   g   h   i   j   k   l   m   n   o
+7x \  p   q   r   s   t   u   v   w   x   y   z  [:] [_] [-] [.] [*]
+    Note: characters in square brackets replacing originals.
+*/
+#define CEP_WORD_MAX_CHARS      11
+
+size_t cep_word_to_text(cepID coded, char s[12]);
+
+#define CEP_WORD_GLOB_SENTINEL    31u
+
+static inline bool cep_id_has_glob_char(cepID id) {
+    if (!cep_id_is_word(id)) {
+        return false;
+    }
+
+    cepID payload = cep_id(id);
+    for (unsigned i = 0; i < CEP_WORD_MAX_CHARS; ++i) {
+        unsigned shift = 5u * ((CEP_WORD_MAX_CHARS - 1u) - i);
+        uint8_t encoded = (uint8_t)((payload >> shift) & 0x1Fu);
+        if (encoded == CEP_WORD_GLOB_SENTINEL) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static inline bool cep_word_glob_match_text(const char* pattern, size_t pattern_len, const char* text, size_t text_len) {
+    size_t pi = 0u;
+    size_t ti = 0u;
+    size_t star = (size_t)-1;
+    size_t match = 0u;
+
+    while (ti < text_len) {
+        if (pi < pattern_len && pattern[pi] == '*') {
+            star = pi++;
+            match = ti;
+            continue;
+        }
+
+        if (pi < pattern_len && pattern[pi] == text[ti]) {
+            ++pi;
+            ++ti;
+            continue;
+        }
+
+        if (star != (size_t)-1) {
+            pi = star + 1u;
+            ++match;
+            ti = match;
+            continue;
+        }
+
+        return false;
+    }
+
+    while (pi < pattern_len && pattern[pi] == '*') {
+        ++pi;
+    }
+
+    return pi == pattern_len;
+}
+
 static inline bool cep_id_matches(cepID pattern, cepID observed) {
-    return cep_id_is_glob_multi(pattern) || pattern == observed;
+    if (cep_id_is_glob_multi(pattern)) {
+        return true;
+    }
+
+    if (pattern == observed) {
+        return true;
+    }
+
+    if (cep_id_has_glob_char(pattern) && cep_id_is_word(pattern)) {
+        if (!cep_id_is_word(observed)) {
+            return false;
+        }
+
+        char pattern_buf[CEP_WORD_MAX_CHARS + 1u];
+        char observed_buf[CEP_WORD_MAX_CHARS + 1u];
+        size_t pattern_len = cep_word_to_text(pattern, pattern_buf);
+        size_t observed_len = cep_word_to_text(observed, observed_buf);
+        return cep_word_glob_match_text(pattern_buf, pattern_len, observed_buf, observed_len);
+    }
+
+    return false;
 }
 
 static inline bool cep_dt_is_valid(const cepDT* dt) {
-    return dt && cep_id_text_valid(dt->domain) && cep_id_valid(dt->tag);
+    return dt && cep_id_text_valid(dt->domain) && cep_id_valid(dt->tag) && (!dt->glob || cep_id_has_glob_char(dt->tag));
 }
 
 
@@ -321,15 +409,6 @@ static inline bool cep_dt_is_valid(const cepDT* dt) {
     }
 
 
-/* Word character chart (ASCII upper set):
- H \  0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
- - -  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-6x \ [SP] a   b   c   d   e   f   g   h   i   j   k   l   m   n   o
-7x \  p   q   r   s   t   u   v   w   x   y   z  [:] [_] [-] [.] [/]
-    Note: characters in square brackets replacing originals.
-*/
-#define CEP_WORD_MAX_CHARS      11
-
 #define CEP_TEXT_TO_WORD_(name)                                                \
     cepID name(const char *s) {                                                \
         assert(s && *s);                                                       \
@@ -362,7 +441,7 @@ static inline bool cep_dt_is_valid(const cepDT* dt) {
               case '_': encoded_char = 28;  break;                             \
               case '-': encoded_char = 29;  break;                             \
               case '.': encoded_char = 30;  break;                             \
-              case '/': encoded_char = 31;  break;                             \
+              case '*': encoded_char = 31;  break;                             \
                                                                                \
               default:                                                         \
                 return 0;   /* Uncodable characters. */                        \
@@ -383,7 +462,13 @@ static inline CEP_CONST_FUNC CEP_TEXT_TO_WORD_(CEP_WORD_constant)
 #define CEP_ACRO(s)     ({static_assert(strlen(s) > 0 && strlen(s) <= 9,  "Acronym IDs must be 9 characters or less!"); CEP_ACRO_constant(s);})
 #define CEP_WORD(s)     ({static_assert(strlen(s) > 0 && strlen(s) <= 11, "Word IDs must be 11 characters or less!"); CEP_WORD_constant(s);})
 
-#define CEP_DTS(d, t)   (&(cepDT){.domain=(d), .tag=(t)})
+static inline cepDT cep_dt_make(cepID domain, cepID tag) {
+    cepDT dt = {.domain = domain, .tag = tag};
+    dt.glob = cep_id_has_glob_char(tag);
+    return dt;
+}
+
+#define CEP_DTS(d, t)   (&(cepDT){.domain=(d), .tag=(t), .glob=cep_id_has_glob_char(t)})
 #define CEP_DTWW(d, t)  CEP_DTS(CEP_WORD(d), CEP_WORD(t))
 #define CEP_DTWA(d, t)  CEP_DTS(CEP_WORD(d), CEP_ACRO(t))
 #define CEP_DTAA(d, t)  CEP_DTS(CEP_ACRO(d), CEP_ACRO(t))
@@ -462,7 +547,8 @@ struct _cepData {
         struct {
           cepID         writable:   1,  /**< If data can be updated. */
                         lock:       1,  /**< Lock on data content. */
-                        _reserved:  4,
+                        _reserved:  3,
+                        glob:       1,  /**< Glob character present. */
                         
                         tag:        CEP_NAME_BITS;
         };
@@ -713,7 +799,8 @@ struct _cepStore {
         struct {
         cepID       writable:   1,              /**< If chidren can be added/deleted. */
                     lock:       1,              /**< Lock on children operations. */
-                    _reserved:  4,
+                    _reserved:  3,
+                    glob:       1,              /**< Glob character present. */
 
                     tag:        CEP_NAME_BITS;
         };

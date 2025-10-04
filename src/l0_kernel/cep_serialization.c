@@ -886,6 +886,7 @@ static bool cep_serialization_reader_record_manifest(cepSerializationReader* rea
         segment->dt.domain = cep_serial_read_be64_buf(cursor);
         cursor += sizeof(uint64_t);
         segment->dt.tag = cep_serial_read_be64_buf(cursor);
+        segment->dt.glob = cep_id_has_glob_char(segment->dt.tag);
         cursor += sizeof(uint64_t);
         segment->timestamp = 0;
     }
@@ -906,6 +907,7 @@ static bool cep_serialization_reader_record_manifest(cepSerializationReader* rea
         stage->data.needed = true;
         stage->data.dt.domain = 0;
         stage->data.dt.tag = 0;
+        stage->data.dt.glob = 0;
         stage->data.total_size = 0;
         stage->data.hash = 0;
         stage->data.buffer = NULL;
@@ -966,6 +968,7 @@ static bool cep_serialization_reader_record_data_header(cepSerializationStageDat
     data->hash = cep_serial_read_be64_buf(payload + 16u);
     data->dt.domain = cep_serial_read_be64_buf(payload + 24u);
     data->dt.tag = cep_serial_read_be64_buf(payload + 32u);
+    data->dt.glob = cep_id_has_glob_char(data->dt.tag);
 
     size_t header_bytes = (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u);
     size_t expected_inline = payload_size - header_bytes;
@@ -1089,7 +1092,7 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
     cepCell* current = reader->root;
     for (unsigned idx = 0; idx < limit; ++idx) {
         const cepPast* segment = &stage->path->past[idx];
-        cepDT name = {.domain = segment->dt.domain, .tag = segment->dt.tag};
+        cepDT name = cep_dt_make(segment->dt.domain, segment->dt.tag);
         cepCell* child = cep_cell_find_by_name(current, &name);
         if (!child) {
             bool final_segment = (idx + 1u == limit);

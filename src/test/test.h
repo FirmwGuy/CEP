@@ -10,10 +10,11 @@
 #define MUNIT_ENABLE_ASSERT_ALIASES
 #include "munit.h"
 
+#include "cep_cell.h"
 #include "watchdog.h"
 
 enum {
-    CEP_NAME_ENUMERATION = 100,
+    CEP_NAME_ENUMERATION = cep_id_to_numeric(100),
     CEP_NAME_TEMP,
     CEP_NAME_Z_COUNT
 };

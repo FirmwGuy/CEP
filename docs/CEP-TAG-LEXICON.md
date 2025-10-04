@@ -9,7 +9,7 @@ when a new behavior needs a fresh word before it lands in code.
 
 ## Technical Details
 - **Domain:** fixed to the uppercase acronym `CEP` for all kernel-provided data.
-- **Tags:** lowercase words up to 11 characters using `[a-z0-9:_-./]`. Longer or
+- **Tags:** lowercase words up to 11 characters using `[a-z0-9:_-.]`; `*` is reserved for glob patterns and `/` only appears in acronym IDs. Longer or
   composite concepts are shortened in this table; scripts should not invent
   alternatives.
 - **CEP word vs. acronym:** A *word* ID encodes lowercase-first names (up to 11

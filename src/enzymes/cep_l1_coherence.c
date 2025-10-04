@@ -875,7 +875,7 @@ static bool cep_l1_index_bond(cepCell* bond, const cepDT* id_dt, cepCell* src, c
     char key_buf[96];
     snprintf(key_buf, sizeof key_buf, "%s:%s:%s:%c", src_buf, dst_buf, type_text, directed ? '1' : '0');
     cepID key_id = cep_namepool_intern_cstr(key_buf);
-    cepDT key_dt = {.domain = cep_domain_cep(), .tag = key_id};
+    cepDT key_dt = cep_dt_make(cep_domain_cep(), key_id);
 
     if (!cep_l1_store_lock(pairs, &pairs_lock)) {
         goto done;
@@ -1937,7 +1937,7 @@ static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* targ
             char key_buf[72];
             snprintf(key_buf, sizeof key_buf, "%s:%s", id_buf, facet_buf);
             cepID key_id = cep_namepool_intern_cstr(key_buf);
-            cepDT key_dt = {.domain = cep_domain_cep(), .tag = key_id};
+            cepDT key_dt = cep_dt_make(cep_domain_cep(), key_id);
 
             if (!cep_l1_link_child(mirror, &key_dt, facet_target)) {
                 goto done;

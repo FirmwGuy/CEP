@@ -559,7 +559,7 @@ static size_t cep_enzyme_path_specificity(const cepPath* pattern) {
         if (!cep_id_is_glob_multi(dt->domain)) {
             specificity++;
         }
-        if (!cep_id_is_glob_multi(dt->tag)) {
+        if (!cep_id_is_glob_multi(dt->tag) && !dt->glob) {
             specificity++;
         }
     }
