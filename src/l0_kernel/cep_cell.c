@@ -1413,28 +1413,28 @@ static bool cep_data_structural_equal(const cepData* existing, const cepData* in
         - CEP_STORAGE_LINKED_LIST:
             No extra arguments.
         - CEP_STORAGE_ARRAY:
-            size_t capacity
+            size_t capacity.
         - CEP_STORAGE_PACKED_QUEUE:
-            size_t capacity
+            size_t capacity.
             Notes: indexing must be CEP_INDEX_BY_INSERTION.
         - CEP_STORAGE_RED_BLACK_T:
             No storage-specific arguments.
             Notes: indexing cannot be CEP_INDEX_BY_INSERTION.
+        - CEP_STORAGE_HASH_TABLE:
+            size_t capacity.
+            Notes: indexing must be CEP_INDEX_BY_HASH.
         - CEP_STORAGE_OCTREE:
-            float* center, double subwide, cepCompare compare
-            Notes: indexing must be CEP_INDEX_BY_FUNCTION.
-                   'center' points to 3 floats (XYZ). 'subwide' is half-width 
-                   of the root bound. The compare callback must determine 
-                   whether the record fits a child bound (return > 0 when it 
-                   fits; <= 0 otherwise). It receives the cell, a user context 
-                   (as provided to store operations), and an 
-                   implementation-defined bound descriptor.
+            float* center, double subwide, cepCompare compare.
+            Notes: indexing must be CEP_INDEX_BY_FUNCTION. The compare callback
+                   checks whether a child fits within the bound (return > 0 when
+                   it fits; <= 0 otherwise). The extra arguments carry the bound
+                   centre (XYZ) and half-width.
 
     - indexing: One of CEP_INDEX_* (ordering strategy).
-        - If 'indexing' is CEP_INDEX_BY_FUNCTION or CEP_INDEX_BY_HASH, append:
-          cepCompare compare. This comparator is used to order/look up 
-          children. For CEP_INDEX_BY_NAME the default Domain/Tag comparison is 
-          used; for CEP_INDEX_BY_INSERTION no comparator is needed.
+        - If 'indexing' is CEP_INDEX_BY_FUNCTION or CEP_INDEX_BY_HASH, append a
+          cepCompare compare callback. This is used to order or look up children.
+          CEP_INDEX_BY_NAME uses the default domain/tag comparison; CEP_INDEX_BY_INSERTION
+          requires no comparator.
 */
 cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
     assert(cep_dt_is_valid(dt) && !dt->glob && (storage < CEP_STORAGE_COUNT) && (indexing < CEP_INDEX_COUNT));

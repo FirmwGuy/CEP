@@ -15,80 +15,11 @@
 extern "C" {
 #endif
 
+
 /**
  * @file
  * @brief Core Layer-0 data structures and utilities for CEP cells.
  */
-
-
-/*
-    CEP - Layer 0 - Cell implementation
-    -----------------------------------
-
-    This is designed to represent and manage hierarchical data structures in a 
-    distributed execution environment, similar in flexibility to representing 
-    complex XML or JSON data models. It facilitates the storage, navigation, 
-    and manipulation of records, which can point to data values (holding actual 
-    information) and to branches of other records (acting as nodes in the 
-    hierarchical structure).
-
-    Key Components
-    --------------
-
-    * Cell: The fundamental unit within the system, capable of storing data
-    and having children cells at the same time.
-
-    * Link: A record that points to another cell.
-
-    * Metacell: Each cell contains meta, including flags that specify the 
-    cell's characteristics, and a name identifier indicating the cell's role or 
-    ID within its parent.
-
-    * Data: This is where the actual data (value) being hold by the cell is 
-    located. It has its own metadata.
-
-    * Store: Storage for children cells according to different indexing 
-    techniques.
-
-    The system supports navigating from any cell to the root of the database, 
-    reconstructing paths within the data hierarchy based on field identifiers 
-    in parent cells.
-
-    Children Storage Techniques
-    ---------------------------
-
-    * Store Metadata: Stores serve as a versatile container within the system,
-    holding child cells through diverse storage strategies. Each storage can
-    adopt one of several mechanisms, determined by the structure indicator in
-    its metadata. This design enables tailored optimization based on specific
-    needs, such as operation frequency, data volume, and access patterns.
-
-    * Storage Types: Each storage type is selected to optimize specific aspects
-    of data management, addressing the system's goals of flexibility,
-    efficiency, and navigability.
-
-      Doubly Linked List: Provides flexibility for frequent insertions
-      and deletions at arbitrary positions with minimal overhead per
-      operation.
-
-      Array: Offers fast access and efficient cache utilization for
-      densely packed records. Ideal for situations where the number of
-      children is relatively static and operations are predominantly at
-      the tail end.
-
-      Packed Queue: Strikes a balance between the cache efficiency of
-      arrays and the flexibility of linked lists. It's optimized for
-      scenarios where operations in head and tail are common.
-
-      Red-Black Tree: Ensures balanced tree structure for ordered data,
-      offering logarithmic time complexity for insertions, deletions,
-      and lookups. Particularly useful for datasets requiring sorted
-      access.
-
-      Octree: Used for (3D) spatial indexing according to contained data.
-      It only needs a comparation function able to determine if the record
-      fully fits inside a quadrant or not.
-*/
 
 
 typedef struct _cepData       cepData;

@@ -17,7 +17,7 @@ L1’s goal is simple: keep the coherence story straight every heartbeat. It cap
 - **Beings** (`/data/coh/being/{id}`) hold long-lived identities and a free-form `attrs` dictionary. You link everything else to these anchors.
 - **Bonds** (`/data/coh/bond/{id}`) connect exactly two beings with a `type`, `src`, `dst`, and optional `directed` flag. They model pairwise relations such as “owns” or “mentors”.
 - **Contexts** (`/data/coh/context/{id}`) gather multiple beings under named `roles/{role}` links and carry scoped `facets/{facet}` children that either link to resolved facts or describe a required-but-missing piece.
-- **Facets** materialize the implications of a context. When the closure enzyme finds a facet link it mirrors it into `/data/coh/facet/{ctx}:{facetType}` so global queries can scan a flat index instead of traversing every context.
+- **Facets** materialize the implications of a context. When the closure enzyme finds a facet link it mirrors it into `/data/coh/facet/{ctx}:{facetType}` so global queries can scan a flat index instead of traversing every context. Canonical IDs (built via `cep_l1_compose_identifier()` or the `CEP_L1_COMPOSE` macro) keep `{ctx}` and `{facet}` consistent across callers.
 - **Debts** (`/data/coh/debt/{ctx}/{facet}`) act as IOUs. When a required facet has no link yet, the closure enzyme records the debt and clears it once a matching fact appears, keeping the closure contract honest.
 
 ### Intent workflow

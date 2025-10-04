@@ -22,6 +22,7 @@ If you want to customize behavior or reason about performance, this is the place
 
 ### Identifier handling
 - Static tags still lean on `CEP_DTAW("CEP", "tag")`, but runtime identifiers now flow through the namepool. The ingest helpers try to compact short strings into CEP words/acronyms and store everything else as `CEP_NAMING_REFERENCE` entries; inputs are limited to 256 bytes by the namepool implementation.
+- Producers can call `cep_l1_compose_identifier()` / `cep_l1_tokens_to_dt()` to normalize multi-token IDs (lowercase + `:` delimiter) before intents ever hit the inbox, keeping ledger keys consistent across collaborating systems.
 - Numeric-only identifiers survive intact (the namepool emits numeric IDs) and glob hints are honored when callers pre-intern pattern references.
 - Roles and facet names must resolve to a valid word, acronym, reference, or numeric ID. If a client supplies an empty or malformed string, the intent is marked invalid and no ledger mutation happens.
 

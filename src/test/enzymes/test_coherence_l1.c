@@ -181,6 +181,58 @@ static cepCell* coh_add_link_field(cepCell* parent, const char* name, cepCell* t
     return link;
 }
 
+static MunitResult test_coh_identifier_helper_word(const MunitParameter params[], void* fixture_ptr) {
+    (void)params;
+    (void)fixture_ptr;
+
+    char buffer[CEP_L1_IDENTIFIER_MAX + 1u];
+    munit_assert_true(CEP_L1_COMPOSE(buffer, sizeof buffer, "Team", "A"));
+    munit_assert_string_equal(buffer, "team:a");
+
+    cepDT dt = {0};
+    munit_assert_true(CEP_L1_TOKENS_TO_DT(&dt, "Team", "A"));
+    munit_assert_true(cep_id_is_word(dt.tag));
+    char decoded[CEP_WORD_MAX_CHARS + 1u];
+    cep_word_to_text(dt.tag, decoded);
+    munit_assert_string_equal(decoded, "team:a");
+
+    return MUNIT_OK;
+}
+
+static MunitResult test_coh_identifier_helper_reference(const MunitParameter params[], void* fixture_ptr) {
+    (void)params;
+    (void)fixture_ptr;
+
+    char buffer[CEP_L1_IDENTIFIER_MAX + 1u];
+    munit_assert_true(CEP_L1_COMPOSE(buffer, sizeof buffer, "Customer", "Region-West", "2025"));
+    munit_assert_string_equal(buffer, "customer:region-west:2025");
+
+    cepDT dt = {0};
+    munit_assert_true(CEP_L1_TOKENS_TO_DT(&dt, "Customer", "Region-West", "2025"));
+    munit_assert_true(cep_id_is_reference(dt.tag));
+    size_t len = 0u;
+    const char* stored = cep_namepool_lookup(dt.tag, &len);
+    munit_assert_not_null(stored);
+    munit_assert_size(len, ==, strlen(buffer));
+    munit_assert_memory_equal(len, buffer, stored);
+
+    return MUNIT_OK;
+}
+
+static MunitResult test_coh_identifier_helper_invalid(const MunitParameter params[], void* fixture_ptr) {
+    (void)params;
+    (void)fixture_ptr;
+
+    const char* tokens_bad[] = { "lead", "phase:alpha" };
+    char buffer[CEP_L1_IDENTIFIER_MAX + 1u];
+    munit_assert_false(cep_l1_compose_identifier(tokens_bad, 2u, buffer, sizeof buffer));
+
+    const char* tokens_space[] = { "  ", "alpha" };
+    munit_assert_false(cep_l1_compose_identifier(tokens_space, 2u, buffer, sizeof buffer));
+
+    return MUNIT_OK;
+}
+
 static void coh_run_single_beat(void) {
     munit_assert_true(cep_heartbeat_stage_commit());
     munit_assert_true(cep_heartbeat_process_impulses());
@@ -958,6 +1010,30 @@ MunitResult test_coh_agenda_order(const MunitParameter params[], void* fixture_p
 }
 
 static MunitTest coherence_tests[] = {
+    {
+        "/coherence/identifier_helper_word",
+        test_coh_identifier_helper_word,
+        coh_setup,
+        coh_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        NULL,
+    },
+    {
+        "/coherence/identifier_helper_reference",
+        test_coh_identifier_helper_reference,
+        coh_setup,
+        coh_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        NULL,
+    },
+    {
+        "/coherence/identifier_helper_invalid",
+        test_coh_identifier_helper_invalid,
+        coh_setup,
+        coh_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        NULL,
+    },
     {
         "/coherence/role_identifiers",
         test_coh_role_identifiers,

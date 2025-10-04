@@ -20,6 +20,7 @@ In short: bootstrap once, register the enzymes, enqueue intents as cells, and le
   - `bo_upsert`: `id`, `type`, `src` link, `dst` link, optional `directed` flag.
   - `ctx_upsert`: `id`, `type`, optional `roles/{role}` links, optional `facets/{facet}` link sets or requirements.
 - **Identifier guard**: any UTF-8 string up to 256 bytes can be supplied. L1 automatically runs it through the namepool, producing a compact word/acronym when possible and falling back to a reference otherwise. Empty strings or values beyond 256 bytes still raise `invalid-*` outcomes.
+- **Helper**: reuse `cep_l1_compose_identifier()` / `CEP_L1_COMPOSE` (and `cep_l1_tokens_to_dt()` / `CEP_L1_TOKENS_TO_DT`) when you need to build canonical IDs from multiple tokens. They lowercase inputs, join with `:`, and hand back the `cepID`, so every caller lands on the same ledger key.
 - **Provenance**: you do not need to add metadata links—the enzymes attach the intent as a parent on every ledger entry they touch.
 
 ### 3) Observing outcomes
