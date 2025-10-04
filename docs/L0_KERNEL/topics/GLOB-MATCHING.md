@@ -8,7 +8,7 @@ Globbing lets CEP reuse familiar "match anything" patterns when inspecting cell 
 - When a word, acronym, or pattern-enabled reference includes `*`, helpers such as `cep_id_has_glob_char` flag the identifier as a glob. Builders produced via `cep_dt_make` or the `CEP_DTS` macros automatically set the `glob` bit inside `cepDT`, `cepMetacell`, `cepData`, and `cepStore` structures.
 - Matching honours the glob bit on tag segments: `cep_id_matches` expands `*` as "match zero or more characters" for both word/acronym identifiers and reference patterns, and falls back to literal equality otherwise. Domain-level globs still rely on the `CEP_ID_GLOB_*` sentinels.
 - Enzyme registries treat globbed tags as less specific than literal matches, ensuring deterministic priority when both candidate paths overlap.
-- Serialization and replay preserve glob semantics. During deserialization, the kernel recomputes the glob bit from the stored tag so wildcard awareness survives round trips.
+- Serialization and replay preserve glob semantics. Each manifest segment and data descriptor carries a dedicated glob byte; readers restore the hint directly without recomputing from the identifier.
 - Literal cell construction APIs reject globbed names; the wildcard syntax is reserved for query-time structures (enzyme patterns, lookups, traversal filters) rather than persistent node names.
 
 ## Q&A

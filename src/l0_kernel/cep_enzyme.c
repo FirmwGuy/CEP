@@ -52,6 +52,8 @@ struct _cepEnzymeRegistry {
     size_t              index_by_signal_count;
     cepEnzymeIndexBucket* signal_buckets;
     size_t              signal_bucket_count;
+    size_t*             signal_wildcard_index;
+    size_t              signal_wildcard_count;
 };
 
 
@@ -74,7 +76,8 @@ static void cep_enzyme_match_merge(cepEnzymeMatch* matches, size_t* match_count,
 static size_t cep_enzyme_path_specificity(const cepPath* pattern);
 static bool cep_enzyme_dt_matches(const cepDT* pattern, const cepDT* observed);
 static bool cep_enzyme_paths_equal(const cepPath* pattern, const cepPath* candidate);
-static bool cep_enzyme_path_is_prefix(const cepPath* prefix, const cepPath* path);
+static bool cep_enzyme_segment_is_wildcard(const cepDT* dt);
+static bool cep_enzyme_path_match(const cepPath* pattern, const cepPath* candidate, bool allow_suffix);
 
 static cepDT cep_enzyme_query_head(const cepPath* path) {
     if (!path || path->length == 0u) {
@@ -176,6 +179,7 @@ static bool cep_enzyme_registry_rebuild_indexes(cepEnzymeRegistry* registry) {
     CEP_FREE(registry->name_buckets);
     CEP_FREE(registry->index_by_signal);
     CEP_FREE(registry->signal_buckets);
+    CEP_FREE(registry->signal_wildcard_index);
 
     registry->index_by_name = NULL;
     registry->index_by_name_count = 0;
@@ -185,6 +189,8 @@ static bool cep_enzyme_registry_rebuild_indexes(cepEnzymeRegistry* registry) {
     registry->index_by_signal_count = 0;
     registry->signal_buckets = NULL;
     registry->signal_bucket_count = 0;
+    registry->signal_wildcard_index = NULL;
+    registry->signal_wildcard_count = 0;
 
     size_t n = registry->entry_count;
     if (n == 0u) {
@@ -270,6 +276,49 @@ static bool cep_enzyme_registry_rebuild_indexes(cepEnzymeRegistry* registry) {
     registry->index_by_signal_count = n;
     registry->signal_buckets = signal_buckets;
     registry->signal_bucket_count = signal_bucket_count;
+
+    size_t wildcard_count = 0u;
+    for (size_t i = 0; i < n; ++i) {
+        const cepEnzymeEntry* entry = &registry->entries[i];
+        if (!entry->query || entry->query->length == 0u) {
+            wildcard_count++;
+            continue;
+        }
+        if (cep_enzyme_segment_is_wildcard(&entry->query->past[0].dt)) {
+            wildcard_count++;
+        }
+    }
+
+    if (wildcard_count) {
+        size_t* wildcard_index = cep_malloc(wildcard_count * sizeof(*wildcard_index));
+        if (!wildcard_index) {
+            CEP_FREE(registry->index_by_name);
+            CEP_FREE(registry->name_buckets);
+            CEP_FREE(registry->index_by_signal);
+            CEP_FREE(registry->signal_buckets);
+            registry->index_by_name = NULL;
+            registry->name_buckets = NULL;
+            registry->index_by_signal = NULL;
+            registry->index_by_signal_count = 0;
+            registry->signal_buckets = NULL;
+            registry->signal_bucket_count = 0;
+            return false;
+        }
+
+        size_t cursor = 0u;
+        for (size_t i = 0; i < n; ++i) {
+            const cepEnzymeEntry* entry = &registry->entries[i];
+            if (!entry->query || entry->query->length == 0u) {
+                wildcard_index[cursor++] = i;
+                continue;
+            }
+            if (cep_enzyme_segment_is_wildcard(&entry->query->past[0].dt)) {
+                wildcard_index[cursor++] = i;
+            }
+        }
+        registry->signal_wildcard_index = wildcard_index;
+        registry->signal_wildcard_count = wildcard_count;
+    }
 
     return true;
 }
@@ -421,30 +470,26 @@ static bool cep_enzyme_matches_signal(const cepEnzymeEntry* entry, const cepPath
 
     size_t specificity = cep_enzyme_path_specificity(entry->query);
 
+    bool match = false;
+
     switch (entry->descriptor.match) {
       case CEP_ENZYME_MATCH_EXACT:
-        if (entry->query->length == signal->length && cep_enzyme_paths_equal(entry->query, signal)) {
-            if (specificity_out) {
-                *specificity_out = specificity;
-            }
-            return true;
-        }
-        return false;
+        match = cep_enzyme_path_match(entry->query, signal, false);
+        break;
 
       case CEP_ENZYME_MATCH_PREFIX:
-        if (cep_enzyme_path_is_prefix(entry->query, signal)) {
-            if (specificity_out) {
-                *specificity_out = specificity;
-            }
-            return true;
-        }
-        return false;
+        match = cep_enzyme_path_match(entry->query, signal, true);
+        break;
 
       default:
         break;
     }
 
-    return false;
+    if (match && specificity_out) {
+        *specificity_out = specificity;
+    }
+
+    return match;
 }
 
 static size_t cep_enzyme_registry_hint_capacity(void) {
@@ -529,6 +574,8 @@ static void cep_enzyme_registry_free_all(cepEnzymeRegistry* registry) {
     registry->index_by_signal_count   = 0;
     registry->signal_buckets          = NULL;
     registry->signal_bucket_count     = 0;
+    registry->signal_wildcard_index   = NULL;
+    registry->signal_wildcard_count   = 0;
 }
 
 
@@ -577,6 +624,73 @@ static bool cep_enzyme_dt_matches(const cepDT* pattern, const cepDT* observed) {
            cep_id_matches(pattern->tag, observed->tag);
 }
 
+static bool cep_enzyme_segment_is_wildcard(const cepDT* dt) {
+    if (!dt) {
+        return true;
+    }
+
+    return cep_id_is_glob_multi(dt->domain) ||
+           cep_id_is_glob_multi(dt->tag)    ||
+           cep_id_is_glob_star(dt->domain)  ||
+           cep_id_is_glob_star(dt->tag)     ||
+           cep_id_is_glob_question(dt->domain) ||
+           cep_id_is_glob_question(dt->tag) ||
+           dt->glob;
+}
+
+static bool cep_enzyme_path_match_impl(const cepPath* pattern,
+                                       size_t pattern_index,
+                                       const cepPath* candidate,
+                                       size_t candidate_index,
+                                       bool allow_suffix) {
+    if (!pattern) {
+        return false;
+    }
+
+    if (pattern_index >= pattern->length) {
+        return allow_suffix || candidate_index >= candidate->length;
+    }
+
+    const cepDT* segment = &pattern->past[pattern_index].dt;
+    bool multi = cep_id_is_glob_multi(segment->domain) || cep_id_is_glob_multi(segment->tag);
+
+    if (multi) {
+        if (pattern_index + 1u >= pattern->length) {
+            return true;
+        }
+
+        for (size_t skip = candidate_index; skip <= candidate->length; ++skip) {
+            if (cep_enzyme_path_match_impl(pattern, pattern_index + 1u, candidate, skip, allow_suffix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    if (candidate_index >= candidate->length) {
+        return false;
+    }
+
+    if (!cep_enzyme_dt_matches(segment, &candidate->past[candidate_index].dt)) {
+        return false;
+    }
+
+    return cep_enzyme_path_match_impl(pattern, pattern_index + 1u, candidate, candidate_index + 1u, allow_suffix);
+}
+
+static bool cep_enzyme_path_match(const cepPath* pattern, const cepPath* candidate, bool allow_suffix) {
+    if (!pattern || !candidate) {
+        return false;
+    }
+
+    if (pattern->length == 0u) {
+        return allow_suffix || candidate->length == 0u;
+    }
+
+    return cep_enzyme_path_match_impl(pattern, 0u, candidate, 0u, allow_suffix);
+}
+
 
 static bool cep_enzyme_paths_equal(const cepPath* pattern, const cepPath* candidate) {
     if (pattern == candidate) {
@@ -591,24 +705,6 @@ static bool cep_enzyme_paths_equal(const cepPath* pattern, const cepPath* candid
 
     for (unsigned i = 0; i < pattern->length; ++i) {
         if (!cep_enzyme_dt_matches(&pattern->past[i].dt, &candidate->past[i].dt)) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-
-static bool cep_enzyme_path_is_prefix(const cepPath* prefix, const cepPath* path) {
-    if (!prefix || !path) {
-        return false;
-    }
-    if (prefix->length > path->length) {
-        return false;
-    }
-
-    for (unsigned i = 0; i < prefix->length; ++i) {
-        if (!cep_enzyme_dt_matches(&prefix->past[i].dt, &path->past[i].dt)) {
             return false;
         }
     }
@@ -689,6 +785,7 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
         CEP_FREE(registry->name_buckets);
         CEP_FREE(registry->index_by_signal);
         CEP_FREE(registry->signal_buckets);
+        CEP_FREE(registry->signal_wildcard_index);
         registry->index_by_name         = NULL;
         registry->index_by_name_count   = 0;
         registry->name_buckets          = NULL;
@@ -697,6 +794,8 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
         registry->index_by_signal_count = 0;
         registry->signal_buckets        = NULL;
         registry->signal_bucket_count   = 0;
+        registry->signal_wildcard_index = NULL;
+        registry->signal_wildcard_count = 0;
         return;
     }
 
@@ -727,6 +826,9 @@ void cep_enzyme_registry_reset(cepEnzymeRegistry* registry) {
     CEP_FREE(registry->signal_buckets);
     registry->signal_buckets = NULL;
     registry->signal_bucket_count = 0;
+    CEP_FREE(registry->signal_wildcard_index);
+    registry->signal_wildcard_index = NULL;
+    registry->signal_wildcard_count = 0;
 }
 
 
@@ -1139,6 +1241,9 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
     cepEffectiveBinding* bindings = NULL;
     size_t binding_count = 0u;
 
+    /* TODO: expose alternate dispatch policies (OR, TARGET_ONLY, SIGNAL_ONLY,
+       STRICT_BOTH) so callers can select how signal/target matches combine. */
+
     if (target_path) {
         const cepHeartbeatTopology* topology = cep_heartbeat_topology();
         const cepCell* root = topology ? topology->root : NULL;
@@ -1243,6 +1348,32 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
             };
 
             cep_enzyme_match_merge(matches, &match_count, &candidate);
+        }
+
+        if (registry->signal_wildcard_count > 0u) {
+            for (size_t i = 0; i < registry->signal_wildcard_count; ++i) {
+                size_t entry_index = registry->signal_wildcard_index[i];
+                if (entry_index >= registry_count) {
+                    continue;
+                }
+
+                const cepEnzymeEntry* entry = &registry->entries[entry_index];
+                size_t signal_specificity = 0u;
+                if (!cep_enzyme_matches_signal(entry, signal, &signal_specificity)) {
+                    continue;
+                }
+
+                cepEnzymeMatch candidate = {
+                    .descriptor = &entry->descriptor,
+                    .specificity_signal = signal_specificity,
+                    .specificity_target = 0u,
+                    .specificity_total = signal_specificity ? signal_specificity : cep_enzyme_path_specificity(entry->query),
+                    .registration_order = entry->registration_order,
+                    .match_type = CEP_ENZYME_MATCH_FLAG_SIGNAL,
+                };
+
+                cep_enzyme_match_merge(matches, &match_count, &candidate);
+            }
         }
     }
 

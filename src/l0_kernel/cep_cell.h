@@ -350,6 +350,10 @@ static inline bool cep_id_matches(cepID pattern, cepID observed) {
         return true;
     }
 
+    if (cep_id_is_glob_star(pattern) || cep_id_is_glob_question(pattern)) {
+        return true;
+    }
+
     if (pattern == observed) {
         return true;
     }

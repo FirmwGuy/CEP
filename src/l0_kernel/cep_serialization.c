@@ -731,6 +731,7 @@ cepSerializationReader* cep_serialization_reader_create(cepCell* root) {
     cepSerializationReader* reader = cep_malloc0(sizeof *reader);
     if (!reader)
         return NULL;
+    cep_namepool_bootstrap();
     cep_serialization_reader_init(reader, root);
     return reader;
 }

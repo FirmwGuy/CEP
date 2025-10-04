@@ -39,7 +39,7 @@ typedef struct {
 
 Register via the **registry**; during a live heartbeat, registrations are staged and **activated on the next beat** to keep the current agenda frozen (see `cep_enzyme_register` and `cep_enzyme_registry_activate_pending`)  . Internally, mid‑beat calls are queued in a *pending* array and promoted later; out of beat, they go straight into the active table and indexes are rebuilt for fast lookup .
 
-**Match policies & wildcards.** A descriptor’s `match` controls how its **query path** is compared: `EXACT` must match the entire `signal_path`, while `PREFIX` matches “starts with” semantics. Path segments can use **Domain/Tag** globbing in two ways: word tags may include `*` (single-segment wildcard handled by `cep_id_matches`), and the reference sentinels (`CEP_ID_GLOB_MULTI`, `CEP_ID_GLOB_STAR`, `CEP_ID_GLOB_QUESTION`) remain available for legacy multi-segment matching.
+**Match policies & wildcards.** A descriptor’s `match` controls how its **query path** is compared: `EXACT` must match the entire `signal_path`, while `PREFIX` matches “starts with” semantics. Path segments can use **Domain/Tag** globbing in two ways: word tags may include `*` (handled by `cep_id_matches`), and the reserved sentinel IDs (`CEP_ID_GLOB_MULTI`, `CEP_ID_GLOB_STAR`, `CEP_ID_GLOB_QUESTION`) provide wildcard behaviour at the domain/tag level.
 
 **Return codes.** Enzymes return `CEP_ENZYME_SUCCESS`, `CEP_ENZYME_RETRY`, or `CEP_ENZYME_FATAL` .
 
@@ -124,6 +124,7 @@ Control headers now carry a tiny record of “which beat emitted this?” so dow
 
 - `cepSerializationHeader` gained `journal_metadata_present`, `journal_beat`, and `journal_decision_replay` fields. Set the boolean to `true` to request metadata; leave it `false` if you supply your own `metadata` buffer.
 - `cep_serialization_emit_cell()` auto-populates `journal_beat` with `cep_beat_index()` when you pass `NULL` for the header (or leave the boolean unset), so ordinary emitters get beat stamps for free.
+- Structure manifests encode an extra byte after every `domain/tag` pair that mirrors the segment’s `glob` flag (`0x01` when set). Data descriptors append the same byte after the payload tag so wildcard hints survive round-trips.
 - During write, the header encodes a 16-byte metadata block: beat (big-endian `uint64_t`), a flag byte (`0x01` for decision replay), and padding. Readers parse it back and set the struct fields when `metadata_length` matches the pattern.
 - You can still inject arbitrary metadata: provide `metadata_length`/`metadata` and leave `journal_metadata_present` `false`; the serializer simply copies your payload.
 
