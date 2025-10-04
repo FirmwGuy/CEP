@@ -305,7 +305,7 @@ static bool cep_serialization_emit_manifest(cepSerializationEmitter* emitter,
         return false;
 
     size_t payload_size = sizeof(uint16_t) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t)
-                        + (size_t)segments * (sizeof(uint64_t) * 2u);
+                        + (size_t)segments * ((sizeof(uint64_t) * 2u) + sizeof(uint8_t));
     uint8_t* payload = cep_malloc(payload_size);
     uint8_t* p = payload;
 
@@ -339,6 +339,7 @@ static bool cep_serialization_emit_manifest(cepSerializationEmitter* emitter,
         uint64_t tag_be = cep_serial_to_be64(segment->dt.tag);
         memcpy(p, &tag_be, sizeof tag_be);
         p += sizeof tag_be;
+        *p++ = (uint8_t)(segment->dt.glob ? 1u : 0u);
     }
 
     bool ok = cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_STRUCTURE, payload, payload_size);
@@ -419,7 +420,8 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     bool chunked = total_size > blob_limit;
 
     size_t header_payload = sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint32_t)
-                           + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t);
+                           + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t)
+                           + sizeof(uint8_t);
     size_t inline_size = chunked ? 0u : total_size;
     if (!chunked)
         header_payload += inline_size;
@@ -458,6 +460,8 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     uint64_t dt_tag_be = cep_serial_to_be64(data->dt.tag);
     memcpy(p, &dt_tag_be, sizeof dt_tag_be);
     p += sizeof dt_tag_be;
+
+    *p++ = (uint8_t)(data->dt.glob ? 1u : 0u);
 
     if (!chunked && inline_size) {
         memcpy(p, bytes, inline_size);
@@ -857,7 +861,7 @@ static bool cep_serialization_reader_record_manifest(cepSerializationReader* rea
     uint16_t reserved = cep_serial_read_be16_buf(payload + 4);
     (void)reserved;
 
-    size_t expected_bytes = (size_t)segments * (sizeof(uint64_t) * 2u);
+    size_t expected_bytes = (size_t)segments * ((sizeof(uint64_t) * 2u) + sizeof(uint8_t));
     if ((size_t)6u + expected_bytes > payload_size)
         return false;
 
@@ -886,8 +890,9 @@ static bool cep_serialization_reader_record_manifest(cepSerializationReader* rea
         segment->dt.domain = cep_serial_read_be64_buf(cursor);
         cursor += sizeof(uint64_t);
         segment->dt.tag = cep_serial_read_be64_buf(cursor);
-        segment->dt.glob = cep_id_has_glob_char(segment->dt.tag);
         cursor += sizeof(uint64_t);
+        segment->dt.glob = cursor[0] != 0u;
+        cursor += sizeof(uint8_t);
         segment->timestamp = 0;
     }
     stage->path = path;
@@ -957,7 +962,7 @@ static bool cep_serialization_reader_record_data_header(cepSerializationStageDat
     if (!data || !payload)
         return false;
 
-    if (payload_size < (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u))
+    if (payload_size < (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u) + sizeof(uint8_t))
         return false;
 
     data->datatype = cep_serial_read_be16_buf(payload);
@@ -968,9 +973,9 @@ static bool cep_serialization_reader_record_data_header(cepSerializationStageDat
     data->hash = cep_serial_read_be64_buf(payload + 16u);
     data->dt.domain = cep_serial_read_be64_buf(payload + 24u);
     data->dt.tag = cep_serial_read_be64_buf(payload + 32u);
-    data->dt.glob = cep_id_has_glob_char(data->dt.tag);
+    data->dt.glob = payload[40u] != 0u;
 
-    size_t header_bytes = (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u);
+    size_t header_bytes = (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u) + sizeof(uint8_t);
     size_t expected_inline = payload_size - header_bytes;
 
     if (!data->chunked) {
@@ -1268,7 +1273,7 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
                 return false;
             }
         } else {
-            size_t header_bytes = (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u);
+            size_t header_bytes = (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u) + sizeof(uint8_t);
             if (payload_size < header_bytes) {
                 cep_serialization_reader_fail(reader);
                 return false;

@@ -255,14 +255,18 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     const uint8_t* path_bytes = manifest_payload_bytes + 6;
     uint64_t domain = read_be64(path_bytes);
     uint64_t tag = read_be64(path_bytes + 8);
+    uint8_t glob_flag = path_bytes[16];
     munit_assert_uint64(domain, ==, expected_domain);
     munit_assert_uint64(tag, ==, expected_tag);
+    munit_assert_uint8(glob_flag, ==, 0);
 
-    const uint8_t* data_bytes = path_bytes + 16;
+    const uint8_t* data_bytes = path_bytes + 17;
     uint64_t data_domain = read_be64(data_bytes);
     uint64_t data_tag = read_be64(data_bytes + 8);
+    uint8_t data_glob = data_bytes[16];
     munit_assert_uint64(data_domain, ==, data->dt.domain);
     munit_assert_uint64(data_tag, ==, data->dt.tag);
+    munit_assert_uint8(data_glob, ==, 0);
 
     const SerializationChunk* data_chunk = &capture.chunks[2];
     const SerializationChunk* control_chunk = &capture.chunks[3];
@@ -288,7 +292,8 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     uint64_t hash = read_be64(descriptor + 16);
     uint64_t dt_domain = read_be64(descriptor + 24);
     uint64_t dt_tag = read_be64(descriptor + 32);
-    const uint8_t* inline_data = descriptor + 40;
+    uint8_t dt_glob = descriptor[40];
+    const uint8_t* inline_data = descriptor + 41;
 
     munit_assert_uint16(datatype, ==, CEP_DATATYPE_VALUE);
     munit_assert_uint16(flags, ==, 0);
@@ -297,6 +302,7 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
     munit_assert_uint64(hash, ==, expected_hash);
     munit_assert_uint64(dt_domain, ==, CEP_DTAW("CEP", "value")->domain);
     munit_assert_uint64(dt_tag, ==, CEP_DTAW("CEP", "value")->tag);
+    munit_assert_uint8(dt_glob, ==, 0);
     munit_assert_int(memcmp(inline_data, payload, sizeof payload - 1u), ==, 0);
 
     cep_cell_system_initiate();

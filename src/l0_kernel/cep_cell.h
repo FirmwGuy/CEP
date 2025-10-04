@@ -270,7 +270,8 @@ static inline bool cep_id_is_glob_question(cepID id) {
 size_t cep_word_to_text(cepID coded, char s[12]);
 size_t cep_acronym_to_text(cepID acro, char s[10]);
 
-bool cep_namepool_reference_is_glob(cepID id);
+const char* cep_namepool_lookup(cepID id, size_t* length);
+bool        cep_namepool_reference_is_glob(cepID id);
 
 #define CEP_WORD_GLOB_SENTINEL    31u
 
@@ -376,6 +377,22 @@ static inline bool cep_id_matches(cepID pattern, cepID observed) {
             size_t pattern_len = cep_acronym_to_text(pattern, pattern_buf);
             size_t observed_len = cep_acronym_to_text(observed, observed_buf);
             return cep_word_glob_match_text(pattern_buf, pattern_len, observed_buf, observed_len);
+        }
+
+        if (cep_id_is_reference(pattern)) {
+            if (!cep_id_is_reference(observed)) {
+                return false;
+            }
+
+            size_t pattern_len = 0u;
+            size_t observed_len = 0u;
+            const char* pattern_text = cep_namepool_lookup(pattern, &pattern_len);
+            const char* observed_text = cep_namepool_lookup(observed, &observed_len);
+            if (!pattern_text || !observed_text) {
+                return false;
+            }
+
+            return cep_word_glob_match_text(pattern_text, pattern_len, observed_text, observed_len);
         }
     }
 
@@ -1435,7 +1452,6 @@ cepID       cep_namepool_intern_static(const char* text, size_t length);
 cepID       cep_namepool_intern_pattern(const char* text, size_t length);
 cepID       cep_namepool_intern_pattern_cstr(const char* text);
 cepID       cep_namepool_intern_pattern_static(const char* text, size_t length);
-const char* cep_namepool_lookup(cepID id, size_t* length);
 bool        cep_namepool_release(cepID id);
 bool        cep_namepool_reference_is_glob(cepID id);
 
