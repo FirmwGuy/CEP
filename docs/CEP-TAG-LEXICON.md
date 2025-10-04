@@ -15,7 +15,9 @@ when a new behavior needs a fresh word before it lands in code.
 - **CEP word vs. acronym:** A *word* ID encodes lowercase-first names (up to 11
   characters, must include at least one `a`-`z`, with optional `:-_./`). An
   *acronym* ID encodes uppercase or symbol-heavy names (up to 9 printable ASCII
-  characters from space through underscore) and cannot be all digits.
+  characters from space through underscore) and cannot be all digits. Both forms
+  permit `*` when the identifier is used as a glob pattern; the runtime marks
+  those tags with the `glob` hint automatically.
 - **Patterns:** Several entries describe a whole family of tags (e.g.
   `sig_*`). Only the patterns listed here are valid; collisions must be resolved
   by extending the table first.

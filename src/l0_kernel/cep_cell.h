@@ -264,31 +264,39 @@ static inline bool cep_id_is_glob_question(cepID id) {
     return cep_id_is_reference(id) && cep_id(id) == (CEP_AUTOID_MAXVAL - 2u);
 }
 
-/* Word character chart (ASCII upper set):
- H \  0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
- - -  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-6x \ [SP] a   b   c   d   e   f   g   h   i   j   k   l   m   n   o
-7x \  p   q   r   s   t   u   v   w   x   y   z  [:] [_] [-] [.] [*]
-    Note: characters in square brackets replacing originals.
-*/
 #define CEP_WORD_MAX_CHARS      11
+#define CEP_ACRON_MAX_CHARS     9
 
 size_t cep_word_to_text(cepID coded, char s[12]);
+size_t cep_acronym_to_text(cepID acro, char s[10]);
 
 #define CEP_WORD_GLOB_SENTINEL    31u
 
 static inline bool cep_id_has_glob_char(cepID id) {
-    if (!cep_id_is_word(id)) {
+    if (cep_id_is_word(id)) {
+        cepID payload = cep_id(id);
+        for (unsigned i = 0; i < CEP_WORD_MAX_CHARS; ++i) {
+            unsigned shift = 5u * ((CEP_WORD_MAX_CHARS - 1u) - i);
+            uint8_t encoded = (uint8_t)((payload >> shift) & 0x1Fu);
+            if (encoded == CEP_WORD_GLOB_SENTINEL) {
+                return true;
+            }
+        }
+
         return false;
     }
 
-    cepID payload = cep_id(id);
-    for (unsigned i = 0; i < CEP_WORD_MAX_CHARS; ++i) {
-        unsigned shift = 5u * ((CEP_WORD_MAX_CHARS - 1u) - i);
-        uint8_t encoded = (uint8_t)((payload >> shift) & 0x1Fu);
-        if (encoded == CEP_WORD_GLOB_SENTINEL) {
-            return true;
+    if (cep_id_is_acronym(id)) {
+        cepID payload = cep_id(id);
+        for (unsigned i = 0; i < CEP_ACRON_MAX_CHARS; ++i) {
+            unsigned shift = 6u * ((CEP_ACRON_MAX_CHARS - 1u) - i);
+            uint8_t encoded = (uint8_t)((payload >> shift) & 0x3Fu);
+            if (encoded == (uint8_t)('*' - 0x20)) {
+                return true;
+            }
         }
+
+        return false;
     }
 
     return false;
@@ -339,16 +347,30 @@ static inline bool cep_id_matches(cepID pattern, cepID observed) {
         return true;
     }
 
-    if (cep_id_has_glob_char(pattern) && cep_id_is_word(pattern)) {
-        if (!cep_id_is_word(observed)) {
-            return false;
+    if (cep_id_has_glob_char(pattern)) {
+        if (cep_id_is_word(pattern)) {
+            if (!cep_id_is_word(observed)) {
+                return false;
+            }
+
+            char pattern_buf[CEP_WORD_MAX_CHARS + 1u];
+            char observed_buf[CEP_WORD_MAX_CHARS + 1u];
+            size_t pattern_len = cep_word_to_text(pattern, pattern_buf);
+            size_t observed_len = cep_word_to_text(observed, observed_buf);
+            return cep_word_glob_match_text(pattern_buf, pattern_len, observed_buf, observed_len);
         }
 
-        char pattern_buf[CEP_WORD_MAX_CHARS + 1u];
-        char observed_buf[CEP_WORD_MAX_CHARS + 1u];
-        size_t pattern_len = cep_word_to_text(pattern, pattern_buf);
-        size_t observed_len = cep_word_to_text(observed, observed_buf);
-        return cep_word_glob_match_text(pattern_buf, pattern_len, observed_buf, observed_len);
+        if (cep_id_is_acronym(pattern)) {
+            if (!cep_id_is_acronym(observed)) {
+                return false;
+            }
+
+            char pattern_buf[CEP_ACRON_MAX_CHARS + 1u];
+            char observed_buf[CEP_ACRON_MAX_CHARS + 1u];
+            size_t pattern_len = cep_acronym_to_text(pattern, pattern_buf);
+            size_t observed_len = cep_acronym_to_text(observed, observed_buf);
+            return cep_word_glob_match_text(pattern_buf, pattern_len, observed_buf, observed_len);
+        }
     }
 
     return false;
@@ -369,8 +391,6 @@ static inline bool cep_dt_is_valid(const cepDT* dt) {
 4x \  @   A   B   C   D   E   F   G   H   I   J   K   L   M   N   O
 5x \  P   Q   R   S   T   U   V   W   X   Y   Z   [   \   ]   ^   _
 */
-#define CEP_ACRON_MAX_CHARS     9
-
 #define CEP_TEXT_TO_ACRONYM_(name)                                             \
     cepID name(const char *s) {                                                \
         assert(s && *s);                                                       \
@@ -409,6 +429,13 @@ static inline bool cep_dt_is_valid(const cepDT* dt) {
     }
 
 
+/* Word character chart (ASCII upper set):
+ H \  0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
+ - -  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+6x \ [SP] a   b   c   d   e   f   g   h   i   j   k   l   m   n   o
+7x \  p   q   r   s   t   u   v   w   x   y   z  [:] [_] [-] [.] [*]
+    Note: characters in square brackets replacing originals.
+*/
 #define CEP_TEXT_TO_WORD_(name)                                                \
     cepID name(const char *s) {                                                \
         assert(s && *s);                                                       \
@@ -475,10 +502,8 @@ static inline cepDT cep_dt_make(cepID domain, cepID tag) {
 #define CEP_DTAW(d, t)  CEP_DTS(CEP_ACRO(d), CEP_WORD(t))
 
 cepID  cep_text_to_acronym(const char *s);
-size_t cep_acronym_to_text(cepID acro, char s[10]);
 
 cepID  cep_text_to_word(const char *s);
-size_t cep_word_to_text(cepID coded, char s[12]);
 
 
 /*

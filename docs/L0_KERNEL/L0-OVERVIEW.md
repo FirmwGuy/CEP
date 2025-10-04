@@ -40,7 +40,7 @@ You get a persistent, queryable history “for free,” plus clean semantics for
 
 ### 2) Naming that routes (Domain/Tag + globs)
 
-The DT scheme packs two 58‑bit fields—`domain` and `tag`—and supports **word**, **acronym**, **reference**, and **numeric** encodings with compile‑time helpers (`CEP_WORD("users")`, `CEP_ACRO("SYS")`, etc.). There are **glob sentinels** (e.g., `CEP_ID_GLOB_MULTI`) that make **path matching** trivial and efficient. 
+The DT scheme packs two 58‑bit fields—`domain` and `tag`—and supports **word**, **acronym**, **reference**, and **numeric** encodings with compile‑time helpers (`CEP_WORD("users")`, `CEP_ACRO("SYS")`, etc.). Word tags may include a literal `*`; the runtime stamps a glob bit so helpers such as `cep_id_matches` expand the wildcard when comparing segments. For whole-domain/prefix globs the legacy sentinels (e.g., `CEP_ID_GLOB_MULTI`) still apply. 
 
 To complement that, the **namepool** can intern text and map it to “reference” IDs when you need textual identity across the system (`cep_namepool_intern*`, `cep_namepool_lookup`). 
 
@@ -230,7 +230,7 @@ Wrap an external stream behind a library binding. Your `cepLibraryOps` implement
 * **Locking:** coarse flags exist for child stores and data payloads (`cep_store_lock/cep_data_lock`) and are checked up the ancestry to prevent unsafe mutations. These are **in‑tree logical locks**, not OS‑level primitives; coordinate your own threading policy. 
 * **Soft vs. hard delete:** soft delete stamps timestamps and preserves history; “hard” variants drop memory (and can reorganize siblings) and are used for GC paths. Pick based on audit requirements. 
 * **Cloning semantics:** VALUE/DATA clone by copy; HANDLE/STREAM clones appear as **links** to the original to keep external resources authoritative. 
-* **Glob semantics:** enzyme path matching uses DT comparison with **glob sentinels** (notably “multi”) to match domains/tags flexibly.  
+* **Glob semantics:** enzyme path matching uses DT comparison with wildcard-aware word tags (single-segment `*`) and the reference sentinels (`CEP_ID_GLOB_*`) to match domains/tags flexibly.  
 * **Namepool:** use it when you need text‑to‑ID indirection for `CEP_NAMING_REFERENCE` identifiers; remember to release IDs you no longer need. 
 
 ---

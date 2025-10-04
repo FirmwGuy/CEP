@@ -39,7 +39,7 @@ typedef struct {
 
 Register via the **registry**; during a live heartbeat, registrations are staged and **activated on the next beat** to keep the current agenda frozen (see `cep_enzyme_register` and `cep_enzyme_registry_activate_pending`)  . Internally, mid‑beat calls are queued in a *pending* array and promoted later; out of beat, they go straight into the active table and indexes are rebuilt for fast lookup .
 
-**Match policies & wildcards.** A descriptor’s `match` controls how its **query path** is compared: `EXACT` must match the entire `signal_path`, while `PREFIX` matches “starts with” semantics (with **Domain/Tag**–wise globbing possible; `CEP_ID_GLOB_MULTI`, `CEP_ID_GLOB_STAR`, `CEP_ID_GLOB_QUESTION`, and `cep_id_matches`)  .
+**Match policies & wildcards.** A descriptor’s `match` controls how its **query path** is compared: `EXACT` must match the entire `signal_path`, while `PREFIX` matches “starts with” semantics. Path segments can use **Domain/Tag** globbing in two ways: word tags may include `*` (single-segment wildcard handled by `cep_id_matches`), and the reference sentinels (`CEP_ID_GLOB_MULTI`, `CEP_ID_GLOB_STAR`, `CEP_ID_GLOB_QUESTION`) remain available for legacy multi-segment matching.
 
 **Return codes.** Enzymes return `CEP_ENZYME_SUCCESS`, `CEP_ENZYME_RETRY`, or `CEP_ENZYME_FATAL` .
 
@@ -147,7 +147,7 @@ When your data lives outside the kernel (files, device handles, remote streams),
 
 ## 4) Naming & the namepool
 
-**Domain/Tag** fields are compact `cepID`s with a **naming nibble** that encodes *word*, *acronym*, *reference*, or *numeric*. Helpers convert text ↔ IDs (`cep_text_to_word`, `cep_word_to_text`, `cep_text_to_acronym`, `cep_acronym_to_text`), and wildcard **glob** IDs enable lookup patterns during enzyme dispatch (`cep_id_matches`) .
+**Domain/Tag** fields are compact `cepID`s with a **naming nibble** that encodes *word*, *acronym*, *reference*, or *numeric*. Helpers convert text ↔ IDs (`cep_text_to_word`, `cep_word_to_text`, `cep_text_to_acronym`, `cep_acronym_to_text`). Word **and acronym** IDs may contain `*`; the kernel records a glob bit so helpers such as `cep_id_matches` can expand the wildcard transparently, while the reference sentinels still cover whole-domain globs.
 
 When you need to interoperate with human text reliably, enable the **namepool** and use:
 
