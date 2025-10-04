@@ -237,7 +237,7 @@ Wrap an external stream behind a library binding. Your `cepLibraryOps` implement
 
 ## Known limitations
 
-- **Tag length caps:** Word IDs (lowercase) top out at 11 characters; acronym IDs (uppercase) at 9. Longer names must be shortened or stored as namepool references in metadata. Core APIs — globbing, dictionary ordering, enzyme lookup — only accept word/acronym IDs as ledger keys. <!-- TODO: extend DT naming so reference IDs can participate in routing/globs safely. -->
+- **Tag length caps:** Word IDs (lowercase) top out at 11 characters and acronym IDs (uppercase) at 9; use them for kernel-supplied tags. Longer caller-supplied names can be interned as namepool references (up to 256 bytes) and now flow through higher layers like L1 without truncation. Core kernel routing still prefers compact word/acronym IDs, but dictionaries and ledgers accept reference IDs when the subsystem opts in.
 - **Reference IDs:** Interned references compare by numeric ID; when you need glob behaviour, intern them with `cep_namepool_intern_pattern*` so matching behaves like word/acronym tags. <!-- TODO: explore reference-aware routing indexes if heavier usage emerges. -->
 - **HANDLE/STREAM gaps:** Stream/handle payload helpers exist, but read/update APIs are still scaffolded (`cep_cell_stream.c`). Until they land, VALUE/DATA remain the fully supported payload types for mutations. <!-- TODO: finish HANDLE/STREAM read/update wiring. -->
 

@@ -189,6 +189,50 @@ static void test_reference_interning(void) {
     assert_true(cep_namepool_release(numeric_id));
 }
 
+static void test_glob_interning(void) {
+    assert_true(cep_namepool_bootstrap());
+
+    /* Reference glob via pattern interning. */
+    const char* pattern_text = "inventory/*/restock";
+    cepID ref_glob_a = cep_namepool_intern_pattern_cstr(pattern_text);
+    cepID ref_glob_b = cep_namepool_intern_pattern_cstr(pattern_text);
+    assert_true(cep_id_is_reference(ref_glob_a));
+    assert_true(cep_namepool_reference_is_glob(ref_glob_a));
+    assert_true(cep_id_has_glob_char(ref_glob_a));
+    size_t len = 0u;
+    const char* lookup = cep_namepool_lookup(ref_glob_a, &len);
+    assert_not_null(lookup);
+    assert_size(len, ==, strlen(pattern_text));
+    assert_memory_equal(len, pattern_text, lookup);
+
+    /* Word-level glob bit. */
+    cepID word_glob = cep_text_to_word("order*");
+    cepID word_target = cep_text_to_word("order");
+    cepID word_other = cep_text_to_word("invoice");
+    assert_uint64(word_glob, !=, 0u);
+    assert_uint64(word_target, !=, 0u);
+    assert_uint64(word_other, !=, 0u);
+    assert_true(cep_id_has_glob_char(word_glob));
+    assert_true(cep_id_matches(word_glob, word_target));
+    assert_false(cep_id_matches(word_glob, word_other));
+
+    /* Reference glob matching. */
+    const char* ref_pattern_text = "customer:*:active";
+    cepID ref_pattern = cep_namepool_intern_pattern_cstr(ref_pattern_text);
+    assert_true(cep_namepool_reference_is_glob(ref_pattern));
+    cepID ref_value = cep_namepool_intern_cstr("customer:emea:active");
+    cepID ref_other = cep_namepool_intern_cstr("customer:emea:inactive");
+    assert_true(cep_id_matches(ref_pattern, ref_value));
+    assert_false(cep_id_matches(ref_pattern, ref_other));
+
+    /* Cleanup releases (mirroring the number of interning calls). */
+    assert_true(cep_namepool_release(ref_glob_b));
+    assert_true(cep_namepool_release(ref_glob_a));
+    assert_true(cep_namepool_release(ref_pattern));
+    assert_true(cep_namepool_release(ref_value));
+    assert_true(cep_namepool_release(ref_other));
+}
+
 
 MunitResult test_domain_tag_naming(const MunitParameter params[], void* user_data_or_fixture) {
     (void)user_data_or_fixture;
@@ -199,6 +243,7 @@ MunitResult test_domain_tag_naming(const MunitParameter params[], void* user_dat
     } else {
         test_domain_tag_naming_coding();
         test_reference_interning();
+        test_glob_interning();
     }
 
     return MUNIT_OK;

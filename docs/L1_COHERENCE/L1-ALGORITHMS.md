@@ -21,7 +21,7 @@ If you want to customize behavior or reason about performance, this is the place
 - Closure and indexing work under coarse-grained store locks to provide snapshot semantics. Because the heartbeat is deterministic, the order of locks is consistent across runs, preventing replay divergence.
 
 ### Identifier handling
-- Static tags still lean on `CEP_DTAW("CEP", "tag")`, but runtime identifiers now flow through the namepool. The ingest helpers try to compact short strings into CEP words/acronyms and store everything else as `CEP_NAMING_REFERENCE` entries, so nothing is truncated.
+- Static tags still lean on `CEP_DTAW("CEP", "tag")`, but runtime identifiers now flow through the namepool. The ingest helpers try to compact short strings into CEP words/acronyms and store everything else as `CEP_NAMING_REFERENCE` entries; inputs are limited to 256 bytes by the namepool implementation.
 - Numeric-only identifiers survive intact (the namepool emits numeric IDs) and glob hints are honored when callers pre-intern pattern references.
 - Roles and facet names must resolve to a valid word, acronym, reference, or numeric ID. If a client supplies an empty or malformed string, the intent is marked invalid and no ledger mutation happens.
 

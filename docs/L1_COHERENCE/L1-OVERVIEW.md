@@ -44,7 +44,7 @@ L1’s goal is simple: keep the coherence story straight every heartbeat. It cap
 A: No. They are scratch structures rebuilt by `coh_adj`. If they are missing or corrupted, the enzyme will recreate them on the next heartbeat.
 
 **Q: What happens if an intent uses a word longer than 11 characters?**  
-A: L1 now interns the full string through the namepool. If it cannot compact to a word/acronym it stores a `CEP_NAMING_REFERENCE`, so the intent succeeds without truncation.
+A: L1 interns the full string through the namepool (up to 256 bytes). If it cannot compact to a word/acronym it stores a `CEP_NAMING_REFERENCE`, so the intent succeeds without truncation.
 
 **Q: How does L1 stay deterministic when multiple facets could link to the same context?**  
 A: `coh_closure` writes a decision entry the first time it chooses a candidate. Later beats reuse the stored decision so replays take the same branch every time.
@@ -53,4 +53,4 @@ A: `coh_closure` writes a decision entry the first time it chooses a candidate. 
 A: Yes. Each being, bond, and context node exposes an `attrs` dictionary. Copy anything you like there—just keep tags within the lexicon rules.
 
 **Q: Are identifiers still limited to 11 characters?**  
-A: No. L1 now routes every identifier through the namepool. Short names still compact to CEP words/acronyms, while longer phrases become stable references, so callers can use their own lexicon without truncation.
+A: No. L1 routes every identifier through the namepool. Short names compact to CEP words/acronyms; longer phrases (up to 256 bytes) become stable references, so callers can use their own lexicon without truncation.

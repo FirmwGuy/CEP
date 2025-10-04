@@ -63,7 +63,7 @@ Short nicknames stay on the label; long nicknames get filed once and every cell 
 
 #### Technical Details
 - Fast paths: decimal strings that fit 56 bits become `CEP_NAMING_NUMERIC`. Lowercase/punctuated text (≤11 chars) uses word IDs, uppercase/punctuated text (≤9 chars) uses acronym IDs. These never touch the intern pool.
-- Reference IDs: anything longer or mixed (UTF-8) goes through `cep_namepool_intern[_static]`, which stores the bytes under `/CEP/sys/namepool` and returns a `CEP_NAMING_REFERENCE` (page,slot) ID. Static entries reuse the caller’s buffer; dynamic ones copy into the CAS-backed value.
+- Reference IDs: anything longer or mixed (UTF-8) up to 256 bytes goes through `cep_namepool_intern[_static]`, which stores the bytes under `/CEP/sys/namepool` and returns a `CEP_NAMING_REFERENCE` (page,slot) ID. Static entries reuse the caller’s buffer; dynamic ones copy into the CAS-backed value.
 - Refcounts: dynamic interns bump a refcount and can be released via `cep_namepool_release(id)` when modules unload. Static interns are permanent. Lookup returns the canonical byte pointer for logging or API use.
 - Validation: `cep_id_text_valid` and `cep_dt_is_valid` now treat reference IDs as first-class, so downstream code doesn’t need special cases.
 
