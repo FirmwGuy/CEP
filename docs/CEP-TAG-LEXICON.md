@@ -161,6 +161,21 @@ when a new behavior needs a fresh word before it lands in code.
 | `fl_*` (`fl_ing`, `fl_wake`, `fl_step`, `fl_index`, `fl_adj`, `fl_upsert`) | ops | reserved prefix for flow enzymes/intents. |
 | `inst_*` (`inst_ing`, `inst_start`, `inst_event`, `inst_ctrl`) | ops | reserved prefix for flow instance enzymes/intents. |
 | `ni_*` (`ni_ing`, `ni_upsert`) | ops | reserved prefix for niche enzymes/intents. |
+| `steps` | core | ordered list of program steps persisted under each flow definition. |
+| `step` | core | container dictionary describing a single program step. |
+| `spec` | core | nested dictionary carrying per-step parameters. |
+| `state` | core | lifecycle flag recorded on flow instances. |
+| `pc` | core | program counter stored with each instance. |
+| `subs` | core | dictionary of active wait subscriptions per instance. |
+| `events` | core | queued external events awaiting consumption by the VM. |
+| `site` | core | identifier for a decision site inside a flow. |
+| `action` | core | control action requested against an instance. |
+| `inst_id` | core | identifier field referencing an existing instance. |
+| `signal_path` | core | signal matcher stored on wait subscriptions and events. |
+| `signal` | core | general-purpose signal identifier metadata. |
+| `status` | core | lifecycle marker used by flow subscriptions and caches. |
+| `payload` | core | dictionary carrying captured event payloads. |
+| `choice` | core | decision choice recorded for replay. |
 
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor
