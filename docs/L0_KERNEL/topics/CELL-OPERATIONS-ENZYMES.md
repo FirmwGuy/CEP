@@ -1,4 +1,4 @@
-# Cell Operation Enzymes
+# L0 Topic: Cell Operation Enzymes
 
 The cell operation enzymes let schedulers apply familiar tree edits (add, update, delete, move, and clone) without poking at the L0 cell API directly. They give cadence scripts a single signal family (`sig_cell`) for routine maintenance so product engineers can express intent ("place this template here") instead of worrying about memory ownership rules or store edge cases.
 

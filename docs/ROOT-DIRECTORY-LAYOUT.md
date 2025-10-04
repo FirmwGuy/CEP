@@ -11,7 +11,7 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
 - `/env` – handles and stream proxies bound to external resources. Enzymes dereference entries through the proxy helpers in `cep_cell`.
 - `/cas` – content-addressable payload store. Large blobs land here so data cells can reference hashes instead of duplicating bytes.
 - `/lib` – library snapshots for proxy-backed streams.
-- `/data` – durable state, promoted from `/rt/.../stage` at the commit edge of a beat.
+- `/data` – durable state, promoted from `/rt/.../stage` at the commit edge of a beat. Layer bootstraps can pre-create namespaces here (for example, `/data/coh` when `cep_l1_coherence_bootstrap()` runs).
 - `/tmp` – linked-list scratch pad for tooling; it is not part of the deterministic contract.
 - `/enzymes` – registry manifest (`cep_enzyme_register`, `cep_enzyme_descriptor`) and their metadata.
 
@@ -23,5 +23,5 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
 
 ## Q&A
 - **When do the beat folders appear?** As soon as `cepHeartbeatPolicy.ensure_directories` is left at its default `true`. Turning it off skips `/rt/beat/<n>` entirely so long-running captures do not grow without bound.
-- **What lives under `/data` after bootstrap?** Nothing until enzymes commit work during a beat. The tree stays empty so callers can choose their own structure.
+- **What lives under `/data` after bootstrap?** Only what subsystems ask for. The bare kernel leaves it empty, but helpers such as `cep_l1_coherence_bootstrap()` pre-create `/data/coh/*` so coherence ledgers have a stable home.
 - **Can I add my own root directories?** Yes—create them under `/data` or `/env` as needed. The bootstrap only guarantees the paths listed in this document.

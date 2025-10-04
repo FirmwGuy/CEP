@@ -1,4 +1,4 @@
-# Glob Matching in CEP
+# L0 Topic: Glob Matching in CEP
 
 ## Introduction
 Globbing lets CEP reuse familiar "match anything" patterns when inspecting cell paths without turning every lookup into custom code. This guide explains how the `*` character behaves inside tag identifiers, what stays reserved for legacy domain wildcards, and how the runtime keeps those clues available for serialization, cloning, and replay.
