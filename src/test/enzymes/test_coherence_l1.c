@@ -145,40 +145,41 @@ static bool coh_adj_ctx_role_contains(const char* being_id, const char* role_nam
     return link && cep_cell_is_link(link);
 }
 
-static cepCell* coh_append_dictionary(cepCell* parent, const cepDT* name) {
-    cepCell* existing = cep_cell_find_by_name(parent, name);
-    if (existing) {
-        return existing;
+typedef struct {
+    const char* parts[16];
+    size_t      count;
+    char        scratch[CEP_L1_IDENTIFIER_MAX + 1u];
+} CohTokens;
+
+static bool coh_tokens_from(const char* text, CohTokens* out) {
+    if (!text || !out) {
+        return false;
     }
-    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
-    cepCell* dict = cep_dict_add_dictionary(parent, (cepDT*)name, &dict_type, CEP_STORAGE_RED_BLACK_T);
-    munit_assert_not_null(dict);
-    return dict;
-}
 
-static cepCell* coh_set_string_field(cepCell* parent, const char* name, const char* text) {
-    cepDT name_dt = dt_word_from(name);
-    cepDT text_dt = *CEP_DTAW("CEP", "text");
-    size_t size = strlen(text) + 1u;
-    cepCell* cell = cep_dict_add_value(parent, &name_dt, &text_dt, (void*)text, size, size);
-    munit_assert_not_null(cell);
-    return cell;
-}
+    size_t len = strlen(text);
+    if (len > CEP_L1_IDENTIFIER_MAX) {
+        return false;
+    }
 
-static cepCell* coh_set_bool_field(cepCell* parent, const char* name, bool flag) {
-    cepDT name_dt = dt_word_from(name);
-    cepDT text_dt = *CEP_DTAW("CEP", "text");
-    uint8_t payload = flag ? 1u : 0u;
-    cepCell* cell = cep_dict_add_value(parent, &name_dt, &text_dt, &payload, sizeof payload, sizeof payload);
-    munit_assert_not_null(cell);
-    return cell;
-}
+    memcpy(out->scratch, text, len + 1u);
+    out->count = 0u;
 
-static cepCell* coh_add_link_field(cepCell* parent, const char* name, cepCell* target) {
-    cepDT name_dt = dt_word_from(name);
-    cepCell* link = cep_dict_add_link(parent, &name_dt, target);
-    munit_assert_not_null(link);
-    return link;
+    char* segment = out->scratch;
+    for (size_t i = 0; i <= len; ++i) {
+        if (out->scratch[i] == ':' || i == len) {
+            if (segment == out->scratch + i) {
+                return false;
+            }
+            if (out->count >= cep_lengthof(out->parts)) {
+                return false;
+            }
+            out->scratch[i] = '\0';
+            out->parts[out->count++] = segment;
+            segment = out->scratch + i + 1u;
+        }
+    }
+
+    return out->count > 0u;
 }
 
 static MunitResult test_coh_identifier_helper_word(const MunitParameter params[], void* fixture_ptr) {
@@ -323,12 +324,21 @@ void coh_teardown(void* fixture_ptr) {
 }
 
 static cepCell* coh_submit_being(const char* txn_id, const char* being_id, const char* kind) {
-    cepDT txn_dt = dt_word_from(txn_id);
-    cepCell* request = coh_append_dictionary(coh_require_inbox_bucket("be_create"), &txn_dt);
-    coh_set_string_field(request, "id", being_id);
-    coh_set_string_field(request, "kind", kind);
+    CohTokens id_tokens = {0};
+    CohTokens kind_tokens = {0};
+    munit_assert_true(coh_tokens_from(being_id, &id_tokens));
+    munit_assert_true(coh_tokens_from(kind, &kind_tokens));
+
+    cepL1BeingIntent intent = {0};
+    munit_assert_true(cep_l1_being_intent_init(&intent,
+                                               txn_id,
+                                               id_tokens.parts,
+                                               id_tokens.count,
+                                               kind_tokens.parts,
+                                               kind_tokens.count));
+
     coh_run_single_beat();
-    return request;
+    return intent.request;
 }
 
 static cepCell* coh_submit_bond(const char* txn_id,
@@ -337,31 +347,50 @@ static cepCell* coh_submit_bond(const char* txn_id,
                                 cepCell* src,
                                 cepCell* dst,
                                 bool directed) {
-    cepDT txn_dt = dt_word_from(txn_id);
-    cepCell* request = coh_append_dictionary(coh_require_inbox_bucket("bo_upsert"), &txn_dt);
-    coh_set_string_field(request, "id", bond_id);
-    coh_set_string_field(request, "type", type);
-    coh_add_link_field(request, "src", src);
-    coh_add_link_field(request, "dst", dst);
-    coh_set_bool_field(request, "directed", directed);
+    CohTokens id_tokens = {0};
+    CohTokens type_tokens = {0};
+    munit_assert_true(coh_tokens_from(bond_id, &id_tokens));
+    munit_assert_true(coh_tokens_from(type, &type_tokens));
+
+    cepL1BondIntent intent = {0};
+    munit_assert_true(cep_l1_bond_intent_init(&intent,
+                                              txn_id,
+                                              id_tokens.parts,
+                                              id_tokens.count,
+                                              type_tokens.parts,
+                                              type_tokens.count,
+                                              src,
+                                              dst,
+                                              directed));
+
     coh_run_single_beat();
-    return request;
+    return intent.request;
 }
 
 static cepCell* coh_submit_context(const char* txn_id,
                                    const char* ctx_id,
                                    const char* ctx_type,
-                                   void (*decorate)(cepCell* request, void* user),
+                                   CohContextDecorator decorate,
                                    void* decorate_ctx) {
-    cepDT txn_dt = dt_word_from(txn_id);
-    cepCell* request = coh_append_dictionary(coh_require_inbox_bucket("ctx_upsert"), &txn_dt);
-    coh_set_string_field(request, "id", ctx_id);
-    coh_set_string_field(request, "type", ctx_type);
+    CohTokens id_tokens = {0};
+    CohTokens type_tokens = {0};
+    munit_assert_true(coh_tokens_from(ctx_id, &id_tokens));
+    munit_assert_true(coh_tokens_from(ctx_type, &type_tokens));
+
+    cepL1ContextIntent intent = {0};
+    munit_assert_true(cep_l1_context_intent_init(&intent,
+                                                 txn_id,
+                                                 id_tokens.parts,
+                                                 id_tokens.count,
+                                                 type_tokens.parts,
+                                                 type_tokens.count));
+
     if (decorate) {
-        decorate(request, decorate_ctx);
+        decorate(&intent, decorate_ctx);
     }
+
     coh_run_single_beat();
-    return request;
+    return intent.request;
 }
 
 static const char* coh_outcome(cepCell* request) {
@@ -384,73 +413,89 @@ static cepCell* coh_bond_cell(const char* bond_id) {
     return cep_cell_find_by_name(coh_ledger("bond"), &id_dt);
 }
 
-static void decorate_roles_word(cepCell* request, void* user) {
+static void decorate_roles_word(cepL1ContextIntent* intent, void* user) {
     const struct {
         const char* role_name;
         cepCell* target;
     }* payload = user;
-    cepCell* roles = coh_append_dictionary(request, CEP_DTAW("CEP", "roles"));
-    coh_add_link_field(roles, payload->role_name, payload->target);
+    CohTokens role_tokens = {0};
+    munit_assert_true(coh_tokens_from(payload->role_name, &role_tokens));
+    munit_assert_true(cep_l1_context_intent_add_role(intent,
+                                                     role_tokens.parts,
+                                                     role_tokens.count,
+                                                     payload->target,
+                                                     NULL));
 }
 
-static void decorate_roles_custom_dt(cepCell* request, void* user) {
+static void decorate_roles_custom_dt(cepL1ContextIntent* intent, void* user) {
     const struct {
         cepDT role_dt;
         cepCell* target;
     }* payload = user;
-    cepCell* roles = coh_append_dictionary(request, CEP_DTAW("CEP", "roles"));
     cepDT role_copy = payload->role_dt;
-    cepCell* link = cep_dict_add_link(roles, &role_copy, payload->target);
+    cepCell* link = cep_dict_add_link(intent->roles, &role_copy, payload->target);
     munit_assert_not_null(link);
 }
 
-static void decorate_facets_required_only(cepCell* request, void* user) {
+static void decorate_facets_required_only(cepL1ContextIntent* intent, void* user) {
     (void)user;
-    cepCell* facets = coh_append_dictionary(request, CEP_DTAW("CEP", "facets"));
-    cepDT facet_dt = dt_word_from("confirm");
-    cepCell* facet = coh_append_dictionary(facets, &facet_dt);
-    coh_set_bool_field(facet, "required", true);
+    CohTokens facet_tokens = {0};
+    munit_assert_true(coh_tokens_from("confirm", &facet_tokens));
+    munit_assert_true(cep_l1_context_intent_add_facet(intent,
+                                                      facet_tokens.parts,
+                                                      facet_tokens.count,
+                                                      NULL,
+                                                      true,
+                                                      NULL));
 }
 
-static void decorate_facets_with_target(cepCell* request, void* user) {
+static void decorate_facets_with_target(cepL1ContextIntent* intent, void* user) {
     cepCell* target = user;
-    cepCell* facets = coh_append_dictionary(request, CEP_DTAW("CEP", "facets"));
-    cepDT facet_dt = dt_word_from("confirm");
-    cepCell* facet = coh_append_dictionary(facets, &facet_dt);
-    coh_add_link_field(facet, "target", target);
-    coh_set_bool_field(facet, "required", true);
+    CohTokens facet_tokens = {0};
+    munit_assert_true(coh_tokens_from("confirm", &facet_tokens));
+    munit_assert_true(cep_l1_context_intent_add_facet(intent,
+                                                      facet_tokens.parts,
+                                                      facet_tokens.count,
+                                                      target,
+                                                      true,
+                                                      NULL));
 }
 
-static void decorate_facets_empty(cepCell* request, void* user) {
+static void decorate_facets_empty(cepL1ContextIntent* intent, void* user) {
     (void)user;
-    (void)coh_append_dictionary(request, CEP_DTAW("CEP", "facets"));
+    (void)intent;
 }
+
+typedef void (*CohContextDecorator)(cepL1ContextIntent* intent, void* user);
 
 typedef struct {
     const char* role_name;
-    cepCell* role_target;
+    cepCell*    role_target;
     const char* facet_name;
-    cepCell* facet_target;
-    bool facet_required;
-} CohContextDecorator;
+    cepCell*    facet_target;
+    bool        facet_required;
+} CohContextDecoratorPayload;
 
-static void decorate_roles_and_custom_facet(cepCell* request, void* user) {
-    const CohContextDecorator* payload = user;
-    cepCell* roles = coh_append_dictionary(request, CEP_DTAW("CEP", "roles"));
-    cepDT role_dt = dt_identifier_from(payload->role_name);
-    cepDT role_copy = role_dt;
-    cepCell* role_link = cep_dict_add_link(roles, &role_copy, payload->role_target);
-    munit_assert_not_null(role_link);
+static void decorate_roles_and_custom_facet(cepL1ContextIntent* intent, void* user) {
+    const CohContextDecoratorPayload* payload = user;
+    CohTokens role_tokens = {0};
+    munit_assert_true(coh_tokens_from(payload->role_name, &role_tokens));
+    munit_assert_true(cep_l1_context_intent_add_role(intent,
+                                                     role_tokens.parts,
+                                                     role_tokens.count,
+                                                     payload->role_target,
+                                                     NULL));
 
-    cepCell* facets = coh_append_dictionary(request, CEP_DTAW("CEP", "facets"));
-    cepDT facet_dt = dt_identifier_from(payload->facet_name);
-    cepCell* facet = coh_append_dictionary(facets, &facet_dt);
-    if (payload->facet_target) {
-        coh_add_link_field(facet, "target", payload->facet_target);
-    }
-    if (payload->facet_required) {
-        coh_set_bool_field(facet, "required", true);
-    }
+    CohTokens facet_tokens = {0};
+    munit_assert_true(coh_tokens_from(payload->facet_name, &facet_tokens));
+    cepCell* facet_cell = NULL;
+    munit_assert_true(cep_l1_context_intent_add_facet(intent,
+                                                      facet_tokens.parts,
+                                                      facet_tokens.count,
+                                                      payload->facet_target,
+                                                      payload->facet_required,
+                                                      &facet_cell));
+    (void)facet_cell;
 }
 
 static const char* coh_extract_enzyme_label(const char* message) {
@@ -597,10 +642,10 @@ MunitResult test_coh_long_identifiers(const MunitParameter params[], void* fixtu
 
     const char* ctx_id = "context:engagement:trial-phase:2025";
     const char* ctx_type = "engagement/trial-phase";
-    const char* role_name = "owner::primary";
-    const char* facet_name = "deliverable::kickoff";
+    const char* role_name = "owner:primary";
+    const char* facet_name = "deliverable:kickoff";
 
-    CohContextDecorator ctx_payload = {
+    CohContextDecoratorPayload ctx_payload = {
         .role_name = role_name,
         .role_target = be_primary,
         .facet_name = facet_name,

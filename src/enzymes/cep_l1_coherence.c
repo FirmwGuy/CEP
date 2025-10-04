@@ -35,6 +35,8 @@ static const cepDT* dt_facets(void)      { return CEP_DTAW("CEP", "facets"); }
 static const cepDT* dt_src(void)         { return CEP_DTAW("CEP", "src"); }
 static const cepDT* dt_dst(void)         { return CEP_DTAW("CEP", "dst"); }
 static const cepDT* dt_directed(void)    { return CEP_DTAW("CEP", "directed"); }
+static const cepDT* dt_original(void)    { return CEP_DTAW("CEP", "original"); }
+static const cepDT* dt_target(void)      { return CEP_DTAW("CEP", "target"); }
 static const cepDT* dt_inbox(void)       { return CEP_DTAW("CEP", "inbox"); }
 static const cepDT* dt_be_create(void)   { return CEP_DTAW("CEP", "be_create"); }
 static const cepDT* dt_bo_upsert(void)   { return CEP_DTAW("CEP", "bo_upsert"); }
@@ -320,6 +322,493 @@ bool cep_l1_tokens_to_dt(const char* const tokens[], size_t token_count, cepDT* 
     }
     out_dt->domain = cep_domain_cep();
     out_dt->tag = reference;
+    return true;
+}
+
+static cepCell* cep_l1_coh_root(void);
+static cepCell* cep_l1_ensure_dictionary(cepCell* parent, const cepDT* name, unsigned storage);
+static bool     cep_l1_set_link_field(cepCell* parent, const cepDT* name, cepCell* target);
+
+static bool cep_l1_tokens_compose_original(const char* const tokens[],
+                                           size_t token_count,
+                                           char* out_buffer,
+                                           size_t out_cap) {
+    if (!tokens || !token_count || !out_buffer || out_cap == 0u) {
+        return false;
+    }
+
+    size_t pos = 0u;
+    for (size_t i = 0; i < token_count; ++i) {
+        const char* token = tokens[i];
+        if (!token) {
+            return false;
+        }
+
+        while (*token == ' ' || *token == '\t' || *token == '\n' || *token == '\r') {
+            ++token;
+        }
+
+        size_t len = strlen(token);
+        while (len && (token[len - 1u] == ' ' || token[len - 1u] == '\t' || token[len - 1u] == '\n' || token[len - 1u] == '\r')) {
+            --len;
+        }
+        if (!len) {
+            return false;
+        }
+
+        for (size_t j = 0; j < len; ++j) {
+            unsigned char ch = (unsigned char)token[j];
+            if (ch == ':') {
+                return false;
+            }
+            if (!((ch >= 'a' && ch <= 'z') ||
+                  (ch >= 'A' && ch <= 'Z') ||
+                  (ch >= '0' && ch <= '9') ||
+                  ch == '-' || ch == '_' || ch == '.' || ch == '/')) {
+                return false;
+            }
+
+            if (pos >= out_cap - 1u || pos >= CEP_L1_IDENTIFIER_MAX) {
+                return false;
+            }
+            out_buffer[pos++] = (char)ch;
+        }
+
+        if (i + 1u < token_count) {
+            if (pos >= out_cap - 1u || pos >= CEP_L1_IDENTIFIER_MAX) {
+                return false;
+            }
+            out_buffer[pos++] = ':';
+        }
+    }
+
+    if (!pos) {
+        return false;
+    }
+    out_buffer[pos] = '\0';
+    return true;
+}
+
+static cepCell* cep_l1_inbox_bucket(const cepDT* bucket_name) {
+    if (!bucket_name) {
+        return NULL;
+    }
+
+    cepCell* coh = cep_l1_coh_root();
+    if (!coh) {
+        return NULL;
+    }
+
+    cepCell* inbox = cep_cell_find_by_name(coh, dt_inbox());
+    if (!inbox || !cep_cell_has_store(inbox)) {
+        return NULL;
+    }
+
+    return cep_cell_find_by_name(inbox, bucket_name);
+}
+
+static bool cep_l1_store_original_value(cepCell* original_root,
+                                        const cepDT* field,
+                                        const char* const tokens[],
+                                        size_t token_count) {
+    if (!original_root || !field) {
+        return true;
+    }
+
+    char original_buffer[CEP_L1_IDENTIFIER_MAX + 1u];
+    if (!cep_l1_tokens_compose_original(tokens, token_count, original_buffer, sizeof original_buffer)) {
+        return false;
+    }
+
+    return cep_l1_set_string_value(original_root, field, original_buffer);
+}
+
+static bool cep_l1_store_original_child(cepCell* original_root,
+                                        const cepDT* branch_name,
+                                        const cepDT* entry_name,
+                                        const char* const tokens[],
+                                        size_t token_count) {
+    if (!original_root || !branch_name || !entry_name) {
+        return true;
+    }
+
+    cepCell* branch = cep_l1_ensure_dictionary(original_root, branch_name, CEP_STORAGE_RED_BLACK_T);
+    if (!branch) {
+        return false;
+    }
+
+    char original_buffer[CEP_L1_IDENTIFIER_MAX + 1u];
+    if (!cep_l1_tokens_compose_original(tokens, token_count, original_buffer, sizeof original_buffer)) {
+        return false;
+    }
+
+    return cep_l1_set_string_value(branch, entry_name, original_buffer);
+}
+
+static bool cep_l1_assign_identifier_field(cepCell* request,
+                                           cepCell* original_root,
+                                           const cepDT* field,
+                                           const char* const tokens[],
+                                           size_t token_count,
+                                           cepDT* out_dt) {
+    if (!request || !field || !tokens || !token_count || !out_dt) {
+        return false;
+    }
+
+    if (!cep_l1_tokens_to_dt(tokens, token_count, out_dt)) {
+        return false;
+    }
+
+    char* canonical = cep_l1_dt_to_owned_cstr(out_dt, NULL);
+    if (!canonical) {
+        return false;
+    }
+
+    bool ok = cep_l1_set_string_value(request, field, canonical);
+    cep_free(canonical);
+    if (!ok) {
+        return false;
+    }
+
+    if (original_root && !cep_l1_store_original_value(original_root, field, tokens, token_count)) {
+        cepCell* existing = cep_cell_find_by_name(request, field);
+        if (existing) {
+            cep_cell_child_take_hard(request, existing);
+        }
+        return false;
+    }
+    return true;
+}
+
+static void cep_l1_intent_abort(cepCell* request) {
+    if (!request) {
+        return;
+    }
+    cepCell* parent = cep_cell_parent(request);
+    if (parent) {
+        cep_cell_child_take_hard(parent, request);
+    }
+}
+
+/* Build a fresh `be_create` request, canonicalising identifiers and exposing
+   the attrs branch so callers can extend the payload without touching stores
+   directly. The helper also records the original spelling for audit trails. */
+bool cep_l1_being_intent_init(cepL1BeingIntent* intent,
+                              const char* txn_word,
+                              const char* const id_tokens[], size_t id_token_count,
+                              const char* const kind_tokens[], size_t kind_token_count) {
+    if (!intent || !txn_word || !id_tokens || !id_token_count || !kind_tokens || !kind_token_count) {
+        return false;
+    }
+
+    memset(intent, 0, sizeof *intent);
+
+    cepCell* bucket = cep_l1_inbox_bucket(dt_be_create());
+    if (!bucket || !cep_cell_has_store(bucket)) {
+        return false;
+    }
+
+    cepID txn_tag = cep_text_to_word(txn_word);
+    if (!txn_tag) {
+        return false;
+    }
+
+    cepDT txn_dt = {
+        .domain = cep_domain_cep(),
+        .tag = txn_tag,
+    };
+
+    if (cep_cell_find_by_name(bucket, &txn_dt)) {
+        return false;
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepDT txn_copy = txn_dt;
+    cepCell* request = cep_dict_add_dictionary(bucket, &txn_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!request) {
+        return false;
+    }
+
+    bool success = false;
+    cepCell* original_root = NULL;
+
+    do {
+        original_root = cep_l1_ensure_dictionary(request, dt_original(), CEP_STORAGE_RED_BLACK_T);
+        if (!original_root) {
+            break;
+        }
+
+        if (!cep_l1_assign_identifier_field(request, original_root, dt_id(), id_tokens, id_token_count, &intent->id_dt)) {
+            break;
+        }
+
+        if (!cep_l1_assign_identifier_field(request, original_root, dt_kind(), kind_tokens, kind_token_count, &intent->kind_dt)) {
+            break;
+        }
+
+        intent->attrs = cep_l1_ensure_dictionary(request, dt_attrs(), CEP_STORAGE_RED_BLACK_T);
+        if (!intent->attrs) {
+            break;
+        }
+
+        intent->request = request;
+        intent->original = original_root;
+        success = true;
+    } while (false);
+
+    if (!success) {
+        cep_l1_intent_abort(request);
+        memset(intent, 0, sizeof *intent);
+    }
+    return success;
+}
+
+/* Assemble a `bo_upsert` request, wiring canonical identifiers, endpoints, and
+   the directed flag so callers can focus on business data instead of boilerplate. */
+bool cep_l1_bond_intent_init(cepL1BondIntent* intent,
+                             const char* txn_word,
+                             const char* const id_tokens[], size_t id_token_count,
+                             const char* const type_tokens[], size_t type_token_count,
+                             cepCell* src,
+                             cepCell* dst,
+                             bool directed) {
+    if (!intent || !txn_word || !id_tokens || !id_token_count || !type_tokens || !type_token_count || !src || !dst) {
+        return false;
+    }
+
+    memset(intent, 0, sizeof *intent);
+
+    cepCell* bucket = cep_l1_inbox_bucket(dt_bo_upsert());
+    if (!bucket || !cep_cell_has_store(bucket)) {
+        return false;
+    }
+
+    cepID txn_tag = cep_text_to_word(txn_word);
+    if (!txn_tag) {
+        return false;
+    }
+
+    cepDT txn_dt = {
+        .domain = cep_domain_cep(),
+        .tag = txn_tag,
+    };
+
+    if (cep_cell_find_by_name(bucket, &txn_dt)) {
+        return false;
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepDT txn_copy = txn_dt;
+    cepCell* request = cep_dict_add_dictionary(bucket, &txn_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!request) {
+        return false;
+    }
+
+    bool success = false;
+    cepCell* original_root = NULL;
+
+    do {
+        original_root = cep_l1_ensure_dictionary(request, dt_original(), CEP_STORAGE_RED_BLACK_T);
+        if (!original_root) {
+            break;
+        }
+
+        if (!cep_l1_assign_identifier_field(request, original_root, dt_id(), id_tokens, id_token_count, &intent->id_dt)) {
+            break;
+        }
+
+        if (!cep_l1_assign_identifier_field(request, original_root, dt_type(), type_tokens, type_token_count, &intent->type_dt)) {
+            break;
+        }
+
+        if (!cep_l1_set_link_field(request, dt_src(), src) || !cep_l1_set_link_field(request, dt_dst(), dst)) {
+            break;
+        }
+
+        if (!cep_l1_set_bool_value(request, dt_directed(), directed)) {
+            break;
+        }
+
+        intent->request = request;
+        intent->original = original_root;
+        intent->directed = directed;
+        success = true;
+    } while (false);
+
+    if (!success) {
+        cep_l1_intent_abort(request);
+        memset(intent, 0, sizeof *intent);
+    }
+    return success;
+}
+
+/* Prepare a `ctx_upsert` request with canonical identifiers and ready-made
+   role/facet containers so collaborators can add relationships without
+   touching raw dictionary plumbing. */
+bool cep_l1_context_intent_init(cepL1ContextIntent* intent,
+                                const char* txn_word,
+                                const char* const id_tokens[], size_t id_token_count,
+                                const char* const type_tokens[], size_t type_token_count) {
+    if (!intent || !txn_word || !id_tokens || !id_token_count || !type_tokens || !type_token_count) {
+        return false;
+    }
+
+    memset(intent, 0, sizeof *intent);
+
+    cepCell* bucket = cep_l1_inbox_bucket(dt_ctx_upsert());
+    if (!bucket || !cep_cell_has_store(bucket)) {
+        return false;
+    }
+
+    cepID txn_tag = cep_text_to_word(txn_word);
+    if (!txn_tag) {
+        return false;
+    }
+
+    cepDT txn_dt = {
+        .domain = cep_domain_cep(),
+        .tag = txn_tag,
+    };
+
+    if (cep_cell_find_by_name(bucket, &txn_dt)) {
+        return false;
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepDT txn_copy = txn_dt;
+    cepCell* request = cep_dict_add_dictionary(bucket, &txn_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!request) {
+        return false;
+    }
+
+    bool success = false;
+    cepCell* original_root = NULL;
+
+    do {
+        original_root = cep_l1_ensure_dictionary(request, dt_original(), CEP_STORAGE_RED_BLACK_T);
+        if (!original_root) {
+            break;
+        }
+
+        if (!cep_l1_assign_identifier_field(request, original_root, dt_id(), id_tokens, id_token_count, &intent->id_dt)) {
+            break;
+        }
+
+        if (!cep_l1_assign_identifier_field(request, original_root, dt_type(), type_tokens, type_token_count, &intent->type_dt)) {
+            break;
+        }
+
+        intent->roles = cep_l1_ensure_dictionary(request, dt_roles(), CEP_STORAGE_RED_BLACK_T);
+        if (!intent->roles) {
+            break;
+        }
+
+        intent->facets = cep_l1_ensure_dictionary(request, dt_facets(), CEP_STORAGE_RED_BLACK_T);
+        if (!intent->facets) {
+            break;
+        }
+
+        intent->request = request;
+        intent->original = original_root;
+        success = true;
+    } while (false);
+
+    if (!success) {
+        cep_l1_intent_abort(request);
+        memset(intent, 0, sizeof *intent);
+    }
+    return success;
+}
+
+/* Attach a canonicalised role link and preserve the submitted spelling for
+   audits. The helper updates the existing role entry if present. */
+bool cep_l1_context_intent_add_role(cepL1ContextIntent* intent,
+                                    const char* const role_tokens[], size_t role_token_count,
+                                    cepCell* target,
+                                    cepCell** out_role_link) {
+    if (!intent || !intent->roles || !role_tokens || !role_token_count || !target) {
+        return false;
+    }
+
+    cepDT role_dt = {0};
+    if (!cep_l1_tokens_to_dt(role_tokens, role_token_count, &role_dt)) {
+        return false;
+    }
+
+    if (!cep_l1_set_link_field(intent->roles, &role_dt, target)) {
+        return false;
+    }
+
+    if (!cep_l1_store_original_child(intent->original, dt_roles(), &role_dt, role_tokens, role_token_count)) {
+        cepCell* link = cep_cell_find_by_name(intent->roles, &role_dt);
+        if (link) {
+            cep_cell_child_take_hard(intent->roles, link);
+        }
+        return false;
+    }
+
+    if (out_role_link) {
+        cepCell* link = cep_cell_find_by_name(intent->roles, &role_dt);
+        if (!link) {
+            return false;
+        }
+        *out_role_link = link;
+    }
+    return true;
+}
+
+/* Add or refresh a facet entry, optionally wiring a target link and toggling
+   the `required` flag. Original spellings are mirrored under
+   `original/facets` so audit trails can recover the submitted casing. */
+bool cep_l1_context_intent_add_facet(cepL1ContextIntent* intent,
+                                     const char* const facet_tokens[], size_t facet_token_count,
+                                     cepCell* target,
+                                     bool required,
+                                     cepCell** out_facet_cell) {
+    if (!intent || !intent->facets || !facet_tokens || !facet_token_count) {
+        return false;
+    }
+
+    cepDT facet_dt = {0};
+    if (!cep_l1_tokens_to_dt(facet_tokens, facet_token_count, &facet_dt)) {
+        return false;
+    }
+
+    cepCell* facet_node = cep_l1_ensure_dictionary(intent->facets, &facet_dt, CEP_STORAGE_RED_BLACK_T);
+    if (!facet_node) {
+        return false;
+    }
+
+    if (target) {
+        if (!cep_l1_set_link_field(facet_node, dt_target(), target)) {
+            return false;
+        }
+    } else {
+        cepCell* existing_target = cep_cell_find_by_name(facet_node, dt_target());
+        if (existing_target) {
+            cep_cell_child_take_hard(facet_node, existing_target);
+        }
+    }
+
+    if (required) {
+        if (!cep_l1_set_bool_value(facet_node, dt_required(), true)) {
+            return false;
+        }
+    } else {
+        cepCell* existing_required = cep_cell_find_by_name(facet_node, dt_required());
+        if (existing_required) {
+            cep_cell_child_take_hard(facet_node, existing_required);
+        }
+    }
+
+    if (!cep_l1_store_original_child(intent->original, dt_facets(), &facet_dt, facet_tokens, facet_token_count)) {
+        cep_cell_child_take_hard(intent->facets, facet_node);
+        return false;
+    }
+
+    if (out_facet_cell) {
+        *out_facet_cell = facet_node;
+    }
     return true;
 }
 

@@ -24,6 +24,7 @@ L1’s goal is simple: keep the coherence story straight every heartbeat. It cap
 - Clients write intents to `/data/coh/inbox/{be_create|bo_upsert|ctx_upsert}/{txn}`. Payloads are plain dictionaries—no hidden APIs.
 - Kernel heartbeats emit `CEP:sig_cell/op_add` when intents arrive. Registry bindings route those signals into the six coherence enzymes in a fixed order.
 - Identifier fields now accept any text that can be interned by the namepool; short values compact to CEP words/acronyms, and longer phrases are stored as stable references without truncation.
+- Helper builders (`cep_l1_being_intent_init()`, `cep_l1_bond_intent_init()`, `cep_l1_context_intent_init()` plus the role/facet adders) stitch these payloads together, mirror the submitted spelling under `original/*`, and keep callers away from low-level dictionary plumbing.
 - Each ingest enzyme materializes ledgers, copies free-form attributes, and records `outcome` status back onto the intent cell.
 
 ### Closure and replay guarantees
