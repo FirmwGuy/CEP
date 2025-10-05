@@ -33,6 +33,7 @@ static const cepDT* dt_policy(void)      { return CEP_DTAW("CEP", "policy"); }
 static const cepDT* dt_variant(void)     { return CEP_DTAW("CEP", "variant"); }
 static const cepDT* dt_niche(void)       { return CEP_DTAW("CEP", "niche"); }
 static const cepDT* dt_guardian(void)    { return CEP_DTAW("CEP", "guardian"); }
+static const cepDT* dt_ctx_type(void)    { return CEP_DTAW("CEP", "ctx_type"); }
 static const cepDT* dt_instance(void)    { return CEP_DTAW("CEP", "instance"); }
 static const cepDT* dt_decision(void)    { return CEP_DTAW("CEP", "decision"); }
 static const cepDT* dt_index(void)       { return CEP_DTAW("CEP", "index"); }
@@ -59,6 +60,7 @@ static const cepDT* dt_signal(void)      { return CEP_DTAW("CEP", "signal"); }
 static const cepDT* dt_signal_path(void) { return CEP_DTAW("CEP", "signal_path"); }
 static const cepDT* dt_status(void)      { return CEP_DTAW("CEP", "status"); }
 static const cepDT* dt_payload(void)     { return CEP_DTAW("CEP", "payload"); }
+static const cepDT* dt_target(void)      { return CEP_DTAW("CEP", "target"); }
 static const cepDT* dt_choice(void)      { return CEP_DTAW("CEP", "choice"); }
 static const cepDT* dt_text(void)        { return CEP_DTAW("CEP", "text"); }
 static const cepDT* dt_outcome(void)     { return CEP_DTAW("CEP", "outcome"); }
@@ -68,6 +70,7 @@ static const cepDT* dt_kind(void)        { return CEP_DTAW("CEP", "kind"); }
 static const cepDT* dt_state(void)       { return CEP_DTAW("CEP", "state"); }
 static const cepDT* dt_pc(void)          { return CEP_DTAW("CEP", "pc"); }
 static const cepDT* dt_events(void)      { return CEP_DTAW("CEP", "events"); }
+static const cepDT* dt_emits(void)       { return CEP_DTAW("CEP", "emits"); }
 static const cepDT* dt_action(void)      { return CEP_DTAW("CEP", "action"); }
 static const cepDT* dt_inst_id(void)     { return CEP_DTAW("CEP", "inst_id"); }
 static const cepDT* dt_site(void)        { return CEP_DTAW("CEP", "site"); }
@@ -77,6 +80,7 @@ static const cepDT* dt_dec_by_pol(void)  { return CEP_DTAW("CEP", "dec_by_pol");
 static const cepDT* dt_by_inst(void)     { return CEP_DTAW("CEP", "by_inst"); }
 static const cepDT* dt_sub_count(void)   { return CEP_DTAW("CEP", "sub_count"); }
 static const cepDT* dt_evt_count(void)   { return CEP_DTAW("CEP", "evt_count"); }
+static const cepDT* dt_emit_count(void)  { return CEP_DTAW("CEP", "emit_count"); }
 static const cepDT* dt_timeout(void)     { return CEP_DTAW("CEP", "timeout"); }
 static const cepDT* dt_deadline(void)    { return CEP_DTAW("CEP", "deadline"); }
 static const cepDT* dt_signal_glob(void) { return CEP_DTAW("CEP", "signal_glob"); }
@@ -145,6 +149,18 @@ typedef struct {
     cepBeatNumber beat;
     bool          initialized;
 } cepL2BudgetState;
+
+typedef struct {
+    unsigned length;
+    unsigned capacity;
+    cepPast  past[2];
+} cepPathStatic2;
+
+typedef struct {
+    unsigned length;
+    unsigned capacity;
+    cepPast  past[4];
+} cepPathStatic4;
 
 static void cep_l2_store_unlock(cepL2StoreLock* guard) {
     if (!guard || !guard->locked || !guard->cell) {
@@ -389,6 +405,486 @@ static bool cep_l2_set_number_value(cepCell* parent, const cepDT* name, size_t v
         return false;
     }
     return cep_l2_set_value_bytes(parent, name, dt_text(), buffer, (size_t)written + 1u);
+}
+
+static bool cep_l2_enqueue_pipeline(void) {
+    cepPathStatic2 signal_path = {0};
+    signal_path.capacity = 2u;
+    signal_path.length = 2u;
+    signal_path.past[0].dt = *dt_signal_cell();
+    signal_path.past[1].dt = *dt_op_add();
+
+    cepCell* flow_root = cep_l2_flow_root();
+    if (!flow_root) {
+        return false;
+    }
+
+    cepPath* target_path = NULL;
+    if (!cep_cell_path(flow_root, &target_path)) {
+        return false;
+    }
+
+    int rc = cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, (const cepPath*)&signal_path, target_path);
+    cep_free(target_path);
+    return rc != CEP_ENZYME_FATAL;
+}
+
+typedef enum {
+    CEP_L2_DEF_UNKNOWN = 0,
+    CEP_L2_DEF_PROGRAM,
+    CEP_L2_DEF_POLICY,
+    CEP_L2_DEF_VARIANT,
+    CEP_L2_DEF_GUARDIAN,
+} cepL2DefinitionKind;
+
+typedef enum {
+    CEP_L2_STEP_UNKNOWN = 0,
+    CEP_L2_STEP_GUARD,
+    CEP_L2_STEP_XFORM,
+    CEP_L2_STEP_WAIT,
+    CEP_L2_STEP_DECIDE,
+    CEP_L2_STEP_CLAMP,
+} cepL2StepKind;
+
+static cepL2DefinitionKind cep_l2_definition_kind_from_text(const char* text) {
+    if (!text) {
+        return CEP_L2_DEF_UNKNOWN;
+    }
+
+    char lowered[16];
+    size_t idx = 0u;
+    for (; text[idx] && idx + 1u < sizeof lowered; ++idx) {
+        lowered[idx] = (char)tolower((unsigned char)text[idx]);
+    }
+    if (text[idx] != '\0') {
+        return CEP_L2_DEF_UNKNOWN;
+    }
+    lowered[idx] = '\0';
+
+    if (strcmp(lowered, "program") == 0) {
+        return CEP_L2_DEF_PROGRAM;
+    }
+    if (strcmp(lowered, "policy") == 0) {
+        return CEP_L2_DEF_POLICY;
+    }
+    if (strcmp(lowered, "variant") == 0) {
+        return CEP_L2_DEF_VARIANT;
+    }
+    if (strcmp(lowered, "guardian") == 0) {
+        return CEP_L2_DEF_GUARDIAN;
+    }
+
+    return CEP_L2_DEF_UNKNOWN;
+}
+
+static const char* cep_l2_definition_kind_text(cepL2DefinitionKind kind) {
+    switch (kind) {
+    case CEP_L2_DEF_PROGRAM:  return "program";
+    case CEP_L2_DEF_POLICY:   return "policy";
+    case CEP_L2_DEF_VARIANT:  return "variant";
+    case CEP_L2_DEF_GUARDIAN: return "guardian";
+    default:                  return NULL;
+    }
+}
+
+static cepL2StepKind cep_l2_step_kind_from_text(const char* text, const char** out_canonical) {
+    if (out_canonical) {
+        *out_canonical = NULL;
+    }
+    if (!text) {
+        return CEP_L2_STEP_UNKNOWN;
+    }
+
+    char lowered[16];
+    size_t idx = 0u;
+    for (; text[idx] && idx + 1u < sizeof lowered; ++idx) {
+        lowered[idx] = (char)tolower((unsigned char)text[idx]);
+    }
+    if (text[idx] != '\0') {
+        return CEP_L2_STEP_UNKNOWN;
+    }
+    lowered[idx] = '\0';
+
+    if (strcmp(lowered, "guard") == 0) {
+        if (out_canonical) {
+            *out_canonical = "guard";
+        }
+        return CEP_L2_STEP_GUARD;
+    }
+    if (strcmp(lowered, "xform") == 0 || strcmp(lowered, "transform") == 0) {
+        if (out_canonical) {
+            *out_canonical = "xform";
+        }
+        return CEP_L2_STEP_XFORM;
+    }
+    if (strcmp(lowered, "wait") == 0) {
+        if (out_canonical) {
+            *out_canonical = "wait";
+        }
+        return CEP_L2_STEP_WAIT;
+    }
+    if (strcmp(lowered, "decide") == 0) {
+        if (out_canonical) {
+            *out_canonical = "decide";
+        }
+        return CEP_L2_STEP_DECIDE;
+    }
+    if (strcmp(lowered, "clamp") == 0) {
+        if (out_canonical) {
+            *out_canonical = "clamp";
+        }
+        return CEP_L2_STEP_CLAMP;
+    }
+
+    return CEP_L2_STEP_UNKNOWN;
+}
+
+static bool cep_l2_copy_original_payload(cepCell* entry, cepCell* request) {
+    if (!entry || !request) {
+        return true;
+    }
+
+    cepCell* original = cep_l2_ensure_dictionary(entry, dt_original(), CEP_STORAGE_RED_BLACK_T);
+    if (!original) {
+        return false;
+    }
+
+    return cep_l2_copy_request_payload(request, original);
+}
+
+static bool cep_l2_store_identifier_text(cepCell* entry, const cepDT* field, const cepDT* value_dt) {
+    if (!entry || !field || !value_dt) {
+        return false;
+    }
+    return cep_l2_store_dt_string(entry, field, value_dt);
+}
+
+static bool cep_l2_replace_with_link_or_text(cepCell* container,
+                                             const cepDT* field,
+                                             cepCell* target,
+                                             const cepDT* fallback_dt) {
+    if (!container || !field) {
+        return false;
+    }
+
+    cep_l2_remove_field(container, field);
+
+    if (target) {
+        cepDT name_copy = *field;
+        if (!cep_cell_add_link(container, &name_copy, 0, target)) {
+            return false;
+        }
+        return true;
+    }
+
+    if (!fallback_dt) {
+        return false;
+    }
+    return cep_l2_store_identifier_text(container, field, fallback_dt);
+}
+
+static bool cep_l2_canonicalize_decide_spec(cepCell* flow_root, cepCell* spec, const char** error_code) {
+    if (!spec) {
+        if (error_code) {
+            *error_code = "decide-spec";
+        }
+        return false;
+    }
+
+    cepDT policy_dt = {0};
+    const char* policy_text = NULL;
+    if (!cep_l2_extract_cell_identifier(spec, dt_policy(), &policy_dt, &policy_text)) {
+        if (error_code) {
+            *error_code = "decide-policy";
+        }
+        return false;
+    }
+
+    cepCell* policy_ledger = flow_root ? cep_cell_find_by_name(flow_root, dt_policy()) : NULL;
+    cepCell* policy_entry = policy_ledger ? cep_cell_find_by_name(policy_ledger, &policy_dt) : NULL;
+
+    if (!cep_l2_replace_with_link_or_text(spec, dt_policy(), policy_entry, &policy_dt)) {
+        if (error_code) {
+            *error_code = "decide-policy-link";
+        }
+        return false;
+    }
+
+    return true;
+}
+
+static bool cep_l2_canonicalize_step(cepCell* flow_root,
+                                     cepCell* request_step,
+                                     cepCell* dest_parent,
+                                     size_t index,
+                                     const char** error_code) {
+    if (!request_step || !dest_parent) {
+        if (error_code) {
+            *error_code = "step-input";
+        }
+        return false;
+    }
+
+    if (!cep_cell_has_store(request_step)) {
+        if (error_code) {
+            *error_code = "step-schema";
+        }
+        return false;
+    }
+
+    char key_buf[16];
+    int written = snprintf(key_buf, sizeof key_buf, "%04zu", index);
+    if (written <= 0 || (size_t)written >= sizeof key_buf) {
+        if (error_code) {
+            *error_code = "step-key";
+        }
+        return false;
+    }
+
+    cepDT key_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(key_buf, (size_t)written, &key_dt)) {
+        if (error_code) {
+            *error_code = "step-key";
+        }
+        return false;
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepCell* step_entry = cep_cell_add_dictionary(dest_parent, &key_dt, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!step_entry) {
+        if (error_code) {
+            *error_code = "step-entry";
+        }
+        return false;
+    }
+
+    const char* raw_kind = cep_l2_fetch_string(request_step, dt_kind());
+    const char* canonical_kind = NULL;
+    cepL2StepKind kind = cep_l2_step_kind_from_text(raw_kind, &canonical_kind);
+    if (kind == CEP_L2_STEP_UNKNOWN || !canonical_kind) {
+        if (error_code) {
+            *error_code = "step-kind";
+        }
+        return false;
+    }
+
+    if (!cep_l2_set_string_value(step_entry, dt_kind(), canonical_kind)) {
+        if (error_code) {
+            *error_code = "step-kind";
+        }
+        return false;
+    }
+
+    cepCell* spec_entry = NULL;
+    cepCell* raw_spec = cep_cell_find_by_name(request_step, dt_spec());
+    cep_l2_remove_field(step_entry, dt_spec());
+
+    cepDT spec_name = *dt_spec();
+    spec_entry = cep_cell_add_dictionary(step_entry, &spec_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!spec_entry) {
+        if (error_code) {
+            *error_code = "step-spec";
+        }
+        return false;
+    }
+
+    if (raw_spec) {
+        if (!cep_cell_has_store(raw_spec)) {
+            if (error_code) {
+                *error_code = "step-spec";
+            }
+            return false;
+        }
+        if (!cep_l2_copy_request_payload(raw_spec, spec_entry)) {
+            if (error_code) {
+                *error_code = "step-spec";
+            }
+            return false;
+        }
+    }
+
+    for (cepCell* child = cep_cell_first(request_step); child; child = cep_cell_next(request_step, child)) {
+        if (cep_cell_name_is(child, dt_kind()) || cep_cell_name_is(child, dt_spec())) {
+            continue;
+        }
+        if (!cep_l2_clone_child_into(step_entry, child)) {
+            if (error_code) {
+                *error_code = "step-copy";
+            }
+            return false;
+        }
+    }
+
+    if (kind == CEP_L2_STEP_DECIDE) {
+        if (!cep_l2_canonicalize_decide_spec(flow_root, spec_entry, error_code)) {
+            return false;
+        }
+    }
+
+    (void)kind; /* Other kinds do not require canonicalisation yet. */
+    return true;
+}
+
+static bool cep_l2_canonicalize_program(cepCell* flow_root,
+                                        cepCell* entry,
+                                        cepCell* request,
+                                        const cepDT* id_dt,
+                                        const char** error_code) {
+    if (!entry || !id_dt) {
+        if (error_code) {
+            *error_code = "program-entry";
+        }
+        return false;
+    }
+
+    if (!cep_l2_store_identifier_text(entry, dt_id(), id_dt)) {
+        if (error_code) {
+            *error_code = "program-id";
+        }
+        return false;
+    }
+
+    cepCell* existing_steps = cep_cell_find_by_name(entry, dt_steps());
+    if (existing_steps) {
+        cep_cell_remove_hard(entry, existing_steps);
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepDT steps_name = *dt_steps();
+    cepCell* dest_steps = cep_cell_add_dictionary(entry, &steps_name, 0, &dict_type, CEP_STORAGE_LINKED_LIST);
+    if (!dest_steps) {
+        if (error_code) {
+            *error_code = "program-steps";
+        }
+        return false;
+    }
+
+    cepCell* source_steps = request ? cep_cell_find_by_name(request, dt_steps()) : NULL;
+    size_t step_index = 0u;
+    if (source_steps && cep_cell_has_store(source_steps)) {
+        for (cepCell* raw_step = cep_cell_first(source_steps); raw_step; raw_step = cep_cell_next(source_steps, raw_step)) {
+            if (!cep_l2_canonicalize_step(flow_root, raw_step, dest_steps, step_index, error_code)) {
+                return false;
+            }
+            ++step_index;
+        }
+    }
+
+    return true;
+}
+
+static bool cep_l2_canonicalize_policy(cepCell* entry, const cepDT* id_dt) {
+    if (!entry || !id_dt) {
+        return false;
+    }
+    return cep_l2_store_identifier_text(entry, dt_id(), id_dt);
+}
+
+static bool cep_l2_canonicalize_variant(cepCell* flow_root,
+                                        cepCell* entry,
+                                        cepCell* request,
+                                        const cepDT* id_dt,
+                                        const char** error_code) {
+    if (!entry || !id_dt) {
+        if (error_code) {
+            *error_code = "variant-entry";
+        }
+        return false;
+    }
+
+    if (!cep_l2_store_identifier_text(entry, dt_id(), id_dt)) {
+        if (error_code) {
+            *error_code = "variant-id";
+        }
+        return false;
+    }
+
+    cepDT program_dt = {0};
+    const char* program_text = NULL;
+    bool have_program = cep_l2_extract_identifier(request, dt_program(), &program_dt, &program_text)
+                     || cep_l2_extract_cell_identifier(entry, dt_program(), &program_dt, &program_text);
+    if (!have_program) {
+        if (error_code) {
+            *error_code = "variant-program";
+        }
+        return false;
+    }
+
+    cepCell* program_ledger = flow_root ? cep_cell_find_by_name(flow_root, dt_program()) : NULL;
+    cepCell* program_entry = program_ledger ? cep_cell_find_by_name(program_ledger, &program_dt) : NULL;
+
+    if (!cep_l2_replace_with_link_or_text(entry, dt_program(), program_entry, &program_dt)) {
+        if (error_code) {
+            *error_code = "variant-program-link";
+        }
+        return false;
+    }
+
+    return true;
+}
+
+static bool cep_l2_canonicalize_guardian(cepCell* entry, const cepDT* id_dt) {
+    if (!entry || !id_dt) {
+        return false;
+    }
+    return cep_l2_store_identifier_text(entry, dt_id(), id_dt);
+}
+
+static bool cep_l2_canonicalize_niche(cepCell* flow_root,
+                                      cepCell* entry,
+                                      cepCell* request,
+                                      const cepDT* id_dt,
+                                      const char** error_code) {
+    if (!entry || !id_dt) {
+        if (error_code) {
+            *error_code = "niche-entry";
+        }
+        return false;
+    }
+
+    if (!cep_l2_store_identifier_text(entry, dt_id(), id_dt)) {
+        if (error_code) {
+            *error_code = "niche-id";
+        }
+        return false;
+    }
+
+    cepDT ctx_dt = {0};
+    if (!cep_l2_extract_identifier(request, dt_ctx_type(), &ctx_dt, NULL)) {
+        if (error_code) {
+            *error_code = "niche-context";
+        }
+        return false;
+    }
+
+    if (!cep_l2_store_identifier_text(entry, dt_ctx_type(), &ctx_dt)) {
+        if (error_code) {
+            *error_code = "niche-context";
+        }
+        return false;
+    }
+
+    cepDT variant_dt = {0};
+    const char* variant_text = NULL;
+    if (!cep_l2_extract_identifier(request, dt_variant(), &variant_dt, &variant_text)) {
+        if (error_code) {
+            *error_code = "niche-variant";
+        }
+        return false;
+    }
+
+    cepCell* variant_ledger = flow_root ? cep_cell_find_by_name(flow_root, dt_variant()) : NULL;
+    cepCell* variant_entry = variant_ledger ? cep_cell_find_by_name(variant_ledger, &variant_dt) : NULL;
+
+    if (!cep_l2_replace_with_link_or_text(entry, dt_variant(), variant_entry, &variant_dt)) {
+        if (error_code) {
+            *error_code = "niche-variant-link";
+        }
+        return false;
+    }
+
+    (void)variant_text;
+    return true;
 }
 
 static void cep_l2_mark_outcome_error(cepCell* request, const char* code) {
@@ -1096,6 +1592,31 @@ static cepL2StepResult cep_l2_step_clamp(cepCell* instance, cepCell* step, size_
         }
     }
 
+    cepCell* budget_dict = (budget_state && budget_state->initialized) ? budget_state->budget : NULL;
+    if (!budget_dict) {
+        budget_dict = cep_cell_find_by_name(instance, dt_budget());
+    }
+
+    const char* timeout_text = cep_l2_fetch_string(spec, dt_timeout());
+    if (timeout_text && budget_dict) {
+        size_t timeout_beats = 0u;
+        if (cep_l2_parse_size_text(timeout_text, &timeout_beats) && timeout_beats > 0u) {
+            size_t deadline = (size_t)now + timeout_beats;
+            cep_l2_set_number_value(budget_dict, dt_timeout(), timeout_beats);
+            cep_l2_set_number_value(budget_dict, dt_deadline(), deadline);
+        }
+    }
+
+    if (budget_dict) {
+        const char* deadline_text = cep_l2_fetch_string(budget_dict, dt_deadline());
+        size_t deadline_value = 0u;
+        if (deadline_text && cep_l2_parse_size_text(deadline_text, &deadline_value) && (size_t)now >= deadline_value) {
+            const char* pause_state = cep_l2_fetch_string(spec, dt_state());
+            cep_l2_set_string_value(instance, dt_state(), pause_state ? pause_state : "paused");
+            return CEP_L2_STEP_BLOCK;
+        }
+    }
+
     const char* limit_text = cep_l2_fetch_string(spec, dt_pc());
     if (limit_text) {
         size_t limit = 0u;
@@ -1318,7 +1839,325 @@ static bool cep_l2_wait_entry_timed_out(cepCell* entry) {
     return (size_t)now >= deadline;
 }
 
-static cepL2StepResult cep_l2_step_transform(cepCell* instance, cepCell* step, size_t pc) {
+static bool cep_l2_transform_build_signal_path(const char* text, cepPathStatic4* path) {
+    if (!text || !*text || !path) {
+        return false;
+    }
+
+    path->length = 0u;
+    path->capacity = sizeof(path->past) / sizeof(path->past[0]);
+
+    const char* cursor = text;
+    while (*cursor) {
+        if (path->length >= path->capacity) {
+            return false;
+        }
+
+        const char* segment = cursor;
+        while (*cursor && *cursor != '/' && *cursor != ':') {
+            ++cursor;
+        }
+
+        size_t len = (size_t)(cursor - segment);
+        if (len == 0u) {
+            return false;
+        }
+
+        /* Ignore explicit domain prefixes (e.g., "CEP:"). */
+        if (*cursor == ':' && path->length == 0u) {
+            cursor++; /* Skip delimiter and restart next segment. */
+            continue;
+        }
+
+        char buffer[64];
+        if (len >= sizeof buffer) {
+            return false;
+        }
+        memcpy(buffer, segment, len);
+        buffer[len] = '\0';
+
+        cepDT segment_dt = {0};
+        if (!cep_l2_text_to_dt_bytes(buffer, len, &segment_dt)) {
+            return false;
+        }
+
+        path->past[path->length].dt = segment_dt;
+        path->past[path->length].timestamp = 0u;
+        path->length += 1u;
+
+        if (*cursor == '\0') {
+            break;
+        }
+        cursor++; /* Skip delimiter */
+    }
+
+    return path->length > 0u;
+}
+
+static bool cep_l2_transform_stage_emit(cepCell* instance,
+                                       cepCell* step,
+                                       cepCell* emission,
+                                       cepCell* emits_root,
+                                       size_t pc,
+                                       cepBeatNumber now,
+                                       size_t index_offset,
+                                       const char* default_signal) {
+    if (!instance || !emits_root) {
+        return false;
+    }
+
+    size_t suffix = cep_cell_children(emits_root) + index_offset;
+    cepCell* slot = NULL;
+
+    for (size_t attempt = 0u; attempt < 64u; ++attempt) {
+        char key_buf[32];
+        int written = snprintf(key_buf, sizeof key_buf, "%zu_%zu", pc, suffix + attempt);
+        if (written <= 0 || (size_t)written >= sizeof key_buf) {
+            return false;
+        }
+
+        cepDT key_dt = {0};
+        if (!cep_l2_text_to_dt_bytes(key_buf, (size_t)written, &key_dt)) {
+            return false;
+        }
+
+        cepCell* existing = cep_cell_find_by_name(emits_root, &key_dt);
+        if (existing) {
+            continue;
+        }
+
+        slot = cep_l2_ensure_dictionary(emits_root, &key_dt, CEP_STORAGE_RED_BLACK_T);
+        break;
+    }
+
+    if (!slot) {
+        return false;
+    }
+
+    if (emission && cep_cell_has_store(emission)) {
+        if (!cep_l2_copy_request_payload(emission, slot)) {
+            return false;
+        }
+    } else if (emission && cep_cell_has_data(emission)) {
+        cepCell* clone = cep_cell_clone_deep(emission);
+        if (!clone) {
+            return false;
+        }
+        cepCell* inserted = cep_cell_add(slot, 0, clone);
+        if (!inserted) {
+            cep_cell_finalize_hard(clone);
+            cep_free(clone);
+            return false;
+        }
+        cep_free(clone);
+    }
+
+    (void)cep_l2_set_number_value(slot, dt_pc(), pc);
+    (void)cep_l2_set_number_value(slot, dt_beat(), (size_t)now);
+
+    cepCell* parents[4];
+    size_t parent_count = 0u;
+    if (instance) {
+        parents[parent_count++] = instance;
+    }
+    if (emission) {
+        parents[parent_count++] = emission;
+    }
+    if (step) {
+        parents[parent_count++] = step;
+    }
+    cepCell* target_field = cep_cell_find_by_name(slot, dt_target());
+    if (!target_field && emission) {
+        target_field = cep_cell_find_by_name(emission, dt_target());
+    }
+    if (target_field && cep_cell_is_link(target_field)) {
+        cepCell* target_cell = cep_link_pull(target_field);
+        if (target_cell && parent_count < sizeof(parents) / sizeof(parents[0])) {
+            parents[parent_count++] = target_cell;
+        }
+    }
+    if (parent_count > 0u) {
+        (void)cep_cell_add_parents(slot, parents, parent_count);
+    }
+
+    cep_cell_content_hash(slot);
+
+    const char* signal_text = cep_l2_fetch_string(slot, dt_signal_path());
+    if (!signal_text || !*signal_text) {
+        signal_text = cep_l2_fetch_string(slot, dt_signal());
+    }
+    if ((!signal_text || !*signal_text) && default_signal && *default_signal) {
+        signal_text = default_signal;
+    }
+
+    if (signal_text && *signal_text) {
+        cepPathStatic4 signal_path = {0};
+        if (cep_l2_transform_build_signal_path(signal_text, &signal_path)) {
+            cepPath* target_path = NULL;
+            if (cep_cell_path(slot, &target_path)) {
+                int rc = cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, (const cepPath*)&signal_path, target_path);
+                cep_free(target_path);
+                if (rc == CEP_ENZYME_FATAL) {
+                    return false;
+                }
+            }
+        }
+        if (!cep_cell_find_by_name(slot, dt_signal_path())) {
+            (void)cep_l2_set_string_value(slot, dt_signal_path(), signal_text);
+        }
+        if (!cep_cell_find_by_name(slot, dt_signal())) {
+            (void)cep_l2_set_string_value(slot, dt_signal(), signal_text);
+        }
+    }
+
+    return true;
+}
+
+static bool cep_l2_transform_stage_outputs(cepCell* instance,
+                                           cepCell* step,
+                                           cepCell* spec,
+                                           size_t pc,
+                                           cepBeatNumber now,
+                                           size_t* out_emits) {
+    if (out_emits) {
+        *out_emits = 0u;
+    }
+
+    if (!instance || !spec) {
+        return true;
+    }
+
+    cepCell* payload = cep_cell_find_by_name(spec, dt_payload());
+    if (!payload || !cep_cell_has_store(payload)) {
+        return true;
+    }
+
+    cepCell* emits_root = cep_l2_ensure_dictionary(instance, dt_emits(), CEP_STORAGE_RED_BLACK_T);
+    if (!emits_root) {
+        return false;
+    }
+
+    const char* default_signal = cep_l2_fetch_string(spec, dt_signal_path());
+    if (!default_signal) {
+        default_signal = cep_l2_fetch_string(spec, dt_signal());
+    }
+    if (!default_signal || !*default_signal) {
+        default_signal = "CEP:sig_cell/op_add";
+    }
+
+    size_t produced = 0u;
+    size_t index_offset = 0u;
+    for (cepCell* emission = cep_cell_first(payload); emission; emission = cep_cell_next(payload, emission)) {
+        if (!cep_cell_is_normal(emission)) {
+            continue;
+        }
+        if (!cep_l2_transform_stage_emit(instance, step, emission, emits_root, pc, now, index_offset, default_signal)) {
+            return false;
+        }
+        ++produced;
+        ++index_offset;
+    }
+
+    if (out_emits) {
+        *out_emits = produced;
+    }
+    return true;
+}
+
+static bool cep_l2_canonicalize_inst_event(cepCell* request, const char** error_code) {
+    if (error_code) {
+        *error_code = NULL;
+    }
+    if (!request) {
+        if (error_code) {
+            *error_code = "no-request";
+        }
+        return false;
+    }
+
+    cepL2StoreLock request_lock = {0};
+    if (!cep_l2_store_lock(request, &request_lock)) {
+        if (error_code) {
+            *error_code = "request-lock";
+        }
+        return false;
+    }
+
+    bool success = true;
+
+    cepCell* original = cep_l2_ensure_dictionary(request, dt_original(), CEP_STORAGE_RED_BLACK_T);
+    cepL2StoreLock original_lock = {0};
+    if (original && cep_l2_store_lock(original, &original_lock)) {
+        (void)cep_l2_copy_request_payload(request, original);
+    }
+    cep_l2_store_unlock(&original_lock);
+
+    const char* signal_path = cep_l2_fetch_string(request, dt_signal_path());
+    const char* signal_text = cep_l2_fetch_string(request, dt_signal());
+    if (!signal_path && signal_text && *signal_text) {
+        if (!cep_l2_set_string_value(request, dt_signal_path(), signal_text)) {
+            if (error_code) {
+                *error_code = "signal-store";
+            }
+            success = false;
+        }
+        signal_path = cep_l2_fetch_string(request, dt_signal_path());
+    }
+
+    if (success && (!signal_path || !*signal_path)) {
+        if (error_code) {
+            *error_code = "missing-signal";
+        }
+        success = false;
+    }
+
+    cepPathStatic4 signal_probe = {0};
+    signal_probe.capacity = sizeof(signal_probe.past) / sizeof(signal_probe.past[0]);
+    if (success && !cep_l2_transform_build_signal_path(signal_path, &signal_probe)) {
+        if (error_code) {
+            *error_code = "signal-format";
+        }
+        success = false;
+    }
+
+    if (success && (!signal_text || !*signal_text)) {
+        if (!cep_l2_set_string_value(request, dt_signal(), signal_path)) {
+            if (error_code) {
+                *error_code = "signal-store";
+            }
+            success = false;
+        }
+    }
+
+    cepCell* payload = success ? cep_cell_find_by_name(request, dt_payload()) : NULL;
+    if (success && payload && !cep_cell_has_store(payload)) {
+        if (error_code) {
+            *error_code = "payload-type";
+        }
+        success = false;
+    }
+    if (success && !payload) {
+        payload = cep_l2_ensure_dictionary(request, dt_payload(), CEP_STORAGE_RED_BLACK_T);
+        if (!payload) {
+            if (error_code) {
+                *error_code = "payload-create";
+            }
+            success = false;
+        }
+    }
+
+    if (success) {
+        char context_signature[128];
+        if (cep_l2_extract_context_signature(request, context_signature, sizeof context_signature)) {
+            (void)cep_l2_set_string_value(request, dt_context(), context_signature);
+        }
+    }
+
+    cep_l2_store_unlock(&request_lock);
+    return success;
+}
+
+static cepL2StepResult cep_l2_step_transform(cepCell* instance, cepCell* step, size_t pc, cepBeatNumber now) {
     cepCell* spec = cep_l2_step_spec(step);
     if (!spec) {
         return CEP_L2_STEP_ADVANCE;
@@ -1328,6 +2167,12 @@ static cepL2StepResult cep_l2_step_transform(cepCell* instance, cepCell* step, s
     if (new_state && *new_state) {
         cep_l2_set_string_value(instance, dt_state(), new_state);
     }
+
+    size_t emitted = 0u;
+    if (!cep_l2_transform_stage_outputs(instance, step, spec, pc, now, &emitted)) {
+        return CEP_L2_STEP_ERROR;
+    }
+    (void)emitted;
 
     cepCell* payload = cep_cell_find_by_name(spec, dt_payload());
     if (payload && cep_cell_has_store(payload)) {
@@ -1346,6 +2191,7 @@ static cepL2StepResult cep_l2_step_transform(cepCell* instance, cepCell* step, s
                     cepCell* slot = cep_l2_ensure_dictionary(events, &key_dt, CEP_STORAGE_RED_BLACK_T);
                     if (slot) {
                         cep_l2_copy_request_payload(payload, slot);
+                        cep_l2_set_number_value(slot, dt_beat(), (size_t)now);
                     }
                 }
             }
@@ -1639,9 +2485,9 @@ bool cep_l2_flows_bootstrap(void) {
 /*  Enzyme callbacks (skeletons)                                             */
 /* ------------------------------------------------------------------------- */
 
-/* The ingest enzyme will eventually canonicalise flow definitions. For now we
- * stage a placeholder so the agenda wiring compiles while leaving TODO markers
- * for the substantive work. */
+/* Flow ingest normalises program/policy/variant/guardian definitions, capturing
+ * the submitted payload under the `original` mirror while materialising the
+ * canonical ledger schema used by the VM and downstream indexes. */
 static int cep_l2_enzyme_fl_ingest(const cepPath* signal, const cepPath* target) {
     (void)signal;
 
@@ -1656,10 +2502,17 @@ static int cep_l2_enzyme_fl_ingest(const cepPath* signal, const cepPath* target)
         return CEP_ENZYME_SUCCESS;
     }
 
+    cepL2DefinitionKind def_kind = cep_l2_definition_kind_from_text(kind_text);
+    const char* canonical_kind = cep_l2_definition_kind_text(def_kind);
+    if (def_kind == CEP_L2_DEF_UNKNOWN || !canonical_kind) {
+        cep_l2_mark_outcome_error(request, "unknown-kind");
+        return CEP_ENZYME_SUCCESS;
+    }
+
     cepCell* bucket = cep_cell_parent(request);
     cepCell* inbox = bucket ? cep_cell_parent(bucket) : NULL;
     cepCell* flow_root = inbox ? cep_cell_parent(inbox) : NULL;
-    cepCell* ledger = cep_l2_definition_ledger(kind_text, flow_root);
+    cepCell* ledger = cep_l2_definition_ledger(canonical_kind, flow_root);
     if (!ledger) {
         cep_l2_mark_outcome_error(request, "unknown-kind");
         return CEP_ENZYME_SUCCESS;
@@ -1698,7 +2551,62 @@ static int cep_l2_enzyme_fl_ingest(const cepPath* signal, const cepPath* target)
         goto done;
     }
 
+    const char* canon_error = NULL;
+    bool canon_ok = true;
+
+    if (!cep_l2_copy_original_payload(entry, request)) {
+        canon_ok = false;
+        canon_error = "original-copy";
+    }
+
+    if (canon_ok && !cep_l2_set_string_value(entry, dt_kind(), canonical_kind)) {
+        canon_ok = false;
+        canon_error = "kind-store";
+    }
+
+    if (canon_ok) {
+        switch (def_kind) {
+        case CEP_L2_DEF_PROGRAM:
+            canon_ok = cep_l2_canonicalize_program(flow_root, entry, request, &id_dt, &canon_error);
+            break;
+        case CEP_L2_DEF_POLICY:
+            canon_ok = cep_l2_canonicalize_policy(entry, &id_dt);
+            if (!canon_ok && !canon_error) {
+                canon_error = "policy-canon";
+            }
+            break;
+        case CEP_L2_DEF_VARIANT:
+            canon_ok = cep_l2_canonicalize_variant(flow_root, entry, request, &id_dt, &canon_error);
+            break;
+        case CEP_L2_DEF_GUARDIAN:
+            canon_ok = cep_l2_canonicalize_guardian(entry, &id_dt);
+            if (!canon_ok && !canon_error) {
+                canon_error = "guardian-canon";
+            }
+            break;
+        case CEP_L2_DEF_UNKNOWN:
+        default:
+            canon_ok = false;
+            if (!canon_error) {
+                canon_error = "unknown-kind";
+            }
+            break;
+        }
+    }
+
+    if (!canon_ok) {
+        if (!canon_error) {
+            canon_error = "canon-failed";
+        }
+        (void)cep_l2_copy_request_payload(request, entry);
+        (void)cep_l2_copy_original_payload(entry, request);
+        cep_l2_mark_outcome_error(request, canon_error);
+        result = CEP_ENZYME_SUCCESS;
+        goto done;
+    }
+
     cep_l2_mark_outcome_ok(request);
+    (void)cep_l2_enqueue_pipeline();
     result = CEP_ENZYME_SUCCESS;
 
 done:
@@ -1757,7 +2665,31 @@ static int cep_l2_enzyme_ni_ingest(const cepPath* signal, const cepPath* target)
         goto done;
     }
 
+    const char* canon_error = NULL;
+    bool canon_ok = true;
+
+    if (!cep_l2_copy_original_payload(entry, request)) {
+        canon_ok = false;
+        canon_error = "original-copy";
+    }
+
+    if (canon_ok) {
+        canon_ok = cep_l2_canonicalize_niche(flow_root, entry, request, &id_dt, &canon_error);
+    }
+
+    if (!canon_ok) {
+        if (!canon_error) {
+            canon_error = "canon-failed";
+        }
+        (void)cep_l2_copy_request_payload(request, entry);
+        (void)cep_l2_copy_original_payload(entry, request);
+        cep_l2_mark_outcome_error(request, canon_error);
+        result = CEP_ENZYME_SUCCESS;
+        goto done;
+    }
+
     cep_l2_mark_outcome_ok(request);
+    (void)cep_l2_enqueue_pipeline();
     result = CEP_ENZYME_SUCCESS;
 
 done:
@@ -1872,6 +2804,7 @@ static int cep_l2_enzyme_inst_ingest(const cepPath* signal, const cepPath* targe
         }
 
         cep_l2_mark_outcome_ok(request);
+        (void)cep_l2_enqueue_pipeline();
         result = CEP_ENZYME_SUCCESS;
         goto done;
     }
@@ -1930,6 +2863,7 @@ static int cep_l2_enzyme_inst_ingest(const cepPath* signal, const cepPath* targe
     }
 
     cep_l2_mark_outcome_ok(request);
+    (void)cep_l2_enqueue_pipeline();
     result = CEP_ENZYME_SUCCESS;
 
 done:
@@ -1944,6 +2878,12 @@ static int cep_l2_enzyme_fl_wake(const cepPath* signal, const cepPath* target) {
 
     cepCell* request = cep_l2_resolve_request(target);
     if (!cep_l2_request_guard(request, dt_inst_event())) {
+        return CEP_ENZYME_SUCCESS;
+    }
+
+    const char* canon_error = NULL;
+    if (!cep_l2_canonicalize_inst_event(request, &canon_error)) {
+        cep_l2_mark_outcome_error(request, canon_error ? canon_error : "event-canon");
         return CEP_ENZYME_SUCCESS;
     }
 
@@ -1989,6 +2929,7 @@ static int cep_l2_enzyme_fl_wake(const cepPath* signal, const cepPath* target) {
     }
 
     cep_l2_mark_outcome_ok(request);
+    (void)cep_l2_enqueue_pipeline();
     return CEP_ENZYME_SUCCESS;
 }
 
@@ -2006,6 +2947,8 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
         return CEP_ENZYME_SUCCESS;
     }
 
+    bool pipeline_requested = false;
+
     for (cepCell* instance = cep_cell_first(ledger); instance; instance = cep_cell_next(ledger, instance)) {
         if (!cep_cell_is_normal(instance)) {
             continue;
@@ -2016,6 +2959,7 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
             continue;
         }
 
+        bool instance_mutated = false;
         const char* state = cep_l2_fetch_string(instance, dt_state());
 
         size_t pc = 0u;
@@ -2032,12 +2976,14 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
             cepCell* entry = cep_l2_sub_entry_for_pc(instance, pc, false);
             if (!entry) {
                 cep_l2_set_string_value(instance, dt_state(), "ready");
+                instance_mutated = true;
             } else if (cep_l2_sub_entry_has_status(entry, "triggered")) {
                 cepCell* subs = cep_cell_parent(entry);
                 if (subs) {
                     cep_cell_remove_hard(subs, entry);
                 }
                 cep_l2_set_string_value(instance, dt_state(), "ready");
+                instance_mutated = true;
             } else if (cep_l2_wait_entry_timed_out(entry)) {
                 cep_l2_sub_entry_set_string(entry, dt_status(), "timeout");
                 cepCell* subs = cep_cell_parent(entry);
@@ -2045,6 +2991,7 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
                     cep_cell_remove_hard(subs, entry);
                 }
                 cep_l2_set_string_value(instance, dt_state(), "ready");
+                instance_mutated = true;
             } else {
                 cep_l2_store_unlock(&inst_lock);
                 continue;
@@ -2069,12 +3016,14 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
             cepCell* steps = cep_l2_steps_container(program);
             if (!steps) {
                 cep_l2_set_string_value(instance, dt_state(), "done");
+                instance_mutated = true;
                 break;
             }
 
             cepCell* step = cep_l2_step_at(steps, pc);
             if (!step) {
                 cep_l2_set_string_value(instance, dt_state(), "done");
+                instance_mutated = true;
                 break;
             }
 
@@ -2084,7 +3033,10 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
             if (kind && strcmp(kind, "guard") == 0) {
                 outcome = cep_l2_step_guard(instance, step, pc);
             } else if (kind && strcmp(kind, "transform") == 0) {
-                outcome = cep_l2_step_transform(instance, step, pc);
+                outcome = cep_l2_step_transform(instance, step, pc, now);
+                if (outcome != CEP_L2_STEP_ADVANCE) {
+                    instance_mutated = true;
+                }
             } else if (kind && strcmp(kind, "wait") == 0) {
                 outcome = cep_l2_step_wait(instance, step, pc);
             } else if (kind && strcmp(kind, "decide") == 0) {
@@ -2096,12 +3048,14 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
 
             if (outcome == CEP_L2_STEP_ERROR) {
                 cep_l2_set_string_value(instance, dt_state(), "error");
+                instance_mutated = true;
                 break;
             }
 
             if (outcome == CEP_L2_STEP_BLOCK) {
                 continue_run = false;
                 ++steps_this_run;
+                instance_mutated = true;
                 break;
             }
 
@@ -2111,15 +3065,29 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
 
         if (budget_state.initialized) {
             cep_l2_budget_state_commit(&budget_state, steps_this_run);
+            if (steps_this_run > 0u) {
+                instance_mutated = true;
+            }
         }
 
         cep_l2_store_pc(instance, pc);
+        if (steps_this_run > 0u) {
+            instance_mutated = true;
+        }
         const char* final_state = cep_l2_fetch_string(instance, dt_state());
         if (!final_state) {
             cep_l2_set_string_value(instance, dt_state(), "ready");
+            instance_mutated = true;
         }
 
+        if (instance_mutated) {
+            pipeline_requested = true;
+        }
         cep_l2_store_unlock(&inst_lock);
+    }
+
+    if (pipeline_requested) {
+        (void)cep_l2_enqueue_pipeline();
     }
 
     return CEP_ENZYME_SUCCESS;
@@ -2317,6 +3285,10 @@ static int cep_l2_enzyme_fl_adj(const cepPath* signal, const cepPath* target) {
         size_t events_count = events && cep_cell_has_store(events) ? cep_cell_children(events) : 0u;
         cep_l2_set_number_value(summary, dt_evt_count(), events_count);
 
+        cepCell* emits = cep_cell_find_by_name(instance, dt_emits());
+        size_t emits_count = emits && cep_cell_has_store(emits) ? cep_cell_children(emits) : 0u;
+        cep_l2_set_number_value(summary, dt_emit_count(), emits_count);
+
         cepCell* latest_event = NULL;
         size_t   latest_beat = 0u;
         if (events && cep_cell_has_store(events)) {
@@ -2399,12 +3371,6 @@ bool cep_l2_flows_register(cepEnzymeRegistry* registry) {
     if (!cep_l2_flows_bootstrap()) {
         return false;
     }
-
-    typedef struct {
-        unsigned length;
-        unsigned capacity;
-        cepPast  past[2];
-    } cepPathStatic2;
 
     cepPathStatic2 signal_path = {
         .length = 2u,

@@ -168,6 +168,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `pc` | core | program counter stored with each instance. |
 | `subs` | core | dictionary of active wait subscriptions per instance. |
 | `events` | core | queued external events awaiting consumption by the VM. |
+| `emits` | core | staged transform outputs stored per instance before commit. |
 | `budget` | core | per-instance clamp state capturing execution ceilings. |
 | `site` | core | identifier for a decision site inside a flow. |
 | `action` | core | control action requested against an instance. |
@@ -185,6 +186,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `by_inst` | core | transient cache containing per-instance summaries. |
 | `sub_count` | core | summary counter of active subscriptions. |
 | `evt_count` | core | summary counter of queued events. |
+| `emit_count` | core | summary counter of staged transform outputs. |
 | `timeout` | core | wait specification field expressing timeout in beats. |
 | `deadline` | core | recorded beat when a wait will time out. |
 | `signal_glob` | core | glob pattern stored alongside wait subscriptions. |
