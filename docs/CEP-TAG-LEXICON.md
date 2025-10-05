@@ -231,11 +231,29 @@ when a new behavior needs a fresh word before it lands in code.
 | `run` | core | Harness run ledger capturing execution evidence. |
 | `bandit` | core | Bandit telemetry nested under a run entry. |
 | `choices` | core | List of arm selections recorded per bandit run. |
+| `inputs` | core | Snapshot of referenced scenario inputs stored on run entries. |
+| `params` | core | Run-specific parameters supplied alongside scenarios. |
+| `actual` | core | Observed value captured by harness assertions. |
+| `diff` | core | Structured mismatch details recorded by harness assertions. |
 | `keys` | core | Index bucket listing active key/value entries. |
 | `count` | core | Numeric counter stored on index or adjacency nodes. |
 | `tomb` | core | Tombstone flag marking soft-deleted key/value entries. |
 | `enabled` | core | Toggle under `/sys/poc` gating PoC enzyme execution. |
 | `parent` | core | Provenance link tag used for audit bindings. |
+| `summary` | core | Aggregated metrics dictionary written by index and adjacency passes. |
+| `recent` | core | Transient list of most recent operations surfaced via adjacency. |
+| `calc_expr` | core | Calculator index grouping results by canonicalised expression. |
+| `kv_prefix` | core | Key/value index grouping active keys by prefix. |
+| `kv_hist` | core | Key/value index summarising per-key write history. |
+| `ids` | core | List storing identifier collections copied into index buckets. |
+| `total` | core | Summary field capturing total submissions for a bucket. |
+| `active` | core | Summary field counting active entities within a bucket. |
+| `ok` | core | Summary counter tracking successful outcomes. |
+| `fail` | core | Summary counter tracking failed outcomes. |
+| `wait` | core | Summary counter tracking pending or unprocessed items. |
+| `kset` | core | Summary bucket covering `poc_kv_set` intents. |
+| `kget` | core | Summary bucket covering `poc_kv_get` intents. |
+| `kdel` | core | Summary bucket covering `poc_kv_del` intents. |
 
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |
