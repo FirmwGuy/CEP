@@ -71,6 +71,21 @@ static const cepDT* dt_events(void)      { return CEP_DTAW("CEP", "events"); }
 static const cepDT* dt_action(void)      { return CEP_DTAW("CEP", "action"); }
 static const cepDT* dt_inst_id(void)     { return CEP_DTAW("CEP", "inst_id"); }
 static const cepDT* dt_site(void)        { return CEP_DTAW("CEP", "site"); }
+static const cepDT* dt_inst_by_var(void) { return CEP_DTAW("CEP", "inst_by_var"); }
+static const cepDT* dt_inst_by_st(void)  { return CEP_DTAW("CEP", "inst_by_st"); }
+static const cepDT* dt_dec_by_pol(void)  { return CEP_DTAW("CEP", "dec_by_pol"); }
+static const cepDT* dt_by_inst(void)     { return CEP_DTAW("CEP", "by_inst"); }
+static const cepDT* dt_sub_count(void)   { return CEP_DTAW("CEP", "sub_count"); }
+static const cepDT* dt_evt_count(void)   { return CEP_DTAW("CEP", "evt_count"); }
+static const cepDT* dt_timeout(void)     { return CEP_DTAW("CEP", "timeout"); }
+static const cepDT* dt_deadline(void)    { return CEP_DTAW("CEP", "deadline"); }
+static const cepDT* dt_signal_glob(void) { return CEP_DTAW("CEP", "signal_glob"); }
+static const cepDT* dt_beat(void)        { return CEP_DTAW("CEP", "beat"); }
+static const cepDT* dt_origin(void)      { return CEP_DTAW("CEP", "origin"); }
+static const cepDT* dt_context(void)     { return CEP_DTAW("CEP", "context"); }
+static const cepDT* dt_budget(void)      { return CEP_DTAW("CEP", "budget"); }
+static const cepDT* dt_step_limit(void)  { return CEP_DTAW("CEP", "step_limit"); }
+static const cepDT* dt_steps_used(void)  { return CEP_DTAW("CEP", "steps_used"); }
 
 /* Forward declarations for helpers used across the module. */
 static cepCell* cep_l2_flow_root(void);
@@ -82,6 +97,13 @@ static cepCell* cep_l2_step_at(cepCell* steps, size_t index);
 static cepCell* cep_l2_step_spec(cepCell* step);
 static cepCell* cep_l2_decision_ledger(cepCell* flow_root);
 static cepCell* cep_l2_decision_node(cepCell* ledger, const cepDT* inst_name, const char* site, bool create);
+static bool     cep_l2_wait_entry_set_deadline(cepCell* entry, size_t timeout_beats);
+static bool     cep_l2_wait_entry_timed_out(cepCell* entry);
+static bool     cep_l2_dt_to_text(const cepDT* dt, char* buffer, size_t cap);
+static bool     cep_l2_instance_variant_dt(cepCell* instance, cepDT* out_dt);
+static bool     cep_l2_extract_cell_identifier(cepCell* container, const cepDT* field, cepDT* out_dt, const char** out_text);
+static const char* cep_l2_fetch_string(cepCell* container, const cepDT* field);
+static bool     cep_l2_extract_identifier(cepCell* request, const cepDT* field, cepDT* out_dt, const char** out_text);
 
 /* ------------------------------------------------------------------------- */
 /*  Local state                                                              */
@@ -97,6 +119,13 @@ static cepID cep_l2_domain(void) {
     return CEP_ACRO("CEP");
 }
 
+static bool cep_l2_dt_equal(const cepDT* a, const cepDT* b) {
+    if (!a || !b) {
+        return false;
+    }
+    return a->domain == b->domain && a->tag == b->tag;
+}
+
 typedef struct {
     cepCell*    cell;
     cepLockToken token;
@@ -108,6 +137,14 @@ typedef struct {
     cepLockToken token;
     bool         locked;
 } cepL2DataLock;
+
+typedef struct {
+    cepCell*      budget;
+    size_t        limit;
+    size_t        used_prior;
+    cepBeatNumber beat;
+    bool          initialized;
+} cepL2BudgetState;
 
 static void cep_l2_store_unlock(cepL2StoreLock* guard) {
     if (!guard || !guard->locked || !guard->cell) {
@@ -306,6 +343,54 @@ static bool cep_l2_set_string_value(cepCell* parent, const cepDT* name, const ch
     return cep_l2_set_value_bytes(parent, name, dt_text(), text, strlen(text) + 1u);
 }
 
+static bool cep_l2_store_dt_string(cepCell* parent, const cepDT* name, const cepDT* value) {
+    if (!parent || !name || !value) {
+        return false;
+    }
+
+    char buffer[128];
+    if (!cep_l2_dt_to_text(value, buffer, sizeof buffer)) {
+        return false;
+    }
+
+    return cep_l2_set_string_value(parent, name, buffer);
+}
+
+static bool cep_l2_parse_size_text(const char* text, size_t* out_value) {
+    if (!text || !out_value) {
+        return false;
+    }
+
+    errno = 0;
+    char* endptr = NULL;
+    unsigned long long value = strtoull(text, &endptr, 10);
+    if (errno != 0 || endptr == text) {
+        return false;
+    }
+
+    *out_value = (size_t)value;
+    return true;
+}
+
+static void cep_l2_remove_field(cepCell* parent, const cepDT* field) {
+    if (!parent || !field || !cep_cell_has_store(parent)) {
+        return;
+    }
+    cepCell* child = cep_cell_find_by_name(parent, field);
+    if (child) {
+        cep_cell_remove_hard(parent, child);
+    }
+}
+
+static bool cep_l2_set_number_value(cepCell* parent, const cepDT* name, size_t value) {
+    char buffer[32];
+    int written = snprintf(buffer, sizeof buffer, "%zu", value);
+    if (written <= 0 || (size_t)written >= sizeof buffer) {
+        return false;
+    }
+    return cep_l2_set_value_bytes(parent, name, dt_text(), buffer, (size_t)written + 1u);
+}
+
 static void cep_l2_mark_outcome_error(cepCell* request, const char* code) {
     if (!request) {
         return;
@@ -380,6 +465,150 @@ static bool cep_l2_dt_to_text(const cepDT* dt, char* buffer, size_t cap) {
     }
     buffer[written] = '\0';
     return true;
+}
+
+static bool cep_l2_context_node_signature(cepCell* node, char* buffer, size_t cap) {
+    if (!node || !buffer || cap == 0u) {
+        return false;
+    }
+
+    if (cep_cell_is_link(node)) {
+        cepCell* target = cep_link_pull(node);
+        const cepDT* name = target ? cep_cell_get_name(target) : NULL;
+        if (!name) {
+            return false;
+        }
+        return cep_l2_dt_to_text(name, buffer, cap);
+    }
+
+    if (cep_cell_has_data(node)) {
+        const cepData* data = node->data;
+        if (!data || data->datatype != CEP_DATATYPE_VALUE || data->size == 0u) {
+            return false;
+        }
+        const char* text = (const char*)data->value;
+        if (!text || text[data->size - 1u] != '\0' || data->size > cap) {
+            return false;
+        }
+        memcpy(buffer, text, data->size);
+        return true;
+    }
+
+    if (cep_cell_has_store(node)) {
+        cepDT id_dt = {0};
+        if (cep_l2_extract_identifier(node, dt_id(), &id_dt, NULL)) {
+            return cep_l2_dt_to_text(&id_dt, buffer, cap);
+        }
+    }
+
+    return false;
+}
+
+static bool cep_l2_extract_context_signature(cepCell* container, char* buffer, size_t cap) {
+    if (!container) {
+        return false;
+    }
+    cepCell* context = cep_cell_find_by_name(container, dt_context());
+    if (!context) {
+        return false;
+    }
+    return cep_l2_context_node_signature(context, buffer, cap);
+}
+
+static void cep_l2_store_wait_context(cepCell* entry, cepCell* instance) {
+    if (!entry) {
+        return;
+    }
+
+    char signature[128];
+    if (cep_l2_extract_context_signature(instance, signature, sizeof signature)) {
+        cep_l2_set_string_value(entry, dt_context(), signature);
+    } else {
+        cep_l2_remove_field(entry, dt_context());
+    }
+}
+
+static bool cep_l2_budget_state_prepare(cepCell* instance, cepCell* spec, cepBeatNumber now, cepL2BudgetState* state) {
+    if (!instance || !state) {
+        return false;
+    }
+
+    cepCell* budget = cep_l2_ensure_dictionary(instance, dt_budget(), CEP_STORAGE_RED_BLACK_T);
+    if (!budget) {
+        return false;
+    }
+
+    size_t limit = 64u;
+    bool limit_from_spec = false;
+
+    if (spec) {
+        const char* spec_limit = cep_l2_fetch_string(spec, dt_step_limit());
+        size_t parsed = 0u;
+        if (spec_limit && cep_l2_parse_size_text(spec_limit, &parsed) && parsed > 0u) {
+            limit = parsed;
+            limit_from_spec = true;
+        }
+    }
+
+    if (!limit_from_spec) {
+        const char* stored_limit = cep_l2_fetch_string(budget, dt_step_limit());
+        size_t parsed = 0u;
+        if (stored_limit && cep_l2_parse_size_text(stored_limit, &parsed) && parsed > 0u) {
+            limit = parsed;
+        }
+    }
+
+    if (limit == 0u) {
+        limit = 1u;
+    }
+
+    const char* beat_text = cep_l2_fetch_string(budget, dt_beat());
+    cepBeatNumber recorded = 0u;
+    if (beat_text) {
+        size_t parsed = 0u;
+        if (cep_l2_parse_size_text(beat_text, &parsed)) {
+            recorded = (cepBeatNumber)parsed;
+        }
+    }
+
+    size_t used = 0u;
+    if (recorded == now) {
+        const char* used_text = cep_l2_fetch_string(budget, dt_steps_used());
+        size_t parsed = 0u;
+        if (used_text && cep_l2_parse_size_text(used_text, &parsed)) {
+            used = parsed;
+        }
+    }
+
+    if (recorded != now) {
+        used = 0u;
+        cep_l2_set_number_value(budget, dt_steps_used(), 0u);
+        cep_l2_set_number_value(budget, dt_beat(), (size_t)now);
+    }
+
+    cep_l2_set_number_value(budget, dt_step_limit(), limit);
+
+    state->budget = budget;
+    state->limit = limit;
+    state->used_prior = used;
+    state->beat = now;
+    state->initialized = true;
+    return true;
+}
+
+static void cep_l2_budget_state_commit(cepL2BudgetState* state, size_t steps_added) {
+    if (!state || !state->initialized || !state->budget) {
+        return;
+    }
+
+    size_t total = state->used_prior + steps_added;
+    if (total > state->limit) {
+        total = state->limit;
+    }
+
+    cep_l2_set_number_value(state->budget, dt_steps_used(), total);
+    cep_l2_set_number_value(state->budget, dt_step_limit(), state->limit);
+    cep_l2_set_number_value(state->budget, dt_beat(), (size_t)state->beat);
 }
 
 static bool cep_l2_parse_pc(cepCell* instance, size_t* out_pc) {
@@ -474,20 +703,65 @@ static bool cep_l2_sub_entry_has_status(cepCell* entry, const char* status) {
 }
 
 static bool cep_l2_sub_entry_matches_signal(cepCell* entry, const char* signal) {
+    if (!entry) {
+        return false;
+    }
+
+    const char* pattern = cep_l2_fetch_string(entry, dt_signal_path());
+    if (!pattern) {
+        pattern = cep_l2_fetch_string(entry, dt_signal());
+    }
+
+    if (!pattern) {
+        return signal == NULL;
+    }
+
     if (!signal) {
         return true;
     }
-    const char* current = cep_l2_fetch_string(entry, dt_signal_path());
-    if (!current) {
-        current = cep_l2_fetch_string(entry, dt_signal());
+
+    for (const char* p = pattern; *p; ++p) {
+        if (*p == '*' || *p == '?') {
+            goto glob_match;
+        }
     }
-    if (!current) {
-        return false;
+    return strcmp(pattern, signal) == 0;
+
+glob_match:
+    while (*pattern == '*') {
+        ++pattern;
     }
-    return strcmp(current, signal) == 0;
+    if (!*pattern) {
+        return true;
+    }
+
+    const char* pat = pattern;
+    const char* text = signal;
+    const char* star = NULL;
+    const char* backtrack = NULL;
+
+    while (*text) {
+        if (*pat == '*') {
+            star = pat++;
+            backtrack = text;
+        } else if (*pat == '?' || *pat == *text) {
+            ++pat;
+            ++text;
+        } else if (star) {
+            pat = star + 1;
+            text = ++backtrack;
+        } else {
+            return false;
+        }
+    }
+
+    while (*pat == '*') {
+        ++pat;
+    }
+    return *pat == '\0';
 }
 
-static bool cep_l2_fire_event_for_instance(cepCell* instance, const char* signal, cepCell* request) {
+static bool cep_l2_fire_event_for_instance(cepCell* instance, const char* signal, cepCell* request, bool targeted) {
     if (!instance) {
         return false;
     }
@@ -498,12 +772,42 @@ static bool cep_l2_fire_event_for_instance(cepCell* instance, const char* signal
     }
 
     bool matched = false;
+    cepBeatNumber now = cep_heartbeat_current();
+
+    char event_context[128];
+    bool event_has_context = request ? cep_l2_extract_context_signature(request, event_context, sizeof event_context) : false;
+
     for (cepCell* entry = cep_cell_first(subs); entry; entry = cep_cell_next(subs, entry)) {
         if (!cep_l2_sub_entry_matches_signal(entry, signal)) {
             continue;
         }
+        if (!targeted) {
+            char wait_context[128];
+            bool wait_has_context = cep_l2_extract_context_signature(entry, wait_context, sizeof wait_context);
+            if (!wait_has_context) {
+                wait_has_context = cep_l2_extract_context_signature(instance, wait_context, sizeof wait_context);
+            }
+
+            if (event_has_context) {
+                if (!wait_has_context || strcmp(wait_context, event_context) != 0) {
+                    continue;
+                }
+            } else if (wait_has_context) {
+                continue;
+            }
+        }
+        if (cep_l2_sub_entry_has_status(entry, "triggered")) {
+            continue;
+        }
         matched = true;
         cep_l2_sub_entry_set_string(entry, dt_status(), "triggered");
+        cep_l2_remove_field(entry, dt_deadline());
+        cep_l2_set_number_value(entry, dt_beat(), (size_t)now);
+        cep_l2_set_string_value(entry, dt_origin(), targeted ? "target" : "broadcast");
+        if (signal) {
+            cep_l2_set_string_value(entry, dt_signal(), signal);
+        }
+        cep_l2_store_wait_context(entry, instance);
         if (request) {
             cepCell* payload = cep_l2_ensure_dictionary(entry, dt_payload(), CEP_STORAGE_RED_BLACK_T);
             if (payload) {
@@ -514,6 +818,38 @@ static bool cep_l2_fire_event_for_instance(cepCell* instance, const char* signal
 
     if (matched) {
         cep_l2_set_string_value(instance, dt_state(), "ready");
+
+        if (request) {
+            cepCell* events = cep_cell_find_by_name(instance, dt_events());
+            if (!events) {
+                cepDT dict_type = *dt_dictionary();
+                cepDT events_name = *dt_events();
+                events = cep_cell_add_dictionary(instance, &events_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+            }
+            if (events) {
+                size_t suffix = cep_cell_children(events);
+                char key_buf[32];
+                int written = snprintf(key_buf, sizeof key_buf, "%llu_%zu", (unsigned long long)now, suffix);
+                if (written > 0 && (size_t)written < sizeof key_buf) {
+                    cepDT key_dt = {0};
+                    if (cep_l2_text_to_dt_bytes(key_buf, (size_t)written, &key_dt)) {
+                        cepCell* slot = cep_l2_ensure_dictionary(events, &key_dt, CEP_STORAGE_RED_BLACK_T);
+                        if (slot) {
+                            cep_l2_copy_request_payload(request, slot);
+                            if (signal) {
+                                cep_l2_set_string_value(slot, dt_signal(), signal);
+                                cep_l2_set_string_value(slot, dt_signal_path(), signal);
+                            }
+                            cep_l2_set_number_value(slot, dt_beat(), (size_t)now);
+                            cep_l2_set_string_value(slot, dt_origin(), targeted ? "target" : "broadcast");
+                            if (event_has_context) {
+                                cep_l2_set_string_value(slot, dt_context(), event_context);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     return matched;
 }
@@ -530,11 +866,21 @@ static cepL2StepResult cep_l2_step_wait(cepCell* instance, cepCell* step, size_t
         return CEP_L2_STEP_ERROR;
     }
 
+    cepCell* subs = cep_cell_parent(entry);
+
     if (cep_l2_sub_entry_has_status(entry, "triggered")) {
-        cepCell* subs = cep_cell_parent(entry);
         if (subs) {
             cep_cell_remove_hard(subs, entry);
         }
+        return CEP_L2_STEP_ADVANCE;
+    }
+
+    if (cep_l2_wait_entry_timed_out(entry)) {
+        cep_l2_sub_entry_set_string(entry, dt_status(), "timeout");
+        if (subs) {
+            cep_cell_remove_hard(subs, entry);
+        }
+        cep_l2_set_string_value(instance, dt_state(), "ready");
         return CEP_L2_STEP_ADVANCE;
     }
 
@@ -545,46 +891,226 @@ static cepL2StepResult cep_l2_step_wait(cepCell* instance, cepCell* step, size_t
     }
     if (signal) {
         cep_l2_sub_entry_set_string(entry, dt_signal_path(), signal);
+        bool has_glob = false;
+        for (const char* p = signal; *p; ++p) {
+            if (*p == '*' || *p == '?') {
+                has_glob = true;
+                break;
+            }
+        }
+        if (has_glob) {
+            cep_l2_sub_entry_set_string(entry, dt_signal_glob(), signal);
+        } else {
+            cep_l2_remove_field(entry, dt_signal_glob());
+            cep_l2_sub_entry_set_string(entry, dt_signal(), signal);
+        }
+    } else {
+        cep_l2_remove_field(entry, dt_signal_path());
+        cep_l2_remove_field(entry, dt_signal_glob());
+        cep_l2_remove_field(entry, dt_signal());
     }
     cep_l2_sub_entry_set_string(entry, dt_status(), "pending");
     cep_l2_set_string_value(instance, dt_state(), "waiting");
+
+    const char* timeout_text = spec ? cep_l2_fetch_string(spec, dt_timeout()) : NULL;
+    if (timeout_text) {
+        size_t timeout_beats = 0u;
+        if (cep_l2_parse_size_text(timeout_text, &timeout_beats) && timeout_beats > 0u) {
+            cep_l2_set_number_value(entry, dt_timeout(), timeout_beats);
+            cep_l2_wait_entry_set_deadline(entry, timeout_beats);
+        } else {
+            cep_l2_remove_field(entry, dt_timeout());
+            cep_l2_remove_field(entry, dt_deadline());
+        }
+    } else {
+        cep_l2_remove_field(entry, dt_timeout());
+        cep_l2_remove_field(entry, dt_deadline());
+    }
+
+    cep_l2_store_wait_context(entry, instance);
+
     return CEP_L2_STEP_BLOCK;
 }
 
-static cepL2StepResult cep_l2_step_decide(cepCell* flow_root, cepCell* instance, cepCell* step) {
+static cepL2StepResult cep_l2_step_decide(cepCell* flow_root, cepCell* instance, cepCell* step, size_t pc) {
     cepCell* spec = cep_l2_step_spec(step);
     const char* site = spec ? cep_l2_fetch_string(spec, dt_site()) : NULL;
     const char* choice = spec ? cep_l2_fetch_string(spec, dt_choice()) : NULL;
+
+    if (!choice || !*choice) {
+        choice = "default";
+    }
+
+    if (!site || !*site) {
+        site = "default";
+    }
 
     cepCell* ledger = cep_l2_decision_ledger(flow_root);
     if (!ledger) {
         return CEP_L2_STEP_ERROR;
     }
 
-    if (!choice || !*choice) {
-        choice = "default";
+    const cepDT* inst_name = cep_cell_get_name(instance);
+    if (!inst_name) {
+        return CEP_L2_STEP_ERROR;
     }
 
-    const cepDT* inst_name = cep_cell_get_name(instance);
     cepCell* node = cep_l2_decision_node(ledger, inst_name, site, true);
     if (!node) {
         return CEP_L2_STEP_ERROR;
     }
 
-    const char* recorded = cep_l2_fetch_string(node, dt_choice());
-    if (!recorded) {
-        cep_l2_set_string_value(node, dt_choice(), choice);
+    cepL2StoreLock node_lock = {0};
+    if (!cep_l2_store_lock(node, &node_lock)) {
+        return CEP_L2_STEP_ERROR;
     }
 
-    return CEP_L2_STEP_ADVANCE;
+    cepL2StepResult result = CEP_L2_STEP_ADVANCE;
+
+    const char* recorded = cep_l2_fetch_string(node, dt_choice());
+    if (recorded) {
+        if (choice && strcmp(recorded, choice) != 0) {
+            result = CEP_L2_STEP_ERROR;
+            goto done;
+        }
+    } else if (!cep_l2_set_string_value(node, dt_choice(), choice)) {
+        result = CEP_L2_STEP_ERROR;
+        goto done;
+    }
+
+    if (!cep_cell_find_by_name(node, dt_site())) {
+        (void)cep_l2_set_string_value(node, dt_site(), site);
+    }
+
+    if (!cep_cell_find_by_name(node, dt_inst_id())) {
+        (void)cep_l2_store_dt_string(node, dt_inst_id(), inst_name);
+    }
+
+    if (!cep_cell_find_by_name(node, dt_pc())) {
+        (void)cep_l2_set_number_value(node, dt_pc(), pc);
+    }
+
+    if (!cep_cell_find_by_name(node, dt_beat())) {
+        (void)cep_l2_set_number_value(node, dt_beat(), (size_t)cep_heartbeat_current());
+    }
+
+    cepDT policy_dt = {0};
+    const char* policy_text = NULL;
+    bool has_policy = spec && cep_l2_extract_cell_identifier(spec, dt_policy(), &policy_dt, &policy_text);
+    if (has_policy) {
+        cepCell* existing_policy = cep_cell_find_by_name(node, dt_policy());
+        if (existing_policy) {
+            if (cep_cell_is_link(existing_policy)) {
+                cepCell* target = cep_link_pull(existing_policy);
+                const cepDT* existing_dt = target ? cep_cell_get_name(target) : NULL;
+                if (!cep_l2_dt_equal(existing_dt, &policy_dt)) {
+                    result = CEP_L2_STEP_ERROR;
+                    goto done;
+                }
+            } else if (cep_cell_has_data(existing_policy)) {
+                const char* recorded_policy = cep_l2_fetch_string(node, dt_policy());
+                if (recorded_policy) {
+                    if (policy_text && strcmp(recorded_policy, policy_text) != 0) {
+                        result = CEP_L2_STEP_ERROR;
+                        goto done;
+                    }
+                    if (!policy_text) {
+                        char buffer[128];
+                        if (cep_l2_dt_to_text(&policy_dt, buffer, sizeof buffer)
+                            && strcmp(recorded_policy, buffer) != 0) {
+                            result = CEP_L2_STEP_ERROR;
+                            goto done;
+                        }
+                    }
+                }
+            }
+        } else {
+            cepCell* policy_ledger = cep_cell_find_by_name(flow_root, dt_policy());
+            cepCell* policy_entry = policy_ledger ? cep_cell_find_by_name(policy_ledger, &policy_dt) : NULL;
+            if (policy_entry) {
+                cepDT name_copy = *dt_policy();
+                (void)cep_cell_add_link(node, &name_copy, 0, policy_entry);
+            } else if (!policy_text) {
+                (void)cep_l2_store_dt_string(node, dt_policy(), &policy_dt);
+            } else {
+                (void)cep_l2_set_string_value(node, dt_policy(), policy_text);
+            }
+        }
+    }
+
+    cepDT variant_dt = {0};
+    if (cep_l2_instance_variant_dt(instance, &variant_dt)) {
+        cepCell* existing_variant = cep_cell_find_by_name(node, dt_variant());
+        if (existing_variant) {
+            if (cep_cell_is_link(existing_variant)) {
+                cepCell* target = cep_link_pull(existing_variant);
+                const cepDT* existing_dt = target ? cep_cell_get_name(target) : NULL;
+                if (!cep_l2_dt_equal(existing_dt, &variant_dt)) {
+                    result = CEP_L2_STEP_ERROR;
+                    goto done;
+                }
+            } else if (cep_cell_has_data(existing_variant)) {
+                const char* recorded_variant = cep_l2_fetch_string(node, dt_variant());
+                char buffer[128];
+                if (recorded_variant && cep_l2_dt_to_text(&variant_dt, buffer, sizeof buffer)
+                    && strcmp(recorded_variant, buffer) != 0) {
+                    result = CEP_L2_STEP_ERROR;
+                    goto done;
+                }
+            }
+        } else {
+            cepCell* variant_ledger = cep_cell_find_by_name(flow_root, dt_variant());
+            cepCell* variant_entry = variant_ledger ? cep_cell_find_by_name(variant_ledger, &variant_dt) : NULL;
+            if (variant_entry) {
+                cepDT name_copy = *dt_variant();
+                (void)cep_cell_add_link(node, &name_copy, 0, variant_entry);
+            } else {
+                (void)cep_l2_store_dt_string(node, dt_variant(), &variant_dt);
+            }
+        }
+    }
+
+done:
+    cep_l2_store_unlock(&node_lock);
+    /* TODO(decision-ledger): capture policy evidence and replay validation metadata. */
+    return result;
 }
 
-static cepL2StepResult cep_l2_step_clamp(cepCell* instance, cepCell* step) {
+static cepL2StepResult cep_l2_step_clamp(cepCell* instance, cepCell* step, size_t pc, size_t projected_steps, cepBeatNumber now, cepL2BudgetState* budget_state) {
     cepCell* spec = cep_l2_step_spec(step);
-    const char* new_state = spec ? cep_l2_fetch_string(spec, dt_state()) : NULL;
-    if (new_state && *new_state) {
-        cep_l2_set_string_value(instance, dt_state(), new_state);
+    if (!spec) {
+        return CEP_L2_STEP_ADVANCE;
     }
+
+    if (budget_state) {
+        if (!budget_state->initialized) {
+            (void)cep_l2_budget_state_prepare(instance, spec, now, budget_state);
+        }
+        if (budget_state->initialized) {
+            size_t total = budget_state->used_prior + projected_steps;
+            if (total >= budget_state->limit) {
+                const char* pause_state = cep_l2_fetch_string(spec, dt_state());
+                cep_l2_set_string_value(instance, dt_state(), pause_state ? pause_state : "paused");
+                return CEP_L2_STEP_BLOCK;
+            }
+        }
+    }
+
+    const char* limit_text = cep_l2_fetch_string(spec, dt_pc());
+    if (limit_text) {
+        size_t limit = 0u;
+        if (cep_l2_parse_size_text(limit_text, &limit) && pc >= limit) {
+            const char* pause_state = cep_l2_fetch_string(spec, dt_state());
+            cep_l2_set_string_value(instance, dt_state(), pause_state ? pause_state : "paused");
+            return CEP_L2_STEP_BLOCK;
+        }
+    }
+
+    const char* annotate_state = cep_l2_fetch_string(spec, dt_state());
+    if (annotate_state && (!limit_text)) {
+        cep_l2_set_string_value(instance, dt_state(), annotate_state);
+    }
+
     return CEP_L2_STEP_ADVANCE;
 }
 
@@ -700,6 +1226,135 @@ static cepCell* cep_l2_step_spec(cepCell* step) {
     return cep_cell_find_by_name(step, dt_spec());
 }
 
+static cepL2StepResult cep_l2_step_guard(cepCell* instance, cepCell* step, size_t pc) {
+    cepCell* spec = cep_l2_step_spec(step);
+    if (!spec) {
+        return CEP_L2_STEP_ADVANCE;
+    }
+
+    const char* required_state = cep_l2_fetch_string(spec, dt_state());
+    if (required_state) {
+        const char* current = cep_l2_fetch_string(instance, dt_state());
+        if (!current || strcmp(current, required_state) != 0) {
+            const char* action_state = cep_l2_fetch_string(spec, dt_action());
+            cep_l2_set_string_value(instance, dt_state(), action_state ? action_state : "done");
+            return CEP_L2_STEP_BLOCK;
+        }
+    }
+
+    const char* pc_text = cep_l2_fetch_string(spec, dt_pc());
+    if (pc_text) {
+        size_t expected_pc = 0u;
+        if (!cep_l2_parse_size_text(pc_text, &expected_pc) || pc != expected_pc) {
+            const char* action_state = cep_l2_fetch_string(spec, dt_action());
+            cep_l2_set_string_value(instance, dt_state(), action_state ? action_state : "done");
+            return CEP_L2_STEP_BLOCK;
+        }
+    }
+
+    return CEP_L2_STEP_ADVANCE;
+}
+
+static bool cep_l2_instance_variant_dt(cepCell* instance, cepDT* out_dt) {
+    if (!instance || !out_dt) {
+        return false;
+    }
+
+    cepCell* variant = cep_cell_find_by_name(instance, dt_variant());
+    if (!variant) {
+        return false;
+    }
+
+    if (cep_cell_is_link(variant)) {
+        variant = cep_link_pull(variant);
+        if (variant) {
+            const cepDT* dt = cep_cell_get_name(variant);
+            if (dt) {
+                *out_dt = *dt;
+                return true;
+            }
+        }
+    }
+
+    if (variant && cep_cell_has_data(variant)) {
+        const cepData* data = variant->data;
+        if (data->datatype == CEP_DATATYPE_VALUE && data->size) {
+            const char* text = (const char*)data->value;
+            if (text && data->size >= 1u) {
+                return cep_l2_text_to_dt_bytes(text, data->size - 1u, out_dt);
+            }
+        }
+    }
+
+    return false;
+}
+
+static bool cep_l2_wait_entry_set_deadline(cepCell* entry, size_t timeout_beats) {
+    cepBeatNumber now = cep_heartbeat_current();
+    size_t deadline = (size_t)now + timeout_beats;
+    return cep_l2_set_number_value(entry, dt_deadline(), deadline);
+}
+
+static bool cep_l2_wait_entry_deadline(cepCell* entry, size_t* out_deadline) {
+    if (!entry || !out_deadline) {
+        return false;
+    }
+
+    const char* deadline_text = cep_l2_fetch_string(entry, dt_deadline());
+    if (!deadline_text) {
+        return false;
+    }
+
+    return cep_l2_parse_size_text(deadline_text, out_deadline);
+}
+
+static bool cep_l2_wait_entry_timed_out(cepCell* entry) {
+    size_t deadline = 0u;
+    if (!cep_l2_wait_entry_deadline(entry, &deadline)) {
+        return false;
+    }
+
+    cepBeatNumber now = cep_heartbeat_current();
+    return (size_t)now >= deadline;
+}
+
+static cepL2StepResult cep_l2_step_transform(cepCell* instance, cepCell* step, size_t pc) {
+    cepCell* spec = cep_l2_step_spec(step);
+    if (!spec) {
+        return CEP_L2_STEP_ADVANCE;
+    }
+
+    const char* new_state = cep_l2_fetch_string(spec, dt_state());
+    if (new_state && *new_state) {
+        cep_l2_set_string_value(instance, dt_state(), new_state);
+    }
+
+    cepCell* payload = cep_cell_find_by_name(spec, dt_payload());
+    if (payload && cep_cell_has_store(payload)) {
+        cepCell* events = cep_cell_find_by_name(instance, dt_events());
+        if (!events) {
+            cepDT dict_type = *dt_dictionary();
+            cepDT events_name = *dt_events();
+            events = cep_cell_add_dictionary(instance, &events_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        }
+        if (events) {
+            char key_buf[32];
+            int written = snprintf(key_buf, sizeof key_buf, "%zu", pc);
+            if (written > 0 && (size_t)written < sizeof key_buf) {
+                cepDT key_dt = {0};
+                if (cep_l2_text_to_dt_bytes(key_buf, (size_t)written, &key_dt)) {
+                    cepCell* slot = cep_l2_ensure_dictionary(events, &key_dt, CEP_STORAGE_RED_BLACK_T);
+                    if (slot) {
+                        cep_l2_copy_request_payload(payload, slot);
+                    }
+                }
+            }
+        }
+    }
+
+    return CEP_L2_STEP_ADVANCE;
+}
+
 static cepCell* cep_l2_decision_ledger(cepCell* flow_root) {
     if (!flow_root) {
         flow_root = cep_l2_flow_root();
@@ -770,6 +1425,48 @@ static bool cep_l2_extract_identifier(cepCell* request, const cepDT* field, cepD
     const char* text = NULL;
     size_t length = 0u;
     if (!cep_l2_get_cstring(request, field, &text, &length)) {
+        return false;
+    }
+
+    if (!cep_l2_text_to_dt_bytes(text, length, out_dt)) {
+        return false;
+    }
+
+    if (out_text) {
+        *out_text = text;
+    }
+    return true;
+}
+
+static bool cep_l2_extract_cell_identifier(cepCell* container, const cepDT* field, cepDT* out_dt, const char** out_text) {
+    if (!container || !field || !out_dt) {
+        return false;
+    }
+
+    cepCell* node = cep_cell_find_by_name(container, field);
+    if (!node) {
+        return false;
+    }
+
+    if (cep_cell_is_link(node)) {
+        cepCell* target = cep_link_pull(node);
+        if (!target) {
+            return false;
+        }
+        const cepDT* name = cep_cell_get_name(target);
+        if (!name) {
+            return false;
+        }
+        *out_dt = *name;
+        if (out_text) {
+            *out_text = NULL;
+        }
+        return true;
+    }
+
+    const char* text = NULL;
+    size_t length = 0u;
+    if (!cep_l2_get_cstring(container, field, &text, &length)) {
         return false;
     }
 
@@ -1163,6 +1860,17 @@ static int cep_l2_enzyme_inst_ingest(const cepPath* signal, const cepPath* targe
             }
         }
 
+        cepCell* budget = cep_cell_find_by_name(entry, dt_budget());
+        if (!budget) {
+            cepDT dict_type = *dt_dictionary();
+            cepDT name_copy = *dt_budget();
+            budget = cep_cell_add_dictionary(entry, &name_copy, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+            if (!budget) {
+                cep_l2_mark_outcome_error(request, "budget");
+                goto done;
+            }
+        }
+
         cep_l2_mark_outcome_ok(request);
         result = CEP_ENZYME_SUCCESS;
         goto done;
@@ -1198,6 +1906,24 @@ static int cep_l2_enzyme_inst_ingest(const cepPath* signal, const cepPath* targe
             (void)cep_l2_copy_request_payload(request, original);
         }
         cep_l2_store_unlock(&original_lock);
+
+        cepCell* updates = cep_cell_find_by_name(request, dt_budget());
+        cepCell* budget = cep_l2_ensure_dictionary(entry, dt_budget(), CEP_STORAGE_RED_BLACK_T);
+        if (budget) {
+            const char* limit_text = NULL;
+            if (updates && cep_cell_has_store(updates)) {
+                limit_text = cep_l2_fetch_string(updates, dt_step_limit());
+            }
+            if (!limit_text) {
+                limit_text = cep_l2_fetch_string(request, dt_step_limit());
+            }
+            size_t limit_value = 0u;
+            if (limit_text && cep_l2_parse_size_text(limit_text, &limit_value) && limit_value > 0u) {
+                cep_l2_set_number_value(budget, dt_step_limit(), limit_value);
+                cep_l2_set_number_value(budget, dt_steps_used(), 0u);
+                cep_l2_set_number_value(budget, dt_beat(), (size_t)cep_heartbeat_current());
+            }
+        }
     } else {
         cep_l2_mark_outcome_error(request, "unknown-action");
         goto done;
@@ -1248,10 +1974,10 @@ static int cep_l2_enzyme_fl_wake(const cepPath* signal, const cepPath* target) {
             cep_l2_mark_outcome_error(request, "unknown-instance");
             return CEP_ENZYME_SUCCESS;
         }
-        matched = cep_l2_fire_event_for_instance(entry, signal_text, request);
+        matched = cep_l2_fire_event_for_instance(entry, signal_text, request, true);
     } else {
         for (cepCell* entry = cep_cell_first(ledger); entry; entry = cep_cell_next(ledger, entry)) {
-            if (cep_l2_fire_event_for_instance(entry, signal_text, request)) {
+            if (cep_l2_fire_event_for_instance(entry, signal_text, request, false)) {
                 matched = true;
             }
         }
@@ -1304,11 +2030,25 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
 
         if (state && strcmp(state, "waiting") == 0) {
             cepCell* entry = cep_l2_sub_entry_for_pc(instance, pc, false);
-            if (!entry || !cep_l2_sub_entry_has_status(entry, "triggered")) {
+            if (!entry) {
+                cep_l2_set_string_value(instance, dt_state(), "ready");
+            } else if (cep_l2_sub_entry_has_status(entry, "triggered")) {
+                cepCell* subs = cep_cell_parent(entry);
+                if (subs) {
+                    cep_cell_remove_hard(subs, entry);
+                }
+                cep_l2_set_string_value(instance, dt_state(), "ready");
+            } else if (cep_l2_wait_entry_timed_out(entry)) {
+                cep_l2_sub_entry_set_string(entry, dt_status(), "timeout");
+                cepCell* subs = cep_cell_parent(entry);
+                if (subs) {
+                    cep_cell_remove_hard(subs, entry);
+                }
+                cep_l2_set_string_value(instance, dt_state(), "ready");
+            } else {
                 cep_l2_store_unlock(&inst_lock);
                 continue;
             }
-            cep_l2_set_string_value(instance, dt_state(), "ready");
         } else if (state && strcmp(state, "paused") == 0) {
             cep_l2_store_unlock(&inst_lock);
             continue;
@@ -1317,9 +2057,11 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
             continue;
         }
 
-        size_t iterations = 0u;
+        cepBeatNumber now = cep_heartbeat_current();
+        cepL2BudgetState budget_state = {0};
+        size_t steps_this_run = 0u;
         bool continue_run = true;
-        while (continue_run && iterations++ < 64u) {
+        while (continue_run && steps_this_run < 64u) {
             cepCell* program = cep_l2_program_from_instance(flow_root, instance);
             if (!program) {
                 program = instance;
@@ -1339,14 +2081,17 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
             const char* kind = cep_l2_step_kind(step);
             cepL2StepResult outcome = CEP_L2_STEP_ADVANCE;
 
-            if (kind && strcmp(kind, "wait") == 0) {
+            if (kind && strcmp(kind, "guard") == 0) {
+                outcome = cep_l2_step_guard(instance, step, pc);
+            } else if (kind && strcmp(kind, "transform") == 0) {
+                outcome = cep_l2_step_transform(instance, step, pc);
+            } else if (kind && strcmp(kind, "wait") == 0) {
                 outcome = cep_l2_step_wait(instance, step, pc);
             } else if (kind && strcmp(kind, "decide") == 0) {
-                outcome = cep_l2_step_decide(flow_root, instance, step);
+                outcome = cep_l2_step_decide(flow_root, instance, step, pc);
             } else if (kind && strcmp(kind, "clamp") == 0) {
-                outcome = cep_l2_step_clamp(instance, step);
-            } else {
-                outcome = CEP_L2_STEP_ADVANCE;
+                size_t projected = steps_this_run + 1u;
+                outcome = cep_l2_step_clamp(instance, step, pc, projected, now, &budget_state);
             }
 
             if (outcome == CEP_L2_STEP_ERROR) {
@@ -1356,10 +2101,16 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
 
             if (outcome == CEP_L2_STEP_BLOCK) {
                 continue_run = false;
+                ++steps_this_run;
                 break;
             }
 
+            ++steps_this_run;
             ++pc;
+        }
+
+        if (budget_state.initialized) {
+            cep_l2_budget_state_commit(&budget_state, steps_this_run);
         }
 
         cep_l2_store_pc(instance, pc);
@@ -1377,15 +2128,235 @@ static int cep_l2_enzyme_fl_step(const cepPath* signal, const cepPath* target) {
 static int cep_l2_enzyme_fl_index(const cepPath* signal, const cepPath* target) {
     (void)signal;
     (void)target;
-    // TODO(l2): Implement durable index maintenance for Layer 2.
+
+    cepCell* flow_root = cep_l2_flow_root();
+    if (!flow_root) {
+        return CEP_ENZYME_SUCCESS;
+    }
+
+    cepCell* instances = cep_cell_find_by_name(flow_root, dt_instance());
+    cepCell* index_root = cep_cell_find_by_name(flow_root, dt_index());
+    if (!instances || !cep_cell_has_store(instances) || !index_root) {
+        return CEP_ENZYME_SUCCESS;
+    }
+
+    cepCell* by_variant = cep_l2_ensure_dictionary(index_root, dt_inst_by_var(), CEP_STORAGE_RED_BLACK_T);
+    cepCell* by_state = cep_l2_ensure_dictionary(index_root, dt_inst_by_st(), CEP_STORAGE_RED_BLACK_T);
+    cepCell* by_policy = cep_l2_ensure_dictionary(index_root, dt_dec_by_pol(), CEP_STORAGE_RED_BLACK_T);
+
+    cep_l2_clear_children(by_variant);
+    cep_l2_clear_children(by_state);
+    cep_l2_clear_children(by_policy);
+
+    for (cepCell* instance = cep_cell_first(instances); instance; instance = cep_cell_next(instances, instance)) {
+        if (!cep_cell_is_normal(instance)) {
+            continue;
+        }
+
+        const cepDT* inst_name = cep_cell_get_name(instance);
+        if (!inst_name) {
+            continue;
+        }
+
+        cepDT variant_dt = {0};
+        if (cep_l2_instance_variant_dt(instance, &variant_dt)) {
+            cepCell* bucket = cep_l2_ensure_dictionary(by_variant, &variant_dt, CEP_STORAGE_RED_BLACK_T);
+            if (bucket) {
+                cepDT name_copy = *inst_name;
+                (void)cep_cell_add_link(bucket, &name_copy, 0, instance);
+            }
+        }
+
+        const char* state = cep_l2_fetch_string(instance, dt_state());
+        if (state && *state) {
+            cepDT state_dt = {0};
+            if (cep_l2_text_to_dt_bytes(state, strlen(state), &state_dt)) {
+                cepCell* bucket = cep_l2_ensure_dictionary(by_state, &state_dt, CEP_STORAGE_RED_BLACK_T);
+                if (bucket) {
+                    cepDT name_copy = *inst_name;
+                    (void)cep_cell_add_link(bucket, &name_copy, 0, instance);
+                }
+            }
+        }
+    }
+
+    cepCell* decisions = cep_cell_find_by_name(flow_root, dt_decision());
+    if (decisions && cep_cell_has_store(decisions)) {
+        for (cepCell* inst_bucket = cep_cell_first(decisions); inst_bucket; inst_bucket = cep_cell_next(decisions, inst_bucket)) {
+            if (!cep_cell_is_normal(inst_bucket) || !cep_cell_has_store(inst_bucket)) {
+                continue;
+            }
+
+            const cepDT* inst_name = cep_cell_get_name(inst_bucket);
+            if (!inst_name) {
+                continue;
+            }
+
+            for (cepCell* decision = cep_cell_first(inst_bucket); decision; decision = cep_cell_next(inst_bucket, decision)) {
+                if (!cep_cell_is_normal(decision)) {
+                    continue;
+                }
+
+                cepCell* policy_field = cep_cell_find_by_name(decision, dt_policy());
+                if (!policy_field) {
+                    continue;
+                }
+
+                cepDT policy_dt = {0};
+                bool have_policy = false;
+
+                if (cep_cell_is_link(policy_field)) {
+                    cepCell* target = cep_link_pull(policy_field);
+                    const cepDT* name = target ? cep_cell_get_name(target) : NULL;
+                    if (name) {
+                        policy_dt = *name;
+                        have_policy = true;
+                    }
+                } else if (cep_cell_has_data(policy_field)) {
+                    const char* policy_text = cep_l2_fetch_string(decision, dt_policy());
+                    if (policy_text) {
+                        have_policy = cep_l2_text_to_dt_bytes(policy_text, strlen(policy_text), &policy_dt);
+                    }
+                }
+
+                if (!have_policy) {
+                    continue;
+                }
+
+                cepCell* policy_bucket = cep_l2_ensure_dictionary(by_policy, &policy_dt, CEP_STORAGE_RED_BLACK_T);
+                if (!policy_bucket) {
+                    continue;
+                }
+
+                cepCell* inst_index = cep_l2_ensure_dictionary(policy_bucket, inst_name, CEP_STORAGE_RED_BLACK_T);
+                if (!inst_index) {
+                    continue;
+                }
+
+                const cepDT* site_name = cep_cell_get_name(decision);
+                if (!site_name) {
+                    continue;
+                }
+
+                cepDT site_copy = *site_name;
+                (void)cep_cell_add_link(inst_index, &site_copy, 0, decision);
+            }
+        }
+    }
+
     return CEP_ENZYME_SUCCESS;
 }
 
-/* Transient cache refresh mirrors the index pattern for `/tmp/flow/adj`. */
 static int cep_l2_enzyme_fl_adj(const cepPath* signal, const cepPath* target) {
     (void)signal;
     (void)target;
-    // TODO(l2): Implement cache refresh for transient adjacency structures.
+
+    cepCell* flow_root = cep_l2_flow_root();
+    if (!flow_root) {
+        return CEP_ENZYME_SUCCESS;
+    }
+
+    cepCell* instances = cep_cell_find_by_name(flow_root, dt_instance());
+    if (!instances || !cep_cell_has_store(instances)) {
+        return CEP_ENZYME_SUCCESS;
+    }
+
+    cepCell* root = cep_root();
+    cepCell* tmp_root = cep_cell_find_by_name(root, dt_tmp_root());
+    if (!tmp_root) {
+        return CEP_ENZYME_SUCCESS;
+    }
+    cepCell* flow_tmp = cep_cell_find_by_name(tmp_root, dt_flow());
+    if (!flow_tmp) {
+        return CEP_ENZYME_SUCCESS;
+    }
+    cepCell* adj_root = cep_cell_find_by_name(flow_tmp, dt_adj());
+    if (!adj_root) {
+        return CEP_ENZYME_SUCCESS;
+    }
+
+    cepCell* by_inst = cep_l2_ensure_dictionary(adj_root, dt_by_inst(), CEP_STORAGE_RED_BLACK_T);
+    if (!by_inst) {
+        return CEP_ENZYME_SUCCESS;
+    }
+
+    cep_l2_clear_children(by_inst);
+
+    for (cepCell* instance = cep_cell_first(instances); instance; instance = cep_cell_next(instances, instance)) {
+        if (!cep_cell_is_normal(instance)) {
+            continue;
+        }
+
+        const cepDT* inst_name = cep_cell_get_name(instance);
+        if (!inst_name) {
+            continue;
+        }
+
+        cepCell* summary = cep_l2_ensure_dictionary(by_inst, inst_name, CEP_STORAGE_RED_BLACK_T);
+        if (!summary) {
+            continue;
+        }
+
+        cep_l2_clear_children(summary);
+
+        const char* state = cep_l2_fetch_string(instance, dt_state());
+        if (state) {
+            cep_l2_set_string_value(summary, dt_state(), state);
+            cep_l2_set_string_value(summary, dt_status(), state);
+        }
+
+        size_t pc = 0u;
+        (void)cep_l2_parse_pc(instance, &pc);
+        cep_l2_set_number_value(summary, dt_pc(), pc);
+
+        cepCell* subs = cep_cell_find_by_name(instance, dt_subs());
+        size_t subs_count = subs && cep_cell_has_store(subs) ? cep_cell_children(subs) : 0u;
+        cep_l2_set_number_value(summary, dt_sub_count(), subs_count);
+
+        cepCell* events = cep_cell_find_by_name(instance, dt_events());
+        size_t events_count = events && cep_cell_has_store(events) ? cep_cell_children(events) : 0u;
+        cep_l2_set_number_value(summary, dt_evt_count(), events_count);
+
+        cepCell* latest_event = NULL;
+        size_t   latest_beat = 0u;
+        if (events && cep_cell_has_store(events)) {
+            for (cepCell* event = cep_cell_first(events); event; event = cep_cell_next(events, event)) {
+                if (!cep_cell_is_normal(event)) {
+                    continue;
+                }
+
+                size_t beat_value = 0u;
+                const char* beat_text = cep_l2_fetch_string(event, dt_beat());
+                if (beat_text && cep_l2_parse_size_text(beat_text, &beat_value)) {
+                    if (!latest_event || beat_value >= latest_beat) {
+                        latest_event = event;
+                        latest_beat = beat_value;
+                    }
+                } else if (!latest_event) {
+                    latest_event = event;
+                }
+            }
+        }
+
+        if (latest_event) {
+            if (latest_beat) {
+                cep_l2_set_number_value(summary, dt_beat(), latest_beat);
+            }
+            const char* origin = cep_l2_fetch_string(latest_event, dt_origin());
+            if (origin) {
+                cep_l2_set_string_value(summary, dt_origin(), origin);
+            }
+            const char* sig = cep_l2_fetch_string(latest_event, dt_signal());
+            if (sig) {
+                cep_l2_set_string_value(summary, dt_signal(), sig);
+            }
+            const char* sig_path = cep_l2_fetch_string(latest_event, dt_signal_path());
+            if (sig_path) {
+                cep_l2_set_string_value(summary, dt_signal_path(), sig_path);
+            }
+        }
+    }
+
     return CEP_ENZYME_SUCCESS;
 }
 

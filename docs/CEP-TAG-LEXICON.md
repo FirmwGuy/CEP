@@ -168,6 +168,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `pc` | core | program counter stored with each instance. |
 | `subs` | core | dictionary of active wait subscriptions per instance. |
 | `events` | core | queued external events awaiting consumption by the VM. |
+| `budget` | core | per-instance clamp state capturing execution ceilings. |
 | `site` | core | identifier for a decision site inside a flow. |
 | `action` | core | control action requested against an instance. |
 | `inst_id` | core | identifier field referencing an existing instance. |
@@ -176,6 +177,19 @@ when a new behavior needs a fresh word before it lands in code.
 | `status` | core | lifecycle marker used by flow subscriptions and caches. |
 | `payload` | core | dictionary carrying captured event payloads. |
 | `choice` | core | decision choice recorded for replay. |
+| `step_limit` | core | maximum steps permitted inside the current clamp window. |
+| `steps_used` | core | running count of steps consumed during the active window. |
+| `inst_by_var` | core | index bucket listing instances grouped by variant. |
+| `inst_by_st` | core | index bucket listing instances grouped by state. |
+| `dec_by_pol` | core | index bucket listing decisions grouped by policy. |
+| `by_inst` | core | transient cache containing per-instance summaries. |
+| `sub_count` | core | summary counter of active subscriptions. |
+| `evt_count` | core | summary counter of queued events. |
+| `timeout` | core | wait specification field expressing timeout in beats. |
+| `deadline` | core | recorded beat when a wait will time out. |
+| `signal_glob` | core | glob pattern stored alongside wait subscriptions. |
+| `beat` | core | heartbeat counter attached to events or waits. |
+| `origin` | core | marker describing whether an event was targeted or broadcast. |
 
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor
