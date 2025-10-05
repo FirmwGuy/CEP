@@ -21,7 +21,7 @@ L1’s goal is simple: keep the coherence story straight every heartbeat. It cap
 - **Debts** (`/data/coh/debt/{ctx}/{facet}`) act as IOUs. When a required facet has no link yet, the closure enzyme records the debt and clears it once a matching fact appears, keeping the closure contract honest.
 
 ### Intent workflow
-- Clients write intents to `/data/coh/inbox/{be_create|bo_upsert|ctx_upsert}/{txn}`. Payloads are plain dictionaries—no hidden APIs.
+- Clients write intents to `/data/inbox/coh/{be_create|bo_upsert|ctx_upsert}/{txn}`. The mailroom moves them into `/data/coh/inbox/**` ahead of the ingest enzymes, leaving an audit link in the original bucket.
 - Kernel heartbeats emit `CEP:sig_cell/op_add` when intents arrive. Registry bindings route those signals into the six coherence enzymes in a fixed order.
 - Identifier fields now accept any text that can be interned by the namepool; short values compact to CEP words/acronyms, and longer phrases are stored as stable references without truncation.
 - Helper builders (`cep_l1_being_intent_init()`, `cep_l1_bond_intent_init()`, `cep_l1_context_intent_init()` plus the role/facet adders) stitch these payloads together, mirror the submitted spelling under `original/*`, and keep callers away from low-level dictionary plumbing.
@@ -55,3 +55,16 @@ A: Yes. Each being, bond, and context node exposes an `attrs` dictionary. Copy a
 
 **Q: Are identifiers still limited to 11 characters?**  
 A: No. L1 routes every identifier through the namepool. Short names compact to CEP words/acronyms; longer phrases (up to 256 bytes) become stable references, so callers can use their own lexicon without truncation.
+
+### Mailroom ingress guarantees
+
+The mailroom removes guesswork from intent envelopes: every request that reaches L1 already carries the shared header and an audit trail back to its source bucket.
+
+**Technical details**
+- Mailroom routing runs before `coh_ing_*`, so intents arrive in `/data/coh/inbox/**` with no need for layer-specific shims.
+- Each routed request includes an `original/*` mirror, a default `outcome` slot, and an empty `meta/parents` list that the ingest enzymes can extend.
+- The mailroom leaves a link under `/data/inbox/coh/{bucket}/{txn}` pointing at the moved request, keeping provenance one hop away for tools and audits.
+
+**Q&A**
+- *Should new tests write directly to the mailroom?* Yes. Staging a request under `/data/inbox/coh/**` exercises routing, shared headers, and audit links exactly like production, making regressions easier to spot.
+- *What happens if routing fails?* The mailroom keeps the original request in place, returns a fatal code, and leaves `outcome` untouched so you can inspect the payload during debugging.

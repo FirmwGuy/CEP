@@ -10,10 +10,11 @@ runtime guarantees deterministic execution and exhaustive evidence.
 - **Boot order** – Call `cep_l2_flows_bootstrap()` immediately after Layer 1
   coherence bootstraps. Follow with `cep_l2_flows_register(registry)` before
   heartbeat start so all seven enzymes resolve correctly.
+- **Mailroom ingress** – Produce intents under `/data/inbox/flow/{fl_upsert|ni_upsert|inst_start|inst_event|inst_ctrl}/{txn}`. `cep_mailroom_bootstrap()`/`register()` run as part of bootstrap/registration, move the payload into `/data/flow/inbox/**`, and preserve an audit link in the mailroom bucket.
 - **Required ledgers** – Ensure `/data/flow/{program,variant,policy,niche,
-  guardian,instance,decision,index,inbox}` exist. Inboxes must expose five
-  child branches (`fl_upsert`, `ni_upsert`, `inst_start`, `inst_event`,
-  `inst_ctrl`).
+  guardian,instance,decision,index,inbox}` exist. The boot helper verifies this
+  for you; only extend the list if you add new ledgers. The per-layer inbox is
+  still used internally after the mailroom routes requests.
 - **Namepool discipline** – Reuse CEP tags for every identifier shorter than
   12 chars. Longer identifiers must be interned through `cep_namepool_intern*`
   and referenced by DTs (flows, instances, policies, niches).

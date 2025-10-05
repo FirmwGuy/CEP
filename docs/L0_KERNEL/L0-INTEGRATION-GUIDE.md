@@ -90,6 +90,22 @@ if (cep_beat_phase() == CEP_BEAT_COMPUTE) {
 - *Do I need to call the phase helpers manually?* No. They are wired into `cep_heartbeat_resolve_agenda()` and `cep_heartbeat_stage_commit()`. Manual calls are only for bespoke schedulers.
 - *What happens to mid-beat registrations?* They are counted and deferred; the agenda for the current beat never mutates.
 
+### 1.5 Unified mailroom router
+
+Think of the mailroom as the lobby of the runtime: everyone drops their intents at the same desk and the kernel forwards them to the right layer before any work begins.
+
+**Technical details**
+
+- `cep_mailroom_bootstrap()` provisions `/data/inbox/{coh,flow}` alongside `/data/coh` and `/data/flow`, and makes sure `/sys/err_cat` exists so shared error codes have a home before ingest runs.
+- `cep_mailroom_register()` installs the `mr_route` enzyme on `CEP:sig_cell/op_add` with `before` edges targeting every ingest enzyme (`coh_ing_*`, `fl_ing`, etc.), so routing always happens ahead of layer-specific work.
+- Routed intents keep an audit trail: the mailroom leaves a link behind in the source bucket and copies the staged cell into the downstream inbox. The router also guarantees the shared intent header by creating `original/*`, seeding `outcome` (if missing), and ensuring `meta/parents` exists.
+- You can extend the router by adding new namespace buckets or compatibility shims (for a transition period, link legacy inbox paths into the mailroom so producers can keep using old entrypoints).
+
+**Q&A**
+
+- *Do I still call layer bootstraps?* Yes. The mailroom deals with ingress only; `cep_l1_coherence_bootstrap()` and `cep_l2_flows_bootstrap()` still provision their ledgers and inboxes.
+- *What happens if the downstream inbox is missing?* The router aborts the move, leaves the original intent under `/data/inbox`, and returns `CEP_ENZYME_FATAL` so tests catch the misconfiguration.
+
 ---
 
 ## 2) Serialization & streams (wire format)

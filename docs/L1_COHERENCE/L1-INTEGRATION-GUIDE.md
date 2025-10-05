@@ -14,7 +14,7 @@ In short: bootstrap once, register the enzymes, enqueue intents as cells, and le
 - **Verify**: after registration, inspect the registry size or list entries—L1 increases the descriptor count by six and marks their callbacks as idempotent.
 
 ### 2) Submitting intents
-- **Paths**: write intents under `/data/coh/inbox/{be_create|bo_upsert|ctx_upsert}/{txn}`. The `{txn}` child can be any word ID; pick something stable so replays find the original cell.
+- **Paths**: write intents under `/data/inbox/coh/{be_create|bo_upsert|ctx_upsert}/{txn}`. The mailroom moves them into `/data/coh/inbox/**` ahead of the ingest enzymes and leaves a link behind for audit trails. Pick a stable `{txn}` name so replays find the original cell.
 - **Payload schema**:
   - `be_create`: `id`, `kind`, optional `attrs/*` values.
   - `bo_upsert`: `id`, `type`, `src` link, `dst` link, optional `directed` flag.
@@ -40,9 +40,9 @@ In short: bootstrap once, register the enzymes, enqueue intents as cells, and le
 - **Monitoring**: treat both areas as metrics. A growing debt tree means contexts are missing required facets; a large decision ledger means business rules are branching frequently.
 
 ### Example: Project onboarding with beings, bonds, and contexts
-1. **Create beings** – enqueue two `be_create` intents (`/data/coh/inbox/be_create/tx-alice`, `tx-bot`) with `id`=`alice`, `bothelper` and `kind`=`human`, `agent`. After the heartbeat, ledger entries appear at `/data/coh/being/alice` and `/data/coh/being/bothelper` with `outcome="ok"` on each intent.
-2. **Link them with a bond** – enqueue `/data/coh/inbox/bo_upsert/tx-alice-bot` containing `id`=`mentor`, `type`=`mentoring`, `src`→being `alice`, `dst`→being `bothelper`, `directed`=`1`. The bond ledger now records the relation and `coh_index` writes an entry under `/data/coh/index/bo_pair/{alice:bothelper:mentoring:1}`.
-3. **Describe a shared context** – enqueue `/data/coh/inbox/ctx_upsert/tx-onboard` with `id`=`onboard1`, `type`=`project`, `roles/lead`→`alice`, `roles/assistant`→`bothelper`, and a `facets/review_plan` child containing a link to an existing plan (or a placeholder dictionary with `required` flag set). The ingest enzyme copies role links, the closure enzyme mirrors any resolved facet under `/data/coh/facet/onboard1:review_plan`, and records `/data/coh/debt/onboard1/review_plan` if the facet was required but absent.
+1. **Create beings** – enqueue two `be_create` intents (`/data/inbox/coh/be_create/tx-alice`, `tx-bot`) with `id`=`alice`, `bothelper` and `kind`=`human`, `agent`. After the heartbeat, ledger entries appear at `/data/coh/being/alice` and `/data/coh/being/bothelper` with `outcome="ok"` on each intent.
+2. **Link them with a bond** – enqueue `/data/inbox/coh/bo_upsert/tx-alice-bot` containing `id`=`mentor`, `type`=`mentoring`, `src`→being `alice`, `dst`→being `bothelper`, `directed`=`1`. The bond ledger now records the relation and `coh_index` writes an entry under `/data/coh/index/bo_pair/{alice:bothelper:mentoring:1}`.
+3. **Describe a shared context** – enqueue `/data/inbox/coh/ctx_upsert/tx-onboard` with `id`=`onboard1`, `type`=`project`, `roles/lead`→`alice`, `roles/assistant`→`bothelper`, and a `facets/review_plan` child containing a link to an existing plan (or a placeholder dictionary with `required` flag set). The ingest enzyme copies role links, the closure enzyme mirrors any resolved facet under `/data/coh/facet/onboard1:review_plan`, and records `/data/coh/debt/onboard1/review_plan` if the facet was required but absent.
 4. **Observe caches** – after the beat, adjacency mirrors record the new relationships under `/tmp/coh/adj/by_being/alice/{out_bonds,ctx_by_role}` and `/tmp/coh/adj/by_being/bothelper/...`, giving neighborhood queries a ready-made cache.
 
 The three intents illustrate the pattern: write to the inbox, let the enzyme pack populate ledgers, and rely on closure/index/adjacency passes to keep derived structures aligned with the source facts.

@@ -7,6 +7,8 @@
 
 #include "cep_cell.h"
 
+#include <string.h>
+
 static const cepDT* dt_data_root(void)      { return CEP_DTAW("CEP", "data"); }
 static const cepDT* dt_sys_root(void)       { return CEP_DTAW("CEP", "sys"); }
 static const cepDT* dt_inbox_root(void)     { return CEP_DTAW("CEP", "inbox"); }
@@ -21,6 +23,13 @@ static const cepDT* dt_inst_start(void)     { return CEP_DTAW("CEP", "inst_start
 static const cepDT* dt_inst_event(void)     { return CEP_DTAW("CEP", "inst_event"); }
 static const cepDT* dt_inst_ctrl(void)      { return CEP_DTAW("CEP", "inst_ctrl"); }
 static const cepDT* dt_err_cat(void)        { return CEP_DTAW("CEP", "err_cat"); }
+static const cepDT* dt_dictionary(void)     { return CEP_DTAW("CEP", "dictionary"); }
+static const cepDT* dt_list(void)           { return CEP_DTAW("CEP", "list"); }
+static const cepDT* dt_text(void)           { return CEP_DTAW("CEP", "text"); }
+static const cepDT* dt_original(void)       { return CEP_DTAW("CEP", "original"); }
+static const cepDT* dt_outcome(void)        { return CEP_DTAW("CEP", "outcome"); }
+static const cepDT* dt_meta(void)           { return CEP_DTAW("CEP", "meta"); }
+static const cepDT* dt_parents(void)        { return CEP_DTAW("CEP", "parents"); }
 static const cepDT* dt_sig_cell(void)       { return CEP_DTAW("CEP", "sig_cell"); }
 static const cepDT* dt_op_add(void)         { return CEP_DTAW("CEP", "op_add"); }
 static const cepDT* dt_mr_route(void)       { return CEP_DTAW("CEP", "mr_route"); }
@@ -69,6 +78,74 @@ static bool cep_mailroom_seed_namespace(cepCell* inbox,
     }
 
     return true;
+}
+
+static bool cep_mailroom_set_string_value(cepCell* parent, const cepDT* name, const char* text) {
+    if (!parent || !name || !text) {
+        return false;
+    }
+
+    size_t size = strlen(text) + 1u;
+    cepCell* existing = cep_cell_find_by_name(parent, name);
+    if (existing && cep_cell_has_data(existing)) {
+        const cepData* data = existing->data;
+        if (data->datatype == CEP_DATATYPE_VALUE && data->size == size && memcmp(data->value, text, size) == 0) {
+            return true;
+        }
+        cep_cell_remove_hard(parent, existing);
+    } else if (existing) {
+        cep_cell_remove_hard(parent, existing);
+    }
+
+    cepDT name_copy = *name;
+    cepDT text_dt = *dt_text();
+    cepCell* node = cep_dict_add_value(parent, &name_copy, &text_dt, (void*)text, size, size);
+    if (!node) {
+        return false;
+    }
+    cep_cell_content_hash(node);
+    return true;
+}
+
+static bool cep_mailroom_ensure_shared_header(cepCell* request) {
+    if (!request) {
+        return false;
+    }
+
+    bool ok = true;
+
+    cepCell* original = cep_cell_find_by_name(request, dt_original());
+    if (!original) {
+        cepDT dict_type = *dt_dictionary();
+        cepDT name_copy = *dt_original();
+        original = cep_dict_add_dictionary(request, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        ok = ok && (original != NULL);
+    }
+
+    cepCell* outcome = cep_cell_find_by_name(request, dt_outcome());
+    if (!outcome || !cep_cell_has_data(outcome)) {
+        ok = ok && cep_mailroom_set_string_value(request, dt_outcome(), "pending");
+    }
+
+    cepCell* meta = cep_cell_find_by_name(request, dt_meta());
+    if (!meta) {
+        cepDT dict_type = *dt_dictionary();
+        cepDT meta_name = *dt_meta();
+        meta = cep_dict_add_dictionary(request, &meta_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        ok = ok && (meta != NULL);
+    }
+
+    if (meta) {
+        cepCell* parents = cep_cell_find_by_name(meta, dt_parents());
+        if (!parents) {
+            cepDT list_type = *dt_list();
+            cepDT parent_name = *dt_parents();
+            parents = cep_dict_add_list(meta, &parent_name, &list_type, CEP_STORAGE_LINKED_LIST);
+            ok = ok && (parents != NULL);
+        }
+    }
+
+    return ok;
 }
 
 /* Prepare the unified mailroom branches so producers can target `/data/inbox`
@@ -186,6 +263,10 @@ static int cep_mailroom_route(const cepPath* signal_path, const cepPath* target_
     cepCell* inserted = cep_cell_add(dest_bucket, 0, &moved);
     if (!inserted) {
         cep_cell_finalize_hard(&moved);
+        return CEP_ENZYME_FATAL;
+    }
+
+    if (!cep_mailroom_ensure_shared_header(inserted)) {
         return CEP_ENZYME_FATAL;
     }
 
