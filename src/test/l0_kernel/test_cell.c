@@ -220,6 +220,39 @@ static void test_cell_links_shadowing(void) {
     cep_cell_delete_hard(list);
 }
 
+/* Confirms that marking a target dead propagates to linked cells and clears
+   once the target becomes visible again. */
+static void test_cell_links_shadow_dead_flag(void) {
+    cepCell* list = cep_cell_add_list(cep_root(),
+                                      CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 4200),
+                                      0,
+                                      CEP_DTAW("CEP", "list"),
+                                      CEP_STORAGE_LINKED_LIST,
+                                      4);
+
+    cepCell* target = cep_cell_append_list(list,
+                                          CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 4201),
+                                          CEP_DTAW("CEP", "list"),
+                                          CEP_STORAGE_LINKED_LIST,
+                                          2);
+
+    cepCell* link = cep_cell_append_link(list,
+                                         CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_TEMP + 4202),
+                                         target);
+
+    assert_int(link->metacell.targetDead, ==, 0);
+
+    cep_cell_shadow_mark_target_dead(target, true);
+    assert_int(link->metacell.targetDead, ==, 1);
+
+    cep_cell_shadow_mark_target_dead(target, false);
+    assert_int(link->metacell.targetDead, ==, 0);
+
+    cep_cell_delete_hard(link);
+    cep_cell_delete_hard(target);
+    cep_cell_delete_hard(list);
+}
+
 
 
 /*
@@ -897,6 +930,7 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
     test_cell_tech_sequencing_catalog();
 
     test_cell_links_shadowing();
+    test_cell_links_shadow_dead_flag();
 
     if (watchdog)
         test_watchdog_signal(watchdog);
