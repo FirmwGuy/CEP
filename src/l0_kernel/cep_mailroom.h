@@ -7,6 +7,7 @@
 #define CEP_MAILROOM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "cep_enzyme.h"
 
@@ -18,6 +19,10 @@ bool cep_mailroom_bootstrap(void);
 bool cep_mailroom_register(cepEnzymeRegistry* registry);
 bool cep_mailroom_seed_coh_errors(void);
 bool cep_mailroom_seed_flow_errors(void);
+bool cep_mailroom_add_namespace(const char* namespace_tag,
+                                const char* const bucket_tags[],
+                                size_t bucket_count);
+bool cep_mailroom_add_router_before(const char* enzyme_tag);
 
 #ifdef __cplusplus
 }

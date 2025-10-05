@@ -217,6 +217,49 @@ when a new behavior needs a fresh word before it lands in code.
 | `beat` | core | heartbeat counter attached to events or waits. |
 | `origin` | core | marker describing whether an event was targeted or broadcast. |
 
+#### PoC Harness Tags
+| Tag / Pattern | Status | Purpose |
+| --- | --- | --- |
+| `poc` | core | PoC sandbox root nested under `/data`. |
+| `io` | core | PoC I/O ledger namespace (`/data/poc/io`). |
+| `hz` | core | Harness ledger namespace (`/data/poc/hz`). |
+| `echo` | core | Echo ledger storing submitted text payloads. |
+| `calc` | core | Calculator ledger storing expressions and results. |
+| `kv` | core | Key/value ledger recording durable entries. |
+| `ans` | core | Key/value answer ledger for read responses. |
+| `scenario` | core | Stored harness scenario definitions. |
+| `run` | core | Harness run ledger capturing execution evidence. |
+| `bandit` | core | Bandit telemetry nested under a run entry. |
+| `choices` | core | List of arm selections recorded per bandit run. |
+| `keys` | core | Index bucket listing active key/value entries. |
+| `count` | core | Numeric counter stored on index or adjacency nodes. |
+| `tomb` | core | Tombstone flag marking soft-deleted key/value entries. |
+| `enabled` | core | Toggle under `/sys/poc` gating PoC enzyme execution. |
+| `parent` | core | Provenance link tag used for audit bindings. |
+
+| Tag / Pattern | Status | Purpose |
+| --- | --- | --- |
+| `poc_echo` | ops | Intent bucket for PoC echo submissions. |
+| `poc_calc` | ops | Intent bucket for calculator requests. |
+| `poc_kv_set` | ops | Intent bucket for key/value set operations. |
+| `poc_kv_get` | ops | Intent bucket for key/value reads. |
+| `poc_kv_del` | ops | Intent bucket for key/value deletion requests. |
+| `poc_scenario` | ops | Intent bucket for scenario authoring. |
+| `poc_run` | ops | Intent bucket for scenario executions. |
+| `poc_assert` | ops | Intent bucket for harness assertions. |
+| `poc_bandit` | ops | Intent bucket for bandit experiments. |
+| `poc_io_ing_echo` | ops | Enzyme descriptor for echo ingestion. |
+| `poc_io_ing_calc` | ops | Enzyme descriptor for calculator ingestion. |
+| `poc_io_ing_kv` | ops | Enzyme descriptor for key/value ingestion. |
+| `poc_io_index` | ops | Enzyme descriptor refreshing PoC I/O indexes. |
+| `poc_io_adj` | ops | Enzyme descriptor publishing PoC I/O adjacency summaries. |
+| `poc_hz_ing_scenario` | ops | Harness enzyme ingesting scenarios. |
+| `poc_hz_ing_run` | ops | Harness enzyme ingesting runs. |
+| `poc_hz_ing_assert` | ops | Harness enzyme validating assertions. |
+| `poc_hz_ing_bandit` | ops | Harness enzyme coordinating bandit executions. |
+| `poc_hz_index` | ops | Harness index refresh enzyme. |
+| `poc_hz_adj` | ops | Harness adjacency refresh enzyme. |
+
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor
   declarations. Emitting them outside the heartbeat dispatcher is undefined.
