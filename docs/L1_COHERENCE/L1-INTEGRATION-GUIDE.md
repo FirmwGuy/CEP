@@ -23,6 +23,7 @@ In short: bootstrap once, register the enzymes, enqueue intents as cells, and le
 - **Helper**: reuse `cep_l1_compose_identifier()` / `CEP_L1_COMPOSE` (and `cep_l1_tokens_to_dt()` / `CEP_L1_TOKENS_TO_DT`) when you need to build canonical IDs from multiple tokens. They lowercase inputs, join with `:`, and hand back the `cepID`, so every caller lands on the same ledger key.
 - **Helper builders**: `cep_l1_being_intent_init()`, `cep_l1_bond_intent_init()`, and `cep_l1_context_intent_init()` stitch together inbox requests (plus roles/facets) while keeping the original spelling under `original/*`. They eliminate manual dictionary work and ensure every identifier follows the token rules before it hits the enzymes.
 - **Provenance**: you do not need to add metadata links—the enzymes attach the intent as a parent on every ledger entry they touch.
+- **Retention overrides**: optionally add `retain_mode` (`permanent`, `ttl`, `archive`), `retain_ttl`, or `retain_upto` fields to the request. If omitted, the decision ledger falls back to `/sys/retention/coh` defaults.
 
 ### 3) Observing outcomes
 - **Outcome code**: every intent receives an `outcome` value (`"ok"` or an error code). Poll the same node after the heartbeat to see whether your request succeeded.

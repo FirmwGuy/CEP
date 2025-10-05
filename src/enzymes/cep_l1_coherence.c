@@ -19,6 +19,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+#include <errno.h>
 
 /* ------------------------------------------------------------------------- */
 /*  Domain and canonical tags                                                */
@@ -50,7 +52,6 @@ static const cepDT* dt_facet_root(void)  { return CEP_DTAW("CEP", "facet"); }
 static const cepDT* dt_debt(void)        { return CEP_DTAW("CEP", "debt"); }
 static const cepDT* dt_decision(void)    { return CEP_DTAW("CEP", "decision"); }
 static const cepDT* dt_index(void)       { return CEP_DTAW("CEP", "index"); }
-static const cepDT* dt_err_cat(void)     { return CEP_DTAW("CEP", "err_cat"); }
 static const cepDT* dt_coh(void)         { return CEP_DTAW("CEP", "coh"); }
 static const cepDT* dt_data_root(void)   { return CEP_DTAW("CEP", "data"); }
 static const cepDT* dt_sys(void)         { return CEP_DTAW("CEP", "sys"); }
@@ -83,6 +84,7 @@ static const cepDT* dt_choice(void)      { return CEP_DTAW("CEP", "choice"); }
 static const cepDT* dt_retain_mode(void) { return CEP_DTAW("CEP", "retain_mode"); }
 static const cepDT* dt_retain_ttl(void)  { return CEP_DTAW("CEP", "retain_ttl"); }
 static const cepDT* dt_retain_upto(void) { return CEP_DTAW("CEP", "retain_upto"); }
+static const cepDT* dt_retention_root(void) { return CEP_DTAW("CEP", "retention"); }
 
 #define CEP_L1_WINDOW_CAP 8u
 
@@ -92,41 +94,12 @@ typedef struct {
     size_t flag;
 } cepL1WindowSample;
 
-typedef struct {
-    const char* code;
-    const char* message;
-} cepL1ErrorCatalogEntry;
-
-static const cepL1ErrorCatalogEntry CEP_L1_ERROR_CATALOG[] = {
-    {"attrs", "attributes branch missing"},
-    {"attrs-copy", "failed to copy submitted attribute"},
-    {"attrs-data", "attribute payload invalid"},
-    {"attrs-lock", "unable to lock attribute dictionary"},
-    {"attrs-name", "attribute name invalid"},
-    {"attrs-value", "attribute value invalid"},
-    {"being-lock", "unable to lock being entry"},
-    {"bond-lock", "unable to lock bond entry"},
-    {"bond-update", "failed to update bond payload"},
-    {"create-failed", "failed to create ledger entry"},
-    {"ctx-lock", "unable to lock context entry"},
-    {"ctx-type", "context type invalid"},
-    {"debt-lock", "unable to lock debt bucket"},
-    {"decision-ledger", "decision ledger update failed"},
-    {"facet-link", "failed to link facet target"},
-    {"facet-lock", "unable to lock facet bucket"},
-    {"facet-parse", "facet payload invalid"},
-    {"facets", "facets dictionary missing"},
-    {"facets-lock", "unable to lock facets dictionary"},
-    {"invalid-role", "role identifier invalid"},
-    {"ledger-lock", "unable to lock ledger"},
-    {"missing-endpoint", "bond endpoint missing"},
-    {"missing-ledger", "required ledger missing"},
-    {"role-link", "failed to link role target"},
-    {"role-target", "role target missing"},
-    {"roles", "roles dictionary missing"},
-    {"roles-lock", "unable to lock roles dictionary"},
-    {"set-kind", "failed to store being kind"},
-};
+typedef enum {
+    CEP_L1_RETAIN_UNSPECIFIED = 0,
+    CEP_L1_RETAIN_PERMANENT,
+    CEP_L1_RETAIN_TTL,
+    CEP_L1_RETAIN_ARCHIVE,
+} cepL1RetentionMode;
 
 static cepL1WindowSample cep_l1_index_metrics[CEP_L1_WINDOW_CAP];
 static size_t            cep_l1_index_metric_count = 0u;
@@ -134,52 +107,12 @@ static cepL1WindowSample cep_l1_adj_metrics[CEP_L1_WINDOW_CAP];
 static size_t            cep_l1_adj_metric_count = 0u;
 
 static bool cep_l1_set_string_value(cepCell* parent, const cepDT* name, const char* text);
-
-static bool cep_l1_seed_error_catalog(void) {
-    cepCell* root = cep_root();
-    cepCell* sys = cep_cell_find_by_name(root, dt_sys());
-    if (!sys) {
-        return false;
-    }
-
-    cepCell* catalog = cep_cell_find_by_name(sys, dt_err_cat());
-    if (!catalog) {
-        return false;
-    }
-
-    for (size_t i = 0; i < cep_lengthof(CEP_L1_ERROR_CATALOG); ++i) {
-        const cepL1ErrorCatalogEntry* entry = &CEP_L1_ERROR_CATALOG[i];
-        cepID tag = cep_text_to_word(entry->code);
-        if (!tag) {
-            size_t len = strlen(entry->code);
-            tag = cep_namepool_intern(entry->code, len);
-        }
-        if (!tag) {
-            return false;
-        }
-
-        cepDT code_dt = {
-            .domain = cep_domain_cep(),
-            .tag = tag,
-        };
-
-        cepCell* bucket = cep_cell_find_by_name(catalog, &code_dt);
-        if (!bucket) {
-            cepDT dict_type = *dt_dictionary();
-            cepDT name_copy = code_dt;
-            bucket = cep_dict_add_dictionary(catalog, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
-        }
-        if (!bucket) {
-            return false;
-        }
-
-        if (!cep_l1_set_string_value(bucket, dt_text(), entry->message)) {
-            return false;
-        }
-    }
-
-    return true;
-}
+static bool cep_l1_ensure_retention_config(void);
+static bool cep_l1_decision_apply_retention(cepCell* entry, cepCell* request, cepBeatNumber decision_beat);
+static bool cep_l1_retention_fetch_config(const char** mode_out, size_t* ttl_out, size_t* upto_out);
+static const char* cep_l1_get_string(cepCell* parent, const cepDT* field);
+static bool cep_l1_parse_size_text(const char* text, size_t* out_value);
+static void cep_l1_remove_field(cepCell* parent, const cepDT* field);
 
 
 typedef struct {
@@ -1211,6 +1144,240 @@ static void cep_l1_metrics_record_adj(size_t successes, size_t failures) {
     cep_l1_metrics_publish(cep_l1_adj_root(), cep_l1_adj_metrics, cep_l1_adj_metric_count);
 }
 
+static const char* cep_l1_get_string(cepCell* parent, const cepDT* field) {
+    if (!parent || !field) {
+        return NULL;
+    }
+
+    cepCell* node = cep_cell_find_by_name(parent, field);
+    if (!node || !cep_cell_has_data(node)) {
+        return NULL;
+    }
+
+    const cepData* data = node->data;
+    if (data->datatype != CEP_DATATYPE_VALUE || data->size == 0u) {
+        return NULL;
+    }
+
+    return (const char*)data->value;
+}
+
+static bool cep_l1_parse_size_text(const char* text, size_t* out_value) {
+    if (!text || !out_value) {
+        return false;
+    }
+
+    char* end = NULL;
+    errno = 0;
+    unsigned long long parsed = strtoull(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0') {
+        return false;
+    }
+
+    *out_value = (size_t)parsed;
+    return true;
+}
+
+static cepL1RetentionMode cep_l1_retention_mode_from_text(const char* text) {
+    if (!text) {
+        return CEP_L1_RETAIN_UNSPECIFIED;
+    }
+
+    char buffer[16];
+    size_t len = strlen(text);
+    if (len >= sizeof buffer) {
+        len = sizeof buffer - 1u;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        buffer[i] = (char)tolower((unsigned char)text[i]);
+    }
+    buffer[len] = '\0';
+
+    if (strcmp(buffer, "permanent") == 0) {
+        return CEP_L1_RETAIN_PERMANENT;
+    }
+    if (strcmp(buffer, "ttl") == 0) {
+        return CEP_L1_RETAIN_TTL;
+    }
+    if (strcmp(buffer, "archive") == 0) {
+        return CEP_L1_RETAIN_ARCHIVE;
+    }
+
+    return CEP_L1_RETAIN_UNSPECIFIED;
+}
+
+static const char* cep_l1_retention_mode_to_text(cepL1RetentionMode mode) {
+    switch (mode) {
+    case CEP_L1_RETAIN_TTL:
+        return "ttl";
+    case CEP_L1_RETAIN_ARCHIVE:
+        return "archive";
+    case CEP_L1_RETAIN_PERMANENT:
+    default:
+        return "permanent";
+    }
+}
+
+static void cep_l1_remove_field(cepCell* parent, const cepDT* field) {
+    if (!parent || !field) {
+        return;
+    }
+
+    cepCell* node = cep_cell_find_by_name(parent, field);
+    if (node) {
+        cep_cell_child_take_hard(parent, node);
+    }
+}
+
+static bool cep_l1_retention_fetch_config(const char** mode_out, size_t* ttl_out, size_t* upto_out) {
+    cepCell* root = cep_root();
+    cepCell* sys = cep_cell_find_by_name(root, dt_sys());
+    if (!sys) {
+        return false;
+    }
+
+    cepCell* retention = cep_cell_find_by_name(sys, dt_retention_root());
+    if (!retention) {
+        return false;
+    }
+
+    cepCell* coh_cfg = cep_cell_find_by_name(retention, dt_coh());
+    if (!coh_cfg) {
+        return false;
+    }
+
+    bool found = false;
+
+    const char* mode = cep_l1_get_string(coh_cfg, dt_retain_mode());
+    if (mode && mode_out) {
+        *mode_out = mode;
+        found = true;
+    }
+
+    const char* ttl_text = cep_l1_get_string(coh_cfg, dt_retain_ttl());
+    if (ttl_text && ttl_out && cep_l1_parse_size_text(ttl_text, ttl_out)) {
+        found = true;
+    }
+
+    const char* upto_text = cep_l1_get_string(coh_cfg, dt_retain_upto());
+    if (upto_text && upto_out && cep_l1_parse_size_text(upto_text, upto_out)) {
+        found = true;
+    }
+
+    return found;
+}
+
+static bool cep_l1_ensure_retention_config(void) {
+    cepCell* sys = cep_cell_find_by_name(cep_root(), dt_sys());
+    if (!sys) {
+        return false;
+    }
+
+    cepCell* retention = cep_l1_ensure_dictionary(sys, dt_retention_root(), CEP_STORAGE_RED_BLACK_T);
+    if (!retention) {
+        return false;
+    }
+
+    cepCell* coh_cfg = cep_l1_ensure_dictionary(retention, dt_coh(), CEP_STORAGE_RED_BLACK_T);
+    if (!coh_cfg) {
+        return false;
+    }
+
+    if (!cep_cell_find_by_name(coh_cfg, dt_retain_mode())) {
+        (void)cep_l1_set_string_value(coh_cfg, dt_retain_mode(), "permanent");
+    }
+    if (!cep_cell_find_by_name(coh_cfg, dt_retain_ttl())) {
+        (void)cep_l1_set_number_value(coh_cfg, dt_retain_ttl(), 0u);
+    }
+    if (!cep_cell_find_by_name(coh_cfg, dt_retain_upto())) {
+        (void)cep_l1_set_number_value(coh_cfg, dt_retain_upto(), 0u);
+    }
+
+    return true;
+}
+
+static bool cep_l1_decision_apply_retention(cepCell* node,
+                                            cepCell* request,
+                                            cepBeatNumber decision_beat) {
+    if (!node) {
+        return false;
+    }
+
+    cepL1RetentionMode mode = CEP_L1_RETAIN_UNSPECIFIED;
+    size_t ttl = 0u;
+    size_t upto = 0u;
+
+    const char* request_mode = cep_l1_get_string(request, dt_retain_mode());
+    if (request_mode && *request_mode) {
+        mode = cep_l1_retention_mode_from_text(request_mode);
+        if (mode == CEP_L1_RETAIN_UNSPECIFIED) {
+            return false;
+        }
+    }
+
+    const char* request_ttl = cep_l1_get_string(request, dt_retain_ttl());
+    if (request_ttl && *request_ttl) {
+        if (!cep_l1_parse_size_text(request_ttl, &ttl)) {
+            return false;
+        }
+    }
+
+    const char* request_upto = cep_l1_get_string(request, dt_retain_upto());
+    if (request_upto && *request_upto) {
+        if (!cep_l1_parse_size_text(request_upto, &upto)) {
+            return false;
+        }
+    }
+
+    const char* config_mode = NULL;
+    size_t cfg_ttl = 0u;
+    size_t cfg_upto = 0u;
+    if (mode == CEP_L1_RETAIN_UNSPECIFIED) {
+        if (cep_l1_retention_fetch_config(&config_mode, &cfg_ttl, &cfg_upto)) {
+            mode = cep_l1_retention_mode_from_text(config_mode);
+            ttl = (ttl == 0u) ? cfg_ttl : ttl;
+            if (upto == 0u) {
+                upto = cfg_upto;
+            }
+        } else {
+            mode = CEP_L1_RETAIN_PERMANENT;
+        }
+    }
+
+    if (mode == CEP_L1_RETAIN_UNSPECIFIED) {
+        mode = CEP_L1_RETAIN_PERMANENT;
+    }
+
+    if ((mode == CEP_L1_RETAIN_TTL || mode == CEP_L1_RETAIN_ARCHIVE) && ttl == 0u) {
+        mode = CEP_L1_RETAIN_PERMANENT;
+    }
+
+    if ((mode == CEP_L1_RETAIN_TTL || mode == CEP_L1_RETAIN_ARCHIVE) && ttl > 0u && upto == 0u) {
+        upto = (size_t)decision_beat + ttl;
+    }
+
+    const char* mode_text = cep_l1_retention_mode_to_text(mode);
+
+    if (!cep_l1_set_string_value(node, dt_retain_mode(), mode_text)) {
+        return false;
+    }
+
+    if (mode == CEP_L1_RETAIN_PERMANENT) {
+        cep_l1_remove_field(node, dt_retain_ttl());
+        cep_l1_remove_field(node, dt_retain_upto());
+        return true;
+    }
+
+    if (!cep_l1_set_number_value(node, dt_retain_ttl(), ttl)) {
+        return false;
+    }
+    if (!cep_l1_set_number_value(node, dt_retain_upto(), upto)) {
+        return false;
+    }
+
+    return true;
+}
+
 /* Copy the `attrs` dictionary from the request into the ledger node so callers
    can persist arbitrary attributes alongside beings without poking internals. */
 static bool cep_l1_apply_attrs_from_request(cepCell* request, cepCell* attrs_dst) {
@@ -1377,7 +1544,11 @@ bool cep_l1_coherence_bootstrap(void) {
         return false;
     }
 
-    if (!cep_l1_seed_error_catalog()) {
+    if (!cep_mailroom_seed_coh_errors()) {
+        return false;
+    }
+
+    if (!cep_l1_ensure_retention_config()) {
         return false;
     }
 
@@ -1619,14 +1790,9 @@ static bool cep_l1_decision_record(const cepDT* ctx_id,
         cep_cell_child_take_hard(entry, existing_choice);
     }
 
-    bool ok = false;
-    cepDT choice_name = *dt_choice();
-    ok = cep_l1_link_child(entry, &choice_name, target);
-
+    bool ok = cep_l1_link_child(entry, dt_choice(), target);
     if (ok) {
-        (void)cep_l1_set_string_value(entry, dt_retain_mode(), "permanent");
-        (void)cep_l1_set_string_value(entry, dt_retain_ttl(), "0");
-        (void)cep_l1_set_string_value(entry, dt_retain_upto(), "0");
+        ok = cep_l1_decision_apply_retention(entry, request, cep_heartbeat_current());
     }
 
     cep_l1_store_unlock(&entry_lock);

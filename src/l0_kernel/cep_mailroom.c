@@ -40,6 +40,61 @@ static const cepDT* dt_fl_ing(void)         { return CEP_DTAW("CEP", "fl_ing"); 
 static const cepDT* dt_ni_ing(void)         { return CEP_DTAW("CEP", "ni_ing"); }
 static const cepDT* dt_inst_ing(void)       { return CEP_DTAW("CEP", "inst_ing"); }
 
+typedef struct {
+    const char* code;
+    const char* message;
+} cepMailroomErrorEntry;
+
+static const cepMailroomErrorEntry CEP_MAILROOM_ERROR_COH[] = {
+    {"attrs", "attributes branch missing"},
+    {"attrs-copy", "failed to copy submitted attribute"},
+    {"attrs-data", "attribute payload invalid"},
+    {"attrs-lock", "unable to lock attribute dictionary"},
+    {"attrs-name", "attribute name invalid"},
+    {"attrs-value", "attribute value invalid"},
+    {"being-lock", "unable to lock being entry"},
+    {"bond-lock", "unable to lock bond entry"},
+    {"bond-update", "failed to update bond payload"},
+    {"create-failed", "failed to create ledger entry"},
+    {"ctx-lock", "unable to lock context entry"},
+    {"ctx-type", "context type invalid"},
+    {"debt-lock", "unable to lock debt bucket"},
+    {"decision-ledger", "decision ledger update failed"},
+    {"facet-link", "failed to link facet target"},
+    {"facet-lock", "unable to lock facet bucket"},
+    {"facet-parse", "facet payload invalid"},
+    {"facets", "facets dictionary missing"},
+    {"facets-lock", "unable to lock facets dictionary"},
+    {"invalid-role", "role identifier invalid"},
+    {"ledger-lock", "unable to lock ledger"},
+    {"missing-endpoint", "bond endpoint missing"},
+    {"missing-ledger", "required ledger missing"},
+    {"role-link", "failed to link role target"},
+    {"role-target", "role target missing"},
+    {"roles", "roles dictionary missing"},
+    {"roles-lock", "unable to lock roles dictionary"},
+    {"set-kind", "failed to store being kind"},
+};
+
+static const cepMailroomErrorEntry CEP_MAILROOM_ERROR_FLOW[] = {
+    {"budget", "instance budget update failed"},
+    {"copy-failed", "failed to copy payload into ledger"},
+    {"entry-lock", "unable to lock ledger entry"},
+    {"events", "unable to stage event metadata"},
+    {"ledger-lock", "unable to lock flow ledger"},
+    {"missing-action", "control intent missing action"},
+    {"missing-id", "identifier missing from request"},
+    {"missing-kind", "flow definition kind missing"},
+    {"missing-ledger", "required flow ledger missing"},
+    {"no-match", "no subscription matched the event"},
+    {"pc", "program counter invalid"},
+    {"state", "instance state invalid"},
+    {"unknown-action", "control action not recognised"},
+    {"unknown-instance", "instance not found"},
+    {"unknown-kind", "flow definition kind unknown"},
+    {"upsert-failed", "failed to upsert flow definition"},
+};
+
 static bool cep_mailroom_bindings_applied = false;
 static cepEnzymeRegistry* cep_mailroom_registered_registry = NULL;
 
@@ -104,6 +159,60 @@ static bool cep_mailroom_set_string_value(cepCell* parent, const cepDT* name, co
         return false;
     }
     cep_cell_content_hash(node);
+    return true;
+}
+
+static bool cep_mailroom_seed_error_entries(const cepMailroomErrorEntry* entries, size_t count) {
+    if (!entries) {
+        return false;
+    }
+
+    cepCell* root = cep_root();
+    cepCell* sys = cep_cell_find_by_name(root, dt_sys_root());
+    if (!sys) {
+        return false;
+    }
+
+    cepCell* catalog = cep_cell_find_by_name(sys, dt_err_cat());
+    if (!catalog) {
+        return false;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        const cepMailroomErrorEntry* entry = &entries[i];
+        if (!entry->code || !entry->message) {
+            continue;
+        }
+
+        cepID tag = cep_text_to_word(entry->code);
+        if (!tag) {
+            size_t len = strlen(entry->code);
+            tag = cep_namepool_intern(entry->code, len);
+        }
+        if (!tag) {
+            return false;
+        }
+
+        cepDT code_dt = {
+            .domain = CEP_ACRO("CEP"),
+            .tag = tag,
+        };
+
+        cepCell* bucket = cep_cell_find_by_name(catalog, &code_dt);
+        if (!bucket) {
+            cepDT dict_type = *dt_dictionary();
+            cepDT name_copy = code_dt;
+            bucket = cep_dict_add_dictionary(catalog, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        }
+        if (!bucket) {
+            return false;
+        }
+
+        if (!cep_mailroom_set_string_value(bucket, dt_text(), entry->message)) {
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -190,6 +299,16 @@ bool cep_mailroom_bootstrap(void) {
     }
 
     return true;
+}
+
+bool cep_mailroom_seed_coh_errors(void) {
+    return cep_mailroom_seed_error_entries(CEP_MAILROOM_ERROR_COH,
+                                           sizeof CEP_MAILROOM_ERROR_COH / sizeof CEP_MAILROOM_ERROR_COH[0]);
+}
+
+bool cep_mailroom_seed_flow_errors(void) {
+    return cep_mailroom_seed_error_entries(CEP_MAILROOM_ERROR_FLOW,
+                                           sizeof CEP_MAILROOM_ERROR_FLOW / sizeof CEP_MAILROOM_ERROR_FLOW[0]);
 }
 
 static bool cep_mailroom_namespace_supported(const cepCell* ns_node) {

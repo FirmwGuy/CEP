@@ -16,6 +16,8 @@ extern "C" {
 
 bool cep_mailroom_bootstrap(void);
 bool cep_mailroom_register(cepEnzymeRegistry* registry);
+bool cep_mailroom_seed_coh_errors(void);
+bool cep_mailroom_seed_flow_errors(void);
 
 #ifdef __cplusplus
 }

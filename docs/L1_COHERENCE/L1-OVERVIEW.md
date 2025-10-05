@@ -64,6 +64,7 @@ The mailroom removes guesswork from intent envelopes: every request that reaches
 - Mailroom routing runs before `coh_ing_*`, so intents arrive in `/data/coh/inbox/**` with no need for layer-specific shims.
 - Each routed request includes an `original/*` mirror, a default `outcome` slot, and an empty `meta/parents` list that the ingest enzymes can extend.
 - The mailroom leaves a link under `/data/inbox/coh/{bucket}/{txn}` pointing at the moved request, keeping provenance one hop away for tools and audits.
+- Retention defaults live under `/sys/retention/coh` (`retain_mode`, `retain_ttl`, `retain_upto`). Update those cells—or set the same fields on individual intents—when you need decisions to expire or archive automatically.
 
 **Q&A**
 - *Should new tests write directly to the mailroom?* Yes. Staging a request under `/data/inbox/coh/**` exercises routing, shared headers, and audit links exactly like production, making regressions easier to spot.

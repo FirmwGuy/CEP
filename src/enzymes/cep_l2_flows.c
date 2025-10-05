@@ -4100,6 +4100,10 @@ bool cep_l2_flows_bootstrap(void) {
         return false;
     }
 
+    if (!cep_mailroom_seed_flow_errors()) {
+        return false;
+    }
+
     cepCell* flow_root = cep_l2_flow_root();
     if (!flow_root) {
         return false;
