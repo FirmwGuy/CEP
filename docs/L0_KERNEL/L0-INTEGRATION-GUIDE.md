@@ -85,11 +85,6 @@ if (cep_beat_phase() == CEP_BEAT_COMPUTE) {
 }
 ```
 
-**Q&A**
-
-- *Do I need to call the phase helpers manually?* No. They are wired into `cep_heartbeat_resolve_agenda()` and `cep_heartbeat_stage_commit()`. Manual calls are only for bespoke schedulers.
-- *What happens to mid-beat registrations?* They are counted and deferred; the agenda for the current beat never mutates.
-
 ### 1.5 Unified mailroom router
 
 Think of the mailroom as the lobby of the runtime: everyone drops their intents at the same desk and the kernel forwards them to the right layer before any work begins.
@@ -101,10 +96,15 @@ Think of the mailroom as the lobby of the runtime: everyone drops their intents 
 - Routed intents keep an audit trail: the mailroom leaves a link behind in the source bucket and copies the staged cell into the downstream inbox. The router also guarantees the shared intent header by creating `original/*`, seeding `outcome` (if missing), and ensuring `meta/parents` exists.
 - You can extend the router by adding new namespace buckets or compatibility shims (for a transition period, link legacy inbox paths into the mailroom so producers can keep using old entrypoints).
 
-**Q&A**
+#### 1.5.1 Mailroom extension helpers
 
-- *Do I still call layer bootstraps?* Yes. The mailroom deals with ingress only; `cep_l1_coherence_bootstrap()` and `cep_l2_flows_bootstrap()` still provision their ledgers and inboxes.
-- *What happens if the downstream inbox is missing?* The router aborts the move, leaves the original intent under `/data/inbox`, and returns `CEP_ENZYME_FATAL` so tests catch the misconfiguration.
+Sometimes you need the lobby to recognise brand new tenants. The two helper functions below let integrators register additional namespaces or slot custom enzymes ahead of the router without touching the built-in wiring.
+
+**Technical details**
+- `bool cep_mailroom_add_namespace(const char* namespace_tag, const char* const bucket_tags[], size_t bucket_count)`<br>
+  Adds (or extends) a namespace under `/data/inbox/<namespace_tag>/` and mirrors the same buckets under `/data/<namespace_tag>/inbox/`. Call it before `cep_mailroom_bootstrap()` so the inbox hierarchy is created during bootstrap. Repeated calls are idempotent: duplicates are ignored and newly-added buckets are seeded immediately if the mailroom already bootstrapped. Passing `bucket_count==0` skips work; otherwise each entry in `bucket_tags` must be a valid lexicon tag.
+- `bool cep_mailroom_add_router_before(const char* enzyme_tag)`<br>
+  Queues a descriptor name to be inserted into the mailroom router's `before` list the next time `cep_mailroom_register()` runs. Use this when your pack needs routing to happen ahead of additional ingest enzymes (for example, PoC packs that introduce `poc_io_ing_*`). The helper validates uniqueness, so you can register the same tag repeatedly while building layered packs.
 
 ---
 
@@ -143,11 +143,6 @@ Control headers now carry a tiny record of “which beat emitted this?” so dow
 - Structure manifests encode an extra byte after every `domain/tag` pair that mirrors the segment’s `glob` flag (`0x01` when set). Data descriptors append the same byte after the payload tag so wildcard hints survive round-trips.
 - During write, the header encodes a 16-byte metadata block: beat (big-endian `uint64_t`), a flag byte (`0x01` for decision replay), and padding. Readers parse it back and set the struct fields when `metadata_length` matches the pattern.
 - You can still inject arbitrary metadata: provide `metadata_length`/`metadata` and leave `journal_metadata_present` `false`; the serializer simply copies your payload.
-
-**Q&A**
-
-- *How do I disable the automatic beat stamp?* Either supply your own `cepSerializationHeader` with `journal_metadata_present = false` and a custom `metadata`, or set the boolean to `false` before calling `cep_serialization_emit_cell()`.
-- *What toggles `journal_decision_replay`?* Higher layers set it when replaying stored decisions; the kernel treats the flag as advisory and preserves it during round-trips.
 
 ---
 
@@ -203,11 +198,6 @@ When you emit derived facts it helps to record “came from these parents” and
 - `cep_cell_content_hash(cell)` recomputes the payload hash (using the kernel’s FNV‑1a) and stores it on the live `cepData` node, returning the 64-bit value for logs.
 - `cep_cell_set_content_hash(cell, hash)` lets you stamp an externally computed checksum without touching the payload.
 - Both helpers follow links to canonical cells and refuse to operate on proxies/handles where a value hash would be meaningless.
-
-**Q&A**
-
-- *Do parent links survive hard deletes?* They are regular links, so removing the parent turns them into shadow entries flagged via the existing link lifecycle (helpful when diagnosing stale references).
-- *Should I hash huge blobs this way?* The helper is quick but not cryptographic; use it for integrity hints. For stronger guarantees, store your own hash alongside the payload and treat this field as advisory.
 
 ---
 
@@ -312,3 +302,18 @@ The **proxy** keeps your adapter logic isolated. CEP takes care of **shadowing**
 * **Respect locks**. Both **data** and **store** locks check the *entire ancestor chain*; if anything is locked above, mutations are denied to keep invariants intact  .
 * **Proxy cloning.** Cloning cells whose payload is a handle/stream produces **links**, not resource copies—by design, to keep a single authoritative resource endpoint .
 * **Hash checks are end‑to‑end.** The reader recomputes the same **content hash** the writer recorded; any mismatch aborts the apply phase before mutating the tree  .
+
+---
+
+## Q&A
+
+- *Do I need to call the phase helpers manually?* No. They are wired into `cep_heartbeat_resolve_agenda()` and `cep_heartbeat_stage_commit()`. Manual calls are only for bespoke schedulers.
+- *What happens to mid-beat registrations?* They are counted and deferred; the agenda for the current beat never mutates.
+- *When should I call `cep_mailroom_add_namespace()` and `cep_mailroom_add_router_before()`?* During your pack’s bootstrap or registration sequence—before you invoke `cep_mailroom_bootstrap()`/`cep_mailroom_register()`—so the mailroom sees the extra namespaces and dependency edges on the first beat.
+- *What happens if the mailroom already bootstrapped?* `cep_mailroom_add_namespace()` retrofits the new buckets immediately, while `cep_mailroom_add_router_before()` stores the dependency and applies it the next time the mailroom registers; you can safely call them on every initialisation pass.
+- *Do I still call layer bootstraps?* Yes. The mailroom only handles ingress; `cep_l1_coherence_bootstrap()` and `cep_l2_flows_bootstrap()` still provision their ledgers and inboxes.
+- *What happens if the downstream inbox is missing?* The router aborts the move, leaves the original intent under `/data/inbox`, and returns `CEP_ENZYME_FATAL` so tests catch the misconfiguration.
+- *How do I disable the automatic beat stamp in serialization?* Supply your own `cepSerializationHeader` with `journal_metadata_present = false` (and your own metadata) or set the boolean to `false` before invoking `cep_serialization_emit_cell()`.
+- *What toggles `journal_decision_replay`?* Higher layers set it when replaying stored decisions; the kernel preserves the advisory flag during round-trips.
+- *Do parent links survive hard deletes?* They are regular links, so removing the parent turns them into shadow entries flagged via the existing link lifecycle—useful when diagnosing stale references.
+- *Should I hash huge blobs with `cep_cell_content_hash()`?* Treat it as an integrity hint rather than a cryptographic guarantee. For large or high-assurance payloads, store your own checksum alongside the data and regard the built-in hash as advisory.
