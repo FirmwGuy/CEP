@@ -84,6 +84,14 @@ static const cepDT* dt_retain_mode(void) { return CEP_DTAW("CEP", "retain_mode")
 static const cepDT* dt_retain_ttl(void)  { return CEP_DTAW("CEP", "retain_ttl"); }
 static const cepDT* dt_retain_upto(void) { return CEP_DTAW("CEP", "retain_upto"); }
 
+#define CEP_L1_WINDOW_CAP 8u
+
+typedef struct {
+    size_t beat;
+    size_t value;
+    size_t flag;
+} cepL1WindowSample;
+
 typedef struct {
     const char* code;
     const char* message;
@@ -119,6 +127,11 @@ static const cepL1ErrorCatalogEntry CEP_L1_ERROR_CATALOG[] = {
     {"roles-lock", "unable to lock roles dictionary"},
     {"set-kind", "failed to store being kind"},
 };
+
+static cepL1WindowSample cep_l1_index_metrics[CEP_L1_WINDOW_CAP];
+static size_t            cep_l1_index_metric_count = 0u;
+static cepL1WindowSample cep_l1_adj_metrics[CEP_L1_WINDOW_CAP];
+static size_t            cep_l1_adj_metric_count = 0u;
 
 static bool cep_l1_set_string_value(cepCell* parent, const cepDT* name, const char* text);
 
@@ -168,15 +181,6 @@ static bool cep_l1_seed_error_catalog(void) {
     return true;
 }
 
-static void cep_l1_publish_metrics(cepCell* node) {
-    if (!node) {
-        return;
-    }
-
-    (void)cep_l1_set_string_value(node, dt_latency(), "0");
-    (void)cep_l1_set_string_value(node, dt_lat_window(), "0");
-    (void)cep_l1_set_string_value(node, dt_err_window(), "0");
-}
 
 typedef struct {
     cepCell*    cell;
@@ -263,6 +267,10 @@ static bool cep_l1_extract_identifier(cepCell* request,
                                       cepDT* out_dt,
                                       const cepData** out_data);
 static char* cep_l1_dt_to_owned_cstr(const cepDT* dt, size_t* out_len);
+static cepCell* cep_l1_ensure_dictionary(cepCell* parent, const cepDT* name, unsigned storage);
+static void cep_l1_clear_children(cepCell* cell);
+static cepCell* cep_l1_index_root(void);
+static cepCell* cep_l1_adj_root(void);
 
 /* ------------------------------------------------------------------------- */
 /*  Small helpers                                                            */
@@ -1076,6 +1084,131 @@ static void cep_l1_clear_children(cepCell* cell) {
     cell->store->writable = true;
     cep_store_delete_children_hard(cell->store);
     cell->store->writable = writable;
+}
+
+static bool cep_l1_set_number_value(cepCell* parent, const cepDT* name, size_t value) {
+    char buffer[32];
+    int written = snprintf(buffer, sizeof buffer, "%zu", value);
+    if (written <= 0 || (size_t)written >= sizeof buffer) {
+        return false;
+    }
+    return cep_l1_set_string_value(parent, name, buffer);
+}
+
+static void cep_l1_window_insert(cepL1WindowSample* samples,
+                                 size_t* count,
+                                 size_t beat,
+                                 size_t value,
+                                 size_t flag) {
+    if (!samples || !count) {
+        return;
+    }
+
+    if (*count > 0u && samples[0].beat == beat) {
+        samples[0].value += value;
+        samples[0].flag += flag;
+        return;
+    }
+
+    cepL1WindowSample sample = {
+        .beat = beat,
+        .value = value,
+        .flag = flag,
+    };
+
+    size_t n = *count;
+    if (n < CEP_L1_WINDOW_CAP) {
+        samples[n++] = sample;
+    } else if (beat > samples[n - 1u].beat) {
+        samples[n - 1u] = sample;
+    } else {
+        return;
+    }
+
+    if (n > CEP_L1_WINDOW_CAP) {
+        n = CEP_L1_WINDOW_CAP;
+    }
+
+    size_t idx = (n < CEP_L1_WINDOW_CAP) ? (n - 1u) : (CEP_L1_WINDOW_CAP - 1u);
+    while (idx > 0u && samples[idx].beat > samples[idx - 1u].beat) {
+        cepL1WindowSample tmp = samples[idx - 1u];
+        samples[idx - 1u] = samples[idx];
+        samples[idx] = tmp;
+        --idx;
+    }
+
+    *count = n;
+}
+
+static bool cep_l1_window_write(cepCell* parent,
+                                const cepDT* window_name,
+                                const cepL1WindowSample* samples,
+                                size_t count,
+                                bool use_flag) {
+    if (!parent || !window_name) {
+        return false;
+    }
+
+    cepCell* window = cep_l1_ensure_dictionary(parent, window_name, CEP_STORAGE_RED_BLACK_T);
+    if (!window) {
+        return false;
+    }
+
+    cep_l1_clear_children(window);
+
+    for (size_t i = 0u; i < count && i < CEP_L1_WINDOW_CAP; ++i) {
+        char key_buf[4];
+        int written = snprintf(key_buf, sizeof key_buf, "%02zu", i);
+        if (written <= 0 || (size_t)written >= sizeof key_buf) {
+            return false;
+        }
+
+        cepDT key_dt = {0};
+        if (!cep_l1_text_to_dt_bytes(key_buf, (size_t)written, &key_dt)) {
+            return false;
+        }
+
+        size_t value = use_flag ? samples[i].flag : samples[i].value;
+        if (!cep_l1_set_number_value(window, &key_dt, value)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void cep_l1_metrics_publish(cepCell* node,
+                                   const cepL1WindowSample* samples,
+                                   size_t count) {
+    if (!node) {
+        return;
+    }
+
+    size_t latest_value = (count > 0u) ? samples[0].value : 0u;
+
+    (void)cep_l1_set_number_value(node, dt_latency(), latest_value);
+    (void)cep_l1_window_write(node, dt_lat_window(), samples, count, false);
+    (void)cep_l1_window_write(node, dt_err_window(), samples, count, true);
+}
+
+static void cep_l1_metrics_record_index(size_t successes, size_t failures) {
+    if (!successes && !failures) {
+        return;
+    }
+
+    size_t beat = (size_t)cep_heartbeat_current();
+    cep_l1_window_insert(cep_l1_index_metrics, &cep_l1_index_metric_count, beat, successes, failures);
+    cep_l1_metrics_publish(cep_l1_index_root(), cep_l1_index_metrics, cep_l1_index_metric_count);
+}
+
+static void cep_l1_metrics_record_adj(size_t successes, size_t failures) {
+    if (!successes && !failures) {
+        return;
+    }
+
+    size_t beat = (size_t)cep_heartbeat_current();
+    cep_l1_window_insert(cep_l1_adj_metrics, &cep_l1_adj_metric_count, beat, successes, failures);
+    cep_l1_metrics_publish(cep_l1_adj_root(), cep_l1_adj_metrics, cep_l1_adj_metric_count);
 }
 
 /* Copy the `attrs` dictionary from the request into the ledger node so callers
@@ -2781,25 +2914,30 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
     if (cep_l1_request_guard(request, dt_be_create())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* being = cep_cell_find_by_name(cep_l1_being_ledger(), &id_dt);
         if (!being) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* kind_cell = cep_cell_find_by_name(being, dt_kind());
         if (!kind_cell || !cep_cell_has_data(kind_cell)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepDT kind_dt = {0};
         if (!cep_l1_data_to_identifier(kind_cell->data, &kind_dt)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         if (!cep_l1_index_being(being, &id_dt, &kind_dt)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
@@ -2807,33 +2945,39 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
     } else if (cep_l1_request_guard(request, dt_bo_upsert())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* bond = cep_cell_find_by_name(cep_l1_bond_ledger(), &id_dt);
         if (!bond) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* src_link = cep_cell_find_by_name(bond, dt_src());
         cepCell* dst_link = cep_cell_find_by_name(bond, dt_dst());
         if (!src_link || !dst_link) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* src = cep_link_pull(src_link);
         cepCell* dst = cep_link_pull(dst_link);
         if (!src || !dst) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* type_cell = cep_cell_find_by_name(bond, dt_type());
         if (!type_cell || !cep_cell_has_data(type_cell)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepDT type_dt = {0};
         if (!cep_l1_data_to_identifier(type_cell->data, &type_dt)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
@@ -2844,6 +2988,7 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
         }
 
         if (!cep_l1_index_bond(bond, &id_dt, src, dst, &type_dt, directed)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
@@ -2851,29 +2996,35 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
     } else if (cep_l1_request_guard(request, dt_ctx_upsert())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* ctx = cep_cell_find_by_name(cep_l1_context_ledger(), &id_dt);
         if (!ctx) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* type_cell = cep_cell_find_by_name(ctx, dt_type());
         if (!type_cell || !cep_cell_has_data(type_cell)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepDT type_dt = {0};
         if (!cep_l1_data_to_identifier(type_cell->data, &type_dt)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         if (!cep_l1_index_context(ctx, &id_dt, &type_dt)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         if (!cep_l1_index_facets(ctx, &id_dt)) {
+            cep_l1_metrics_record_index(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
@@ -2881,7 +3032,7 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
     }
 
     if (handled) {
-        cep_l1_publish_metrics(cep_l1_index_root());
+        cep_l1_metrics_record_index(1u, 0u);
         cep_l1_mark_outcome_ok(request);
     }
 
@@ -2900,11 +3051,13 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     if (cep_l1_request_guard(request, dt_be_create())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
+            cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* being = cep_cell_find_by_name(cep_l1_being_ledger(), &id_dt);
         if (!being || !cep_l1_adj_being(being, &id_dt)) {
+            cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
@@ -2912,27 +3065,32 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     } else if (cep_l1_request_guard(request, dt_bo_upsert())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
+            cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* bond = cep_cell_find_by_name(cep_l1_bond_ledger(), &id_dt);
         if (!bond) {
+            cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* src_link = cep_cell_find_by_name(bond, dt_src());
         cepCell* dst_link = cep_cell_find_by_name(bond, dt_dst());
         if (!src_link || !dst_link) {
+            cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* src = cep_link_pull(src_link);
         cepCell* dst = cep_link_pull(dst_link);
         if (!src || !dst) {
+            cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         if (!cep_l1_adj_bond(bond, &id_dt, src, dst)) {
+            cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
@@ -2940,15 +3098,18 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     } else if (cep_l1_request_guard(request, dt_ctx_upsert())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
+            cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* ctx = cep_cell_find_by_name(cep_l1_context_ledger(), &id_dt);
         if (!ctx) {
+            cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         if (!cep_l1_adj_context(ctx, &id_dt)) {
+            cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
@@ -2956,7 +3117,7 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     }
 
     if (handled) {
-        cep_l1_publish_metrics(cep_l1_adj_root());
+        cep_l1_metrics_record_adj(1u, 0u);
         cep_l1_mark_outcome_ok(request);
     }
 
