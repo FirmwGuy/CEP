@@ -168,6 +168,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `pc` | core | program counter stored with each instance. |
 | `subs` | core | dictionary of active wait subscriptions per instance. |
 | `events` | core | queued external events awaiting consumption by the VM. |
+| `event` | core | link reference from wait entries to a captured event record. |
 | `emits` | core | staged transform outputs stored per instance before commit. |
 | `budget` | core | per-instance clamp state capturing execution ceilings. |
 | `site` | core | identifier for a decision site inside a flow. |
@@ -177,6 +178,11 @@ when a new behavior needs a fresh word before it lands in code.
 | `signal` | core | general-purpose signal identifier metadata. |
 | `status` | core | lifecycle marker used by flow subscriptions and caches. |
 | `payload` | core | dictionary carrying captured event payloads. |
+| `evidence` | core | supporting facts recorded alongside a decision entry. |
+| `validation` | core | replay guard metadata stored for decision verification. |
+| `fingerprint` | core | deterministic replay key stored under `validation`. |
+| `retain` | core | retention directive for decision ledger entries. |
+| `history` | core | append-only timeline recorded for event lifecycle tracking. |
 | `choice` | core | decision choice recorded for replay. |
 | `step_limit` | core | maximum steps permitted inside the current clamp window. |
 | `steps_used` | core | running count of steps consumed during the active window. |
@@ -187,6 +193,10 @@ when a new behavior needs a fresh word before it lands in code.
 | `sub_count` | core | summary counter of active subscriptions. |
 | `evt_count` | core | summary counter of queued events. |
 | `emit_count` | core | summary counter of staged transform outputs. |
+| `dec_count` | core | summary counter of decisions aggregated per policy. |
+| `inst_count` | core | summary counter of instances grouped under a policy. |
+| `site_count` | core | summary counter of decision sites keyed under a policy. |
+| `latency` | core | heartbeat latency metric stored on adjacency summaries. |
 | `timeout` | core | wait specification field expressing timeout in beats. |
 | `deadline` | core | recorded beat when a wait will time out. |
 | `signal_glob` | core | glob pattern stored alongside wait subscriptions. |

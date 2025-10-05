@@ -10,6 +10,12 @@
 
 #include <string.h>
 
+static cepBeatNumber cep_serialization_marked_decision_beat = CEP_BEAT_INVALID;
+
+void cep_serialization_mark_decision_replay(void) {
+    cep_serialization_marked_decision_beat = cep_heartbeat_current();
+}
+
 static inline uint16_t cep_serial_to_be16(uint16_t value) {
     return __builtin_bswap16(value);
 }
@@ -530,9 +536,21 @@ bool cep_serialization_emit_cell(const cepCell* cell,
         return false;
 
     cepSerializationHeader local = header ? *header : (cepSerializationHeader){0};
+
+    cepBeatNumber current_beat = cep_beat_index();
+    if (cep_serialization_marked_decision_beat != CEP_BEAT_INVALID &&
+        cep_serialization_marked_decision_beat != current_beat) {
+        cep_serialization_marked_decision_beat = CEP_BEAT_INVALID;
+    }
+    if (cep_serialization_marked_decision_beat == current_beat) {
+        local.journal_decision_replay = true;
+    }
+
     if (!local.metadata_length && !local.journal_metadata_present) {
         local.journal_metadata_present = true;
-        local.journal_beat = cep_beat_index();
+        local.journal_beat = current_beat;
+    } else if (!local.journal_beat) {
+        local.journal_beat = current_beat;
     }
     if (!local.magic)
         local.magic = CEP_SERIALIZATION_MAGIC;

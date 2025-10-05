@@ -89,10 +89,12 @@ bool cep_serialization_header_read(const uint8_t* chunk,
                                    size_t chunk_size,
                                    cepSerializationHeader* header);
 bool cep_serialization_emit_cell(const cepCell* cell,
-                                   const cepSerializationHeader* header,
-                                   cepSerializationWriteFn write,
-                                   void* context,
-                                   size_t blob_payload_bytes);
+                                 const cepSerializationHeader* header,
+                                 cepSerializationWriteFn write,
+                                 void* context,
+                                 size_t blob_payload_bytes);
+
+void cep_serialization_mark_decision_replay(void);
 cepSerializationReader* cep_serialization_reader_create(cepCell* root);
 void cep_serialization_reader_destroy(cepSerializationReader* reader);
 void cep_serialization_reader_reset(cepSerializationReader* reader);
