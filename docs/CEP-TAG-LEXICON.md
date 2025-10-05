@@ -143,6 +143,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `guardian` | core | declarative invariant rules enforced by flows. |
 | `instance` | core | runtime instances tracking VM state. |
 | `decision` | core | immutable decision cells recorded for replay. |
+| `dec_archive` | core | archival ledger for decisions retained past their TTL. |
 | `index` | core | durable indexes mirroring flow lookups. |
 | `inbox` | core | intent ingress namespace for L2. |
 | `adj` | core | transient adjacency/cache namespace under `/tmp`. |
@@ -180,8 +181,12 @@ when a new behavior needs a fresh word before it lands in code.
 | `payload` | core | dictionary carrying captured event payloads. |
 | `evidence` | core | supporting facts recorded alongside a decision entry. |
 | `validation` | core | replay guard metadata stored for decision verification. |
+| `telemetry` | core | dictionary capturing per-decision evaluation metrics. |
 | `fingerprint` | core | deterministic replay key stored under `validation`. |
 | `retain` | core | retention directive for decision ledger entries. |
+| `retain_mode` | core | canonical retention mode (`permanent`, `ttl`, `archive`). |
+| `retain_ttl` | core | retention window expressed in beats. |
+| `retain_upto` | core | beat when the decision expires under TTL enforcement. |
 | `history` | core | append-only timeline recorded for event lifecycle tracking. |
 | `choice` | core | decision choice recorded for replay. |
 | `step_limit` | core | maximum steps permitted inside the current clamp window. |
@@ -197,6 +202,13 @@ when a new behavior needs a fresh word before it lands in code.
 | `inst_count` | core | summary counter of instances grouped under a policy. |
 | `site_count` | core | summary counter of decision sites keyed under a policy. |
 | `latency` | core | heartbeat latency metric stored on adjacency summaries. |
+| `lat_window` | core | rolling latency window maintained on adjacency summaries. |
+| `err_window` | core | rolling error window maintained on policy and adjacency summaries. |
+| `score` | core | recorded policy evaluation score for a decision. |
+| `confidence` | core | recorded confidence level for a decision outcome. |
+| `rng_seed` | core | deterministic seed used when sampling policy decisions. |
+| `rng_seq` | core | deterministic sequence number associated with policy RNG state. |
+| `error_flag` | core | boolean marker noting whether a decision ended in an error state. |
 | `timeout` | core | wait specification field expressing timeout in beats. |
 | `deadline` | core | recorded beat when a wait will time out. |
 | `signal_glob` | core | glob pattern stored alongside wait subscriptions. |
