@@ -1037,6 +1037,9 @@ bool cep_heartbeat_resolve_agenda(void) {
 /** Execute the enzymes scheduled for this beat, short-circuiting on fatal
     errors while allowing retries to propagate to the agenda statistics. */
 bool cep_heartbeat_execute_agenda(void) {
+    // FIXME: Enzyme callbacks are invoked during cep_heartbeat_process_impulses;
+    // either move execution here or update documentation so the phase diagram
+    // matches the current control flow.
     return CEP_RUNTIME.running;
 }
 

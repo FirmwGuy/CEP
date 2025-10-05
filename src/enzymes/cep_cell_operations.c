@@ -373,7 +373,7 @@ static int cep_cell_enzyme_delete(const cepPath* signal, const cepPath* target) 
         return CEP_ENZYME_FATAL;
     }
 
-    cep_cell_delete_hard(cell);
+    cep_cell_delete(cell);
     return CEP_ENZYME_SUCCESS;
 }
 
@@ -649,4 +649,3 @@ bool cep_cell_operations_register(cepEnzymeRegistry* registry) {
 
     return true;
 }
-
