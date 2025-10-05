@@ -6,8 +6,10 @@
 #include "cep_l1_coherence.h"
 
 #include "../l0_kernel/cep_cell.h"
+#include "../l0_kernel/cep_identifier.h"
 #include "../l0_kernel/cep_enzyme.h"
 #include "../l0_kernel/cep_heartbeat.h"
+#include "../l0_kernel/cep_mailroom.h"
 #include "../l0_kernel/cep_namepool.h"
 
 #include <assert.h>
@@ -48,8 +50,10 @@ static const cepDT* dt_facet_root(void)  { return CEP_DTAW("CEP", "facet"); }
 static const cepDT* dt_debt(void)        { return CEP_DTAW("CEP", "debt"); }
 static const cepDT* dt_decision(void)    { return CEP_DTAW("CEP", "decision"); }
 static const cepDT* dt_index(void)       { return CEP_DTAW("CEP", "index"); }
+static const cepDT* dt_err_cat(void)     { return CEP_DTAW("CEP", "err_cat"); }
 static const cepDT* dt_coh(void)         { return CEP_DTAW("CEP", "coh"); }
 static const cepDT* dt_data_root(void)   { return CEP_DTAW("CEP", "data"); }
+static const cepDT* dt_sys(void)         { return CEP_DTAW("CEP", "sys"); }
 static const cepDT* dt_tmp(void)         { return CEP_DTAW("CEP", "tmp"); }
 static const cepDT* dt_adj(void)         { return CEP_DTAW("CEP", "adj"); }
 static const cepDT* dt_by_being(void)    { return CEP_DTAW("CEP", "by_being"); }
@@ -72,6 +76,107 @@ static const cepDT* dt_in_bonds(void)    { return CEP_DTAW("CEP", "in_bonds"); }
 static const cepDT* dt_ctx_by_role(void) { return CEP_DTAW("CEP", "ctx_by_role"); }
 static const cepDT* dt_required(void)    { return CEP_DTAW("CEP", "required"); }
 static const cepDT* dt_attrs(void)       { return CEP_DTAW("CEP", "attrs"); }
+static const cepDT* dt_latency(void)     { return CEP_DTAW("CEP", "latency"); }
+static const cepDT* dt_lat_window(void)  { return CEP_DTAW("CEP", "lat_window"); }
+static const cepDT* dt_err_window(void)  { return CEP_DTAW("CEP", "err_window"); }
+static const cepDT* dt_choice(void)      { return CEP_DTAW("CEP", "choice"); }
+static const cepDT* dt_retain_mode(void) { return CEP_DTAW("CEP", "retain_mode"); }
+static const cepDT* dt_retain_ttl(void)  { return CEP_DTAW("CEP", "retain_ttl"); }
+static const cepDT* dt_retain_upto(void) { return CEP_DTAW("CEP", "retain_upto"); }
+
+typedef struct {
+    const char* code;
+    const char* message;
+} cepL1ErrorCatalogEntry;
+
+static const cepL1ErrorCatalogEntry CEP_L1_ERROR_CATALOG[] = {
+    {"attrs", "attributes branch missing"},
+    {"attrs-copy", "failed to copy submitted attribute"},
+    {"attrs-data", "attribute payload invalid"},
+    {"attrs-lock", "unable to lock attribute dictionary"},
+    {"attrs-name", "attribute name invalid"},
+    {"attrs-value", "attribute value invalid"},
+    {"being-lock", "unable to lock being entry"},
+    {"bond-lock", "unable to lock bond entry"},
+    {"bond-update", "failed to update bond payload"},
+    {"create-failed", "failed to create ledger entry"},
+    {"ctx-lock", "unable to lock context entry"},
+    {"ctx-type", "context type invalid"},
+    {"debt-lock", "unable to lock debt bucket"},
+    {"decision-ledger", "decision ledger update failed"},
+    {"facet-link", "failed to link facet target"},
+    {"facet-lock", "unable to lock facet bucket"},
+    {"facet-parse", "facet payload invalid"},
+    {"facets", "facets dictionary missing"},
+    {"facets-lock", "unable to lock facets dictionary"},
+    {"invalid-role", "role identifier invalid"},
+    {"ledger-lock", "unable to lock ledger"},
+    {"missing-endpoint", "bond endpoint missing"},
+    {"missing-ledger", "required ledger missing"},
+    {"role-link", "failed to link role target"},
+    {"role-target", "role target missing"},
+    {"roles", "roles dictionary missing"},
+    {"roles-lock", "unable to lock roles dictionary"},
+    {"set-kind", "failed to store being kind"},
+};
+
+static bool cep_l1_set_string_value(cepCell* parent, const cepDT* name, const char* text);
+
+static bool cep_l1_seed_error_catalog(void) {
+    cepCell* root = cep_root();
+    cepCell* sys = cep_cell_find_by_name(root, dt_sys());
+    if (!sys) {
+        return false;
+    }
+
+    cepCell* catalog = cep_cell_find_by_name(sys, dt_err_cat());
+    if (!catalog) {
+        return false;
+    }
+
+    for (size_t i = 0; i < cep_lengthof(CEP_L1_ERROR_CATALOG); ++i) {
+        const cepL1ErrorCatalogEntry* entry = &CEP_L1_ERROR_CATALOG[i];
+        cepID tag = cep_text_to_word(entry->code);
+        if (!tag) {
+            size_t len = strlen(entry->code);
+            tag = cep_namepool_intern(entry->code, len);
+        }
+        if (!tag) {
+            return false;
+        }
+
+        cepDT code_dt = {
+            .domain = cep_domain_cep(),
+            .tag = tag,
+        };
+
+        cepCell* bucket = cep_cell_find_by_name(catalog, &code_dt);
+        if (!bucket) {
+            cepDT dict_type = *dt_dictionary();
+            cepDT name_copy = code_dt;
+            bucket = cep_dict_add_dictionary(catalog, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        }
+        if (!bucket) {
+            return false;
+        }
+
+        if (!cep_l1_set_string_value(bucket, dt_text(), entry->message)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void cep_l1_publish_metrics(cepCell* node) {
+    if (!node) {
+        return;
+    }
+
+    (void)cep_l1_set_string_value(node, dt_latency(), "0");
+    (void)cep_l1_set_string_value(node, dt_lat_window(), "0");
+    (void)cep_l1_set_string_value(node, dt_err_window(), "0");
+}
 
 typedef struct {
     cepCell*    cell;
@@ -237,65 +342,13 @@ static bool cep_l1_text_to_dt_bytes(const char* text, size_t length, cepDT* out)
     return true;
 }
 
+/* Delegate identifier composition to the shared L0 helper so every layer
+ * normalises tokens identically without duplicating validation logic. */
 bool cep_l1_compose_identifier(const char* const tokens[],
                                size_t token_count,
                                char* out_buffer,
                                size_t out_cap) {
-    if (!tokens || !token_count || !out_buffer || out_cap == 0u) {
-        return false;
-    }
-
-    size_t pos = 0u;
-    for (size_t i = 0; i < token_count; ++i) {
-        const char* token = tokens[i];
-        if (!token) {
-            return false;
-        }
-
-        while (*token == ' ' || *token == '\t' || *token == '\n' || *token == '\r') {
-            ++token;
-        }
-        size_t len = strlen(token);
-        while (len && (token[len - 1u] == ' ' || token[len - 1u] == '\t' || token[len - 1u] == '\n' || token[len - 1u] == '\r')) {
-            --len;
-        }
-        if (!len) {
-            return false;
-        }
-
-        for (size_t j = 0; j < len; ++j) {
-            unsigned char ch = (unsigned char)token[j];
-            if (ch == ':') {
-                return false;
-            }
-            if (ch >= 'A' && ch <= 'Z') {
-                ch = (unsigned char)(ch - 'A' + 'a');
-            }
-            if (!((ch >= 'a' && ch <= 'z') ||
-                  (ch >= '0' && ch <= '9') ||
-                  ch == '-' || ch == '_' || ch == '.' || ch == '/')) {
-                return false;
-            }
-
-            if (pos >= out_cap - 1u || pos >= CEP_L1_IDENTIFIER_MAX) {
-                return false;
-            }
-            out_buffer[pos++] = (char)ch;
-        }
-
-        if (i + 1u < token_count) {
-            if (pos >= out_cap - 1u || pos >= CEP_L1_IDENTIFIER_MAX) {
-                return false;
-            }
-            out_buffer[pos++] = ':';
-        }
-    }
-
-    if (!pos) {
-        return false;
-    }
-    out_buffer[pos] = '\0';
-    return true;
+    return cep_compose_identifier(tokens, token_count, out_buffer, out_cap);
 }
 
 bool cep_l1_tokens_to_dt(const char* const tokens[], size_t token_count, cepDT* out_dt) {
@@ -394,17 +447,23 @@ static cepCell* cep_l1_inbox_bucket(const cepDT* bucket_name) {
         return NULL;
     }
 
-    cepCell* coh = cep_l1_coh_root();
-    if (!coh) {
+    cepCell* root = cep_root();
+    cepCell* data = cep_cell_find_by_name(root, dt_data_root());
+    if (!data) {
         return NULL;
     }
 
-    cepCell* inbox = cep_cell_find_by_name(coh, dt_inbox());
-    if (!inbox || !cep_cell_has_store(inbox)) {
+    cepCell* mailroom = cep_cell_find_by_name(data, dt_inbox());
+    if (!mailroom || !cep_cell_has_store(mailroom)) {
         return NULL;
     }
 
-    return cep_cell_find_by_name(inbox, bucket_name);
+    cepCell* coh_ns = cep_cell_find_by_name(mailroom, dt_coh());
+    if (!coh_ns || !cep_cell_has_store(coh_ns)) {
+        return NULL;
+    }
+
+    return cep_cell_find_by_name(coh_ns, bucket_name);
 }
 
 static bool cep_l1_store_original_value(cepCell* original_root,
@@ -1181,6 +1240,14 @@ bool cep_l1_coherence_bootstrap(void) {
         return false;
     }
 
+    if (!cep_mailroom_bootstrap()) {
+        return false;
+    }
+
+    if (!cep_l1_seed_error_catalog()) {
+        return false;
+    }
+
     cepCell* coh = cep_l1_coh_root_cell();
     if (!coh) {
         return false;
@@ -1362,10 +1429,14 @@ static cepCell* cep_l1_decision_entry(const cepDT* ctx_id, const cepDT* facet_id
    decision or link is present. */
 static cepCell* cep_l1_decision_target(const cepDT* ctx_id, const cepDT* facet_id) {
     cepCell* entry = cep_l1_decision_entry(ctx_id, facet_id);
-    if (!entry || !cep_cell_is_link(entry)) {
+    if (!entry || !cep_cell_has_store(entry)) {
         return NULL;
     }
-    return cep_link_pull(entry);
+    cepCell* choice = cep_cell_find_by_name(entry, dt_choice());
+    if (!choice || !cep_cell_is_link(choice)) {
+        return NULL;
+    }
+    return cep_link_pull(choice);
 }
 
 /* Persist the chosen candidate for a facet so deterministic replays can
@@ -1388,23 +1459,49 @@ static bool cep_l1_decision_record(const cepDT* ctx_id,
         return false;
     }
 
+    cepCell* entry = NULL;
     cepL1StoreLock ledger_lock = {0};
     if (!cep_l1_store_lock(ledger, &ledger_lock)) {
         return false;
     }
 
-    bool ok = cep_l1_link_child(ledger, &key_dt, target);
-    cepCell* entry = NULL;
-    if (ok) {
-        entry = cep_cell_find_by_name(ledger, &key_dt);
-        ok = entry != NULL;
+    entry = cep_cell_find_by_name(ledger, &key_dt);
+    if (!entry) {
+        cepDT dict_type = *dt_dictionary();
+        cepDT key_copy = key_dt;
+        entry = cep_dict_add_dictionary(ledger, &key_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
     }
     cep_l1_store_unlock(&ledger_lock);
+    if (!entry) {
+        return false;
+    }
+
+    cepL1StoreLock entry_lock = {0};
+    if (!cep_l1_store_lock(entry, &entry_lock)) {
+        return false;
+    }
+
+    cepCell* existing_choice = cep_cell_find_by_name(entry, dt_choice());
+    if (existing_choice) {
+        cep_cell_child_take_hard(entry, existing_choice);
+    }
+
+    bool ok = false;
+    cepDT choice_name = *dt_choice();
+    ok = cep_l1_link_child(entry, &choice_name, target);
+
+    if (ok) {
+        (void)cep_l1_set_string_value(entry, dt_retain_mode(), "permanent");
+        (void)cep_l1_set_string_value(entry, dt_retain_ttl(), "0");
+        (void)cep_l1_set_string_value(entry, dt_retain_upto(), "0");
+    }
+
+    cep_l1_store_unlock(&entry_lock);
     if (!ok) {
         return false;
     }
 
-    if (request && entry) {
+    if (request) {
         cep_l1_attach_request_parent(entry, request);
     }
     return true;
@@ -2784,6 +2881,7 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
     }
 
     if (handled) {
+        cep_l1_publish_metrics(cep_l1_index_root());
         cep_l1_mark_outcome_ok(request);
     }
 
@@ -2858,6 +2956,7 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     }
 
     if (handled) {
+        cep_l1_publish_metrics(cep_l1_adj_root());
         cep_l1_mark_outcome_ok(request);
     }
 
@@ -2921,6 +3020,10 @@ bool cep_l1_coherence_register(cepEnzymeRegistry* registry) {
     }
 
     if (!cep_l1_coherence_bootstrap()) {
+        return false;
+    }
+
+    if (!cep_mailroom_register(registry)) {
         return false;
     }
 

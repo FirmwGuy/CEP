@@ -8,6 +8,7 @@
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_enzyme.h"
 #include "../l0_kernel/cep_heartbeat.h"
+#include "../l0_kernel/cep_mailroom.h"
 #include "../l0_kernel/cep_serialization.h"
 #include "../l0_kernel/cep_namepool.h"
 
@@ -4095,6 +4096,10 @@ bool cep_l2_flows_bootstrap(void) {
         return false;
     }
 
+    if (!cep_mailroom_bootstrap()) {
+        return false;
+    }
+
     cepCell* flow_root = cep_l2_flow_root();
     if (!flow_root) {
         return false;
@@ -5199,6 +5204,10 @@ bool cep_l2_flows_register(cepEnzymeRegistry* registry) {
     }
 
     if (!cep_l2_flows_bootstrap()) {
+        return false;
+    }
+
+    if (!cep_mailroom_register(registry)) {
         return false;
     }
 

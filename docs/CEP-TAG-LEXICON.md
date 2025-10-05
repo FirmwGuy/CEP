@@ -43,6 +43,8 @@ when a new behavior needs a fresh word before it lands in code.
 | `env` | core | runtime environment subtree for external handles. |
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `inbox` | core | captured impulses queued for the current beat. |
+| `mailroom` | core | unified inbox namespace that receives all external intents. |
+| `mr_route` | ops | routing enzyme that moves unified inbox entries into layer inboxes. |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |
 | `lib` | core | library snapshot directory for proxied streams. |
@@ -59,6 +61,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `stage` | core | per-beat stage log recording committed mutations. |
 | `stream-log` | core | runtime log for stream adapters. |
 | `sys` | core | system namespace with counters and configuration. |
+| `err_cat` | core | dictionary of canonical error codes referenced by outcomes. |
 | `text` | core | namepool payload store for textual data. |
 | `tmp` | core | scratch list reserved for tooling. |
 

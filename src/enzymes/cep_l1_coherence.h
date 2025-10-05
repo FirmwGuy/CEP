@@ -9,9 +9,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "../l0_kernel/cep_identifier.h"
 #include "../l0_kernel/cep_enzyme.h"
 
-#define CEP_L1_IDENTIFIER_MAX 256u
+#define CEP_L1_IDENTIFIER_MAX CEP_IDENTIFIER_MAX
 
 #ifdef __cplusplus
 extern "C" {

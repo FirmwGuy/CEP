@@ -63,6 +63,19 @@ static cepCell* l2_inbox_bucket(const char* bucket_name) {
     return bucket;
 }
 
+static cepCell* l2_mailroom_bucket(const char* bucket_name) {
+    cepCell* data = cep_cell_find_by_name(cep_root(), CEP_DTAW("CEP", "data"));
+    munit_assert_not_null(data);
+    cepCell* inbox = cep_cell_find_by_name(data, CEP_DTAW("CEP", "inbox"));
+    munit_assert_not_null(inbox);
+    cepCell* flow_ns = cep_cell_find_by_name(inbox, CEP_DTAW("CEP", "flow"));
+    munit_assert_not_null(flow_ns);
+    cepDT dt = l2_name_dt(bucket_name);
+    cepCell* bucket = cep_cell_find_by_name(flow_ns, &dt);
+    munit_assert_not_null(bucket);
+    return bucket;
+}
+
 static cepCell* l2_tmp_adj(void) {
     cepCell* tmp = cep_cell_find_by_name(cep_root(), CEP_DTAW("CEP", "tmp"));
     munit_assert_not_null(tmp);
@@ -96,6 +109,19 @@ static void l2_clear_state(void) {
     if (inbox && cep_cell_has_store(inbox)) {
         for (cepCell* bucket = cep_cell_first(inbox); bucket; bucket = cep_cell_next(inbox, bucket)) {
             l2_remove_children(bucket);
+        }
+    }
+
+    cepCell* data = cep_cell_find_by_name(cep_root(), CEP_DTAW("CEP", "data"));
+    if (data) {
+        cepCell* mailroom = cep_cell_find_by_name(data, CEP_DTAW("CEP", "inbox"));
+        if (mailroom && cep_cell_has_store(mailroom)) {
+            cepCell* flow_ns = cep_cell_find_by_name(mailroom, CEP_DTAW("CEP", "flow"));
+            if (flow_ns && cep_cell_has_store(flow_ns)) {
+                for (cepCell* bucket = cep_cell_first(flow_ns); bucket; bucket = cep_cell_next(flow_ns, bucket)) {
+                    l2_remove_children(bucket);
+                }
+            }
         }
     }
 
@@ -152,7 +178,7 @@ static void l2_set_number(cepCell* parent, const char* field, size_t value) {
 }
 
 static cepCell* l2_create_request(const char* bucket_name, const char* request_id) {
-    cepCell* bucket = l2_inbox_bucket(bucket_name);
+    cepCell* bucket = l2_mailroom_bucket(bucket_name);
     cepDT req_dt = l2_name_dt(request_id);
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
     cepDT req_copy = req_dt;

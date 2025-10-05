@@ -9,6 +9,7 @@
 #include "cep_cell.h"
 #include "cep_enzyme.h"
 #include "cep_heartbeat.h"
+#include "cep_mailroom.h"
 #include "cep_l1_coherence.h"
 #include "cep_namepool.h"
 
@@ -267,6 +268,16 @@ static void coh_clear_state(void) {
                 for (cepCell* bucket = cep_cell_first(inbox); bucket; bucket = cep_cell_next(inbox, bucket)) {
                     coh_clear_children(bucket);
                 }
+            }
+        }
+    }
+
+    cepCell* inbox = data ? cep_cell_find_by_name(data, CEP_DTAW("CEP", "inbox")) : NULL;
+    if (inbox && cep_cell_has_store(inbox)) {
+        cepCell* coh_ns = cep_cell_find_by_name(inbox, CEP_DTAW("CEP", "coh"));
+        if (coh_ns && cep_cell_has_store(coh_ns)) {
+            for (cepCell* bucket = cep_cell_first(coh_ns); bucket; bucket = cep_cell_next(coh_ns, bucket)) {
+                coh_clear_children(bucket);
             }
         }
     }
