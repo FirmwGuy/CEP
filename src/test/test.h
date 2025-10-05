@@ -46,4 +46,10 @@ MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fi
 #endif
 MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_fixture);
 
+MunitResult test_l2_ingest_and_decision(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_l2_retention_archive(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_l2_wait_event_resume(const MunitParameter params[], void* user_data_or_fixture);
+void*       l2_setup(const MunitParameter params[], void* user_data);
+void        l2_teardown(void* fixture);
+
 extern MunitSuite lock_suites[];

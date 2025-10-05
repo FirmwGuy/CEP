@@ -75,6 +75,30 @@ MunitTest tests[] = {
         timeout_params
     },
     {
+        "/flows/basic",
+        test_l2_ingest_and_decision,
+        l2_setup,
+        l2_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
+    {
+        "/flows/wait_event",
+        test_l2_wait_event_resume,
+        l2_setup,
+        l2_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
+    {
+        "/flows/retention",
+        test_l2_retention_archive,
+        l2_setup,
+        l2_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
+    {
         "/serialization/cell",
         test_serialization,
         NULL,
