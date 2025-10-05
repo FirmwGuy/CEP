@@ -479,6 +479,35 @@ static void decorate_facets_empty(cepL1ContextIntent* intent, void* user) {
 
 typedef void (*CohContextDecorator)(cepL1ContextIntent* intent, void* user);
 
+static void coh_context_intent_rehydrate(cepCell* request, cepL1ContextIntent* intent) {
+    CEP_0(intent);
+    intent->request = request;
+    if (!request) {
+        return;
+    }
+
+    intent->roles = cep_cell_find_by_name(request, CEP_DTAW("CEP", "roles"));
+    if (!intent->roles) {
+        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+        cepDT roles_name = *CEP_DTAW("CEP", "roles");
+        intent->roles = cep_dict_add_dictionary(request, &roles_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    }
+
+    intent->facets = cep_cell_find_by_name(request, CEP_DTAW("CEP", "facets"));
+    if (!intent->facets) {
+        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+        cepDT facets_name = *CEP_DTAW("CEP", "facets");
+        intent->facets = cep_dict_add_dictionary(request, &facets_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    }
+
+    intent->original = cep_cell_find_by_name(request, CEP_DTAW("CEP", "original"));
+    if (!intent->original) {
+        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+        cepDT original_name = *CEP_DTAW("CEP", "original");
+        intent->original = cep_dict_add_dictionary(request, &original_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    }
+}
+
 typedef struct {
     const char* role_name;
     cepCell*    role_target;
@@ -937,7 +966,9 @@ MunitResult test_coh_indexes_and_adjacency(const MunitParameter params[], void* 
                                              "session",
                                              decorate_roles_word,
                                              &role_initial);
-    decorate_facets_with_target(ctx_request, bond);
+    cepL1ContextIntent ctx_intent = {0};
+    coh_context_intent_rehydrate(ctx_request, &ctx_intent);
+    decorate_facets_with_target(&ctx_intent, bond);
     coh_run_single_beat();
 
     cepCell* ctx = coh_context_cell("ctx_idx");
@@ -975,7 +1006,9 @@ MunitResult test_coh_indexes_and_adjacency(const MunitParameter params[], void* 
                                             "meeting",
                                             decorate_roles_word,
                                             &role_update);
-    decorate_facets_empty(ctx_update, NULL);
+    cepL1ContextIntent update_intent = {0};
+    coh_context_intent_rehydrate(ctx_update, &update_intent);
+    decorate_facets_empty(&update_intent, NULL);
     coh_run_single_beat();
 
     munit_assert_null(cep_cell_find_by_name(session_bucket, &ctx_dt));
@@ -1023,7 +1056,9 @@ MunitResult test_coh_agenda_order(const MunitParameter params[], void* fixture_p
                                              "session",
                                              decorate_roles_word,
                                              &role);
-    decorate_facets_with_target(ctx_request, being);
+    cepL1ContextIntent agenda_intent = {0};
+    coh_context_intent_rehydrate(ctx_request, &agenda_intent);
+    decorate_facets_with_target(&agenda_intent, being);
     coh_run_single_beat();
 
     cepBeatNumber beat = cep_heartbeat_current();

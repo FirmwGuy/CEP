@@ -1,4 +1,4 @@
-# Layer 2 Integration Guide
+# L2 Flow: Integration Guide
 
 Layer 2 is the bridge between business intent and the kernel. Treat it as the
 place where product teams submit playbooks, policies, and experiments, while the
@@ -21,6 +21,15 @@ runtime guarantees deterministic execution and exhaustive evidence.
 - **Intent format** – Payloads are plain dictionaries with `id` and `original`
   mirrors. Canonicalisers in `fl_ing`, `ni_ing`, and `inst_ing` expect text
   fields to be NUL-terminated UTF-8.
+- **Intent builders** – `cep_l2_definition_intent_init()`
+  (plus helpers such as `cep_l2_definition_intent_add_step()` and
+  `cep_l2_definition_step_ensure_spec()`),
+  `cep_l2_niche_intent_init()`, `cep_l2_instance_start_intent_init()`,
+  `cep_l2_instance_event_intent_init()`, and
+  `cep_l2_instance_control_intent_init()` build mailroom-ready requests with
+  canonical identifiers, optional spec dictionaries, and helper accessors for
+  budget/payload fields. Using these helpers keeps tests and application code
+  away from low-level dictionary wiring.
 - **Policy hooks** – Policies live under `/data/flow/policy/<id>`. Populate
   optional `telemetry` keys (`score`, `confidence`, `rng_seed`, `rng_seq`) if
   the policy has deterministic values; otherwise the engine synthesizes them.

@@ -1,4 +1,4 @@
-# Layer 2 Overview
+# L2 Flow: Overview
 
 Layer 2 teaches the runtime how to run playbooks: it wraps the raw facts from Layer 0 and the ledgers from Layer 1 in living flows, so product teams can tell the system “try this tactic, log every choice, and replay it whenever we need to explain ourselves.”
 
@@ -7,6 +7,7 @@ Layer 2 teaches the runtime how to run playbooks: it wraps the raw facts from La
 ## Technical Details
 - **Scope** – L2 adds a deterministic Flow VM with five programmable steps (Guard, Transform, Wait, Decide, Clamp). It anchors durable ledgers under `/data/flow/*` (`program`, `variant`, `policy`, `niche`, `guardian`, `instance`, `decision`, `index`) and transient caches under `/tmp/flow/*`.
 - **Intents & enzymes** – Producers drop `fl_upsert`, `ni_upsert`, `inst_start`, `inst_event`, and `inst_ctrl` intents under `/data/inbox/flow/{bucket}/{txn}`. The mailroom moves them into `/data/flow/inbox/**`, then the usual enzyme pack (`fl_ing`, `ni_ing`, `inst_ing`, `fl_wake`, `fl_step`, `fl_index`, `fl_adj`) runs in its strict before/after order so beats deterministically follow ingestion → wake → stepping → indexing → adjacency refresh.
+- **Intent builders** – `cep_l2_definition_intent_init()` (with helpers to add steps and specs), `cep_l2_niche_intent_init()`, `cep_l2_instance_start_intent_init()`, `cep_l2_instance_event_intent_init()`, and `cep_l2_instance_control_intent_init()` prepare mailroom requests with canonical identifiers, optional payload dictionaries, and convenience setters so application code avoids manual dictionary plumbing.
 - **Determinism** – Every policy branch writes a Decision Cell under `/data/flow/decision/{inst}/{site}` capturing choice, links to `policy` and `variant`, a fingerprint, validation/evidence payloads, telemetry metrics, and retention directives. Replay validates fingerprints and context signatures before reusing a stored decision.
 - **Instance lifecycle** – Instances move through `ready → waiting → ready/done/error/paused` states. Wait steps materialise subscriptions in `subs`, latch events from `inst_event` intents, and compute deadlines/timeouts. Clamp steps enforce budgets using the `budget` dictionary (`step_limit`, `steps_used`, `deadline`).
 - **Observability** – `fl_index` and `fl_adj` rebuild durable indexes (`inst_by_var`, `inst_by_st`, `dec_by_pol`) and adjacency summaries (`by_inst`). They now publish rolling `lat_window`/`err_window` samples plus decision telemetry (`score`, `confidence`, `rng_seed`, `rng_seq`, `latency`, `error_flag`).

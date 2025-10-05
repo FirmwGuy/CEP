@@ -1,4 +1,4 @@
-# Layer 2 Roadmap
+# L2 Flow: Roadmap
 
 Layer 2 is live but still growing muscles. The core VM runs, decisions are
 recorded, and telemetry is flowing—we just need to tighten a few screws before
@@ -10,6 +10,8 @@ handing it to larger workloads.
 - **Status snapshot**
   - Flow ingestion, instance lifecycle, decision ledger, and retention: ✅
   - Telemetry (score/confidence/RNG, latency/error windows): ✅
+  - Intent builders for definitions, niches, and instance start/event/control
+    requests (`cep_l2_*_intent_*` helpers): ✅
   - Transform emission publication, guardian enforcement tooling, policy
     analytics dashboards: 🚧
 - **Near term (Weeks)**

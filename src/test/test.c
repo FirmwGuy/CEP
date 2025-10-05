@@ -74,6 +74,7 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         timeout_params
     },
+#if defined(CEP_HAS_L2_TESTS)
     {
         "/flows/basic",
         test_l2_ingest_and_decision,
@@ -98,6 +99,7 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         timeout_params
     },
+#endif
     {
         "/serialization/cell",
         test_serialization,

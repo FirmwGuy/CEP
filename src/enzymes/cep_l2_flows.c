@@ -116,6 +116,9 @@ static const cepDT* dt_rng_seed(void)    { return CEP_DTAW("CEP", "rng_seed"); }
 static const cepDT* dt_rng_seq(void)     { return CEP_DTAW("CEP", "rng_seq"); }
 static const cepDT* dt_error_flag(void)  { return CEP_DTAW("CEP", "error_flag"); }
 static const cepDT* dt_meta(void)        { return CEP_DTAW("CEP", "meta"); }
+static const cepDT* dt_variant_field(void) { return CEP_DTAW("CEP", "variant"); }
+static const cepDT* dt_program_field(void) { return CEP_DTAW("CEP", "program"); }
+static const cepDT* dt_policy_field(void)  { return CEP_DTAW("CEP", "policy"); }
 
 #define CEP_L2_WINDOW_CAP 8u
 
@@ -218,6 +221,13 @@ static bool     cep_l2_window_write(cepCell* parent,
                                     const cepL2WindowSample* samples,
                                     size_t count,
                                     bool use_flag);
+static cepCell* cep_l2_mailroom_bucket(const cepDT* bucket_name);
+static bool     cep_l2_tokens_to_identifier(const char* const tokens[], size_t token_count, char* out_buffer, size_t out_cap);
+static bool     cep_l2_set_identifier_value(cepCell* parent, const cepDT* field,
+                                            const char* const tokens[], size_t token_count);
+static bool     cep_l2_set_text_field(cepCell* parent, const char* field, const char* value);
+static bool     cep_l2_set_number_field(cepCell* parent, const char* field, size_t value);
+static cepCell* cep_l2_ensure_field_dictionary(cepCell* parent, const char* field, unsigned storage);
 
 /* ------------------------------------------------------------------------- */
 /*  Local state                                                              */
@@ -565,6 +575,484 @@ static bool cep_l2_set_u64_value(cepCell* parent, const cepDT* name, uint64_t va
         return false;
     }
     return cep_l2_set_value_bytes(parent, name, dt_text(), buffer, (size_t)written + 1u);
+}
+
+static cepCell* cep_l2_mailroom_bucket(const cepDT* bucket_name) {
+    if (!bucket_name) {
+        return NULL;
+    }
+
+    cepCell* root = cep_root();
+    if (!root) {
+        return NULL;
+    }
+
+    cepCell* data_root = cep_l2_ensure_dictionary(root, dt_data_root(), CEP_STORAGE_RED_BLACK_T);
+    if (!data_root) {
+        return NULL;
+    }
+
+    cepCell* inbox_root = cep_l2_ensure_dictionary(data_root, dt_inbox(), CEP_STORAGE_RED_BLACK_T);
+    if (!inbox_root) {
+        return NULL;
+    }
+
+    cepCell* flow_ns = cep_l2_ensure_dictionary(inbox_root, dt_flow(), CEP_STORAGE_RED_BLACK_T);
+    if (!flow_ns) {
+        return NULL;
+    }
+
+    cepCell* bucket = cep_cell_find_by_name(flow_ns, bucket_name);
+    if (!bucket) {
+        cepDT name_copy = *bucket_name;
+        cepDT dict_type = *dt_dictionary();
+        bucket = cep_dict_add_dictionary(flow_ns, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    }
+
+    return bucket;
+}
+
+static bool cep_l2_tokens_to_identifier(const char* const tokens[], size_t token_count, char* out_buffer, size_t out_cap) {
+    if (!tokens || !token_count || !out_buffer || out_cap == 0u) {
+        return false;
+    }
+    return cep_compose_identifier(tokens, token_count, out_buffer, out_cap);
+}
+
+static bool cep_l2_set_identifier_value(cepCell* parent, const cepDT* field,
+                                        const char* const tokens[], size_t token_count) {
+    if (!parent || !field || !tokens || !token_count) {
+        return false;
+    }
+
+    char canonical[CEP_IDENTIFIER_MAX + 1u];
+    if (!cep_l2_tokens_to_identifier(tokens, token_count, canonical, sizeof canonical)) {
+        return false;
+    }
+
+    return cep_l2_set_string_value(parent, field, canonical);
+}
+
+static bool cep_l2_set_text_field(cepCell* parent, const char* field, const char* value) {
+    if (!parent || !field || !value) {
+        return false;
+    }
+
+    cepDT field_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(field, strlen(field), &field_dt)) {
+        return false;
+    }
+
+    return cep_l2_set_string_value(parent, &field_dt, value);
+}
+
+static bool cep_l2_set_number_field(cepCell* parent, const char* field, size_t number) {
+    if (!parent || !field) {
+        return false;
+    }
+
+    cepDT field_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(field, strlen(field), &field_dt)) {
+        return false;
+    }
+
+    return cep_l2_set_number_value(parent, &field_dt, number);
+}
+
+static cepCell* cep_l2_ensure_field_dictionary(cepCell* parent, const char* field, unsigned storage) {
+    if (!parent || !field) {
+        return NULL;
+    }
+
+    cepDT field_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(field, strlen(field), &field_dt)) {
+        return NULL;
+    }
+
+    return cep_l2_ensure_dictionary(parent, &field_dt, storage);
+}
+
+bool cep_l2_definition_intent_init(cepL2DefinitionIntent* intent,
+                                   const char* txn_word,
+                                   const char* kind,
+                                   const char* const id_tokens[], size_t id_token_count) {
+    if (!intent || !txn_word || !kind || !id_tokens || !id_token_count) {
+        return false;
+    }
+
+    cepCell* bucket = cep_l2_mailroom_bucket(dt_fl_upsert());
+    if (!bucket) {
+        return false;
+    }
+
+    cepDT txn_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(txn_word, strlen(txn_word), &txn_dt)) {
+        return false;
+    }
+
+    cepCell* existing = cep_cell_find_by_name(bucket, &txn_dt);
+    if (existing) {
+        cep_cell_remove_hard(bucket, existing);
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepDT txn_copy = txn_dt;
+    cepCell* request = cep_dict_add_dictionary(bucket, &txn_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!request) {
+        return false;
+    }
+
+    char canonical[CEP_IDENTIFIER_MAX + 1u];
+    if (!cep_l2_tokens_to_identifier(id_tokens, id_token_count, canonical, sizeof canonical)) {
+        return false;
+    }
+
+    if (!cep_l2_set_string_value(request, dt_kind(), kind)) {
+        return false;
+    }
+
+    if (!cep_l2_set_string_value(request, dt_id(), canonical)) {
+        return false;
+    }
+
+    intent->request = request;
+    intent->next_step_index = 0u;
+    return true;
+}
+
+cepCell* cep_l2_definition_intent_request(const cepL2DefinitionIntent* intent) {
+    return intent ? intent->request : NULL;
+}
+
+cepCell* cep_l2_definition_intent_add_step(cepL2DefinitionIntent* intent, const char* step_kind) {
+    if (!intent || !intent->request || !step_kind) {
+        return NULL;
+    }
+
+    cepCell* steps = cep_cell_find_by_name(intent->request, dt_steps());
+    if (!steps) {
+        steps = cep_l2_ensure_dictionary(intent->request, dt_steps(), CEP_STORAGE_RED_BLACK_T);
+        if (!steps) {
+            return NULL;
+        }
+    }
+
+    char key_buffer[32];
+    int written = snprintf(key_buffer, sizeof key_buffer, "%zu", intent->next_step_index++);
+    if (written <= 0 || (size_t)written >= sizeof key_buffer) {
+        return NULL;
+    }
+
+    cepDT key_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(key_buffer, (size_t)written, &key_dt)) {
+        return NULL;
+    }
+
+    cepCell* existing = cep_cell_find_by_name(steps, &key_dt);
+    if (existing) {
+        cep_cell_remove_hard(steps, existing);
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepDT key_copy = key_dt;
+    cepCell* step = cep_dict_add_dictionary(steps, &key_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!step) {
+        return NULL;
+    }
+
+    if (!cep_l2_set_string_value(step, dt_kind(), step_kind)) {
+        return NULL;
+    }
+
+    return step;
+}
+
+cepCell* cep_l2_definition_step_ensure_spec(cepCell* step) {
+    if (!step) {
+        return NULL;
+    }
+
+    cepCell* spec = cep_cell_find_by_name(step, dt_spec());
+    if (!spec) {
+        cepDT dict_type = *dt_dictionary();
+        cepDT spec_name = *dt_spec();
+        spec = cep_dict_add_dictionary(step, &spec_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    }
+    return spec;
+}
+
+bool cep_l2_definition_intent_set_program(cepL2DefinitionIntent* intent,
+                                          const char* const program_tokens[], size_t program_token_count) {
+    if (!intent || !intent->request || !program_tokens || !program_token_count) {
+        return false;
+    }
+    return cep_l2_set_identifier_value(intent->request, dt_program_field(), program_tokens, program_token_count);
+}
+
+bool cep_l2_definition_intent_set_variant(cepL2DefinitionIntent* intent,
+                                          const char* const variant_tokens[], size_t variant_token_count) {
+    if (!intent || !intent->request || !variant_tokens || !variant_token_count) {
+        return false;
+    }
+    return cep_l2_set_identifier_value(intent->request, dt_variant_field(), variant_tokens, variant_token_count);
+}
+
+bool cep_l2_definition_intent_set_text(cepL2DefinitionIntent* intent,
+                                       const char* field,
+                                       const char* value) {
+    if (!intent || !intent->request) {
+        return false;
+    }
+    return cep_l2_set_text_field(intent->request, field, value);
+}
+
+bool cep_l2_niche_intent_init(cepL2NicheIntent* intent,
+                              const char* txn_word,
+                              const char* const id_tokens[], size_t id_token_count,
+                              const char* const ctx_tokens[], size_t ctx_token_count,
+                              const char* const variant_tokens[], size_t variant_token_count) {
+    if (!intent || !txn_word || !id_tokens || !id_token_count || !ctx_tokens || !ctx_token_count || !variant_tokens || !variant_token_count) {
+        return false;
+    }
+
+    cepCell* bucket = cep_l2_mailroom_bucket(dt_ni_upsert());
+    if (!bucket) {
+        return false;
+    }
+
+    cepDT txn_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(txn_word, strlen(txn_word), &txn_dt)) {
+        return false;
+    }
+
+    cepCell* existing = cep_cell_find_by_name(bucket, &txn_dt);
+    if (existing) {
+        cep_cell_remove_hard(bucket, existing);
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepDT txn_copy = txn_dt;
+    cepCell* request = cep_dict_add_dictionary(bucket, &txn_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!request) {
+        return false;
+    }
+
+    if (!cep_l2_set_identifier_value(request, dt_id(), id_tokens, id_token_count)) {
+        return false;
+    }
+
+    if (!cep_l2_set_identifier_value(request, dt_ctx_type(), ctx_tokens, ctx_token_count)) {
+        return false;
+    }
+
+    if (!cep_l2_set_identifier_value(request, dt_variant_field(), variant_tokens, variant_token_count)) {
+        return false;
+    }
+
+    intent->request = request;
+    return true;
+}
+
+cepCell* cep_l2_niche_intent_request(const cepL2NicheIntent* intent) {
+    return intent ? intent->request : NULL;
+}
+
+bool cep_l2_instance_start_intent_init(cepL2InstanceStartIntent* intent,
+                                       const char* txn_word,
+                                       const char* const id_tokens[], size_t id_token_count,
+                                       const char* const variant_tokens[], size_t variant_token_count) {
+    if (!intent || !txn_word || !id_tokens || !id_token_count || !variant_tokens || !variant_token_count) {
+        return false;
+    }
+
+    cepCell* bucket = cep_l2_mailroom_bucket(dt_inst_start());
+    if (!bucket) {
+        return false;
+    }
+
+    cepDT txn_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(txn_word, strlen(txn_word), &txn_dt)) {
+        return false;
+    }
+
+    cepCell* existing = cep_cell_find_by_name(bucket, &txn_dt);
+    if (existing) {
+        cep_cell_remove_hard(bucket, existing);
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepDT txn_copy = txn_dt;
+    cepCell* request = cep_dict_add_dictionary(bucket, &txn_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!request) {
+        return false;
+    }
+
+    if (!cep_l2_set_identifier_value(request, dt_id(), id_tokens, id_token_count)) {
+        return false;
+    }
+
+    if (!cep_l2_set_identifier_value(request, dt_variant_field(), variant_tokens, variant_token_count)) {
+        return false;
+    }
+
+    intent->request = request;
+    return true;
+}
+
+cepCell* cep_l2_instance_start_intent_request(const cepL2InstanceStartIntent* intent) {
+    return intent ? intent->request : NULL;
+}
+
+bool cep_l2_instance_start_intent_set_policy(cepL2InstanceStartIntent* intent,
+                                             const char* const policy_tokens[], size_t policy_token_count) {
+    if (!intent || !intent->request || !policy_tokens || !policy_token_count) {
+        return false;
+    }
+    return cep_l2_set_identifier_value(intent->request, dt_policy_field(), policy_tokens, policy_token_count);
+}
+
+bool cep_l2_instance_start_intent_set_text(cepL2InstanceStartIntent* intent,
+                                           const char* field,
+                                           const char* value) {
+    if (!intent || !intent->request) {
+        return false;
+    }
+    return cep_l2_set_text_field(intent->request, field, value);
+}
+
+bool cep_l2_instance_event_intent_init(cepL2InstanceEventIntent* intent,
+                                       const char* txn_word,
+                                       const char* signal_path,
+                                       const char* const id_tokens[], size_t id_token_count) {
+    if (!intent || !txn_word || !signal_path || !*signal_path) {
+        return false;
+    }
+
+    cepCell* bucket = cep_l2_mailroom_bucket(dt_inst_event());
+    if (!bucket) {
+        return false;
+    }
+
+    cepDT txn_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(txn_word, strlen(txn_word), &txn_dt)) {
+        return false;
+    }
+
+    cepCell* existing = cep_cell_find_by_name(bucket, &txn_dt);
+    if (existing) {
+        cep_cell_remove_hard(bucket, existing);
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepDT txn_copy = txn_dt;
+    cepCell* request = cep_dict_add_dictionary(bucket, &txn_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!request) {
+        return false;
+    }
+
+    if (id_tokens && id_token_count) {
+        if (!cep_l2_set_identifier_value(request, dt_inst_id(), id_tokens, id_token_count)) {
+            return false;
+        }
+    }
+
+    if (!cep_l2_set_string_value(request, dt_signal_path(), signal_path)) {
+        return false;
+    }
+
+    if (!cep_l2_set_string_value(request, dt_signal(), signal_path)) {
+        return false;
+    }
+
+    intent->request = request;
+    return true;
+}
+
+cepCell* cep_l2_instance_event_intent_request(const cepL2InstanceEventIntent* intent) {
+    return intent ? intent->request : NULL;
+}
+
+cepCell* cep_l2_instance_event_intent_payload(cepL2InstanceEventIntent* intent) {
+    if (!intent || !intent->request) {
+        return NULL;
+    }
+    return cep_l2_ensure_field_dictionary(intent->request, "payload", CEP_STORAGE_RED_BLACK_T);
+}
+
+bool cep_l2_instance_control_intent_init(cepL2InstanceControlIntent* intent,
+                                         const char* txn_word,
+                                         const char* action,
+                                         const char* const id_tokens[], size_t id_token_count) {
+    if (!intent || !txn_word || !action || !*action) {
+        return false;
+    }
+
+    cepCell* bucket = cep_l2_mailroom_bucket(dt_inst_ctrl());
+    if (!bucket) {
+        return false;
+    }
+
+    cepDT txn_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(txn_word, strlen(txn_word), &txn_dt)) {
+        return false;
+    }
+
+    cepCell* existing = cep_cell_find_by_name(bucket, &txn_dt);
+    if (existing) {
+        cep_cell_remove_hard(bucket, existing);
+    }
+
+    cepDT dict_type = *dt_dictionary();
+    cepDT txn_copy = txn_dt;
+    cepCell* request = cep_dict_add_dictionary(bucket, &txn_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!request) {
+        return false;
+    }
+
+    if (id_tokens && id_token_count) {
+        if (!cep_l2_set_identifier_value(request, dt_inst_id(), id_tokens, id_token_count)) {
+            return false;
+        }
+    }
+
+    if (!cep_l2_set_string_value(request, dt_action(), action)) {
+        return false;
+    }
+
+    intent->request = request;
+    return true;
+}
+
+cepCell* cep_l2_instance_control_intent_request(const cepL2InstanceControlIntent* intent) {
+    return intent ? intent->request : NULL;
+}
+
+bool cep_l2_instance_control_intent_set_step_limit(cepL2InstanceControlIntent* intent, size_t step_limit) {
+    if (!intent || !intent->request) {
+        return false;
+    }
+
+    cepCell* budget = cep_l2_ensure_field_dictionary(intent->request, "budget", CEP_STORAGE_RED_BLACK_T);
+    if (!budget) {
+        return false;
+    }
+
+    if (!cep_l2_set_number_value(budget, dt_step_limit(), step_limit)) {
+        return false;
+    }
+
+    (void)cep_l2_set_number_value(budget, dt_steps_used(), 0u);
+    (void)cep_l2_set_number_field(intent->request, "step_limit", step_limit);
+    return true;
+}
+
+bool cep_l2_instance_control_intent_set_text(cepL2InstanceControlIntent* intent,
+                                             const char* field,
+                                             const char* value) {
+    if (!intent || !intent->request) {
+        return false;
+    }
+    return cep_l2_set_text_field(intent->request, field, value);
 }
 
 static void cep_l2_retention_plan_init(cepL2RetentionPlan* plan) {

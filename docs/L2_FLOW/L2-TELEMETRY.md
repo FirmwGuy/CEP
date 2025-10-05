@@ -1,4 +1,4 @@
-# Layer 2 Telemetry, Retention, and Summaries
+# L2 Flow: Telemetry, Retention, and Summaries
 
 Layer 2 now reports how each flow decision was made, keeps a friendly eye on latency, and retires old choices when policies ask for it. Operators can glance at the new summaries to spot trouble before it compounds.
 

@@ -63,19 +63,6 @@ static cepCell* l2_inbox_bucket(const char* bucket_name) {
     return bucket;
 }
 
-static cepCell* l2_mailroom_bucket(const char* bucket_name) {
-    cepCell* data = cep_cell_find_by_name(cep_root(), CEP_DTAW("CEP", "data"));
-    munit_assert_not_null(data);
-    cepCell* inbox = cep_cell_find_by_name(data, CEP_DTAW("CEP", "inbox"));
-    munit_assert_not_null(inbox);
-    cepCell* flow_ns = cep_cell_find_by_name(inbox, CEP_DTAW("CEP", "flow"));
-    munit_assert_not_null(flow_ns);
-    cepDT dt = l2_name_dt(bucket_name);
-    cepCell* bucket = cep_cell_find_by_name(flow_ns, &dt);
-    munit_assert_not_null(bucket);
-    return bucket;
-}
-
 static cepCell* l2_tmp_adj(void) {
     cepCell* tmp = cep_cell_find_by_name(cep_root(), CEP_DTAW("CEP", "tmp"));
     munit_assert_not_null(tmp);
@@ -145,17 +132,6 @@ static void l2_run_beats(unsigned count) {
     }
 }
 
-static cepCell* l2_ensure_dictionary(cepCell* parent, const char* name, unsigned storage) {
-    cepDT name_dt = l2_name_dt(name);
-    cepCell* existing = cep_cell_find_by_name(parent, &name_dt);
-    if (existing) {
-        return existing;
-    }
-    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
-    cepDT copy = name_dt;
-    return cep_dict_add_dictionary(parent, &copy, &dict_type, storage);
-}
-
 static void l2_set_string(cepCell* parent, const char* field, const char* value) {
     cepDT name_dt = l2_name_dt(field);
     cepCell* existing = cep_cell_find_by_name(parent, &name_dt);
@@ -177,16 +153,6 @@ static void l2_set_number(cepCell* parent, const char* field, size_t value) {
     l2_set_string(parent, field, buffer);
 }
 
-static cepCell* l2_create_request(const char* bucket_name, const char* request_id) {
-    cepCell* bucket = l2_mailroom_bucket(bucket_name);
-    cepDT req_dt = l2_name_dt(request_id);
-    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
-    cepDT req_copy = req_dt;
-    cepCell* request = cep_dict_add_dictionary(bucket, &req_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
-    munit_assert_not_null(request);
-    return request;
-}
-
 static cepCell* l2_expect_entry(cepCell* ledger, const char* identifier) {
     cepDT id_dt = l2_name_dt(identifier);
     cepCell* entry = cep_cell_find_by_name(ledger, &id_dt);
@@ -203,19 +169,15 @@ static const char* l2_get_text(cepCell* parent, const char* field) {
     return (const char*)node->data->value;
 }
 
-static cepCell* l2_step_dict(cepCell* steps, unsigned index) {
-    char key_buf[8];
-    int written = snprintf(key_buf, sizeof key_buf, "%04u", index);
-    munit_assert_true(written > 0 && (size_t)written < sizeof key_buf);
-    return l2_ensure_dictionary(steps, key_buf, CEP_STORAGE_RED_BLACK_T);
-}
-
 static void l2_build_policy(const char* policy_id, const char* retain_directive) {
-    cepCell* request = l2_create_request("fl_upsert", "req_policy");
-    l2_set_string(request, "id", policy_id);
-    l2_set_string(request, "kind", "policy");
+    cepL2DefinitionIntent intent = {0};
+    munit_assert_true(cep_l2_definition_intent_init(&intent,
+                                                    "req_policy",
+                                                    "policy",
+                                                    (const char*[]){ policy_id },
+                                                    1u));
     if (retain_directive) {
-        l2_set_string(request, "retain", retain_directive);
+        munit_assert_true(cep_l2_definition_intent_set_text(&intent, "retain", retain_directive));
     }
     l2_run_beats(2u);
     cepCell* policy = l2_expect_entry(l2_ledger("policy"), policy_id);
@@ -223,13 +185,15 @@ static void l2_build_policy(const char* policy_id, const char* retain_directive)
 }
 
 static void l2_build_program(const char* program_id, const char* policy_id, const char* site_name) {
-    cepCell* request = l2_create_request("fl_upsert", "req_program");
-    l2_set_string(request, "id", program_id);
-    l2_set_string(request, "kind", "program");
-    cepCell* steps = l2_ensure_dictionary(request, "steps", CEP_STORAGE_LINKED_LIST);
-    cepCell* step0 = l2_step_dict(steps, 0u);
-    l2_set_string(step0, "kind", "decide");
-    cepCell* spec = l2_ensure_dictionary(step0, "spec", CEP_STORAGE_RED_BLACK_T);
+    cepL2DefinitionIntent intent = {0};
+    munit_assert_true(cep_l2_definition_intent_init(&intent,
+                                                    "req_program",
+                                                    "program",
+                                                    (const char*[]){ program_id },
+                                                    1u));
+
+    cepCell* step0 = cep_l2_definition_intent_add_step(&intent, "decide");
+    cepCell* spec = cep_l2_definition_step_ensure_spec(step0);
     l2_set_string(spec, "policy", policy_id);
     l2_set_string(spec, "site", site_name);
     l2_set_string(spec, "choice", "variant_a");
@@ -240,21 +204,20 @@ static void l2_build_program(const char* program_id, const char* policy_id, cons
 
 static void l2_build_wait_program(const char* program_id,
                                   const char* wait_signal) {
-    cepCell* request = l2_create_request("fl_upsert", "req_program_wait");
-    l2_set_string(request, "id", program_id);
-    l2_set_string(request, "kind", "program");
+    cepL2DefinitionIntent intent = {0};
+    munit_assert_true(cep_l2_definition_intent_init(&intent,
+                                                    "req_program_wait",
+                                                    "program",
+                                                    (const char*[]){ program_id },
+                                                    1u));
 
-    cepCell* steps = l2_ensure_dictionary(request, "steps", CEP_STORAGE_LINKED_LIST);
-
-    cepCell* wait_step = l2_step_dict(steps, 0u);
-    l2_set_string(wait_step, "kind", "wait");
-    cepCell* wait_spec = l2_ensure_dictionary(wait_step, "spec", CEP_STORAGE_RED_BLACK_T);
+    cepCell* wait_step = cep_l2_definition_intent_add_step(&intent, "wait");
+    cepCell* wait_spec = cep_l2_definition_step_ensure_spec(wait_step);
     l2_set_string(wait_spec, "signal_path", wait_signal);
     l2_set_number(wait_spec, "timeout", 5u);
 
-    cepCell* transform_step = l2_step_dict(steps, 1u);
-    l2_set_string(transform_step, "kind", "transform");
-    cepCell* transform_spec = l2_ensure_dictionary(transform_step, "spec", CEP_STORAGE_RED_BLACK_T);
+    cepCell* transform_step = cep_l2_definition_intent_add_step(&intent, "transform");
+    cepCell* transform_spec = cep_l2_definition_step_ensure_spec(transform_step);
     l2_set_string(transform_spec, "state", "done");
 
     l2_run_beats(2u);
@@ -263,19 +226,28 @@ static void l2_build_wait_program(const char* program_id,
 }
 
 static void l2_build_variant(const char* variant_id, const char* program_id) {
-    cepCell* request = l2_create_request("fl_upsert", "req_variant");
-    l2_set_string(request, "id", variant_id);
-    l2_set_string(request, "kind", "variant");
-    l2_set_string(request, "program", program_id);
+    cepL2DefinitionIntent intent = {0};
+    munit_assert_true(cep_l2_definition_intent_init(&intent,
+                                                    "req_variant",
+                                                    "variant",
+                                                    (const char*[]){ variant_id },
+                                                    1u));
+    munit_assert_true(cep_l2_definition_intent_set_program(&intent,
+                                                           (const char*[]){ program_id },
+                                                           1u));
     l2_run_beats(2u);
     cepCell* variant = l2_expect_entry(l2_ledger("variant"), variant_id);
     munit_assert_not_null(variant);
 }
 
 static cepCell* l2_start_instance(const char* instance_id, const char* variant_id) {
-    cepCell* request = l2_create_request("inst_start", "req_inst_start");
-    l2_set_string(request, "id", instance_id);
-    l2_set_string(request, "variant", variant_id);
+    cepL2InstanceStartIntent intent = {0};
+    munit_assert_true(cep_l2_instance_start_intent_init(&intent,
+                                                        "req_inst_start",
+                                                        (const char*[]){ instance_id },
+                                                        1u,
+                                                        (const char*[]){ variant_id },
+                                                        1u));
     l2_run_beats(3u);
     return l2_expect_entry(l2_ledger("instance"), instance_id);
 }
@@ -294,11 +266,15 @@ static void l2_post_event(const char* request_id,
                           const char* signal_path,
                           const char* payload_key,
                           const char* payload_value) {
-    cepCell* request = l2_create_request("inst_event", request_id);
-    l2_set_string(request, "inst_id", instance_id);
-    l2_set_string(request, "signal_path", signal_path);
+    cepL2InstanceEventIntent intent = {0};
+    munit_assert_true(cep_l2_instance_event_intent_init(&intent,
+                                                       request_id,
+                                                       signal_path,
+                                                       instance_id ? (const char*[]){ instance_id } : NULL,
+                                                       instance_id ? 1u : 0u));
     if (payload_key && payload_value) {
-        cepCell* payload = l2_ensure_dictionary(request, "payload", CEP_STORAGE_RED_BLACK_T);
+        cepCell* payload = cep_l2_instance_event_intent_payload(&intent);
+        munit_assert_not_null(payload);
         l2_set_string(payload, payload_key, payload_value);
     }
     l2_run_beats(2u);
@@ -523,9 +499,12 @@ MunitResult test_l2_retention_archive(const MunitParameter params[], void* fixtu
     l2_run_beats(3u);
 
     /* Submit a no-op control to trigger the pipeline and retention pass. */
-    cepCell* ctrl = l2_create_request("inst_ctrl", "req_ctrl_resume");
-    l2_set_string(ctrl, "inst_id", instance_id);
-    l2_set_string(ctrl, "action", "resume");
+    cepL2InstanceControlIntent ctrl_intent = {0};
+    munit_assert_true(cep_l2_instance_control_intent_init(&ctrl_intent,
+                                                          "req_ctrl_resume",
+                                                          "resume",
+                                                          (const char*[]){ instance_id },
+                                                          1u));
     l2_run_beats(4u);
 
     cepCell* decisions = l2_ledger("decision");

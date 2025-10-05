@@ -1,4 +1,4 @@
-# Layer 2 Algorithms
+# L2 Flow: Algorithms
 
 Think of Layer 2 as a conductor: it keeps the score of every flow, cues each section at the right beat, and records the performance so we can replay it perfectly later.
 

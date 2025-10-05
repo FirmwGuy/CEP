@@ -158,7 +158,8 @@ See [`docs/CEP.md`](./docs/CEP.md) for the full conceptual framework, glossary, 
 ## Current Implementation Snapshot
 - **L0 Kernel** – Deterministic heartbeats, append-only cell stores, serialization, and stream adapters ship under `src/l0_kernel`.
 - **L1 Coherence** – The enzyme pack in `src/enzymes/cep_l1_coherence.*` manages beings, bonds, contexts, closure debts, indexes, and adjacency mirrors. Reference docs live under `docs/L1_COHERENCE`.
-- **Layers 2–5** – Concepts are documented in `docs/CEP.md`; concrete code is still in planning.
+- **L2 Flows** – Bootstrap/registration helpers (`cep_l2_flows_bootstrap/register`) and the new intent builders in `src/enzymes/cep_l2_flows.*` let you compose definition/niche/instance intents without touching raw mailroom structures. See `docs/L2_FLOW` for integration notes.
+- **Layers 3–5** – Concepts are documented in `docs/CEP.md`; concrete code is still in planning.
 
 ---
 
@@ -168,7 +169,7 @@ See [`docs/CEP.md`](./docs/CEP.md) for the full conceptual framework, glossary, 
 | --- | --- | --- |
 | L0 Kernel | ✅ Implemented | Core heartbeat and data persistence are already shipping. |
 | L1 Bonds & Coherence | ✅ Shipping | Deterministic API for beings/bonds/contexts plus facet queue and adjacency; policy hooks are next. |
-| L2 Ecology of Flows | 🕒 Planned | Parallel strategy orchestration is on deck after coherence lands. |
+| L2 Ecology of Flows | ⚙️ Partial | Flow bootstrap + ingest/retention enzymes ship with high-level intent builders; runtime telemetry/publishing continue to expand. |
 | L3 Cognition | 🕒 Planned | Pattern recognition and scoring will build on the earlier layers. |
 | L4 Society | 🕒 Planned | Governance workflows arrive once cognition can suggest reforms. |
 | L5 Culture | 🕒 Planned | Story-building tools will cap the stack after governance stabilizes. |

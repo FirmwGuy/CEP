@@ -43,7 +43,6 @@ when a new behavior needs a fresh word before it lands in code.
 | `env` | core | runtime environment subtree for external handles. |
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `inbox` | core | captured impulses queued for the current beat. |
-| `mailroom` | core | unified inbox namespace that receives all external intents. |
 | `mr_route` | ops | routing enzyme that moves unified inbox entries into layer inboxes. |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |

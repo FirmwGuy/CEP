@@ -8,7 +8,12 @@
 
 #include <stdbool.h>
 
+#include <stddef.h>
+#include <stdbool.h>
+
 #include "../l0_kernel/cep_enzyme.h"
+#include "../l0_kernel/cep_identifier.h"
+#include "../l0_kernel/cep_cell.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,6 +34,77 @@ bool cep_l2_flows_bootstrap(void);
  * specificity. The helper is idempotent and safe to call multiple times.
  */
 bool cep_l2_flows_register(cepEnzymeRegistry* registry);
+
+typedef struct {
+    cepCell* request;
+    size_t   next_step_index;
+} cepL2DefinitionIntent;
+
+typedef struct {
+    cepCell* request;
+} cepL2NicheIntent;
+
+typedef struct {
+    cepCell* request;
+} cepL2InstanceStartIntent;
+
+typedef struct {
+    cepCell* request;
+} cepL2InstanceEventIntent;
+
+typedef struct {
+    cepCell* request;
+} cepL2InstanceControlIntent;
+
+bool cep_l2_definition_intent_init(cepL2DefinitionIntent* intent,
+                                   const char* txn_word,
+                                   const char* kind,
+                                   const char* const id_tokens[], size_t id_token_count);
+cepCell* cep_l2_definition_intent_request(const cepL2DefinitionIntent* intent);
+cepCell* cep_l2_definition_intent_add_step(cepL2DefinitionIntent* intent, const char* step_kind);
+cepCell* cep_l2_definition_step_ensure_spec(cepCell* step);
+bool cep_l2_definition_intent_set_program(cepL2DefinitionIntent* intent,
+                                          const char* const program_tokens[], size_t program_token_count);
+bool cep_l2_definition_intent_set_variant(cepL2DefinitionIntent* intent,
+                                          const char* const variant_tokens[], size_t variant_token_count);
+bool cep_l2_definition_intent_set_text(cepL2DefinitionIntent* intent,
+                                       const char* field,
+                                       const char* value);
+
+bool cep_l2_niche_intent_init(cepL2NicheIntent* intent,
+                              const char* txn_word,
+                              const char* const id_tokens[], size_t id_token_count,
+                              const char* const ctx_tokens[], size_t ctx_token_count,
+                              const char* const variant_tokens[], size_t variant_token_count);
+cepCell* cep_l2_niche_intent_request(const cepL2NicheIntent* intent);
+
+bool cep_l2_instance_start_intent_init(cepL2InstanceStartIntent* intent,
+                                       const char* txn_word,
+                                       const char* const id_tokens[], size_t id_token_count,
+                                       const char* const variant_tokens[], size_t variant_token_count);
+cepCell* cep_l2_instance_start_intent_request(const cepL2InstanceStartIntent* intent);
+bool cep_l2_instance_start_intent_set_policy(cepL2InstanceStartIntent* intent,
+                                             const char* const policy_tokens[], size_t policy_token_count);
+bool cep_l2_instance_start_intent_set_text(cepL2InstanceStartIntent* intent,
+                                           const char* field,
+                                           const char* value);
+
+bool cep_l2_instance_event_intent_init(cepL2InstanceEventIntent* intent,
+                                       const char* txn_word,
+                                       const char* signal_path,
+                                       const char* const id_tokens[], size_t id_token_count);
+cepCell* cep_l2_instance_event_intent_request(const cepL2InstanceEventIntent* intent);
+cepCell* cep_l2_instance_event_intent_payload(cepL2InstanceEventIntent* intent);
+
+bool cep_l2_instance_control_intent_init(cepL2InstanceControlIntent* intent,
+                                         const char* txn_word,
+                                         const char* action,
+                                         const char* const id_tokens[], size_t id_token_count);
+cepCell* cep_l2_instance_control_intent_request(const cepL2InstanceControlIntent* intent);
+bool cep_l2_instance_control_intent_set_step_limit(cepL2InstanceControlIntent* intent, size_t step_limit);
+bool cep_l2_instance_control_intent_set_text(cepL2InstanceControlIntent* intent,
+                                             const char* field,
+                                             const char* value);
 
 #ifdef __cplusplus
 }

@@ -10,6 +10,12 @@
 #define MUNIT_ENABLE_ASSERT_ALIASES
 #include "munit.h"
 
+#ifndef CEP_HAS_L2_TESTS
+/* Meson builds run the full flow suite; the fallback unix/Makefile may define
+ * this to 0 when it omits the L2 intent fixtures. */
+#define CEP_HAS_L2_TESTS 1
+#endif
+
 #include "cep_cell.h"
 #include "watchdog.h"
 
