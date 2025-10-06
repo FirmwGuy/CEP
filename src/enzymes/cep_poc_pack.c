@@ -10,6 +10,7 @@
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_enzyme.h"
 #include "../l0_kernel/cep_heartbeat.h"
+#include "../l0_kernel/cep_l0.h"
 #include "../l0_kernel/cep_mailroom.h"
 #include "../l0_kernel/cep_namepool.h"
 #include "../l0_kernel/cep_identifier.h"
@@ -418,17 +419,13 @@ static bool cep_poc_configure_retention_slot(cepCell* retention_root,
 /* Ensure the PoC directory tree and toggles exist before any registry wiring
  * so ingest enzymes can assume the ledgers and inbox buckets already exist. */
 bool cep_poc_bootstrap(void) {
-    if (!cep_cell_system_initialized()) {
+    if (!cep_l0_bootstrap()) {
         return false;
     }
 
     if (!cep_mailroom_add_namespace(cep_poc_mailroom_namespace,
                                     cep_poc_mailroom_buckets,
                                     cep_lengthof(cep_poc_mailroom_buckets))) {
-        return false;
-    }
-
-    if (!cep_mailroom_bootstrap()) {
         return false;
     }
 

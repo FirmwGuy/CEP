@@ -8,6 +8,7 @@
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_enzyme.h"
 #include "../l0_kernel/cep_heartbeat.h"
+#include "../l0_kernel/cep_l0.h"
 #include "../l0_kernel/cep_mailroom.h"
 #include "../l0_kernel/cep_serialization.h"
 #include "../l0_kernel/cep_namepool.h"
@@ -4580,11 +4581,7 @@ static bool cep_l2_bootstrap_tmp(void) {
 /* This helper coordinates the whole bootstrap sequence so callers can rely on
  * a single public function to prepare the flow layer. */
 bool cep_l2_flows_bootstrap(void) {
-    if (!cep_cell_system_initialized()) {
-        return false;
-    }
-
-    if (!cep_mailroom_bootstrap()) {
+    if (!cep_l0_bootstrap()) {
         return false;
     }
 
@@ -4605,7 +4602,7 @@ bool cep_l2_flows_bootstrap(void) {
         return false;
     }
 
-    cep_namepool_bootstrap();
+    (void)cep_namepool_bootstrap();
     return true;
 }
 

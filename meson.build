@@ -58,6 +58,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
   'src/l0_kernel/cep_cell_stream.c',
   'src/l0_kernel/cep_cell_system.c',
+  'src/l0_kernel/cep_l0.c',
   'src/l0_kernel/cep_mailroom.c',
   'src/l0_kernel/cep_identifier.c',
   'src/enzymes/cep_cell_operations.c',

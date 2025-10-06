@@ -9,6 +9,7 @@
 #include "../l0_kernel/cep_identifier.h"
 #include "../l0_kernel/cep_enzyme.h"
 #include "../l0_kernel/cep_heartbeat.h"
+#include "../l0_kernel/cep_l0.h"
 #include "../l0_kernel/cep_mailroom.h"
 #include "../l0_kernel/cep_namepool.h"
 
@@ -1536,11 +1537,7 @@ static bool cep_l1_bootstrap_tmp(void) {
 }
 
 bool cep_l1_coherence_bootstrap(void) {
-    if (!cep_cell_system_initialized()) {
-        return false;
-    }
-
-    if (!cep_mailroom_bootstrap()) {
+    if (!cep_l0_bootstrap()) {
         return false;
     }
 
