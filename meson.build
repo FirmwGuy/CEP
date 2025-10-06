@@ -12,6 +12,11 @@ cc = meson.get_compiler('c')
 fs = import('fs')
 python_mod = import('python')
 
+poc_enabled = get_option('poc')
+if poc_enabled
+  add_project_arguments('-DCEP_HAS_POC=1', language: 'c')
+endif
+
 # Includes
 inc = include_directories('src/l0_kernel', 'src/test', 'src/enzymes')
 
@@ -54,6 +59,11 @@ endif
 zip_opt = get_option('zip')
 zip_dep = dependency('libzip', required: zip_opt.enabled(), method: 'pkg-config', allow_fallback: true)
 
+poc_sources = []
+if poc_enabled
+  poc_sources += files('src/enzymes/cep_poc_pack.c')
+endif
+
 l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
   'src/l0_kernel/cep_cell_stream.c',
@@ -64,7 +74,6 @@ l0_srcs = files(
   'src/enzymes/cep_cell_operations.c',
   'src/enzymes/cep_l1_coherence.c',
   'src/enzymes/cep_l2_flows.c',
-  'src/enzymes/cep_poc_pack.c',
   'src/l0_kernel/stream/cep_stream_stdio.c',
   'src/l0_kernel/stream/cep_stream_effects.c',
   'src/l0_kernel/cep_enzyme_bindings.c',
@@ -74,6 +83,8 @@ l0_srcs = files(
   'src/l0_kernel/cep_namepool.c',
   'src/l0_kernel/cep_serialization.c',
 )
+
+l0_srcs += poc_sources
 
 lib_dependencies = []
 
@@ -117,7 +128,6 @@ if get_option('tests').enabled()
     'src/test/enzymes/test_cell_operations.c',
     'src/test/enzymes/test_enzyme_randomized.c',
     'src/test/enzymes/test_flows_l2.c',
-    'src/test/enzymes/test_poc_pack.c',
     'src/test/l0_kernel/test_domain_tag_naming.c',
     'src/test/l0_kernel/test_identifier.c',
     'src/test/l0_kernel/test_mailroom.c',
@@ -132,6 +142,9 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_serialization_randomized.c',
     'src/test/l0_kernel/test_streams_randomized.c',
   )
+  if poc_enabled
+    test_srcs += files('src/test/enzymes/test_poc_pack.c')
+  endif
   test_dependencies = []
   if zip_dep.found()
     test_srcs += files('src/test/l0_kernel/test_stream_zip.c')

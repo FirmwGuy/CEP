@@ -124,6 +124,7 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         NULL
     },
+#ifdef CEP_HAS_POC
     {
         "/poc/bootstrap",
         test_poc_bootstrap,
@@ -156,6 +157,7 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         timeout_params
     },
+#endif
     {
         "/serialization/proxy",
         test_serialization_proxy,
