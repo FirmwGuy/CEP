@@ -60,4 +60,11 @@ MunitResult test_l2_wait_event_resume(const MunitParameter params[], void* user_
 void*       l2_setup(const MunitParameter params[], void* user_data);
 void        l2_teardown(void* fixture);
 
+MunitResult test_poc_bootstrap(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_poc_io_pipeline(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_poc_scenario_pipeline(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_poc_assert_builder(const MunitParameter params[], void* user_data_or_fixture);
+void*       test_poc_setup(const MunitParameter params[], void* user_data);
+void        test_poc_teardown(void* fixture);
+
 extern MunitSuite lock_suites[];

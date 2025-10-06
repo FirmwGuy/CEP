@@ -125,6 +125,38 @@ MunitTest tests[] = {
         NULL
     },
     {
+        "/poc/bootstrap",
+        test_poc_bootstrap,
+        test_poc_setup,
+        test_poc_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
+    {
+        "/poc/io_pipeline",
+        test_poc_io_pipeline,
+        test_poc_setup,
+        test_poc_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
+    {
+        "/poc/scenario_pipeline",
+        test_poc_scenario_pipeline,
+        test_poc_setup,
+        test_poc_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
+    {
+        "/poc/assert_builder",
+        test_poc_assert_builder,
+        test_poc_setup,
+        test_poc_teardown,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
+    {
         "/serialization/proxy",
         test_serialization_proxy,
         NULL,

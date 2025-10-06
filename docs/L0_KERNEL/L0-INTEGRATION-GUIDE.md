@@ -85,7 +85,20 @@ if (cep_beat_phase() == CEP_BEAT_COMPUTE) {
 }
 ```
 
-### 1.5 Unified mailroom router
+### 1.5 L0 bootstrap helper
+
+**In plain words.** `cep_l0_bootstrap()` is the one button that brings the heartbeat, namepool, and mailroom online so higher layers can assume the lobby is ready before they touch anything.
+
+**Technical details**
+- `cep_l0_bootstrap()` first ensures the cell system exists, then calls `cep_heartbeat_bootstrap()` to mint `/sys`, `/data`, `/rt`, `/journal`, `/tmp`, and the default enzyme registry.
+- It follows up with `cep_namepool_bootstrap()` so reference identifiers can be interned immediately, and finally `cep_mailroom_bootstrap()` to seed `/data/inbox/{coh,flow}` and `/sys/err_cat`.
+- The helper caches its work; subsequent calls return `true` without mutating state unless the cell system has been torn down.
+
+**Q&A**
+- *Do I call heartbeat or mailroom bootstrap directly anymore?* Not when you have access to `cep_l0_bootstrap()`; call it once at process start (tests included) and higher-level bootstraps will sit atop a consistent base.
+- *What if my embedder wants to customise the heartbeat topology?* Configure the heartbeat afterwards with `cep_heartbeat_configure()`—the bootstrap only creates missing roots, it doesn’t lock you out of overrides.
+
+### 1.6 Unified mailroom router
 
 Think of the mailroom as the lobby of the runtime: everyone drops their intents at the same desk and the kernel forwards them to the right layer before any work begins.
 
@@ -96,7 +109,7 @@ Think of the mailroom as the lobby of the runtime: everyone drops their intents 
 - Routed intents keep an audit trail: the mailroom leaves a link behind in the source bucket and copies the staged cell into the downstream inbox. The router also guarantees the shared intent header by creating `original/*`, seeding `outcome` (if missing), and ensuring `meta/parents` exists.
 - You can extend the router by adding new namespace buckets or compatibility shims (for a transition period, link legacy inbox paths into the mailroom so producers can keep using old entrypoints).
 
-#### 1.5.1 Mailroom extension helpers
+#### 1.6.1 Mailroom extension helpers
 
 Sometimes you need the lobby to recognise brand new tenants. The two helper functions below let integrators register additional namespaces or slot custom enzymes ahead of the router without touching the built-in wiring.
 
@@ -105,6 +118,19 @@ Sometimes you need the lobby to recognise brand new tenants. The two helper func
   Adds (or extends) a namespace under `/data/inbox/<namespace_tag>/` and mirrors the same buckets under `/data/<namespace_tag>/inbox/`. Call it before `cep_mailroom_bootstrap()` so the inbox hierarchy is created during bootstrap. Repeated calls are idempotent: duplicates are ignored and newly-added buckets are seeded immediately if the mailroom already bootstrapped. Passing `bucket_count==0` skips work; otherwise each entry in `bucket_tags` must be a valid lexicon tag.
 - `bool cep_mailroom_add_router_before(const char* enzyme_tag)`<br>
   Queues a descriptor name to be inserted into the mailroom router's `before` list the next time `cep_mailroom_register()` runs. Use this when your pack needs routing to happen ahead of additional ingest enzymes (for example, PoC packs that introduce `poc_io_ing_*`). The helper validates uniqueness, so you can register the same tag repeatedly while building layered packs.
+
+### 1.7 Identifier composer helper
+
+**In plain words.** `cep_compose_identifier()` trims and normalises a handful of text fragments into the colon-delimited, lowercase identifier format the kernel expects, sparing you from writing the casing and validation boilerplate by hand.
+
+**Technical details**
+- Pass an array of C strings and the helper lowercases permitted characters (`[a-z0-9-_.\/]`), trims ASCII whitespace from each token, rejects embedded `:` characters, and glues the pieces with `:` into the supplied buffer.
+- The output is limited to `CEP_IDENTIFIER_MAX` (256) bytes; the routine fails early if the combined length would overflow either `out_cap` or the global limit.
+- If any token is `NULL`, reduces to empty after trimming, or contains a disallowed character, the helper returns `false` without touching the buffer.
+
+**Q&A**
+- *When should I prefer this over the layer-specific macros?* Use `cep_compose_identifier()` any time you need plain L0 naming (for example, mailroom buckets or diagnostics). Layer convenience macros such as `CEP_L1_COMPOSE` still make sense when you are operating entirely inside their schema.
+- *Can I feed the result into the namepool?* Yes. Once composed, hand it to `cep_namepool_intern_cstr()` (or the layer helpers) to obtain a stable `cepID` if you need to reuse the identifier frequently.
 
 ---
 
