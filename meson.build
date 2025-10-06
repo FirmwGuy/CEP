@@ -117,6 +117,8 @@ if get_option('tests').enabled()
     'src/test/enzymes/test_enzyme_randomized.c',
     'src/test/enzymes/test_flows_l2.c',
     'src/test/l0_kernel/test_domain_tag_naming.c',
+    'src/test/l0_kernel/test_identifier.c',
+    'src/test/l0_kernel/test_mailroom.c',
     'src/test/l0_kernel/test_enzyme.c',
     'src/test/l0_kernel/test_heartbeat.c',
     'src/test/l0_kernel/test_stream.c',

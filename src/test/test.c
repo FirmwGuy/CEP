@@ -48,6 +48,22 @@ MunitTest tests[] = {
         }
     },
     {
+        "/identifier",
+        test_identifier,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/mailroom",
+        test_mailroom,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
+    {
         "/enzyme",
         test_enzyme,
         test_enzyme_setup,
