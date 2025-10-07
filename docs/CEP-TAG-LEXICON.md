@@ -242,6 +242,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `kill_wait` | core | Beats to wait before enforcing a kill request. |
 | `signal_path` | core | Rendezvous signal path used to wake waiting instances. |
 | `telemetry` | core | Telemetry dictionary copied from rendezvous workers. |
+| `defaults` | core | Profile-specific fallback parameters attached to rendezvous specs. |
 
 #### PoC Harness Tags
 | Tag / Pattern | Status | Purpose |

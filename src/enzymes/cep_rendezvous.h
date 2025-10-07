@@ -11,6 +11,8 @@
 
 #include "../l0_kernel/cep_cell.h"
 
+#include "../l0_kernel/cep_heartbeat.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -37,6 +39,19 @@ typedef struct {
 } cepRvSpec;
 
 bool cep_rv_bootstrap(void);
+
+/**
+ * Build a rendezvous spec from a transform dictionary, merging any
+ * profile-specific defaults so callers can hand a ready-to-spawn descriptor
+ * directly to `cep_rv_spawn`. The scratch buffer is used when the helper needs
+ * to synthesise the signal path from the rendezvous key.
+ */
+bool cep_rv_prepare_spec(cepRvSpec* out_spec,
+                         const cepCell* spec_node,
+                         const cepDT* instance_dt,
+                         cepBeatNumber now,
+                         char* signal_buffer,
+                         size_t signal_capacity);
 
 bool cep_rv_spawn(const cepRvSpec* spec, cepID key);
 bool cep_rv_resched(cepID key, uint32_t delta);

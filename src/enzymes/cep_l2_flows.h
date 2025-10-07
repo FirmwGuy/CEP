@@ -71,6 +71,30 @@ bool cep_l2_definition_intent_set_text(cepL2DefinitionIntent* intent,
                                        const char* field,
                                        const char* value);
 
+/**
+ * Ensure the rendezvous dictionary for a step exists so callers can populate
+ * spawn parameters without poking at lower-level helpers.
+ */
+cepCell* cep_l2_definition_step_ensure_rendezvous(cepCell* step);
+
+/**
+ * Store a rendezvous parameter on the step's spec dictionary using the
+ * provided textual field name.
+ */
+bool cep_l2_definition_step_set_rendezvous_text(cepCell* step,
+                                                const char* field,
+                                                const char* value);
+
+/**
+ * Record a profile-specific rendezvous default under
+ * `spec/rendezvous/defaults/<profile>` so runtime assembly can merge the
+ * fallback values before spawning.
+ */
+bool cep_l2_definition_step_set_rendezvous_default(cepCell* step,
+                                                    const char* profile,
+                                                    const char* field,
+                                                    const char* value);
+
 bool cep_l2_niche_intent_init(cepL2NicheIntent* intent,
                               const char* txn_word,
                               const char* const id_tokens[], size_t id_token_count,

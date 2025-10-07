@@ -42,6 +42,16 @@ static const cepDT* dt_inst_id(void)        { return CEP_DTAW("CEP", "inst_id");
 static const cepDT* dt_profile(void)        { return CEP_DTAW("CEP", "profile"); }
 static const cepDT* dt_telemetry(void)      { return CEP_DTAW("CEP", "telemetry"); }
 
+static const cepDT* dt_key_field(void)     { return CEP_DTAW("CEP", "key"); }
+static const cepDT* dt_profile_field(void) { return CEP_DTAW("CEP", "profile"); }
+static const cepDT* dt_defaults(void)      { return CEP_DTAW("CEP", "defaults"); }
+static const cepDT* dt_signal_field(void)  { return CEP_DTAW("CEP", "signal"); }
+static const cepDT* dt_due_offset(void)    { return CEP_DTAW("CEP", "due_off"); }
+static const cepDT* dt_deadline_offset(void){ return CEP_DTAW("CEP", "deadl_off"); }
+
+static cepID cep_rv_text_to_id(const char* text);
+static bool cep_rv_text_to_dt(const char* text, cepDT* out_dt);
+
 static bool cep_rv_id_to_text(cepID id, char* buffer, size_t capacity) {
     if (!buffer || capacity == 0u) {
         return false;
@@ -211,6 +221,179 @@ static bool cep_rv_parse_u32(const char* text, uint32_t* out_value) {
     return true;
 }
 
+static const char* cep_rv_fetch_with_default(cepCell* primary, cepCell* fallback, const cepDT* field) {
+    const char* value = cep_rv_fetch_cstring(primary, field);
+    if (!value && fallback) {
+        value = cep_rv_fetch_cstring(fallback, field);
+    }
+    return value;
+}
+
+static cepCell* cep_rv_profile_defaults(cepCell* defaults_root, const char* profile_text) {
+    if (!defaults_root || !cep_cell_has_store(defaults_root)) {
+        return NULL;
+    }
+
+    if (profile_text && *profile_text) {
+        cepDT profile_dt = {0};
+        if (cep_rv_text_to_dt(profile_text, &profile_dt)) {
+            cepCell* specific = cep_cell_find_by_name(defaults_root, &profile_dt);
+            if (specific && cep_cell_has_store(specific)) {
+                return specific;
+            }
+        }
+    }
+
+    cepDT fallback_dt = {0};
+    if (cep_rv_text_to_dt("default", &fallback_dt)) {
+        cepCell* fallback = cep_cell_find_by_name(defaults_root, &fallback_dt);
+        if (fallback && cep_cell_has_store(fallback)) {
+            return fallback;
+        }
+    }
+
+    return NULL;
+}
+
+bool cep_rv_prepare_spec(cepRvSpec* out_spec,
+                         const cepCell* spec_node,
+                         const cepDT* instance_dt,
+                         cepBeatNumber now,
+                         char* signal_buffer,
+                         size_t signal_capacity) {
+    if (!out_spec || !spec_node || !instance_dt) {
+        return false;
+    }
+
+    memset(out_spec, 0, sizeof *out_spec);
+    out_spec->instance_dt = *instance_dt;
+
+    cepCell* spec = (cepCell*)spec_node;
+    if (!cep_cell_has_store(spec)) {
+        return false;
+    }
+
+    const char* key_text = cep_rv_fetch_cstring(spec, dt_key_field());
+    if (!key_text || !*key_text) {
+        return false;
+    }
+
+    cepDT key_dt = {0};
+    if (!cep_rv_text_to_dt(key_text, &key_dt)) {
+        cepID key_id = cep_rv_text_to_id(key_text);
+        if (!key_id) {
+            return false;
+        }
+        key_dt.domain = CEP_ACRO("CEP");
+        key_dt.tag = key_id;
+    }
+    out_spec->key_dt = key_dt;
+
+    const char* profile_text = cep_rv_fetch_cstring(spec, dt_profile_field());
+    if (!profile_text || !*profile_text) {
+        profile_text = "rv-fixed";
+    }
+
+    cepID profile_id = cep_rv_text_to_id(profile_text);
+    if (profile_id) {
+        out_spec->prof = profile_id;
+    }
+
+    cepCell* defaults_root = cep_cell_find_by_name(spec, dt_defaults());
+    cepCell* profile_defaults = cep_rv_profile_defaults(defaults_root, profile_text);
+
+    const char* on_miss_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_on_miss());
+    if (on_miss_text && *on_miss_text) {
+        out_spec->on_miss = cep_rv_text_to_id(on_miss_text);
+    }
+
+    const char* kill_mode_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_kill_mode());
+    if (kill_mode_text && *kill_mode_text) {
+        out_spec->kill_mode = cep_rv_text_to_id(kill_mode_text);
+    }
+
+    uint32_t number32 = 0u;
+    const char* kill_wait_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_kill_wait());
+    if (kill_wait_text && cep_rv_parse_u32(kill_wait_text, &number32)) {
+        out_spec->kill_wait = number32;
+    }
+
+    const char* cas_hash = cep_rv_fetch_with_default(spec, profile_defaults, dt_cas_hash());
+    if (cas_hash && *cas_hash) {
+        out_spec->cas_hash = cas_hash;
+    }
+
+    uint64_t number64 = 0u;
+    const char* input_fp_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_input_fp());
+    if (input_fp_text && cep_rv_parse_u64(input_fp_text, &number64)) {
+        out_spec->input_fp = number64;
+    }
+
+    uint64_t due_value = (uint64_t)now;
+    const char* due_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_due());
+    const char* due_off_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_due_offset());
+    if (due_text && cep_rv_parse_u64(due_text, &number64)) {
+        due_value = number64;
+    } else if (due_off_text && cep_rv_parse_u64(due_off_text, &number64)) {
+        due_value = (uint64_t)now + number64;
+    }
+    out_spec->due = due_value;
+
+    const char* deadline_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_deadline());
+    const char* deadline_off_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_deadline_offset());
+    if (deadline_text && cep_rv_parse_u64(deadline_text, &number64)) {
+        out_spec->deadline = number64;
+    } else if (deadline_off_text && cep_rv_parse_u64(deadline_off_text, &number64)) {
+        out_spec->deadline = due_value + number64;
+    }
+
+    const char* epoch_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_epoch_k());
+    if (epoch_text && cep_rv_parse_u32(epoch_text, &number32)) {
+        out_spec->epoch_k = number32;
+    }
+
+    const char* grace_delta_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_grace_delta());
+    if (grace_delta_text && cep_rv_parse_u32(grace_delta_text, &number32)) {
+        out_spec->grace_delta = number32;
+    }
+
+    const char* max_grace_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_max_grace());
+    if (max_grace_text && cep_rv_parse_u32(max_grace_text, &number32)) {
+        out_spec->max_grace = number32;
+    }
+
+    const char* signal_path = cep_rv_fetch_with_default(spec, profile_defaults, dt_signal_path());
+    if (!signal_path || !*signal_path) {
+        const char* signal_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_signal_field());
+        if (signal_text && *signal_text) {
+            signal_path = signal_text;
+        }
+    }
+
+    if (!signal_path || !*signal_path) {
+        if (!signal_buffer || signal_capacity == 0u) {
+            return false;
+        }
+        if (!cep_rv_signal_for_key(&out_spec->key_dt, signal_buffer, signal_capacity)) {
+            return false;
+        }
+        out_spec->signal_path = signal_buffer;
+    } else {
+        out_spec->signal_path = signal_path;
+    }
+
+    cepCell* telemetry = cep_cell_find_by_name(spec, dt_telemetry());
+    if (!telemetry || !cep_cell_has_store(telemetry)) {
+        telemetry = profile_defaults ? cep_cell_find_by_name(profile_defaults, dt_telemetry()) : NULL;
+        if (telemetry && !cep_cell_has_store(telemetry)) {
+            telemetry = NULL;
+        }
+    }
+    out_spec->telemetry = telemetry;
+
+    return true;
+}
+
 static bool cep_rv_copy_telemetry(cepCell* entry, const cepCell* telemetry) {
     if (!entry) {
         return false;
@@ -320,6 +503,12 @@ static cepCell* cep_rv_flow_root(void) {
         return NULL;
     }
 
+    cep_cell_to_dictionary(data_root);
+
+    if (!cep_cell_has_store(data_root)) {
+        return NULL;
+    }
+
     cepCell* flow_root = cep_cell_find_by_name(data_root, dt_flow_root());
     if (!flow_root) {
         cepDT dict_type = *dt_dictionary();
@@ -332,6 +521,12 @@ static cepCell* cep_rv_flow_root(void) {
 static cepCell* cep_rv_ledger(void) {
     cepCell* data_root = cep_heartbeat_data_root();
     if (!data_root) {
+        return NULL;
+    }
+
+    cep_cell_to_dictionary(data_root);
+
+    if (!cep_cell_has_store(data_root)) {
         return NULL;
     }
 
