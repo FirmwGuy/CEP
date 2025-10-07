@@ -18,6 +18,21 @@
 
 static bool cep_rv_ready = false;
 
+static bool cep_rv_data_root_ready(void) {
+    cep_cell_system_ensure();
+    cepCell* data_root = cep_heartbeat_data_root();
+    if (!data_root || !cep_cell_is_normal(data_root)) {
+        return false;
+    }
+
+    cepStore* store = data_root->store;
+    if (!store || !cep_dt_is_valid(&store->dt)) {
+        return false;
+    }
+
+    return true;
+}
+
 static const cepDT* dt_flow_root(void)      { return CEP_DTAW("CEP", "flow"); }
 static const cepDT* dt_dictionary(void)     { return CEP_DTAW("CEP", "dictionary"); }
 static const cepDT* dt_text(void)           { return CEP_DTAW("CEP", "text"); }
@@ -783,6 +798,10 @@ static bool cep_rv_emit_event_for_entry(cepCell* entry, const char* state) {
 }
 
 bool cep_rv_bootstrap(void) {
+    if (!cep_rv_data_root_ready()) {
+        return false;
+    }
+
     cepCell* ledger = cep_rv_ledger();
     if (ledger) {
         cep_rv_ready = true;
@@ -1070,17 +1089,17 @@ bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
 
 bool cep_rv_capture_scan(void) {
     if (!cep_rv_ready) {
-        return false;
+        return true;
     }
 
     cepCell* ledger = cep_rv_ledger();
     if (!ledger) {
-        return false;
+        return true;
     }
 
     cepStore* ledger_store = ledger->store;
     if (!ledger_store || !cep_dt_is_valid(&ledger_store->dt)) {
-        return false;
+        return true;
     }
 
     cepLockToken ledger_lock = {0};
@@ -1168,17 +1187,17 @@ bool cep_rv_capture_scan(void) {
 
 bool cep_rv_commit_apply(void) {
     if (!cep_rv_ready) {
-        return false;
+        return true;
     }
 
     cepCell* ledger = cep_rv_ledger();
     if (!ledger) {
-        return false;
+        return true;
     }
 
     cepStore* ledger_store = ledger->store;
     if (!ledger_store || !cep_dt_is_valid(&ledger_store->dt)) {
-        return false;
+        return true;
     }
 
     cepLockToken ledger_lock = {0};
