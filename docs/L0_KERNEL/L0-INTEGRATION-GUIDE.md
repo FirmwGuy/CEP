@@ -91,7 +91,7 @@ if (cep_beat_phase() == CEP_BEAT_COMPUTE) {
 
 **Technical details**
 - `cep_l0_bootstrap()` first ensures the cell system exists, then calls `cep_heartbeat_bootstrap()` to mint `/sys`, `/data`, `/rt`, `/journal`, `/tmp`, and the default enzyme registry.
-- It follows up with `cep_namepool_bootstrap()` so reference identifiers can be interned immediately, and finally `cep_mailroom_bootstrap()` to seed `/data/inbox/{coh,flow}` and `/sys/err_cat`.
+- It follows up with `cep_namepool_bootstrap()` so reference identifiers can be interned immediately, and finally `cep_mailroom_bootstrap()` to seed `/data/inbox/{coh,flow}`, `/sys/err_cat`, and the layer error catalogs on `/sys/err_cat/{coh,flow}`.
 - The helper caches its work; subsequent calls return `true` without mutating state unless the cell system has been torn down.
 
 **Q&A**
@@ -104,7 +104,7 @@ Think of the mailroom as the lobby of the runtime: everyone drops their intents 
 
 **Technical details**
 
-- `cep_mailroom_bootstrap()` provisions `/data/inbox/{coh,flow}` alongside `/data/coh` and `/data/flow`, and makes sure `/sys/err_cat` exists so shared error codes have a home before ingest runs.
+- `cep_mailroom_bootstrap()` provisions `/data/inbox/{coh,flow}` alongside `/data/coh` and `/data/flow`, ensures `/sys/err_cat` exists, and now seeds both the coherence and flow error catalogs so higher layers no longer reseed the tables themselves.
 - `cep_mailroom_register()` installs the `mr_route` enzyme on `CEP:sig_cell/op_add` with `before` edges targeting every ingest enzyme (`coh_ing_*`, `fl_ing`, etc.), so routing always happens ahead of layer-specific work.
 - Routed intents keep an audit trail: the mailroom leaves a link behind in the source bucket and copies the staged cell into the downstream inbox. The router also guarantees the shared intent header by creating `original/*`, seeding `outcome` (if missing), and ensuring `meta/parents` exists.
 - You can extend the router by adding new namespace buckets or compatibility shims (for a transition period, link legacy inbox paths into the mailroom so producers can keep using old entrypoints).

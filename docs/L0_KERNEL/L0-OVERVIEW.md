@@ -216,6 +216,18 @@ Wrap an external stream behind a library binding. Your `cepLibraryOps` implement
 
 ---
 
+### F) Rendezvous, pipelines, and threads
+
+Rendezvous give flows a deterministic staging area for long-running or parallel work. The helper APIs in `cep_rendezvous.h` cover spec preparation, spawn/reschedule/kill/report, and the capture/commit enzymes. Entries live under `/data/rv/{key}` with the documented fields (`prof`, `spawn_beat`, `due`, `epoch_k`, `input_fp`, `cas_hash`, `state`, `on_miss`, `grace_delta`, `max_grace`, `deadline`, `kill_mode`, `kill_wait`, `telemetry/*`). Wait steps subscribe to the rendezvous signal path (`CEP:sig_rv/<key>`), and the rv→flow bridge emits instance events when `state` reaches `applied`, `timeout`, or `killed`. See `docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md` for details on profiles (`rv-fixed`, `rv-epoch`, `rv-cas`, `observer`, `spec`), ledger expectations, and pipeline integration.
+
+---
+
+### G) Mailroom and layer mailboxes
+
+Every intent hits the mailroom before layer ingest enzymes run. `cep_mailroom_bootstrap()` provisions `/data/inbox/{coh,flow}`, seeds `/sys/err_cat/{coh,flow}`, and `cep_mailroom_register()` installs the `mr_route` enzyme so routing happens ahead of ingest packs. Helpers such as `cep_mailroom_add_namespace()` and `cep_mailroom_add_router_before()` let you extend the lobby with extra mailboxes or enforce custom routing order. See `docs/L0_KERNEL/topics/MAILROOM-AND-MAILBOXES.md` for namespace examples, error-catalog seeding, and audit-trail behavior.
+
+---
+
 ## Design choices that unlock potential
 
 * **Idempotency and append‑only history.** Most “writes” create a new point on a timeline; readers can ask “as of beat X” without branching logic. Reindexing captures a one‑time snapshot of layout to preserve historical traversal; normal operations rely solely on timestamps. 

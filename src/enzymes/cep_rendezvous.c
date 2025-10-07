@@ -44,6 +44,9 @@ static const cepDT* dt_epoch_k(void)        { return CEP_DTAW("CEP", "epoch_k");
 static const cepDT* dt_input_fp(void)       { return CEP_DTAW("CEP", "input_fp"); }
 static const cepDT* dt_cas_hash(void)       { return CEP_DTAW("CEP", "cas_hash"); }
 static const cepDT* dt_state(void)          { return CEP_DTAW("CEP", "state"); }
+/* TODO: audit the rendezvous ledger so every entry can reach the full
+ * pending|ready|applied|late|timeout|killed|quarantine lifecycle described by
+ * the `/data/rv` schema. */
 static const cepDT* dt_on_miss(void)        { return CEP_DTAW("CEP", "on_miss"); }
 static const cepDT* dt_grace_delta(void)    { return CEP_DTAW("CEP", "grace_delta"); }
 static const cepDT* dt_grace_used(void)     { return CEP_DTAW("CEP", "grace_used"); }
@@ -897,6 +900,9 @@ bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
         entry = cep_dict_add_dictionary(ledger, &name_dt, &dict_type, CEP_STORAGE_RED_BLACK_T);
     }
 
+    /* TODO: double-check rv_spawn writes the initial `state=pending` record plus
+     * every default ledger field so replay tooling can rely on the schema
+     * without defensive guards. */
     if (!entry) {
         cep_store_unlock(ledger, &ledger_lock);
         return false;
