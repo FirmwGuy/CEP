@@ -90,6 +90,30 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         timeout_params
     },
+    {
+        "/rendezvous/capture_commit",
+        test_rendezvous_capture_commit,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
+    {
+        "/rendezvous/policies",
+        test_rendezvous_policies,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
+    {
+        "/rendezvous/controls",
+        test_rendezvous_controls,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        timeout_params
+    },
 #if defined(CEP_HAS_L2_TESTS)
     {
         "/flows/basic",

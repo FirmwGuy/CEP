@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static bool cep_rv_ready = false;
+
 static const cepDT* dt_flow_root(void)      { return CEP_DTAW("CEP", "flow"); }
 static const cepDT* dt_dictionary(void)     { return CEP_DTAW("CEP", "dictionary"); }
 static const cepDT* dt_text(void)           { return CEP_DTAW("CEP", "text"); }
@@ -498,14 +500,13 @@ static bool cep_rv_text_to_dt(const char* text, cepDT* out_dt) {
 }
 
 static cepCell* cep_rv_flow_root(void) {
+    cep_cell_system_ensure();
     cepCell* data_root = cep_heartbeat_data_root();
     if (!data_root) {
         return NULL;
     }
 
-    cep_cell_to_dictionary(data_root);
-
-    if (!cep_cell_has_store(data_root)) {
+    if (!cep_cell_has_store(data_root) || !cep_dt_is_valid(&data_root->store->dt)) {
         return NULL;
     }
 
@@ -519,14 +520,13 @@ static cepCell* cep_rv_flow_root(void) {
 }
 
 static cepCell* cep_rv_ledger(void) {
+    cep_cell_system_ensure();
     cepCell* data_root = cep_heartbeat_data_root();
     if (!data_root) {
         return NULL;
     }
 
-    cep_cell_to_dictionary(data_root);
-
-    if (!cep_cell_has_store(data_root)) {
+    if (!cep_cell_has_store(data_root) || !cep_dt_is_valid(&data_root->store->dt)) {
         return NULL;
     }
 
@@ -783,7 +783,11 @@ static bool cep_rv_emit_event_for_entry(cepCell* entry, const char* state) {
 }
 
 bool cep_rv_bootstrap(void) {
-    return cep_rv_ledger() != NULL;
+    cepCell* ledger = cep_rv_ledger();
+    if (ledger) {
+        cep_rv_ready = true;
+    }
+    return ledger != NULL;
 }
 
 static cepCell* cep_rv_find_entry(cepCell* ledger, cepID key) {
@@ -1065,8 +1069,17 @@ bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
 }
 
 bool cep_rv_capture_scan(void) {
+    if (!cep_rv_ready) {
+        return false;
+    }
+
     cepCell* ledger = cep_rv_ledger();
     if (!ledger) {
+        return false;
+    }
+
+    cepStore* ledger_store = ledger->store;
+    if (!ledger_store || !cep_dt_is_valid(&ledger_store->dt)) {
         return false;
     }
 
@@ -1154,8 +1167,17 @@ bool cep_rv_capture_scan(void) {
 }
 
 bool cep_rv_commit_apply(void) {
+    if (!cep_rv_ready) {
+        return false;
+    }
+
     cepCell* ledger = cep_rv_ledger();
     if (!ledger) {
+        return false;
+    }
+
+    cepStore* ledger_store = ledger->store;
+    if (!ledger_store || !cep_dt_is_valid(&ledger_store->dt)) {
         return false;
     }
 

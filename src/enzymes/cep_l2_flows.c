@@ -82,6 +82,11 @@ static const cepDT* dt_inst_id(void)     { return CEP_DTAW("CEP", "inst_id"); }
 static const cepDT* dt_site(void)        { return CEP_DTAW("CEP", "site"); }
 static const cepDT* dt_rendezvous(void)  { return CEP_DTAW("CEP", "rendezvous"); }
 static const cepDT* dt_defaults(void)    { return CEP_DTAW("CEP", "defaults"); }
+static const cepDT* dt_key_field(void)   { return CEP_DTAW("CEP", "key"); }
+static const cepDT* dt_due_field(void)   { return CEP_DTAW("CEP", "due"); }
+static const cepDT* dt_due_offset_field(void){ return CEP_DTAW("CEP", "due_off"); }
+static const cepDT* dt_kill_mode_field(void){ return CEP_DTAW("CEP", "kill_mode"); }
+static const cepDT* dt_kill_wait_field(void){ return CEP_DTAW("CEP", "kill_wait"); }
 static const cepDT* dt_inst_by_var(void) { return CEP_DTAW("CEP", "inst_by_var"); }
 static const cepDT* dt_inst_by_st(void)  { return CEP_DTAW("CEP", "inst_by_st"); }
 static const cepDT* dt_dec_by_pol(void)  { return CEP_DTAW("CEP", "dec_by_pol"); }
@@ -651,6 +656,26 @@ static bool cep_l2_set_text_field(cepCell* parent, const char* field, const char
     return cep_l2_set_string_value(parent, &field_dt, value);
 }
 
+static cepID cep_l2_text_to_id(const char* text) {
+    if (!text || !*text) {
+        return 0;
+    }
+
+    cepID id = cep_text_to_word(text);
+    if (!id) {
+        id = cep_text_to_acronym(text);
+    }
+    if (!id) {
+        cepID ref = cep_namepool_intern(text, strlen(text));
+        if (!ref) {
+            return 0;
+        }
+        id = ref;
+    }
+
+    return id;
+}
+
 static bool cep_l2_set_number_field(cepCell* parent, const char* field, size_t number) {
     if (!parent || !field) {
         return false;
@@ -1133,6 +1158,92 @@ bool cep_l2_instance_control_intent_set_text(cepL2InstanceControlIntent* intent,
         return false;
     }
     return cep_l2_set_text_field(intent->request, field, value);
+}
+
+cepCell* cep_l2_instance_control_intent_ensure_rendezvous(cepL2InstanceControlIntent* intent) {
+    if (!intent || !intent->request) {
+        return NULL;
+    }
+    return cep_l2_ensure_dictionary(intent->request, dt_rendezvous(), CEP_STORAGE_RED_BLACK_T);
+}
+
+bool cep_l2_instance_control_intent_set_rendezvous_key(cepL2InstanceControlIntent* intent, const char* key_text) {
+    if (!intent || !key_text || !*key_text) {
+        return false;
+    }
+    cepCell* rv = cep_l2_instance_control_intent_ensure_rendezvous(intent);
+    if (!rv) {
+        return false;
+    }
+    return cep_l2_set_string_value(rv, dt_key_field(), key_text);
+}
+
+bool cep_l2_instance_control_intent_set_rendezvous_text(cepL2InstanceControlIntent* intent, const char* field, const char* value) {
+    if (!intent || !field || !value) {
+        return false;
+    }
+    cepCell* rv = cep_l2_instance_control_intent_ensure_rendezvous(intent);
+    if (!rv) {
+        return false;
+    }
+    return cep_l2_set_text_field(rv, field, value);
+}
+
+bool cep_l2_instance_control_intent_set_rendezvous_number(cepL2InstanceControlIntent* intent, const char* field, size_t value) {
+    if (!intent || !field) {
+        return false;
+    }
+    cepCell* rv = cep_l2_instance_control_intent_ensure_rendezvous(intent);
+    if (!rv) {
+        return false;
+    }
+    cepDT field_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(field, strlen(field), &field_dt)) {
+        return false;
+    }
+    return cep_l2_set_number_value(rv, &field_dt, value);
+}
+
+bool cep_l2_instance_control_intent_copy_rendezvous_telemetry(cepL2InstanceControlIntent* intent, const cepCell* telemetry_source) {
+    if (!intent || !intent->request) {
+        return false;
+    }
+    cepCell* rv = cep_l2_instance_control_intent_ensure_rendezvous(intent);
+    if (!rv) {
+        return false;
+    }
+
+    cepCell* existing = cep_cell_find_by_name(rv, dt_telemetry());
+    if (existing) {
+        cep_cell_remove_hard(rv, existing);
+    }
+
+    if (!telemetry_source || !cep_cell_has_store((cepCell*)telemetry_source)) {
+        return true;
+    }
+
+    cepDT name_copy = *dt_telemetry();
+    cepDT dict_type = *dt_dictionary();
+    cepCell* dest = cep_dict_add_dictionary(rv, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!dest) {
+        return false;
+    }
+
+    for (cepCell* child = cep_cell_first((cepCell*)telemetry_source); child; child = cep_cell_next((cepCell*)telemetry_source, child)) {
+        cepCell* clone = cep_cell_clone_deep(child);
+        if (!clone) {
+            return false;
+        }
+        cepCell* inserted = cep_cell_add(dest, 0, clone);
+        if (!inserted) {
+            cep_cell_finalize_hard(clone);
+            cep_free(clone);
+            return false;
+        }
+        cep_free(clone);
+    }
+
+    return true;
 }
 
 static void cep_l2_retention_plan_init(cepL2RetentionPlan* plan) {
@@ -5102,6 +5213,97 @@ static int cep_l2_enzyme_inst_ingest(const cepPath* signal, const cepPath* targe
                 cep_l2_set_number_value(budget, dt_beat(), (size_t)cep_heartbeat_current());
             }
         }
+    } else if (strcmp(action, "rv_resched") == 0) {
+        cepCell* rv_node = cep_cell_find_by_name(request, dt_rendezvous());
+        if (!rv_node) {
+            cep_l2_mark_outcome_error(request, "rv-missing");
+            goto done;
+        }
+
+        cepDT rv_key = {0};
+        if (!cep_l2_extract_identifier(rv_node, dt_key_field(), &rv_key, NULL) || !rv_key.tag) {
+            cep_l2_mark_outcome_error(request, "rv-key");
+            goto done;
+        }
+
+        size_t parsed_value = 0u;
+        uint32_t delta = 0u;
+        const char* delta_text = cep_l2_fetch_string(rv_node, dt_due_offset_field());
+        if (delta_text && cep_l2_parse_size_text(delta_text, &parsed_value) && parsed_value <= UINT32_MAX) {
+            delta = (uint32_t)parsed_value;
+        } else {
+            const char* due_text = cep_l2_fetch_string(rv_node, dt_due_field());
+            if (due_text && cep_l2_parse_size_text(due_text, &parsed_value)) {
+                cepBeatNumber now = cep_heartbeat_current();
+                if (parsed_value >= (size_t)now) {
+                    size_t diff = parsed_value - (size_t)now;
+                    delta = (diff > UINT32_MAX) ? UINT32_MAX : (uint32_t)diff;
+                }
+            }
+        }
+
+        if (!cep_rv_resched(rv_key.tag, delta)) {
+            cep_l2_mark_outcome_error(request, "rv-resched");
+            goto done;
+        }
+
+        (void)cep_l2_copy_original_payload(entry, request);
+    } else if (strcmp(action, "rv_kill") == 0) {
+        cepCell* rv_node = cep_cell_find_by_name(request, dt_rendezvous());
+        if (!rv_node) {
+            cep_l2_mark_outcome_error(request, "rv-missing");
+            goto done;
+        }
+
+        cepDT rv_key = {0};
+        if (!cep_l2_extract_identifier(rv_node, dt_key_field(), &rv_key, NULL) || !rv_key.tag) {
+            cep_l2_mark_outcome_error(request, "rv-key");
+            goto done;
+        }
+
+        cepID kill_mode = 0;
+        const char* mode_text = cep_l2_fetch_string(rv_node, dt_kill_mode_field());
+        if (mode_text && *mode_text) {
+            kill_mode = cep_l2_text_to_id(mode_text);
+            if (!kill_mode) {
+                cep_l2_mark_outcome_error(request, "rv-mode");
+                goto done;
+            }
+        }
+
+        size_t parsed_value = 0u;
+        uint32_t wait_beats = 0u;
+        const char* wait_text = cep_l2_fetch_string(rv_node, dt_kill_wait_field());
+        if (wait_text && cep_l2_parse_size_text(wait_text, &parsed_value)) {
+            wait_beats = (parsed_value > UINT32_MAX) ? UINT32_MAX : (uint32_t)parsed_value;
+        }
+
+        if (!cep_rv_kill(rv_key.tag, kill_mode, wait_beats)) {
+            cep_l2_mark_outcome_error(request, "rv-kill");
+            goto done;
+        }
+
+        (void)cep_l2_copy_original_payload(entry, request);
+    } else if (strcmp(action, "rv_report") == 0) {
+        cepCell* rv_node = cep_cell_find_by_name(request, dt_rendezvous());
+        if (!rv_node) {
+            cep_l2_mark_outcome_error(request, "rv-missing");
+            goto done;
+        }
+
+        cepDT rv_key = {0};
+        if (!cep_l2_extract_identifier(rv_node, dt_key_field(), &rv_key, NULL) || !rv_key.tag) {
+            cep_l2_mark_outcome_error(request, "rv-key");
+            goto done;
+        }
+
+        cepCell* telemetry = cep_cell_find_by_name(rv_node, dt_telemetry());
+        if (!cep_rv_report(rv_key.tag, telemetry)) {
+            cep_l2_mark_outcome_error(request, "rv-report");
+            goto done;
+        }
+
+        (void)cep_l2_copy_original_payload(entry, request);
     } else {
         cep_l2_mark_outcome_error(request, "unknown-action");
         goto done;

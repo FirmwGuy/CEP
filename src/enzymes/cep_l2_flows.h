@@ -130,6 +130,12 @@ bool cep_l2_instance_control_intent_set_text(cepL2InstanceControlIntent* intent,
                                              const char* field,
                                              const char* value);
 
+cepCell* cep_l2_instance_control_intent_ensure_rendezvous(cepL2InstanceControlIntent* intent);
+bool cep_l2_instance_control_intent_set_rendezvous_key(cepL2InstanceControlIntent* intent, const char* key_text);
+bool cep_l2_instance_control_intent_set_rendezvous_text(cepL2InstanceControlIntent* intent, const char* field, const char* value);
+bool cep_l2_instance_control_intent_set_rendezvous_number(cepL2InstanceControlIntent* intent, const char* field, size_t value);
+bool cep_l2_instance_control_intent_copy_rendezvous_telemetry(cepL2InstanceControlIntent* intent, const cepCell* telemetry_source);
+
 #ifdef __cplusplus
 }
 #endif
