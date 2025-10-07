@@ -59,10 +59,11 @@ static const cepDT* dt_inst_id(void)        { return CEP_DTAW("CEP", "inst_id");
 static const cepDT* dt_profile(void)        { return CEP_DTAW("CEP", "profile"); }
 static const cepDT* dt_telemetry(void)      { return CEP_DTAW("CEP", "telemetry"); }
 
-static const cepDT* dt_key_field(void)     { return CEP_DTAW("CEP", "key"); }
+static const cepDT* dt_key(void)           { return CEP_DTAW("CEP", "key"); }
 static const cepDT* dt_profile_field(void) { return CEP_DTAW("CEP", "profile"); }
 static const cepDT* dt_defaults(void)      { return CEP_DTAW("CEP", "defaults"); }
-static const cepDT* dt_signal_field(void)  { return CEP_DTAW("CEP", "signal"); }
+static const cepDT* dt_signal(void)        { return CEP_DTAW("CEP", "signal"); }
+static const cepDT* dt_result(void)        { return CEP_DTAW("CEP", "result"); }
 static const cepDT* dt_due_offset(void)    { return CEP_DTAW("CEP", "due_off"); }
 static const cepDT* dt_deadline_offset(void){ return CEP_DTAW("CEP", "deadl_off"); }
 
@@ -290,7 +291,7 @@ bool cep_rv_prepare_spec(cepRvSpec* out_spec,
         return false;
     }
 
-    const char* key_text = cep_rv_fetch_cstring(spec, dt_key_field());
+    const char* key_text = cep_rv_fetch_cstring(spec, dt_key());
     if (!key_text || !*key_text) {
         return false;
     }
@@ -381,7 +382,7 @@ bool cep_rv_prepare_spec(cepRvSpec* out_spec,
 
     const char* signal_path = cep_rv_fetch_with_default(spec, profile_defaults, dt_signal_path());
     if (!signal_path || !*signal_path) {
-        const char* signal_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_signal_field());
+        const char* signal_text = cep_rv_fetch_with_default(spec, profile_defaults, dt_signal());
         if (signal_text && *signal_text) {
             signal_path = signal_text;
         }
@@ -657,6 +658,8 @@ static bool cep_rv_prepare_event_payload(cepCell* request,
                                          const char* state,
                                          const char* profile,
                                          const char* cas_hash,
+                                         const char* key_text,
+                                         const char* signal_path,
                                          uint64_t input_fp,
                                          uint64_t spawn_beat,
                                          uint64_t due,
@@ -670,26 +673,52 @@ static bool cep_rv_prepare_event_payload(cepCell* request,
 
     if (profile && *profile) {
         cep_rv_set_string(payload, dt_profile(), profile);
+    } else {
+        cep_rv_remove_field(payload, dt_profile());
     }
 
     if (cas_hash && *cas_hash) {
         cep_rv_set_string(payload, dt_cas_hash(), cas_hash);
+        cep_rv_set_string(payload, dt_result(), cas_hash);
+    } else {
+        cep_rv_remove_field(payload, dt_cas_hash());
+        cep_rv_remove_field(payload, dt_result());
+    }
+
+    if (key_text && *key_text) {
+        cep_rv_set_string(payload, dt_key(), key_text);
+    } else {
+        cep_rv_remove_field(payload, dt_key());
+    }
+
+    if (signal_path && *signal_path) {
+        cep_rv_set_string(payload, dt_signal(), signal_path);
+    } else {
+        cep_rv_remove_field(payload, dt_signal());
     }
 
     if (input_fp) {
         cep_rv_set_number(payload, dt_input_fp(), input_fp);
+    } else {
+        cep_rv_remove_field(payload, dt_input_fp());
     }
 
     if (spawn_beat) {
         cep_rv_set_number(payload, dt_spawn_beat(), spawn_beat);
+    } else {
+        cep_rv_remove_field(payload, dt_spawn_beat());
     }
 
     if (due) {
         cep_rv_set_number(payload, dt_due(), due);
+    } else {
+        cep_rv_remove_field(payload, dt_due());
     }
 
     if (applied_beat) {
         cep_rv_set_number(payload, dt_applied_beat(), applied_beat);
+    } else {
+        cep_rv_remove_field(payload, dt_applied_beat());
     }
 
     cepCell* telemetry_src = cep_cell_find_by_name(entry, dt_telemetry());
@@ -789,7 +818,17 @@ static bool cep_rv_emit_event_for_entry(cepCell* entry, const char* state) {
     const char* profile = cep_rv_fetch_cstring(entry, dt_prof());
     const char* cas_hash = cep_rv_fetch_cstring(entry, dt_cas_hash());
 
-    cep_rv_prepare_event_payload(request, entry, state, profile, cas_hash, input_fp, spawn_beat, due_value, applied_beat);
+    cep_rv_prepare_event_payload(request,
+                                 entry,
+                                 state,
+                                 profile,
+                                 cas_hash,
+                                 key_text,
+                                 signal_path,
+                                 input_fp,
+                                 spawn_beat,
+                                 due_value,
+                                 applied_beat);
 
     cep_rv_emit_signal_for_request(request);
     cep_rv_enqueue_pipeline();
@@ -1267,4 +1306,3 @@ bool cep_rv_signal_for_key(const cepDT* key, char* buffer, size_t capacity) {
     }
     return true;
 }
-

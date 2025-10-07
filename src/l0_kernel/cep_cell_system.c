@@ -5,6 +5,7 @@
 
 
 #include "cep_cell.h"
+#include "cep_mailroom.h"
 
 cepOpCount CEP_OP_COUNT;
 

@@ -66,14 +66,6 @@ static const cepDT* dt_coh_ing_ctx(void)    { return CEP_DTAW("CEP", "coh_ing_ct
 static const cepDT* dt_fl_ing(void)         { return CEP_DTAW("CEP", "fl_ing"); }
 static const cepDT* dt_ni_ing(void)         { return CEP_DTAW("CEP", "ni_ing"); }
 static const cepDT* dt_inst_ing(void)       { return CEP_DTAW("CEP", "inst_ing"); }
-static const cepDT* dt_be_create(void)      { return CEP_DTAW("CEP", "be_create"); }
-static const cepDT* dt_bo_upsert(void)      { return CEP_DTAW("CEP", "bo_upsert"); }
-static const cepDT* dt_ctx_upsert(void)     { return CEP_DTAW("CEP", "ctx_upsert"); }
-static const cepDT* dt_fl_upsert(void)      { return CEP_DTAW("CEP", "fl_upsert"); }
-static const cepDT* dt_ni_upsert(void)      { return CEP_DTAW("CEP", "ni_upsert"); }
-static const cepDT* dt_inst_start(void)     { return CEP_DTAW("CEP", "inst_start"); }
-static const cepDT* dt_inst_event(void)     { return CEP_DTAW("CEP", "inst_event"); }
-static const cepDT* dt_inst_ctrl(void)      { return CEP_DTAW("CEP", "inst_ctrl"); }
 
 typedef struct {
     const char* code;
@@ -150,7 +142,7 @@ static cepCell* cep_mailroom_ensure_dictionary(cepCell* parent, const cepDT* nam
 
 static bool cep_mailroom_seed_namespace(cepCell* inbox,
                                         const cepDT* ns_name,
-                                        const cepDT* const* buckets,
+                                        const cepDT* buckets,
                                         size_t bucket_count) {
     if (!inbox || !ns_name || (bucket_count && !buckets)) {
         return false;
@@ -162,7 +154,8 @@ static bool cep_mailroom_seed_namespace(cepCell* inbox,
     }
 
     for (size_t i = 0; i < bucket_count; ++i) {
-        if (!cep_mailroom_ensure_dictionary(ns_root, buckets[i], CEP_STORAGE_RED_BLACK_T)) {
+        const cepDT* bucket_dt = &buckets[i];
+        if (!cep_mailroom_ensure_dictionary(ns_root, bucket_dt, CEP_STORAGE_RED_BLACK_T)) {
             return false;
         }
     }
@@ -441,19 +434,9 @@ bool cep_mailroom_add_namespace(const char* namespace_tag,
         }
 
         cepMailroomNamespaceSpec* target = spec;
-        const cepDT** bucket_refs = NULL;
         if (target->bucket_count) {
-            bucket_refs = cep_malloc(sizeof(*bucket_refs) * target->bucket_count);
-            if (!bucket_refs) {
-                return false;
-            }
-            for (size_t i = 0; i < target->bucket_count; ++i) {
-                bucket_refs[i] = &target->bucket_dts[i];
-            }
-            bool seeded = cep_mailroom_seed_namespace(inbox_root, &target->namespace_dt,
-                                                      bucket_refs, target->bucket_count);
-            cep_free((void*)bucket_refs);
-            if (!seeded) {
+            if (!cep_mailroom_seed_namespace(inbox_root, &target->namespace_dt,
+                                             target->bucket_dts, target->bucket_count)) {
                 return false;
             }
         }
@@ -517,23 +500,37 @@ bool cep_mailroom_bootstrap(void) {
         return false;
     }
 
-    cepCell* data_root = cep_mailroom_ensure_dictionary(root, dt_data_root(), CEP_STORAGE_RED_BLACK_T);
+    cepDT data_dt = cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("data"));
+    cepCell* data_root = cep_mailroom_ensure_dictionary(root, &data_dt, CEP_STORAGE_RED_BLACK_T);
     if (!data_root) {
         return false;
     }
 
-    cepCell* inbox_root = cep_mailroom_ensure_dictionary(data_root, dt_inbox_root(), CEP_STORAGE_RED_BLACK_T);
+    cepDT inbox_dt = cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("inbox"));
+    cepCell* inbox_root = cep_mailroom_ensure_dictionary(data_root, &inbox_dt, CEP_STORAGE_RED_BLACK_T);
     if (!inbox_root) {
         return false;
     }
 
-    const cepDT* coh_buckets[] = { dt_be_create(), dt_bo_upsert(), dt_ctx_upsert() };
-    if (!cep_mailroom_seed_namespace(inbox_root, dt_mailroom_ns_coh(), coh_buckets, cep_lengthof(coh_buckets))) {
+    const cepDT coh_buckets[] = {
+        cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("be_create")),
+        cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("bo_upsert")),
+        cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("ctx_upsert")),
+    };
+    cepDT coh_ns = cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("coh"));
+    if (!cep_mailroom_seed_namespace(inbox_root, &coh_ns, coh_buckets, cep_lengthof(coh_buckets))) {
         return false;
     }
 
-    const cepDT* flow_buckets[] = { dt_fl_upsert(), dt_ni_upsert(), dt_inst_start(), dt_inst_event(), dt_inst_ctrl() };
-    if (!cep_mailroom_seed_namespace(inbox_root, dt_mailroom_ns_flow(), flow_buckets, cep_lengthof(flow_buckets))) {
+    const cepDT flow_buckets[] = {
+        cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("fl_upsert")),
+        cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("ni_upsert")),
+        cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("inst_start")),
+        cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("inst_event")),
+        cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("inst_ctrl")),
+    };
+    cepDT flow_ns = cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("flow"));
+    if (!cep_mailroom_seed_namespace(inbox_root, &flow_ns, flow_buckets, cep_lengthof(flow_buckets))) {
         return false;
     }
 
@@ -542,11 +539,7 @@ bool cep_mailroom_bootstrap(void) {
         if (!spec->bucket_count) {
             continue;
         }
-        const cepDT* bucket_refs[spec->bucket_count];
-        for (size_t j = 0; j < spec->bucket_count; ++j) {
-            bucket_refs[j] = &spec->bucket_dts[j];
-        }
-        if (!cep_mailroom_seed_namespace(inbox_root, &spec->namespace_dt, bucket_refs, spec->bucket_count)) {
+        if (!cep_mailroom_seed_namespace(inbox_root, &spec->namespace_dt, spec->bucket_dts, spec->bucket_count)) {
             return false;
         }
     }
@@ -557,6 +550,15 @@ bool cep_mailroom_bootstrap(void) {
     }
 
     if (!cep_mailroom_ensure_dictionary(sys_root, dt_err_cat(), CEP_STORAGE_RED_BLACK_T)) {
+        return false;
+    }
+
+    /* FIXME: consolidate catalog seeding with future mailroom persistence work once shutdown/reset is reconciled. */
+    if (!cep_mailroom_seed_coh_errors()) {
+        return false;
+    }
+
+    if (!cep_mailroom_seed_flow_errors()) {
         return false;
     }
 

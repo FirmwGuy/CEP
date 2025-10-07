@@ -1541,10 +1541,6 @@ bool cep_l1_coherence_bootstrap(void) {
         return false;
     }
 
-    if (!cep_mailroom_seed_coh_errors()) {
-        return false;
-    }
-
     if (!cep_l1_ensure_retention_config()) {
         return false;
     }

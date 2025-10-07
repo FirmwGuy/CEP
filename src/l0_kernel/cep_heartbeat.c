@@ -6,6 +6,7 @@
 
 #include "cep_heartbeat.h"
 #include "cep_heartbeat_internal.h"
+#include "cep_mailroom.h"
 #include "cep_namepool.h"
 #include "../enzymes/cep_cell_operations.h"
 #include "../enzymes/cep_rendezvous.h"
