@@ -8,6 +8,7 @@
 #include "cep_heartbeat_internal.h"
 #include "cep_namepool.h"
 #include "../enzymes/cep_cell_operations.h"
+#include "../enzymes/cep_rendezvous.h"
 #include "stream/cep_stream_internal.h"
 
 #include <string.h>
@@ -1027,6 +1028,10 @@ bool cep_heartbeat_resolve_agenda(void) {
         cep_enzyme_registry_activate_pending(CEP_RUNTIME.registry);
     }
 
+    if (!cep_rv_commit_apply()) {
+        return false;
+    }
+
     return cep_heartbeat_process_impulses();
 }
 
@@ -1140,6 +1145,7 @@ void cep_beat_note_deferred_activation(size_t count) {
 void cep_beat_begin_capture(void) {
     CEP_RUNTIME.phase = CEP_BEAT_CAPTURE;
     CEP_RUNTIME.deferred_activations = 0u;
+    (void)cep_rv_capture_scan();
 }
 
 

@@ -217,6 +217,32 @@ when a new behavior needs a fresh word before it lands in code.
 | `beat` | core | heartbeat counter attached to events or waits. |
 | `origin` | core | marker describing whether an event was targeted or broadcast. |
 
+#### Rendezvous Tags
+| Tag / Pattern | Status | Purpose |
+| --- | --- | --- |
+| `rv` | core | Rendezvous ledger root stored under `/data`. |
+| `rendezvous` | core | Transform spec dictionary describing rendezvous spawn parameters. |
+| `prof` | core | Rendezvous profile identifier captured on ledger entries. |
+| `spawn_beat` | core | Beat when a rendezvous job was created. |
+| `due` | core | Beat when the rendezvous is due. |
+| `due_off` | core | Relative due offset expressed in beats. |
+| `deadline` | core | Hard beat deadline recorded on ledger entries. |
+| `deadl_off` | core | Deadline offset applied relative to the due beat. |
+| `ready_beat` | core | Beat when a rendezvous entered the ready state. |
+| `applied_bt` | core | Beat when a rendezvous outcome was applied. |
+| `epoch_k` | core | Rendezvous cadence interval for periodic jobs. |
+| `input_fp` | core | Fingerprint of rendezvous inputs and code. |
+| `cas_hash` | core | Content-addressed hash for rendezvous payloads staged in CAS. |
+| `state` | core | Current rendezvous state (`pending`, `ready`, etc.). |
+| `on_miss` | core | Policy captured for rendezvous misses. |
+| `grace_delta` | core | Beat delta applied when extending a rendezvous via grace. |
+| `grace_used` | core | Number of grace extensions already consumed. |
+| `max_grace` | core | Maximum number of grace extensions allowed. |
+| `kill_mode` | core | Kill policy recorded for rendezvous cancellation. |
+| `kill_wait` | core | Beats to wait before enforcing a kill request. |
+| `signal_path` | core | Rendezvous signal path used to wake waiting instances. |
+| `telemetry` | core | Telemetry dictionary copied from rendezvous workers. |
+
 #### PoC Harness Tags
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |

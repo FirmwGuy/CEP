@@ -73,6 +73,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_identifier.c',
   'src/enzymes/cep_cell_operations.c',
   'src/enzymes/cep_l1_coherence.c',
+  'src/enzymes/cep_rendezvous.c',
   'src/enzymes/cep_l2_flows.c',
   'src/l0_kernel/stream/cep_stream_stdio.c',
   'src/l0_kernel/stream/cep_stream_effects.c',

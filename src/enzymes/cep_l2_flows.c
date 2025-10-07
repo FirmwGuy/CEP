@@ -12,6 +12,7 @@
 #include "../l0_kernel/cep_mailroom.h"
 #include "../l0_kernel/cep_serialization.h"
 #include "../l0_kernel/cep_namepool.h"
+#include "cep_rendezvous.h"
 
 #include <assert.h>
 #include <stddef.h>
@@ -79,6 +80,20 @@ static const cepDT* dt_emits(void)       { return CEP_DTAW("CEP", "emits"); }
 static const cepDT* dt_action(void)      { return CEP_DTAW("CEP", "action"); }
 static const cepDT* dt_inst_id(void)     { return CEP_DTAW("CEP", "inst_id"); }
 static const cepDT* dt_site(void)        { return CEP_DTAW("CEP", "site"); }
+static const cepDT* dt_rendezvous(void)  { return CEP_DTAW("CEP", "rendezvous"); }
+static const cepDT* dt_profile_field(void){ return CEP_DTAW("CEP", "profile"); }
+static const cepDT* dt_key_field(void)   { return CEP_DTAW("CEP", "key"); }
+static const cepDT* dt_due_offset(void)  { return CEP_DTAW("CEP", "due_off"); }
+static const cepDT* dt_deadline_offset(void){ return CEP_DTAW("CEP", "deadl_off"); }
+static const cepDT* dt_due_field(void)    { return CEP_DTAW("CEP", "due"); }
+static const cepDT* dt_epoch_field(void) { return CEP_DTAW("CEP", "epoch_k"); }
+static const cepDT* dt_grace_delta_field(void){ return CEP_DTAW("CEP", "grace_delta"); }
+static const cepDT* dt_max_grace_field(void){ return CEP_DTAW("CEP", "max_grace"); }
+static const cepDT* dt_kill_mode_field(void){ return CEP_DTAW("CEP", "kill_mode"); }
+static const cepDT* dt_kill_wait_field(void){ return CEP_DTAW("CEP", "kill_wait"); }
+static const cepDT* dt_input_fp_field(void){ return CEP_DTAW("CEP", "input_fp"); }
+static const cepDT* dt_on_miss_field(void){ return CEP_DTAW("CEP", "on_miss"); }
+static const cepDT* dt_cas_hash_field(void){ return CEP_DTAW("CEP", "cas_hash"); }
 static const cepDT* dt_inst_by_var(void) { return CEP_DTAW("CEP", "inst_by_var"); }
 static const cepDT* dt_inst_by_st(void)  { return CEP_DTAW("CEP", "inst_by_st"); }
 static const cepDT* dt_dec_by_pol(void)  { return CEP_DTAW("CEP", "dec_by_pol"); }
@@ -164,6 +179,7 @@ static bool     cep_l2_extract_identifier(cepCell* request, const cepDT* field, 
 static bool     cep_l2_canonicalize_inst_start(cepCell* flow_root, cepCell* entry, cepCell* request, const char** error_code);
 static bool     cep_l2_canonicalize_inst_event(cepCell* request, const char** error_code);
 static bool     cep_l2_process_emits(cepCell* flow_root);
+static bool     cep_l2_transform_spawn_rendezvous(cepCell* instance, cepCell* spec, cepBeatNumber now);
 static cepCell* cep_l2_events_root(cepCell* instance);
 static cepCell* cep_l2_event_entry_new(cepCell* instance,
                                        cepCell* request,
@@ -645,6 +661,26 @@ static bool cep_l2_set_text_field(cepCell* parent, const char* field, const char
     }
 
     return cep_l2_set_string_value(parent, &field_dt, value);
+}
+
+static cepID cep_l2_text_to_id(const char* text) {
+    if (!text || !*text) {
+        return 0;
+    }
+
+    cepID id = cep_text_to_word(text);
+    if (!id) {
+        id = cep_text_to_acronym(text);
+    }
+    if (!id) {
+        cepID ref = cep_namepool_intern(text, strlen(text));
+        if (!ref) {
+            return 0;
+        }
+        id = ref;
+    }
+
+    return id;
 }
 
 static bool cep_l2_set_number_field(cepCell* parent, const char* field, size_t number) {
@@ -4028,6 +4064,130 @@ static bool cep_l2_transform_stage_outputs(cepCell* instance,
     return true;
 }
 
+static bool cep_l2_transform_spawn_rendezvous(cepCell* instance, cepCell* spec, cepBeatNumber now) {
+    if (!instance || !spec) {
+        return true;
+    }
+
+    cepCell* rv_spec = cep_cell_find_by_name(spec, dt_rendezvous());
+    if (!rv_spec || !cep_cell_has_store(rv_spec)) {
+        return true;
+    }
+
+    const char* key_text = cep_l2_fetch_string(rv_spec, dt_key_field());
+    if (!key_text || !*key_text) {
+        return true;
+    }
+
+    cepDT key_dt = {0};
+    if (!cep_l2_text_to_dt_bytes(key_text, strlen(key_text), &key_dt)) {
+        cepID key_id = cep_l2_text_to_id(key_text);
+        if (!key_id) {
+            return false;
+        }
+        key_dt.domain = CEP_ACRO("CEP");
+        key_dt.tag = key_id;
+    }
+
+    const cepDT* inst_name = cep_cell_get_name(instance);
+    if (!inst_name) {
+        return false;
+    }
+
+    cepRvSpec rv = {0};
+    rv.key_dt = key_dt;
+    rv.instance_dt = *inst_name;
+
+    const char* profile_text = cep_l2_fetch_string(rv_spec, dt_profile_field());
+    if (profile_text && *profile_text) {
+        rv.prof = cep_l2_text_to_id(profile_text);
+    }
+
+    const char* on_miss_text = cep_l2_fetch_string(rv_spec, dt_on_miss_field());
+    if (on_miss_text && *on_miss_text) {
+        rv.on_miss = cep_l2_text_to_id(on_miss_text);
+    }
+
+    const char* kill_mode_text = cep_l2_fetch_string(rv_spec, dt_kill_mode_field());
+    if (kill_mode_text && *kill_mode_text) {
+        rv.kill_mode = cep_l2_text_to_id(kill_mode_text);
+    }
+
+    const char* kill_wait_text = cep_l2_fetch_string(rv_spec, dt_kill_wait_field());
+    size_t number_value = 0u;
+    if (kill_wait_text && cep_l2_parse_size_text(kill_wait_text, &number_value) && number_value <= UINT32_MAX) {
+        rv.kill_wait = (uint32_t)number_value;
+    }
+
+    const char* signal_path = cep_l2_fetch_string(rv_spec, dt_signal_path());
+    if (!signal_path) {
+        signal_path = cep_l2_fetch_string(rv_spec, dt_signal());
+    }
+
+    char signal_buffer[CEP_IDENTIFIER_MAX + 32u];
+    if (!signal_path || !*signal_path) {
+        if (cep_rv_signal_for_key(&rv.key_dt, signal_buffer, sizeof signal_buffer)) {
+            rv.signal_path = signal_buffer;
+        }
+    } else {
+        rv.signal_path = signal_path;
+    }
+
+    const char* cas_hash = cep_l2_fetch_string(rv_spec, dt_cas_hash_field());
+    if (cas_hash && *cas_hash) {
+        rv.cas_hash = cas_hash;
+    }
+
+    const char* input_fp_text = cep_l2_fetch_string(rv_spec, dt_input_fp_field());
+    if (input_fp_text && cep_l2_parse_size_text(input_fp_text, &number_value)) {
+        rv.input_fp = number_value;
+    }
+
+    const char* due_text = cep_l2_fetch_string(rv_spec, dt_due_field());
+    const char* due_offset_text = cep_l2_fetch_string(rv_spec, dt_due_offset());
+    uint64_t due_value = (uint64_t)now;
+    if (due_text && cep_l2_parse_size_text(due_text, &number_value)) {
+        due_value = number_value;
+    } else if (due_offset_text && cep_l2_parse_size_text(due_offset_text, &number_value)) {
+        due_value = (uint64_t)now + number_value;
+    }
+    rv.due = due_value;
+
+    const char* deadline_text = cep_l2_fetch_string(rv_spec, dt_deadline());
+    const char* deadline_offset_text = cep_l2_fetch_string(rv_spec, dt_deadline_offset());
+    if (deadline_text && cep_l2_parse_size_text(deadline_text, &number_value)) {
+        rv.deadline = number_value;
+    } else if (deadline_offset_text && cep_l2_parse_size_text(deadline_offset_text, &number_value)) {
+        rv.deadline = due_value + number_value;
+    }
+
+    const char* epoch_text = cep_l2_fetch_string(rv_spec, dt_epoch_field());
+    if (epoch_text && cep_l2_parse_size_text(epoch_text, &number_value) && number_value <= UINT32_MAX) {
+        rv.epoch_k = (uint32_t)number_value;
+    }
+
+    const char* grace_delta_text = cep_l2_fetch_string(rv_spec, dt_grace_delta_field());
+    if (grace_delta_text && cep_l2_parse_size_text(grace_delta_text, &number_value) && number_value <= UINT32_MAX) {
+        rv.grace_delta = (uint32_t)number_value;
+    }
+
+    const char* max_grace_text = cep_l2_fetch_string(rv_spec, dt_max_grace_field());
+    if (max_grace_text && cep_l2_parse_size_text(max_grace_text, &number_value) && number_value <= UINT32_MAX) {
+        rv.max_grace = (uint32_t)number_value;
+    }
+
+    cepCell* telemetry = cep_cell_find_by_name(rv_spec, dt_telemetry());
+    if (telemetry) {
+        rv.telemetry = telemetry;
+    }
+
+    if (!cep_rv_spawn(&rv, rv.key_dt.tag)) {
+        return false;
+    }
+
+    return true;
+}
+
 static bool cep_l2_canonicalize_inst_event(cepCell* request, const char** error_code) {
     if (error_code) {
         *error_code = NULL;
@@ -4288,6 +4448,9 @@ static cepL2StepResult cep_l2_step_transform(cepCell* instance, cepCell* step, s
 
     size_t emitted = 0u;
     if (!cep_l2_transform_stage_outputs(instance, step, spec, pc, now, &emitted)) {
+        return CEP_L2_STEP_ERROR;
+    }
+    if (!cep_l2_transform_spawn_rendezvous(instance, spec, now)) {
         return CEP_L2_STEP_ERROR;
     }
     (void)emitted;
