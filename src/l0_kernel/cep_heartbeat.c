@@ -1248,20 +1248,34 @@ bool cep_heartbeat_step(void) {
 }
 
 
+bool cep_heartbeat_emit_shutdown(void) {
+    if (CEP_RUNTIME.sys_shutdown_emitted) {
+        return true;
+    }
+
+    if (!cep_runtime_has_registry()) {
+        CEP_RUNTIME.sys_shutdown_emitted = true;
+        return true;
+    }
+
+    if (!CEP_RUNTIME.running) {
+        return false;
+    }
+
+    bool restore_running = CEP_RUNTIME.running;
+    cep_heartbeat_emit_sys_signal(cep_heartbeat_sys_shutdown_path());
+    bool ok = cep_heartbeat_process_impulses();
+    CEP_RUNTIME.running = restore_running;
+    if (ok) {
+        CEP_RUNTIME.sys_shutdown_emitted = true;
+    }
+    return ok;
+}
+
 /** Stop the heartbeat runtime and release scratch buffers so subsequent
     start-ups begin from a clean state. */
 void cep_heartbeat_shutdown(void) {
-    if (!cep_runtime_has_registry()) {
-        CEP_RUNTIME.sys_shutdown_emitted = true;
-    }
-
-    if (!CEP_RUNTIME.sys_shutdown_emitted && CEP_RUNTIME.running) {
-        bool restore_running = CEP_RUNTIME.running;
-        cep_heartbeat_emit_sys_signal(cep_heartbeat_sys_shutdown_path());
-        (void)cep_heartbeat_process_impulses();
-        CEP_RUNTIME.running = restore_running;
-        CEP_RUNTIME.sys_shutdown_emitted = true;
-    }
+    (void)cep_heartbeat_emit_shutdown();
 
     cep_runtime_reset_state(true);
     cep_runtime_reset_defaults();

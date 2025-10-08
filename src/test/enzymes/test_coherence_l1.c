@@ -328,7 +328,7 @@ void coh_teardown(void* fixture_ptr) {
     CohFixture* fixture = fixture_ptr;
     if (fixture && fixture->initialized) {
         coh_clear_state();
-        cep_heartbeat_shutdown();
+        test_runtime_shutdown();
         cep_cell_system_shutdown();
     }
     free(fixture);

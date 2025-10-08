@@ -156,7 +156,7 @@ static MunitResult test_enzyme_tombstone_masks_ancestor(void) {
     munit_assert_size(resolved, ==, 0);
 
     cep_enzyme_registry_destroy(registry);
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
@@ -505,7 +505,7 @@ static MunitResult test_enzyme_data_binding_resolves(void) {
     munit_assert_true(seen_store);
 
     cep_enzyme_registry_destroy(registry);
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 

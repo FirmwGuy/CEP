@@ -161,6 +161,7 @@ bool  cep_heartbeat_resolve_agenda(void);
 bool  cep_heartbeat_execute_agenda(void);
 bool  cep_heartbeat_stage_commit(void);
 bool  cep_heartbeat_step(void);
+bool  cep_heartbeat_emit_shutdown(void);
 void  cep_heartbeat_shutdown(void);
 
 

@@ -178,7 +178,7 @@ MunitResult test_enzyme_randomized(const MunitParameter params[], void* user_dat
         verify_dependency_order(names, after_counts, after_lists, positions, descriptor_count);
 
         cep_enzyme_registry_destroy(registry);
-        cep_heartbeat_shutdown();
+        test_runtime_shutdown();
     }
 
     return MUNIT_OK;

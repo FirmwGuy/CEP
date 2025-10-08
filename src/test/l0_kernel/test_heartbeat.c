@@ -85,7 +85,7 @@ static int heartbeat_secondary_enzyme(const cepPath* signal, const cepPath* targ
 
 
 static MunitResult test_heartbeat_duplicate_impulses(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -122,13 +122,13 @@ static MunitResult test_heartbeat_duplicate_impulses(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_success_calls, ==, 3);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 
 static MunitResult test_heartbeat_retry_requeues(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -163,7 +163,7 @@ static MunitResult test_heartbeat_retry_requeues(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_retry_calls, ==, 2);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
@@ -186,7 +186,7 @@ static const cepPath* create_binding_path(const cepDT* segments, size_t count, C
 
 
 static MunitResult test_heartbeat_binding_propagation(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -241,13 +241,13 @@ static MunitResult test_heartbeat_binding_propagation(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 1);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 
 static MunitResult test_heartbeat_binding_tombstone(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -303,13 +303,13 @@ static MunitResult test_heartbeat_binding_tombstone(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 0);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 
 static MunitResult test_heartbeat_binding_no_propagation(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -362,12 +362,12 @@ static MunitResult test_heartbeat_binding_no_propagation(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 0);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 static MunitResult test_heartbeat_binding_union_chain(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -437,12 +437,12 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 3);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 static MunitResult test_heartbeat_binding_duplicate_mask(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -496,12 +496,12 @@ static MunitResult test_heartbeat_binding_duplicate_mask(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 1);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 static MunitResult test_heartbeat_target_requires_binding(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -550,12 +550,12 @@ static MunitResult test_heartbeat_target_requires_binding(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 0);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 static MunitResult test_heartbeat_binding_signal_filter(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -615,13 +615,13 @@ static MunitResult test_heartbeat_binding_signal_filter(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 0);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 
 static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -728,13 +728,13 @@ static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
     munit_assert_int(heartbeat_binding_calls, ==, 1);
 
     cep_free(dynamic_path);
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 
 static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -832,13 +832,13 @@ static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
     munit_assert_int(heartbeat_binding_calls, ==, 1);
 
     cep_free(dynamic_path);
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 
 static MunitResult test_heartbeat_signal_broadcast(void) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -877,7 +877,7 @@ static MunitResult test_heartbeat_signal_broadcast(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_secondary_calls, ==, 1);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 

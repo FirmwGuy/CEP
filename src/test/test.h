@@ -17,6 +17,7 @@
 #endif
 
 #include "cep_cell.h"
+#include "cep_heartbeat.h"
 #include "watchdog.h"
 
 enum {
@@ -73,3 +74,8 @@ void        test_poc_teardown(void* fixture);
 #endif
 
 extern MunitSuite lock_suites[];
+
+static inline void test_runtime_shutdown(void) {
+    (void)cep_heartbeat_emit_shutdown();
+    cep_heartbeat_shutdown();
+}

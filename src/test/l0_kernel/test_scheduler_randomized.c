@@ -195,7 +195,7 @@ static int heartbeat_retry(const cepPath* signal, const cepPath* target) {
 }
 
 static void exercise_heartbeat_sequence(SchedulerFixture* fix) {
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
 
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
@@ -260,7 +260,7 @@ static void exercise_heartbeat_sequence(SchedulerFixture* fix) {
     munit_assert_uint(g_success_calls, ==, pulses * 4u);
     munit_assert_uint(g_retry_calls, ==, pulses * 2u);
 
-    cep_heartbeat_shutdown();
+    test_runtime_shutdown();
     test_watchdog_signal(fix->watchdog);
 }
 
