@@ -48,13 +48,7 @@ static cepDT* cep_mailroom_router_before_extra = NULL;
 static size_t cep_mailroom_router_before_extra_count = 0u;
 
 static bool cep_mailroom_bootstrap_done = false;
-/* TODO: re-enable error catalog seeding once rendezvous/bootstrap invariants
- * are restored so tests can exercise the full mailroom pipeline. */
 static bool cep_mailroom_seed_errors_enabled = true;
-
-void cep_mailroom_disable_error_seeding(void) {
-    cep_mailroom_seed_errors_enabled = false;
-}
 
 static const cepDT* dt_sig_sys(void)        { return CEP_DTAW("CEP", "sig_sys"); }
 static const cepDT* dt_sys_init(void)       { return CEP_DTAW("CEP", "init"); }

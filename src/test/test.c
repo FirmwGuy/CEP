@@ -93,24 +93,24 @@ MunitTest tests[] = {
     {
         "/rendezvous/capture_commit",
         test_rendezvous_capture_commit,
-        rendezvous_setup,
-        rendezvous_teardown,
+        NULL,
+        NULL,
         MUNIT_TEST_OPTION_NONE,
         timeout_params
     },
     {
         "/rendezvous/policies",
         test_rendezvous_policies,
-        rendezvous_setup,
-        rendezvous_teardown,
+        NULL,
+        NULL,
         MUNIT_TEST_OPTION_NONE,
         timeout_params
     },
     {
         "/rendezvous/controls",
         test_rendezvous_controls,
-        rendezvous_setup,
-        rendezvous_teardown,
+        NULL,
+        NULL,
         MUNIT_TEST_OPTION_NONE,
         timeout_params
     },
