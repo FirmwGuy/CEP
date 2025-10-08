@@ -331,6 +331,22 @@ The **proxy** keeps your adapter logic isolated. CEP takes care of **shadowing**
 
 ---
 
+## 9) Lifecycle signals in practice
+
+Heartbeat init/shutdown pulses now mirror production beats, so tooling and tests can treat them as first-class events instead of ad-hoc bootstrap helpers.
+
+### Technical details
+- Call `cep_heartbeat_begin()` right after `cep_heartbeat_configure()` when you want the system-init cascade; follow it with `cep_heartbeat_step()` so `mr_init`, `coh_init`, `fl_init`, and `rv_init` actually execute.
+- `cep_heartbeat_emit_shutdown()` enqueues the shutdown signal on the live agenda, runs the same commit path as a normal beat, and writes a short breadcrumb even when directory logging stays disabled.
+- Each lifecycle emission appends a message under `/journal/sys_log`, giving you an easy way to assert that init/shutdown happened without rummaging through agenda dumps.
+
+### Q&A
+- *How do I check that init ran during a test?* Inspect `/journal/sys_log` or verify that `cep_heartbeat_sys_root()` picked up the expected namespaces after the first beat—both are populated by the init enzyme.
+- *Can I replay init mid-run?* Yes. Call `cep_heartbeat_restart()`, then `cep_heartbeat_begin()` and a single `cep_heartbeat_step()`; the sys-log will capture each pulse so you can line them up with assertions.
+- *Will emitting shutdown twice cause trouble?* No. The helper is idempotent; once `sys_shutdown_emitted` flips, subsequent calls simply return `true`.
+
+---
+
 ## Q&A
 
 - *Do I need to call the phase helpers manually?* No. They are wired into `cep_heartbeat_resolve_agenda()` and `cep_heartbeat_stage_commit()`. Manual calls are only for bespoke schedulers.

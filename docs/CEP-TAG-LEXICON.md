@@ -63,6 +63,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `rt` | core | runtime staging root holding beat journals. |
 | `stage` | core | per-beat stage log recording committed mutations. |
 | `stream-log` | core | runtime log for stream adapters. |
+| `sys_log` | core | journal list recording system init/shutdown signal emissions. |
 | `sys` | core | system namespace with counters and configuration. |
 | `err_cat` | core | dictionary of canonical error codes referenced by outcomes. |
 | `text` | core | namepool payload store for textual data. |

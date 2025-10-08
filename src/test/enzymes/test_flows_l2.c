@@ -373,15 +373,13 @@ void* l2_setup(const MunitParameter params[], void* user_data) {
         .enforce_visibility = false,
     };
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    munit_assert_true(cep_heartbeat_bootstrap());
+    munit_assert_true(cep_heartbeat_begin(policy.start_at));
     l2_force_root_directories();
-    munit_assert_true(cep_heartbeat_startup());
 
-    munit_assert_true(cep_l2_flows_bootstrap());
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
     munit_assert_true(cep_l2_flows_register(registry));
-    cep_enzyme_registry_activate_pending(registry);
+    munit_assert_true(cep_heartbeat_step());
 
     l2_clear_state();
 

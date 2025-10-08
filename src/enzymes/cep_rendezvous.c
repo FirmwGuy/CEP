@@ -857,6 +857,18 @@ bool cep_rv_bootstrap(void) {
 
     cepCell* ledger = cep_rv_ledger();
     if (ledger) {
+        if (!cep_cell_has_store(ledger)) {
+            cepDT dict_type = *dt_dictionary();
+            dict_type.glob = 0u;
+            cepStore* store = cep_store_new(&dict_type, CEP_STORAGE_RED_BLACK_T, CEP_INDEX_BY_NAME);
+            if (!store) {
+                cep_rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_ALLOC;
+                return false;
+            }
+            cep_cell_set_store(ledger, store);
+        } else if (ledger->store->indexing != CEP_INDEX_BY_NAME) {
+            cep_cell_to_dictionary(ledger);
+        }
         cep_rv_ready = true;
         cep_rv_last_status = CEP_RV_SPAWN_STATUS_OK;
     }

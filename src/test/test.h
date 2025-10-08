@@ -53,6 +53,8 @@ MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_
 MunitResult test_rendezvous_capture_commit(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_rendezvous_policies(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_rendezvous_controls(const MunitParameter params[], void* user_data_or_fixture);
+void*       rendezvous_setup(const MunitParameter params[], void* user_data);
+void        rendezvous_teardown(void* fixture);
 #ifdef CEP_HAS_LIBZIP
 MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fixture);
 #endif

@@ -7,7 +7,7 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
 ### Always-on roots (created by `cep_heartbeat_bootstrap`)
 - `/sys` – core counters, configuration toggles, and name tables the kernel reads each beat.
 - `/rt` – heartbeat staging area. The runtime keeps beat journals here when directory capture is enabled.
-- `/journal` – append-only heartbeat evidence. The kernel writes intent/outcome records here; other layers can add ledgers alongside them.
+- `/journal` – append-only heartbeat evidence. The kernel writes intent/outcome records here; other layers can add ledgers alongside them. Lifecycle signals append a short note under `/journal/sys_log` so you can confirm when init/shutdown fired.
 - `/env` – handles and stream proxies bound to external resources. Enzymes dereference entries through the proxy helpers in `cep_cell`.
 - `/cas` – content-addressable payload store. Large blobs land here so data cells can reference hashes instead of duplicating bytes.
 - `/lib` – library snapshots for proxy-backed streams.

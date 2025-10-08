@@ -310,12 +310,12 @@ void* coh_setup(const MunitParameter params[], void* user_data) {
         .enforce_visibility = false,
     };
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    munit_assert_true(cep_heartbeat_startup());
+    munit_assert_true(cep_heartbeat_begin(policy.start_at));
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
     munit_assert_true(cep_l1_coherence_register(registry));
-    cep_enzyme_registry_activate_pending(registry);
+    munit_assert_true(cep_heartbeat_step());
 
     coh_clear_state();
 
