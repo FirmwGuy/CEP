@@ -52,6 +52,9 @@ static const cepDT* dt_ni_upsert(void)   { return CEP_DTAW("CEP", "ni_upsert"); 
 static const cepDT* dt_inst_start(void)  { return CEP_DTAW("CEP", "inst_start"); }
 static const cepDT* dt_inst_event(void)  { return CEP_DTAW("CEP", "inst_event"); }
 static const cepDT* dt_inst_ctrl(void)   { return CEP_DTAW("CEP", "inst_ctrl"); }
+static const cepDT* dt_sig_sys(void)     { return CEP_DTAW("CEP", "sig_sys"); }
+static const cepDT* dt_sys_init(void)    { return CEP_DTAW("CEP", "init"); }
+static const cepDT* dt_fl_init(void)     { return CEP_DTAW("CEP", "fl_init"); }
 static const cepDT* dt_fl_ing(void)      { return CEP_DTAW("CEP", "fl_ing"); }
 static const cepDT* dt_ni_ing(void)      { return CEP_DTAW("CEP", "ni_ing"); }
 static const cepDT* dt_inst_ing(void)    { return CEP_DTAW("CEP", "inst_ing"); }
@@ -158,6 +161,7 @@ static bool     cep_l2_set_u64_value(cepCell* parent, const cepDT* name, uint64_
 static cepCell* cep_l2_program_from_instance(cepCell* flow_root, cepCell* instance);
 static cepCell* cep_l2_steps_container(cepCell* program);
 static cepCell* cep_l2_step_at(cepCell* steps, size_t index);
+static int  cep_l2_enzyme_init(const cepPath* signal, const cepPath* target);
 static cepCell* cep_l2_step_spec(cepCell* step);
 static cepCell* cep_l2_decision_ledger(cepCell* flow_root);
 static cepCell* cep_l2_decision_node(cepCell* ledger, const cepDT* inst_name, const char* site, bool create);
@@ -4595,13 +4599,16 @@ static cepCell* cep_l2_ensure_dictionary(cepCell* parent, const cepDT* name, uns
         return NULL;
     }
 
-    cepCell* existing = cep_cell_find_by_name(parent, name);
+    cepDT lookup = *name;
+    lookup.glob = 0u;
+
+    cepCell* existing = cep_cell_find_by_name(parent, &lookup);
     if (existing) {
         return existing;
     }
 
     cepDT type = *dt_dictionary();
-    cepDT copy = *name;
+    cepDT copy = lookup;
     return cep_dict_add_dictionary(parent, &copy, &type, storage);
 }
 
@@ -4715,6 +4722,12 @@ static cepCell* cep_l2_flow_root(void) {
         return NULL;
     }
     return cep_l2_ensure_dictionary(data, dt_flow(), CEP_STORAGE_RED_BLACK_T);
+}
+
+static int cep_l2_enzyme_init(const cepPath* signal, const cepPath* target) {
+    (void)signal;
+    (void)target;
+    return cep_l2_flows_bootstrap() ? CEP_ENZYME_SUCCESS : CEP_ENZYME_FATAL;
 }
 
 /* This helper creates all durable ledgers that L2 relies on so that ingest and
@@ -6004,11 +6017,36 @@ bool cep_l2_flows_register(cepEnzymeRegistry* registry) {
         return false;
     }
 
-    if (!cep_l2_flows_bootstrap()) {
+    if (!cep_mailroom_register(registry)) {
         return false;
     }
 
-    if (!cep_mailroom_register(registry)) {
+    if (!cep_rendezvous_register(registry)) {
+        return false;
+    }
+
+    cepPathStatic2 init_path = {
+        .length = 2u,
+        .capacity = 2u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_init(), .timestamp = 0u},
+        },
+    };
+
+    cepDT after_coh[] = { *CEP_DTAW("CEP", "coh_init") };
+
+    cepEnzymeDescriptor init_descriptor = {
+        .name = *dt_fl_init(),
+        .label = "l2.fl.init",
+        .callback = cep_l2_enzyme_init,
+        .flags = CEP_ENZYME_FLAG_IDEMPOTENT,
+        .match = CEP_ENZYME_MATCH_EXACT,
+        .after = after_coh,
+        .after_count = sizeof after_coh / sizeof after_coh[0],
+    };
+
+    if (cep_enzyme_register(registry, (const cepPath*)&init_path, &init_descriptor) != CEP_ENZYME_SUCCESS) {
         return false;
     }
 

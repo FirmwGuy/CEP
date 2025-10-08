@@ -43,7 +43,11 @@ when a new behavior needs a fresh word before it lands in code.
 | `env` | core | runtime environment subtree for external handles. |
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `inbox` | core | captured impulses queued for the current beat. |
+| `sig_sys` | core | System-level signal namespace emitted during lifecycle hooks. |
+| `init` | core | System init signal tag that bootstraps higher layers. |
+| `shutdown` | core | System shutdown signal tag emitted before teardown. |
 | `mr_route` | ops | routing enzyme that moves unified inbox entries into layer inboxes. |
+| `mr_init` | ops | Mailroom bootstrap enzyme bound to the system init signal. |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |
 | `lib` | core | library snapshot directory for proxied streams. |
@@ -90,6 +94,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `coh_closure` | ops | enzyme descriptor for facet closure. |
 | `coh_index` | ops | enzyme descriptor for coherence indexes. |
 | `coh_adj` | ops | enzyme descriptor for adjacency refresh. |
+| `coh_init` | ops | Coherence bootstrap enzyme triggered during init. |
 | `out_bonds` | core | adjacency list of outgoing bonds per being. |
 | `in_bonds` | core | adjacency list of inbound bonds per being. |
 | `ctx_by_role` | core | adjacency bucket of contexts grouped by role. |
@@ -161,6 +166,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `fl_step` | ops | enzyme descriptor for executing VM steps. |
 | `fl_index` | ops | enzyme descriptor for rebuilding L2 indexes. |
 | `fl_adj` | ops | enzyme descriptor for refreshing transient caches. |
+| `fl_init` | ops | Flow bootstrap enzyme triggered during system init. |
 | `fl_*` (`fl_ing`, `fl_wake`, `fl_step`, `fl_index`, `fl_adj`, `fl_upsert`) | ops | reserved prefix for flow enzymes/intents. |
 | `inst_*` (`inst_ing`, `inst_start`, `inst_event`, `inst_ctrl`) | ops | reserved prefix for flow instance enzymes/intents. |
 | `ni_*` (`ni_ing`, `ni_upsert`) | ops | reserved prefix for niche enzymes/intents. |
@@ -243,6 +249,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `signal_path` | core | Rendezvous signal path used to wake waiting instances. |
 | `telemetry` | core | Telemetry dictionary copied from rendezvous workers. |
 | `defaults` | core | Profile-specific fallback parameters attached to rendezvous specs. |
+| `rv_init` | ops | Rendezvous bootstrap enzyme triggered during system init. |
 
 #### PoC Harness Tags
 | Tag / Pattern | Status | Purpose |

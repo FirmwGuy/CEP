@@ -27,6 +27,8 @@
 /*  Domain and canonical tags                                                */
 /* ------------------------------------------------------------------------- */
 
+static bool cep_l1_bindings_applied = false;
+
 static cepID cep_domain_cep(void) {
     return CEP_ACRO("CEP");
 }
@@ -86,6 +88,9 @@ static const cepDT* dt_retain_mode(void) { return CEP_DTAW("CEP", "retain_mode")
 static const cepDT* dt_retain_ttl(void)  { return CEP_DTAW("CEP", "retain_ttl"); }
 static const cepDT* dt_retain_upto(void) { return CEP_DTAW("CEP", "retain_upto"); }
 static const cepDT* dt_retention_root(void) { return CEP_DTAW("CEP", "retention"); }
+static const cepDT* dt_sig_sys(void)        { return CEP_DTAW("CEP", "sig_sys"); }
+static const cepDT* dt_sys_init(void)       { return CEP_DTAW("CEP", "init"); }
+static const cepDT* dt_coh_init(void)       { return CEP_DTAW("CEP", "coh_init"); }
 
 #define CEP_L1_WINDOW_CAP 8u
 
@@ -114,6 +119,7 @@ static bool cep_l1_retention_fetch_config(const char** mode_out, size_t* ttl_out
 static const char* cep_l1_get_string(cepCell* parent, const cepDT* field);
 static bool cep_l1_parse_size_text(const char* text, size_t* out_value);
 static void cep_l1_remove_field(cepCell* parent, const cepDT* field);
+static int cep_l1_enzyme_init(const cepPath* signal, const cepPath* target);
 
 
 typedef struct {
@@ -1230,6 +1236,12 @@ static void cep_l1_remove_field(cepCell* parent, const cepDT* field) {
     }
 }
 
+static int cep_l1_enzyme_init(const cepPath* signal, const cepPath* target) {
+    (void)signal;
+    (void)target;
+    return cep_l1_coherence_bootstrap() ? CEP_ENZYME_SUCCESS : CEP_ENZYME_FATAL;
+}
+
 static bool cep_l1_retention_fetch_config(const char** mode_out, size_t* ttl_out, size_t* upto_out) {
     cepCell* root = cep_root();
     cepCell* sys = cep_cell_find_by_name(root, dt_sys());
@@ -1582,6 +1594,19 @@ bool cep_l1_coherence_bootstrap(void) {
     }
 
     cep_namepool_bootstrap();
+
+    if (!cep_l1_bindings_applied) {
+        cepCell* coh = cep_l1_coh_root();
+        if (coh) {
+            (void)cep_cell_bind_enzyme(coh, dt_coh_ing_be(), true);
+            (void)cep_cell_bind_enzyme(coh, dt_coh_ing_bo(), true);
+            (void)cep_cell_bind_enzyme(coh, dt_coh_ing_ctx(), true);
+            (void)cep_cell_bind_enzyme(coh, dt_coh_closure(), true);
+            (void)cep_cell_bind_enzyme(coh, dt_coh_index(), true);
+            (void)cep_cell_bind_enzyme(coh, dt_coh_adj(), true);
+            cep_l1_bindings_applied = true;
+        }
+    }
     return true;
 }
 
@@ -3294,7 +3319,6 @@ typedef struct {
 static cepL1RegistryRecord* cep_l1_records = NULL;
 static size_t cep_l1_record_count = 0u;
 static size_t cep_l1_record_capacity = 0u;
-static bool   cep_l1_bindings_applied = false;
 
 static cepL1RegistryRecord* cep_l1_record_find(cepEnzymeRegistry* registry) {
     for (size_t i = 0; i < cep_l1_record_count; ++i) {
@@ -3336,10 +3360,6 @@ static cepL1RegistryRecord* cep_l1_record_append(cepEnzymeRegistry* registry, si
 
 bool cep_l1_coherence_register(cepEnzymeRegistry* registry) {
     if (!registry) {
-        return false;
-    }
-
-    if (!cep_l1_coherence_bootstrap()) {
         return false;
     }
 
@@ -3419,6 +3439,31 @@ bool cep_l1_coherence_register(cepEnzymeRegistry* registry) {
         cepPast  past[2];
     } cepPathStatic2;
 
+    cepPathStatic2 init_path = {
+        .length = 2u,
+        .capacity = 2u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_init(), .timestamp = 0u},
+        },
+    };
+
+    cepDT after_mailroom[] = { *CEP_DTAW("CEP", "mr_init") };
+
+    cepEnzymeDescriptor init_descriptor = {
+        .name = *dt_coh_init(),
+        .label = "coh.init",
+        .callback = cep_l1_enzyme_init,
+        .flags = CEP_ENZYME_FLAG_IDEMPOTENT,
+        .match = CEP_ENZYME_MATCH_EXACT,
+        .after = after_mailroom,
+        .after_count = sizeof after_mailroom / sizeof after_mailroom[0],
+    };
+
+    if (cep_enzyme_register(registry, (const cepPath*)&init_path, &init_descriptor) != CEP_ENZYME_SUCCESS) {
+        return false;
+    }
+
     cepPathStatic2 signal_path = {
         .length = 2u,
         .capacity = 2u,
@@ -3432,21 +3477,6 @@ bool cep_l1_coherence_register(cepEnzymeRegistry* registry) {
         if (cep_enzyme_register(registry, (const cepPath*)&signal_path, &descriptors[i]) != CEP_ENZYME_SUCCESS) {
             return false;
         }
-    }
-
-    if (!cep_l1_bindings_applied) {
-        cepCell* coh = cep_l1_coh_root();
-        if (!coh) {
-            return false;
-        }
-
-        (void)cep_cell_bind_enzyme(coh, dt_coh_ing_be(), true);
-        (void)cep_cell_bind_enzyme(coh, dt_coh_ing_bo(), true);
-        (void)cep_cell_bind_enzyme(coh, dt_coh_ing_ctx(), true);
-        (void)cep_cell_bind_enzyme(coh, dt_coh_closure(), true);
-        (void)cep_cell_bind_enzyme(coh, dt_coh_index(), true);
-        (void)cep_cell_bind_enzyme(coh, dt_coh_adj(), true);
-        cep_l1_bindings_applied = true;
     }
 
     return true;

@@ -26,9 +26,64 @@ static cepHeartbeatRuntime CEP_RUNTIME = {
     .current = CEP_BEAT_INVALID,
     .phase   = CEP_BEAT_CAPTURE,
     .deferred_activations = 0u,
+    .sys_init_emitted = false,
+    .sys_shutdown_emitted = false,
 };
 
 static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
+
+static const cepPath* cep_heartbeat_sys_init_path(void) {
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[2];
+    } cepStaticPath2;
+
+    static cepStaticPath2 path;
+    static bool initialised = false;
+    if (!initialised) {
+        path.length = 2u;
+        path.capacity = 2u;
+        path.past[0].dt = *CEP_DTAW("CEP", "sig_sys");
+        path.past[0].timestamp = 0u;
+        path.past[1].dt = *CEP_DTAW("CEP", "init");
+        path.past[1].timestamp = 0u;
+        initialised = true;
+    }
+    return (const cepPath*)&path;
+}
+
+static const cepPath* cep_heartbeat_sys_shutdown_path(void) {
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[2];
+    } cepStaticPath2;
+
+    static cepStaticPath2 path;
+    static bool initialised = false;
+    if (!initialised) {
+        path.length = 2u;
+        path.capacity = 2u;
+        path.past[0].dt = *CEP_DTAW("CEP", "sig_sys");
+        path.past[0].timestamp = 0u;
+        path.past[1].dt = *CEP_DTAW("CEP", "shutdown");
+        path.past[1].timestamp = 0u;
+        initialised = true;
+    }
+    return (const cepPath*)&path;
+}
+
+static void cep_heartbeat_emit_sys_signal(const cepPath* signal_path) {
+    if (!CEP_RUNTIME.topology.root) {
+        return;
+    }
+
+    bool ensure_dirs = CEP_RUNTIME.policy.ensure_directories;
+    CEP_RUNTIME.policy.ensure_directories = false;
+    cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, signal_path, NULL);
+    CEP_RUNTIME.policy.ensure_directories = ensure_dirs;
+}
 
 
 static int cep_heartbeat_path_compare(const cepPath* lhs, const cepPath* rhs) {
@@ -769,10 +824,13 @@ static void cep_runtime_reset_state(bool destroy_registry) {
 
     CEP_RUNTIME.current = CEP_BEAT_INVALID;
     CEP_RUNTIME.running = false;
-
+    
     memset(&CEP_RUNTIME.topology, 0, sizeof(CEP_RUNTIME.topology));
     memset(&CEP_RUNTIME.policy, 0, sizeof(CEP_RUNTIME.policy));
     CEP_RUNTIME.policy.ensure_directories = true;
+    CEP_RUNTIME.deferred_activations = 0u;
+    CEP_RUNTIME.sys_init_emitted = false;
+    CEP_RUNTIME.sys_shutdown_emitted = false;
 }
 
 
@@ -1008,6 +1066,10 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
     CEP_RUNTIME.running = true;
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
+    if (!CEP_RUNTIME.sys_init_emitted) {
+        cep_heartbeat_emit_sys_signal(cep_heartbeat_sys_init_path());
+        CEP_RUNTIME.sys_init_emitted = true;
+    }
     cep_beat_begin_capture();
     return true;
 }
@@ -1189,6 +1251,18 @@ bool cep_heartbeat_step(void) {
 /** Stop the heartbeat runtime and release scratch buffers so subsequent
     start-ups begin from a clean state. */
 void cep_heartbeat_shutdown(void) {
+    if (!cep_runtime_has_registry()) {
+        CEP_RUNTIME.sys_shutdown_emitted = true;
+    }
+
+    if (!CEP_RUNTIME.sys_shutdown_emitted && CEP_RUNTIME.running) {
+        bool restore_running = CEP_RUNTIME.running;
+        cep_heartbeat_emit_sys_signal(cep_heartbeat_sys_shutdown_path());
+        (void)cep_heartbeat_process_impulses();
+        CEP_RUNTIME.running = restore_running;
+        CEP_RUNTIME.sys_shutdown_emitted = true;
+    }
+
     cep_runtime_reset_state(true);
     cep_runtime_reset_defaults();
     if (cep_cell_system_initialized()) {

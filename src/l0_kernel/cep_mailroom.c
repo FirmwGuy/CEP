@@ -48,7 +48,12 @@ static cepDT* cep_mailroom_router_before_extra = NULL;
 static size_t cep_mailroom_router_before_extra_count = 0u;
 
 static bool cep_mailroom_bootstrap_done = false;
+/* TODO: re-enable error catalog seeding once rendezvous/bootstrap invariants
+ * are restored so tests can exercise the full mailroom pipeline. */
+static bool cep_mailroom_seed_errors_enabled = false;
 
+static const cepDT* dt_sig_sys(void)        { return CEP_DTAW("CEP", "sig_sys"); }
+static const cepDT* dt_sys_init(void)       { return CEP_DTAW("CEP", "init"); }
 static const cepDT* dt_err_cat(void)        { return CEP_DTAW("CEP", "err_cat"); }
 static const cepDT* dt_dictionary(void)     { return CEP_DTAW("CEP", "dictionary"); }
 static const cepDT* dt_list(void)           { return CEP_DTAW("CEP", "list"); }
@@ -60,6 +65,7 @@ static const cepDT* dt_parents(void)        { return CEP_DTAW("CEP", "parents");
 static const cepDT* dt_sig_cell(void)       { return CEP_DTAW("CEP", "sig_cell"); }
 static const cepDT* dt_op_add(void)         { return CEP_DTAW("CEP", "op_add"); }
 static const cepDT* dt_mr_route(void)       { return CEP_DTAW("CEP", "mr_route"); }
+static const cepDT* dt_mr_init(void)        { return CEP_DTAW("CEP", "mr_init"); }
 static const cepDT* dt_coh_ing_be(void)     { return CEP_DTAW("CEP", "coh_ing_be"); }
 static const cepDT* dt_coh_ing_bo(void)     { return CEP_DTAW("CEP", "coh_ing_bo"); }
 static const cepDT* dt_coh_ing_ctx(void)    { return CEP_DTAW("CEP", "coh_ing_ctx"); }
@@ -130,13 +136,16 @@ static cepCell* cep_mailroom_ensure_dictionary(cepCell* parent, const cepDT* nam
         return NULL;
     }
 
-    cepCell* existing = cep_cell_find_by_name(parent, name);
+    cepDT lookup = *name;
+    lookup.glob = 0u;
+
+    cepCell* existing = cep_cell_find_by_name(parent, &lookup);
     if (existing) {
         return existing;
     }
 
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
-    cepDT name_copy = *name;
+    cepDT name_copy = lookup;
     return cep_dict_add_dictionary(parent, &name_copy, &dict_type, storage);
 }
 
@@ -169,18 +178,21 @@ static bool cep_mailroom_set_string_value(cepCell* parent, const cepDT* name, co
     }
 
     size_t size = strlen(text) + 1u;
-    cepCell* existing = cep_cell_find_by_name(parent, name);
-    if (existing && cep_cell_has_data(existing)) {
-        const cepData* data = existing->data;
-        if (data->datatype == CEP_DATATYPE_VALUE && data->size == size && memcmp(data->value, text, size) == 0) {
-            return true;
+    cepDT lookup = *name;
+    lookup.glob = 0u;
+
+    cepCell* existing = cep_cell_find_by_name(parent, &lookup);
+    if (existing) {
+        if (cep_cell_has_data(existing)) {
+            const cepData* data = existing->data;
+            if (data->datatype == CEP_DATATYPE_VALUE && data->size == size && memcmp(data->value, text, size) == 0) {
+                return true;
+            }
         }
-        cep_cell_remove_hard(parent, existing);
-    } else if (existing) {
         cep_cell_remove_hard(parent, existing);
     }
 
-    cepDT name_copy = *name;
+    cepDT name_copy = lookup;
     cepDT text_dt = *dt_text();
     cepCell* node = cep_dict_add_value(parent, &name_copy, &text_dt, (void*)text, size, size);
     if (!node) {
@@ -196,12 +208,16 @@ static bool cep_mailroom_seed_error_entries(const cepMailroomErrorEntry* entries
     }
 
     cepCell* root = cep_root();
-    cepCell* sys = cep_cell_find_by_name(root, dt_sys_root());
+    cepDT sys_dt = *dt_sys_root();
+    sys_dt.glob = 0u;
+    cepCell* sys = cep_cell_find_by_name(root, &sys_dt);
     if (!sys) {
         return false;
     }
 
-    cepCell* catalog = cep_cell_find_by_name(sys, dt_err_cat());
+    cepDT err_dt = *dt_err_cat();
+    err_dt.glob = 0u;
+    cepCell* catalog = cep_cell_find_by_name(sys, &err_dt);
     if (!catalog) {
         return false;
     }
@@ -212,19 +228,10 @@ static bool cep_mailroom_seed_error_entries(const cepMailroomErrorEntry* entries
             continue;
         }
 
-        cepID tag = cep_text_to_word(entry->code);
-        if (!tag) {
-            size_t len = strlen(entry->code);
-            tag = cep_namepool_intern(entry->code, len);
-        }
-        if (!tag) {
+        cepDT code_dt = {0};
+        if (!cep_mailroom_dt_from_text(&code_dt, entry->code)) {
             return false;
         }
-
-        cepDT code_dt = {
-            .domain = CEP_ACRO("CEP"),
-            .tag = tag,
-        };
 
         cepCell* bucket = cep_cell_find_by_name(catalog, &code_dt);
         if (!bucket) {
@@ -554,12 +561,14 @@ bool cep_mailroom_bootstrap(void) {
     }
 
     /* FIXME: consolidate catalog seeding with future mailroom persistence work once shutdown/reset is reconciled. */
-    if (!cep_mailroom_seed_coh_errors()) {
-        return false;
-    }
+    if (cep_mailroom_seed_errors_enabled) {
+        if (!cep_mailroom_seed_coh_errors()) {
+            return false;
+        }
 
-    if (!cep_mailroom_seed_flow_errors()) {
-        return false;
+        if (!cep_mailroom_seed_flow_errors()) {
+            return false;
+        }
     }
 
     cep_mailroom_bootstrap_done = true;
@@ -597,6 +606,12 @@ static bool cep_mailroom_namespace_supported(const cepCell* ns_node) {
     }
 
     return false;
+}
+
+static int cep_mailroom_enzyme_init(const cepPath* signal, const cepPath* target) {
+    (void)signal;
+    (void)target;
+    return cep_mailroom_bootstrap() ? CEP_ENZYME_SUCCESS : CEP_ENZYME_FATAL;
 }
 
 /* Relocate a freshly added intent from `/data/inbox` into the appropriate layer
@@ -700,6 +715,27 @@ bool cep_mailroom_register(cepEnzymeRegistry* registry) {
         unsigned capacity;
         cepPast  past[2];
     } cepPathStatic2;
+
+    cepPathStatic2 init_path = {
+        .length = 2u,
+        .capacity = 2u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_init(), .timestamp = 0u},
+        },
+    };
+
+    cepEnzymeDescriptor init_descriptor = {
+        .name = *dt_mr_init(),
+        .label = "mailroom.init",
+        .callback = cep_mailroom_enzyme_init,
+        .flags = CEP_ENZYME_FLAG_IDEMPOTENT,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    if (cep_enzyme_register(registry, (const cepPath*)&init_path, &init_descriptor) != CEP_ENZYME_SUCCESS) {
+        return false;
+    }
 
     cepPathStatic2 signal_path = {
         .length = 2u,

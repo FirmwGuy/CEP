@@ -12,6 +12,7 @@
 #include "../l0_kernel/cep_cell.h"
 
 #include "../l0_kernel/cep_heartbeat.h"
+#include "../l0_kernel/cep_enzyme.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +39,16 @@ typedef struct {
     uint32_t     kill_wait;     /**< Beats to wait after a kill request before escalation. */
 } cepRvSpec;
 
+typedef enum {
+    CEP_RV_SPAWN_STATUS_OK = 0,
+    CEP_RV_SPAWN_STATUS_NO_SPEC,
+    CEP_RV_SPAWN_STATUS_DATA_ROOT,
+    CEP_RV_SPAWN_STATUS_LEDGER_MISSING,
+    CEP_RV_SPAWN_STATUS_LEDGER_LOCK,
+    CEP_RV_SPAWN_STATUS_ENTRY_ALLOC,
+    CEP_RV_SPAWN_STATUS_ENTRY_LOCK,
+} cepRvSpawnStatus;
+
 bool cep_rv_bootstrap(void);
 
 /**
@@ -54,6 +65,7 @@ bool cep_rv_prepare_spec(cepRvSpec* out_spec,
                          size_t signal_capacity);
 
 bool cep_rv_spawn(const cepRvSpec* spec, cepID key);
+cepRvSpawnStatus cep_rv_last_spawn_status(void);
 bool cep_rv_resched(cepID key, uint32_t delta);
 bool cep_rv_kill(cepID key, cepID mode, uint32_t wait_beats);
 bool cep_rv_report(cepID key, const cepCell* telemetry_node);
@@ -68,6 +80,8 @@ bool cep_rv_commit_apply(void);
  * supplied buffer and returns true on success.
  */
 bool cep_rv_signal_for_key(const cepDT* key, char* buffer, size_t capacity);
+
+bool cep_rendezvous_register(cepEnzymeRegistry* registry);
 
 #ifdef __cplusplus
 }

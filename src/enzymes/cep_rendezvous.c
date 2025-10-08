@@ -17,6 +17,9 @@
 #include <string.h>
 
 static bool cep_rv_ready = false;
+static bool cep_rv_registry_registered = false;
+static int  cep_rv_enzyme_init(const cepPath* signal, const cepPath* target);
+static cepRvSpawnStatus cep_rv_last_status = CEP_RV_SPAWN_STATUS_OK;
 
 static bool cep_rv_data_root_ready(void) {
     cep_cell_system_ensure();
@@ -37,6 +40,9 @@ static const cepDT* dt_flow_root(void)      { return CEP_DTAW("CEP", "flow"); }
 static const cepDT* dt_dictionary(void)     { return CEP_DTAW("CEP", "dictionary"); }
 static const cepDT* dt_text(void)           { return CEP_DTAW("CEP", "text"); }
 static const cepDT* dt_rv_root(void)        { return CEP_DTAW("CEP", "rv"); }
+static const cepDT* dt_sig_sys(void)        { return CEP_DTAW("CEP", "sig_sys"); }
+static const cepDT* dt_sys_init(void)       { return CEP_DTAW("CEP", "init"); }
+static const cepDT* dt_rv_init(void)        { return CEP_DTAW("CEP", "rv_init"); }
 static const cepDT* dt_prof(void)           { return CEP_DTAW("CEP", "prof"); }
 static const cepDT* dt_spawn_beat(void)     { return CEP_DTAW("CEP", "spawn_beat"); }
 static const cepDT* dt_due(void)            { return CEP_DTAW("CEP", "due"); }
@@ -529,10 +535,12 @@ static cepCell* cep_rv_flow_root(void) {
         return NULL;
     }
 
-    cepCell* flow_root = cep_cell_find_by_name(data_root, dt_flow_root());
+    cepDT flow_dt = *dt_flow_root();
+    flow_dt.glob = 0u;
+    cepCell* flow_root = cep_cell_find_by_name(data_root, &flow_dt);
     if (!flow_root) {
         cepDT dict_type = *dt_dictionary();
-        cepDT flow_name = *dt_flow_root();
+        cepDT flow_name = flow_dt;
         flow_root = cep_dict_add_dictionary(data_root, &flow_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
     }
     return flow_root;
@@ -549,10 +557,12 @@ static cepCell* cep_rv_ledger(void) {
         return NULL;
     }
 
-    cepCell* ledger = cep_cell_find_by_name(data_root, dt_rv_root());
+    cepDT ledger_dt = *dt_rv_root();
+    ledger_dt.glob = 0u;
+    cepCell* ledger = cep_cell_find_by_name(data_root, &ledger_dt);
     if (!ledger) {
         cepDT dict_type = *dt_dictionary();
-        cepDT name_copy = *dt_rv_root();
+        cepDT name_copy = ledger_dt;
         ledger = cep_dict_add_dictionary(data_root, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
     }
     return ledger;
@@ -841,14 +851,25 @@ static bool cep_rv_emit_event_for_entry(cepCell* entry, const char* state) {
 
 bool cep_rv_bootstrap(void) {
     if (!cep_rv_data_root_ready()) {
+        cep_rv_last_status = CEP_RV_SPAWN_STATUS_DATA_ROOT;
         return false;
     }
 
     cepCell* ledger = cep_rv_ledger();
     if (ledger) {
         cep_rv_ready = true;
+        cep_rv_last_status = CEP_RV_SPAWN_STATUS_OK;
+    }
+    if (!ledger) {
+        cep_rv_last_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
     }
     return ledger != NULL;
+}
+
+static int cep_rv_enzyme_init(const cepPath* signal, const cepPath* target) {
+    (void)signal;
+    (void)target;
+    return cep_rv_bootstrap() ? CEP_ENZYME_SUCCESS : CEP_ENZYME_FATAL;
 }
 
 static cepCell* cep_rv_find_entry(cepCell* ledger, cepID key) {
@@ -870,6 +891,7 @@ static cepCell* cep_rv_find_entry(cepCell* ledger, cepID key) {
 
 bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
     if (!spec) {
+        cep_rv_last_status = CEP_RV_SPAWN_STATUS_NO_SPEC;
         return false;
     }
 
@@ -879,11 +901,17 @@ bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
 
     cepCell* ledger = cep_rv_ledger();
     if (!ledger) {
+        cep_rv_last_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
         return false;
     }
 
-    cepLockToken ledger_lock = {0};
-    if (!cep_store_lock(ledger, &ledger_lock)) {
+    if (!cep_cell_has_store(ledger)) {
+        cep_rv_last_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
+        return false;
+    }
+
+    if (cep_cell_store_locked_hierarchy(ledger)) {
+        cep_rv_last_status = CEP_RV_SPAWN_STATUS_LEDGER_LOCK;
         return false;
     }
 
@@ -904,13 +932,30 @@ bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
      * every default ledger field so replay tooling can rely on the schema
      * without defensive guards. */
     if (!entry) {
-        cep_store_unlock(ledger, &ledger_lock);
+        cep_rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_ALLOC;
         return false;
+    }
+
+    if (cep_cell_store_locked_hierarchy(entry)) {
+        cep_rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_LOCK;
+        return false;
+    }
+
+    if (!cep_cell_has_store(entry) || !cep_store_valid(entry->store)) {
+        cepDT dict_type = *dt_dictionary();
+        cepStore* store = cep_store_new(&dict_type, CEP_STORAGE_RED_BLACK_T, CEP_INDEX_BY_NAME);
+        if (!store) {
+            cep_rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_ALLOC;
+            return false;
+        }
+        cep_cell_set_store(entry, store);
+    } else if (entry->store->indexing != CEP_INDEX_BY_NAME) {
+        cep_cell_to_dictionary(entry);
     }
 
     cepLockToken entry_lock = {0};
     if (!cep_store_lock(entry, &entry_lock)) {
-        cep_store_unlock(ledger, &ledger_lock);
+        cep_rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_LOCK;
         return false;
     }
 
@@ -1016,7 +1061,56 @@ bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
     cep_rv_remove_field(entry, dt_grace_used());
 
     cep_store_unlock(entry, &entry_lock);
-    cep_store_unlock(ledger, &ledger_lock);
+
+    cep_rv_last_status = CEP_RV_SPAWN_STATUS_OK;
+    return true;
+}
+
+cepRvSpawnStatus cep_rv_last_spawn_status(void) {
+    return cep_rv_last_status;
+}
+
+bool cep_rendezvous_register(cepEnzymeRegistry* registry) {
+    if (!registry) {
+        return false;
+    }
+
+    if (cep_rv_registry_registered) {
+        return true;
+    }
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[2];
+    } cepStaticPath2;
+
+    cepStaticPath2 init_path = {
+        .length = 2u,
+        .capacity = 2u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_init(), .timestamp = 0u},
+        },
+    };
+
+    cepDT after_flow[] = { *CEP_DTAW("CEP", "fl_init") };
+
+    cepEnzymeDescriptor descriptor = {
+        .name = *dt_rv_init(),
+        .label = "rv.init",
+        .callback = cep_rv_enzyme_init,
+        .flags = CEP_ENZYME_FLAG_IDEMPOTENT,
+        .match = CEP_ENZYME_MATCH_EXACT,
+        .after = after_flow,
+        .after_count = sizeof after_flow / sizeof after_flow[0],
+    };
+
+    if (cep_enzyme_register(registry, (const cepPath*)&init_path, &descriptor) != CEP_ENZYME_SUCCESS) {
+        return false;
+    }
+
+    cep_rv_registry_registered = true;
     return true;
 }
 
@@ -1030,20 +1124,8 @@ bool cep_rv_resched(cepID key, uint32_t delta) {
         return false;
     }
 
-    cepLockToken ledger_lock = {0};
-    if (!cep_store_lock(ledger, &ledger_lock)) {
-        return false;
-    }
-
     cepCell* entry = cep_rv_find_entry(ledger, key);
     if (!entry) {
-        cep_store_unlock(ledger, &ledger_lock);
-        return false;
-    }
-
-    cepLockToken entry_lock = {0};
-    if (!cep_store_lock(entry, &entry_lock)) {
-        cep_store_unlock(ledger, &ledger_lock);
         return false;
     }
 
@@ -1055,9 +1137,6 @@ bool cep_rv_resched(cepID key, uint32_t delta) {
 
     due_value += delta;
     cep_rv_set_number(entry, dt_due(), due_value);
-
-    cep_store_unlock(entry, &entry_lock);
-    cep_store_unlock(ledger, &ledger_lock);
     return true;
 }
 
@@ -1067,20 +1146,8 @@ bool cep_rv_kill(cepID key, cepID mode, uint32_t wait_beats) {
         return false;
     }
 
-    cepLockToken ledger_lock = {0};
-    if (!cep_store_lock(ledger, &ledger_lock)) {
-        return false;
-    }
-
     cepCell* entry = cep_rv_find_entry(ledger, key);
     if (!entry) {
-        cep_store_unlock(ledger, &ledger_lock);
-        return false;
-    }
-
-    cepLockToken entry_lock = {0};
-    if (!cep_store_lock(entry, &entry_lock)) {
-        cep_store_unlock(ledger, &ledger_lock);
         return false;
     }
 
@@ -1096,9 +1163,6 @@ bool cep_rv_kill(cepID key, cepID mode, uint32_t wait_beats) {
     }
 
     cep_rv_set_string(entry, dt_state(), "killed");
-
-    cep_store_unlock(entry, &entry_lock);
-    cep_store_unlock(ledger, &ledger_lock);
     return true;
 }
 
@@ -1108,28 +1172,11 @@ bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
         return false;
     }
 
-    cepLockToken ledger_lock = {0};
-    if (!cep_store_lock(ledger, &ledger_lock)) {
-        return false;
-    }
-
     cepCell* entry = cep_rv_find_entry(ledger, key);
     if (!entry) {
-        cep_store_unlock(ledger, &ledger_lock);
         return false;
     }
-
-    cepLockToken entry_lock = {0};
-    if (!cep_store_lock(entry, &entry_lock)) {
-        cep_store_unlock(ledger, &ledger_lock);
-        return false;
-    }
-
-    bool ok = cep_rv_copy_telemetry(entry, telemetry_node);
-
-    cep_store_unlock(entry, &entry_lock);
-    cep_store_unlock(ledger, &ledger_lock);
-    return ok;
+    return cep_rv_copy_telemetry(entry, telemetry_node);
 }
 
 bool cep_rv_capture_scan(void) {
