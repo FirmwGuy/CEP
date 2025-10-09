@@ -114,24 +114,24 @@ MunitTest tests[] = {
         boot_cycle_timeout_params
     },
     {
-        "/rendezvous/capture_commit",
-        test_rendezvous_capture_commit,
+        "/rendezvous/bootstrap_cycles",
+        test_rendezvous_bootstrap_cycles,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
         timeout_params
     },
     {
-        "/rendezvous/policies",
-        test_rendezvous_policies,
+        "/rendezvous/pipeline",
+        test_rendezvous_pipeline,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
         timeout_params
     },
     {
-        "/rendezvous/controls",
-        test_rendezvous_controls,
+        "/rendezvous/parallel",
+        test_rendezvous_parallel,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
