@@ -903,7 +903,7 @@ static void test_cell_tech_sequencing_catalog(void) {
 
 
 MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
 
     TestWatchdog* watchdog = user_data_or_fixture;
     (void)watchdog;

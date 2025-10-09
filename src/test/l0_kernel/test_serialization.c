@@ -200,7 +200,7 @@ static const cepLibraryOps proxy_test_library_ops = {
 /* Covers serialization framing and payload replay semantics. */
 
 MunitResult test_serialization(const MunitParameter params[], void* user_data_or_fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)user_data_or_fixture;
 
     uint8_t payload[] = "serialize-me";
@@ -351,7 +351,7 @@ MunitResult test_serialization(const MunitParameter params[], void* user_data_or
 
 
 MunitResult test_serialization_proxy(const MunitParameter params[], void* user_data_or_fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)user_data_or_fixture;
 
     cepDT handle_name = *CEP_DTS(CEP_ACRO("LIB"), CEP_WORD("proxy_hdl"));

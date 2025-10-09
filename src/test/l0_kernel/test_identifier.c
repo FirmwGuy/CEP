@@ -10,7 +10,7 @@
 /* Exercise happy path and rejection rules for cep_compose_identifier so callers
  * see consistent trimming, casing, and validation behaviour. */
 MunitResult test_identifier(const MunitParameter params[], void* fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)fixture;
 
     char buffer[CEP_IDENTIFIER_MAX + 2u];
@@ -54,4 +54,3 @@ MunitResult test_identifier(const MunitParameter params[], void* fixture) {
 
     return MUNIT_OK;
 }
-

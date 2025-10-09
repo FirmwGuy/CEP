@@ -105,7 +105,7 @@ static void verify_dependency_order(const cepDT names[], const size_t dependency
 }
 
 MunitResult test_enzyme_randomized(const MunitParameter params[], void* user_data_or_fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)user_data_or_fixture;
 
     cepDT signal_dt = *CEP_DTAW("CEP", "sig_rand");

@@ -42,7 +42,7 @@ static void mailroom_reset_system(void) {
 }
 
 MunitResult test_mailroom(const MunitParameter params[], void* fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)fixture;
 
     mailroom_reset_system();

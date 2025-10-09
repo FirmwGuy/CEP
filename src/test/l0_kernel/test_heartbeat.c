@@ -883,7 +883,7 @@ static MunitResult test_heartbeat_signal_broadcast(void) {
 
 
 MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)user_data_or_fixture;
 
     MunitResult result;

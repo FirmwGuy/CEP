@@ -669,7 +669,7 @@ void test_enzyme_tear_down(void* fixture) {
 
 
 MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)user_data_or_fixture;
 
     MunitResult result;

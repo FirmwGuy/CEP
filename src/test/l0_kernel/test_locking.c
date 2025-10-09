@@ -10,8 +10,19 @@
 
 #include "cep_cell.h"
 
+static char* lock_boot_cycle_values[] = {
+    TEST_BOOT_CYCLE_FRESH,
+    TEST_BOOT_CYCLE_AFTER,
+    NULL
+};
+
+static MunitParameterEnum lock_boot_cycle_params[] = {
+    {"boot_cycle", lock_boot_cycle_values},
+    {NULL, NULL}
+};
+
 static MunitResult test_lock_store_blocks_append(const MunitParameter params[], void* fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)fixture;
 
     cepCell parent;
@@ -56,7 +67,7 @@ static MunitResult test_lock_store_blocks_append(const MunitParameter params[], 
 }
 
 static MunitResult test_lock_data_blocks_update(const MunitParameter params[], void* fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)fixture;
 
     cepCell cell;
@@ -87,7 +98,7 @@ static MunitTest lock_tests[] = {
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
-        NULL,
+        lock_boot_cycle_params,
     },
     {
         "/lock_data_blocks_update",
@@ -95,7 +106,7 @@ static MunitTest lock_tests[] = {
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
-        NULL,
+        lock_boot_cycle_params,
     },
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL}
 };

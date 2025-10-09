@@ -629,3 +629,30 @@ bool cep_namepool_reference_is_glob(cepID id) {
     }
     return entry->glob;
 }
+
+/** Reset cached namepool metadata so a fresh bootstrap can rebuild dictionaries
+    after the cell system shuts down. */
+void cep_namepool_reset(void) {
+    if (name_pages) {
+        for (size_t i = 0; i < name_page_count; ++i) {
+            if (name_pages[i]) {
+                cep_free(name_pages[i]);
+                name_pages[i] = NULL;
+            }
+        }
+        cep_free(name_pages);
+    }
+    name_pages = NULL;
+    name_page_count = 0u;
+    name_page_cap = 0u;
+
+    if (name_buckets) {
+        cep_free(name_buckets);
+    }
+    name_buckets = NULL;
+    name_bucket_cap = 0u;
+    name_bucket_count = 0u;
+    name_bucket_threshold = 0u;
+
+    namepool_root = NULL;
+}

@@ -1394,8 +1394,9 @@ static void test_cell_deep_traverse_random_catalogs(unsigned storage) {
  * unified watchdog-managed session.
  */
 MunitResult test_traverse(const MunitParameter params[], void* user_data_or_fixture) {
+    test_boot_cycle_prepare(params);
+
     TestWatchdog* watchdog = user_data_or_fixture;
-    (void)params;
 
     cep_cell_system_initiate();
 

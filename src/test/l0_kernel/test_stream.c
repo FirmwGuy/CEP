@@ -19,7 +19,7 @@
 #include <stdio.h>
 
 MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)user_data_or_fixture;
 
     cep_cell_system_initiate();

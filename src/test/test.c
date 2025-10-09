@@ -16,6 +16,35 @@ static MunitParameterEnum timeout_params[] = {
     {NULL, NULL}
 };
 
+static char* boot_cycle_values[] = {
+    TEST_BOOT_CYCLE_FRESH,
+    TEST_BOOT_CYCLE_AFTER,
+    NULL
+};
+
+static MunitParameterEnum boot_cycle_params[] = {
+    {"boot_cycle", boot_cycle_values},
+    {NULL, NULL}
+};
+
+static MunitParameterEnum boot_cycle_timeout_params[] = {
+    {"boot_cycle", boot_cycle_values},
+    {"timeout", NULL},
+    {NULL, NULL}
+};
+
+static MunitParameterEnum boot_cycle_text_params[] = {
+    {"boot_cycle", boot_cycle_values},
+    {"text", NULL},
+    {NULL, NULL}
+};
+
+static MunitParameterEnum boot_cycle_stdio_params[] = {
+    {"boot_cycle", boot_cycle_values},
+    {"stdio", NULL},
+    {NULL, NULL}
+};
+
 
 
 
@@ -26,7 +55,7 @@ MunitTest tests[] = {
         test_cell_setup,
         test_cell_tear_down,
         MUNIT_TEST_OPTION_NONE,
-        timeout_params             // Parameters.
+        boot_cycle_timeout_params  // Parameters.
     },
     {
         "/traverse",
@@ -34,7 +63,7 @@ MunitTest tests[] = {
         test_traverse_setup,
         test_traverse_tear_down,
         MUNIT_TEST_OPTION_NONE,
-        timeout_params             // Parameters.
+        boot_cycle_timeout_params  // Parameters.
     },
     {
         "/domain_tag_naming",
@@ -42,10 +71,7 @@ MunitTest tests[] = {
         NULL,                     // Setup
         NULL,                     // Tear_down
         MUNIT_TEST_OPTION_NONE,
-        (MunitParameterEnum[]) {
-            {"text", NULL},       // Text to convert to ID value.
-            {NULL, NULL}
-        }
+        boot_cycle_text_params
     },
     {
         "/identifier",
@@ -53,7 +79,7 @@ MunitTest tests[] = {
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
-        NULL
+        boot_cycle_params
     },
     {
         "/mailroom",
@@ -61,7 +87,7 @@ MunitTest tests[] = {
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
-        timeout_params
+        boot_cycle_timeout_params
     },
     {
         "/enzyme",
@@ -69,10 +95,7 @@ MunitTest tests[] = {
         test_enzyme_setup,
         test_enzyme_tear_down,
         MUNIT_TEST_OPTION_NONE,
-        (MunitParameterEnum[]) {
-            {"stdio", NULL},      // Text to convert to ID value.
-            {NULL, NULL}
-        }
+        boot_cycle_stdio_params
     },
     {
         "/enzyme/randomized",
@@ -80,7 +103,7 @@ MunitTest tests[] = {
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
-        timeout_params
+        boot_cycle_timeout_params
     },
     {
         "/heartbeat",
@@ -88,7 +111,7 @@ MunitTest tests[] = {
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
-        timeout_params
+        boot_cycle_timeout_params
     },
     {
         "/rendezvous/capture_commit",
@@ -121,7 +144,7 @@ MunitTest tests[] = {
         l2_setup,
         l2_teardown,
         MUNIT_TEST_OPTION_NONE,
-        timeout_params
+        boot_cycle_timeout_params
     },
     {
         "/flows/wait_event",
@@ -129,7 +152,7 @@ MunitTest tests[] = {
         l2_setup,
         l2_teardown,
         MUNIT_TEST_OPTION_NONE,
-        timeout_params
+        boot_cycle_timeout_params
     },
     {
         "/flows/retention",
@@ -137,7 +160,7 @@ MunitTest tests[] = {
         l2_setup,
         l2_teardown,
         MUNIT_TEST_OPTION_NONE,
-        timeout_params
+        boot_cycle_timeout_params
     },
 #endif
     {
@@ -146,7 +169,7 @@ MunitTest tests[] = {
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
-        NULL
+        boot_cycle_params
     },
 #ifdef CEP_HAS_POC
     {
@@ -188,7 +211,7 @@ MunitTest tests[] = {
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
-        NULL
+        boot_cycle_params
     },
     {
         "/stream/stdio",
@@ -196,7 +219,7 @@ MunitTest tests[] = {
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
-        NULL
+        boot_cycle_params
     },
 #ifdef CEP_HAS_LIBZIP
     {
@@ -205,7 +228,7 @@ MunitTest tests[] = {
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
-        NULL
+        boot_cycle_params
     },
 #endif
 

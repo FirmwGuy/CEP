@@ -399,7 +399,7 @@ void l2_teardown(void* fixture_ptr) {
 }
 
 MunitResult test_l2_ingest_and_decision(const MunitParameter params[], void* fixture_ptr) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     L2Fixture* fixture = fixture_ptr;
     if (!fixture || !fixture->initialized) {
         munit_log(MUNIT_LOG_INFO, "Skipping Layer 2 flow tests; set CEP_L2_TEST_ENABLE=1 to run when bootstrap succeeds on this platform.");
@@ -468,7 +468,7 @@ MunitResult test_l2_ingest_and_decision(const MunitParameter params[], void* fix
 }
 
 MunitResult test_l2_retention_archive(const MunitParameter params[], void* fixture_ptr) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     L2Fixture* fixture = fixture_ptr;
     if (!fixture || !fixture->initialized) {
         munit_log(MUNIT_LOG_INFO, "Skipping Layer 2 retention test; set CEP_L2_TEST_ENABLE=1 to run when bootstrap succeeds on this platform.");
@@ -525,7 +525,7 @@ MunitResult test_l2_retention_archive(const MunitParameter params[], void* fixtu
 }
 
 MunitResult test_l2_wait_event_resume(const MunitParameter params[], void* fixture_ptr) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     L2Fixture* fixture = fixture_ptr;
     if (!fixture || !fixture->initialized) {
         munit_log(MUNIT_LOG_INFO, "Skipping Layer 2 wait/event test; set CEP_L2_TEST_ENABLE=1 to run when bootstrap succeeds on this platform.");

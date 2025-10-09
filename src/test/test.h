@@ -10,6 +10,8 @@
 #define MUNIT_ENABLE_ASSERT_ALIASES
 #include "munit.h"
 
+#include <string.h>
+
 #ifndef CEP_HAS_L2_TESTS
 /* Meson builds run the full flow suite; the fallback unix/Makefile may define
  * this to 0 when it omits the L2 intent fixtures. */
@@ -78,4 +80,21 @@ extern MunitSuite lock_suites[];
 static inline void test_runtime_shutdown(void) {
     (void)cep_heartbeat_emit_shutdown();
     cep_heartbeat_shutdown();
+}
+
+#define TEST_BOOT_CYCLE_FRESH       "fresh"
+#define TEST_BOOT_CYCLE_AFTER       "after_reboot"
+
+static inline bool test_boot_cycle_is_after(const MunitParameter params[]) {
+    const char* cycle = params ? munit_parameters_get(params, "boot_cycle") : NULL;
+    return cycle && (strcmp(cycle, TEST_BOOT_CYCLE_AFTER) == 0);
+}
+
+static inline void test_boot_cycle_prepare(const MunitParameter params[]) {
+    if (!test_boot_cycle_is_after(params)) {
+        return;
+    }
+
+    test_runtime_shutdown();
+    cep_cell_system_initiate();
 }

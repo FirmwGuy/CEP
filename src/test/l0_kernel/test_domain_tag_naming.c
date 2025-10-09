@@ -235,6 +235,8 @@ static void test_glob_interning(void) {
 
 
 MunitResult test_domain_tag_naming(const MunitParameter params[], void* user_data_or_fixture) {
+    test_boot_cycle_prepare(params);
+
     (void)user_data_or_fixture;
 
     const char* param_value = munit_parameters_get(params, "text");

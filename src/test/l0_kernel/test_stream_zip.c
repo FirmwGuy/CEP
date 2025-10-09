@@ -28,7 +28,7 @@ static char* make_temp_path(void) {
 }
 
 MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fixture) {
-    (void)params;
+    test_boot_cycle_prepare(params);
     (void)user_data_or_fixture;
 
     char* archive_path = make_temp_path();
