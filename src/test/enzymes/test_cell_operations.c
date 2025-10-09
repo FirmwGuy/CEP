@@ -31,12 +31,12 @@ static const cepPath* make_signal_path(CepPathStatic2* buf, const cepDT* segment
     return (const cepPath*)buf;
 }
 
-static const cepDT* dt_sig_cell(void) { return CEP_DTAW("CEP", "sig_cell"); }
-static const cepDT* dt_op_add(void)   { return CEP_DTAW("CEP", "op_add"); }
-static const cepDT* dt_op_update(void){ return CEP_DTAW("CEP", "op_upd"); }
-static const cepDT* dt_op_delete(void){ return CEP_DTAW("CEP", "op_delete"); }
-static const cepDT* dt_op_move(void)  { return CEP_DTAW("CEP", "op_move"); }
-static const cepDT* dt_op_clone(void) { return CEP_DTAW("CEP", "op_clone"); }
+CEP_DEFINE_STATIC_DT(dt_sig_cell, CEP_ACRO("CEP"), CEP_WORD("sig_cell"))
+CEP_DEFINE_STATIC_DT(dt_op_add, CEP_ACRO("CEP"), CEP_WORD("op_add"))
+CEP_DEFINE_STATIC_DT(dt_op_update, CEP_ACRO("CEP"), CEP_WORD("op_upd"))
+CEP_DEFINE_STATIC_DT(dt_op_delete, CEP_ACRO("CEP"), CEP_WORD("op_delete"))
+CEP_DEFINE_STATIC_DT(dt_op_move, CEP_ACRO("CEP"), CEP_WORD("op_move"))
+CEP_DEFINE_STATIC_DT(dt_op_clone, CEP_ACRO("CEP"), CEP_WORD("op_clone"))
 
 MunitResult test_cell_operations_enzymes(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;

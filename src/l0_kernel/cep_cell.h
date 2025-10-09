@@ -459,6 +459,19 @@ static inline cepDT cep_dt_make(cepID domain, cepID tag) {
 #define CEP_DTAA(d, t)  CEP_DTS(CEP_ACRO(d), CEP_ACRO(t))
 #define CEP_DTAW(d, t)  CEP_DTS(CEP_ACRO(d), CEP_WORD(t))
 
+#define CEP_DEFINE_STATIC_DT(fn_name, domain_expr, tag_expr)                  \
+    static const cepDT* fn_name(void) {                                       \
+        static cepDT value;                                                   \
+        static bool initialized = false;                                      \
+        if (!initialized) {                                                   \
+            value.domain = (domain_expr);                                     \
+            value.tag = (tag_expr);                                           \
+            value.glob = cep_id_has_glob_char(value.tag);                     \
+            initialized = true;                                               \
+        }                                                                     \
+        return &value;                                                        \
+    }
+
 cepID  cep_text_to_acronym(const char *s);
 
 cepID  cep_text_to_word(const char *s);

@@ -33,64 +33,64 @@ static cepID cep_domain_cep(void) {
     return CEP_ACRO("CEP");
 }
 
-static const cepDT* dt_dictionary(void)  { return CEP_DTAW("CEP", "dictionary"); }
-static const cepDT* dt_text(void)        { return CEP_DTAW("CEP", "text"); }
-static const cepDT* dt_kind(void)        { return CEP_DTAW("CEP", "kind"); }
-static const cepDT* dt_type(void)        { return CEP_DTAW("CEP", "type"); }
-static const cepDT* dt_roles(void)       { return CEP_DTAW("CEP", "roles"); }
-static const cepDT* dt_facets(void)      { return CEP_DTAW("CEP", "facets"); }
-static const cepDT* dt_src(void)         { return CEP_DTAW("CEP", "src"); }
-static const cepDT* dt_dst(void)         { return CEP_DTAW("CEP", "dst"); }
-static const cepDT* dt_directed(void)    { return CEP_DTAW("CEP", "directed"); }
-static const cepDT* dt_original(void)    { return CEP_DTAW("CEP", "original"); }
-static const cepDT* dt_target(void)      { return CEP_DTAW("CEP", "target"); }
-static const cepDT* dt_inbox(void)       { return CEP_DTAW("CEP", "inbox"); }
-static const cepDT* dt_be_create(void)   { return CEP_DTAW("CEP", "be_create"); }
-static const cepDT* dt_bo_upsert(void)   { return CEP_DTAW("CEP", "bo_upsert"); }
-static const cepDT* dt_ctx_upsert(void)  { return CEP_DTAW("CEP", "ctx_upsert"); }
-static const cepDT* dt_being(void)       { return CEP_DTAW("CEP", "being"); }
-static const cepDT* dt_bond(void)        { return CEP_DTAW("CEP", "bond"); }
-static const cepDT* dt_context(void)     { return CEP_DTAW("CEP", "context"); }
-static const cepDT* dt_facet_root(void)  { return CEP_DTAW("CEP", "facet"); }
-static const cepDT* dt_debt(void)        { return CEP_DTAW("CEP", "debt"); }
-static const cepDT* dt_decision(void)    { return CEP_DTAW("CEP", "decision"); }
-static const cepDT* dt_index(void)       { return CEP_DTAW("CEP", "index"); }
-static const cepDT* dt_coh(void)         { return CEP_DTAW("CEP", "coh"); }
-static const cepDT* dt_data_root(void)   { return CEP_DTAW("CEP", "data"); }
-static const cepDT* dt_sys(void)         { return CEP_DTAW("CEP", "sys"); }
-static const cepDT* dt_tmp(void)         { return CEP_DTAW("CEP", "tmp"); }
-static const cepDT* dt_adj(void)         { return CEP_DTAW("CEP", "adj"); }
-static const cepDT* dt_by_being(void)    { return CEP_DTAW("CEP", "by_being"); }
-static const cepDT* dt_signal_cell(void) { return CEP_DTAW("CEP", "sig_cell"); }
-static const cepDT* dt_op_add(void)      { return CEP_DTAW("CEP", "op_add"); }
-static const cepDT* dt_coh_ing_be(void)  { return CEP_DTAW("CEP", "coh_ing_be"); }
-static const cepDT* dt_coh_ing_bo(void)  { return CEP_DTAW("CEP", "coh_ing_bo"); }
-static const cepDT* dt_coh_ing_ctx(void) { return CEP_DTAW("CEP", "coh_ing_ctx"); }
-static const cepDT* dt_coh_closure(void) { return CEP_DTAW("CEP", "coh_closure"); }
-static const cepDT* dt_coh_index(void)   { return CEP_DTAW("CEP", "coh_index"); }
-static const cepDT* dt_coh_adj(void)     { return CEP_DTAW("CEP", "coh_adj"); }
-static const cepDT* dt_be_kind(void)     { return CEP_DTAW("CEP", "be_kind"); }
-static const cepDT* dt_bo_pair(void)     { return CEP_DTAW("CEP", "bo_pair"); }
-static const cepDT* dt_ctx_type(void)    { return CEP_DTAW("CEP", "ctx_type"); }
-static const cepDT* dt_fa_ctx(void)      { return CEP_DTAW("CEP", "fa_ctx"); }
-static const cepDT* dt_id(void)          { return CEP_DTAW("CEP", "id"); }
-static const cepDT* dt_outcome(void)     { return CEP_DTAW("CEP", "outcome"); }
-static const cepDT* dt_out_bonds(void)   { return CEP_DTAW("CEP", "out_bonds"); }
-static const cepDT* dt_in_bonds(void)    { return CEP_DTAW("CEP", "in_bonds"); }
-static const cepDT* dt_ctx_by_role(void) { return CEP_DTAW("CEP", "ctx_by_role"); }
-static const cepDT* dt_required(void)    { return CEP_DTAW("CEP", "required"); }
-static const cepDT* dt_attrs(void)       { return CEP_DTAW("CEP", "attrs"); }
-static const cepDT* dt_latency(void)     { return CEP_DTAW("CEP", "latency"); }
-static const cepDT* dt_lat_window(void)  { return CEP_DTAW("CEP", "lat_window"); }
-static const cepDT* dt_err_window(void)  { return CEP_DTAW("CEP", "err_window"); }
-static const cepDT* dt_choice(void)      { return CEP_DTAW("CEP", "choice"); }
-static const cepDT* dt_retain_mode(void) { return CEP_DTAW("CEP", "retain_mode"); }
-static const cepDT* dt_retain_ttl(void)  { return CEP_DTAW("CEP", "retain_ttl"); }
-static const cepDT* dt_retain_upto(void) { return CEP_DTAW("CEP", "retain_upto"); }
-static const cepDT* dt_retention_root(void) { return CEP_DTAW("CEP", "retention"); }
-static const cepDT* dt_sig_sys(void)        { return CEP_DTAW("CEP", "sig_sys"); }
-static const cepDT* dt_sys_init(void)       { return CEP_DTAW("CEP", "init"); }
-static const cepDT* dt_coh_init(void)       { return CEP_DTAW("CEP", "coh_init"); }
+CEP_DEFINE_STATIC_DT(dt_dictionary, CEP_ACRO("CEP"), CEP_WORD("dictionary"))
+CEP_DEFINE_STATIC_DT(dt_text, CEP_ACRO("CEP"), CEP_WORD("text"))
+CEP_DEFINE_STATIC_DT(dt_kind, CEP_ACRO("CEP"), CEP_WORD("kind"))
+CEP_DEFINE_STATIC_DT(dt_type, CEP_ACRO("CEP"), CEP_WORD("type"))
+CEP_DEFINE_STATIC_DT(dt_roles, CEP_ACRO("CEP"), CEP_WORD("roles"))
+CEP_DEFINE_STATIC_DT(dt_facets, CEP_ACRO("CEP"), CEP_WORD("facets"))
+CEP_DEFINE_STATIC_DT(dt_src, CEP_ACRO("CEP"), CEP_WORD("src"))
+CEP_DEFINE_STATIC_DT(dt_dst, CEP_ACRO("CEP"), CEP_WORD("dst"))
+CEP_DEFINE_STATIC_DT(dt_directed, CEP_ACRO("CEP"), CEP_WORD("directed"))
+CEP_DEFINE_STATIC_DT(dt_original, CEP_ACRO("CEP"), CEP_WORD("original"))
+CEP_DEFINE_STATIC_DT(dt_target, CEP_ACRO("CEP"), CEP_WORD("target"))
+CEP_DEFINE_STATIC_DT(dt_inbox, CEP_ACRO("CEP"), CEP_WORD("inbox"))
+CEP_DEFINE_STATIC_DT(dt_be_create, CEP_ACRO("CEP"), CEP_WORD("be_create"))
+CEP_DEFINE_STATIC_DT(dt_bo_upsert, CEP_ACRO("CEP"), CEP_WORD("bo_upsert"))
+CEP_DEFINE_STATIC_DT(dt_ctx_upsert, CEP_ACRO("CEP"), CEP_WORD("ctx_upsert"))
+CEP_DEFINE_STATIC_DT(dt_being, CEP_ACRO("CEP"), CEP_WORD("being"))
+CEP_DEFINE_STATIC_DT(dt_bond, CEP_ACRO("CEP"), CEP_WORD("bond"))
+CEP_DEFINE_STATIC_DT(dt_context, CEP_ACRO("CEP"), CEP_WORD("context"))
+CEP_DEFINE_STATIC_DT(dt_facet_root, CEP_ACRO("CEP"), CEP_WORD("facet"))
+CEP_DEFINE_STATIC_DT(dt_debt, CEP_ACRO("CEP"), CEP_WORD("debt"))
+CEP_DEFINE_STATIC_DT(dt_decision, CEP_ACRO("CEP"), CEP_WORD("decision"))
+CEP_DEFINE_STATIC_DT(dt_index, CEP_ACRO("CEP"), CEP_WORD("index"))
+CEP_DEFINE_STATIC_DT(dt_coh, CEP_ACRO("CEP"), CEP_WORD("coh"))
+CEP_DEFINE_STATIC_DT(dt_data_root, CEP_ACRO("CEP"), CEP_WORD("data"))
+CEP_DEFINE_STATIC_DT(dt_sys, CEP_ACRO("CEP"), CEP_WORD("sys"))
+CEP_DEFINE_STATIC_DT(dt_tmp, CEP_ACRO("CEP"), CEP_WORD("tmp"))
+CEP_DEFINE_STATIC_DT(dt_adj, CEP_ACRO("CEP"), CEP_WORD("adj"))
+CEP_DEFINE_STATIC_DT(dt_by_being, CEP_ACRO("CEP"), CEP_WORD("by_being"))
+CEP_DEFINE_STATIC_DT(dt_signal_cell, CEP_ACRO("CEP"), CEP_WORD("sig_cell"))
+CEP_DEFINE_STATIC_DT(dt_op_add, CEP_ACRO("CEP"), CEP_WORD("op_add"))
+CEP_DEFINE_STATIC_DT(dt_coh_ing_be, CEP_ACRO("CEP"), CEP_WORD("coh_ing_be"))
+CEP_DEFINE_STATIC_DT(dt_coh_ing_bo, CEP_ACRO("CEP"), CEP_WORD("coh_ing_bo"))
+CEP_DEFINE_STATIC_DT(dt_coh_ing_ctx, CEP_ACRO("CEP"), CEP_WORD("coh_ing_ctx"))
+CEP_DEFINE_STATIC_DT(dt_coh_closure, CEP_ACRO("CEP"), CEP_WORD("coh_closure"))
+CEP_DEFINE_STATIC_DT(dt_coh_index, CEP_ACRO("CEP"), CEP_WORD("coh_index"))
+CEP_DEFINE_STATIC_DT(dt_coh_adj, CEP_ACRO("CEP"), CEP_WORD("coh_adj"))
+CEP_DEFINE_STATIC_DT(dt_be_kind, CEP_ACRO("CEP"), CEP_WORD("be_kind"))
+CEP_DEFINE_STATIC_DT(dt_bo_pair, CEP_ACRO("CEP"), CEP_WORD("bo_pair"))
+CEP_DEFINE_STATIC_DT(dt_ctx_type, CEP_ACRO("CEP"), CEP_WORD("ctx_type"))
+CEP_DEFINE_STATIC_DT(dt_fa_ctx, CEP_ACRO("CEP"), CEP_WORD("fa_ctx"))
+CEP_DEFINE_STATIC_DT(dt_id, CEP_ACRO("CEP"), CEP_WORD("id"))
+CEP_DEFINE_STATIC_DT(dt_outcome, CEP_ACRO("CEP"), CEP_WORD("outcome"))
+CEP_DEFINE_STATIC_DT(dt_out_bonds, CEP_ACRO("CEP"), CEP_WORD("out_bonds"))
+CEP_DEFINE_STATIC_DT(dt_in_bonds, CEP_ACRO("CEP"), CEP_WORD("in_bonds"))
+CEP_DEFINE_STATIC_DT(dt_ctx_by_role, CEP_ACRO("CEP"), CEP_WORD("ctx_by_role"))
+CEP_DEFINE_STATIC_DT(dt_required, CEP_ACRO("CEP"), CEP_WORD("required"))
+CEP_DEFINE_STATIC_DT(dt_attrs, CEP_ACRO("CEP"), CEP_WORD("attrs"))
+CEP_DEFINE_STATIC_DT(dt_latency, CEP_ACRO("CEP"), CEP_WORD("latency"))
+CEP_DEFINE_STATIC_DT(dt_lat_window, CEP_ACRO("CEP"), CEP_WORD("lat_window"))
+CEP_DEFINE_STATIC_DT(dt_err_window, CEP_ACRO("CEP"), CEP_WORD("err_window"))
+CEP_DEFINE_STATIC_DT(dt_choice, CEP_ACRO("CEP"), CEP_WORD("choice"))
+CEP_DEFINE_STATIC_DT(dt_retain_mode, CEP_ACRO("CEP"), CEP_WORD("retain_mode"))
+CEP_DEFINE_STATIC_DT(dt_retain_ttl, CEP_ACRO("CEP"), CEP_WORD("retain_ttl"))
+CEP_DEFINE_STATIC_DT(dt_retain_upto, CEP_ACRO("CEP"), CEP_WORD("retain_upto"))
+CEP_DEFINE_STATIC_DT(dt_retention_root, CEP_ACRO("CEP"), CEP_WORD("retention"))
+CEP_DEFINE_STATIC_DT(dt_sig_sys, CEP_ACRO("CEP"), CEP_WORD("sig_sys"))
+CEP_DEFINE_STATIC_DT(dt_sys_init, CEP_ACRO("CEP"), CEP_WORD("init"))
+CEP_DEFINE_STATIC_DT(dt_coh_init, CEP_ACRO("CEP"), CEP_WORD("coh_init"))
 
 #define CEP_L1_WINDOW_CAP 8u
 

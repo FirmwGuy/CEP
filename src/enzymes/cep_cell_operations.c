@@ -67,27 +67,27 @@ static cepCellOperationsRegistryRecord* cep_cell_operations_registry_record_appe
 }
 
 
-static const cepDT* dt_signal_cell(void) { return CEP_DTAW("CEP", "sig_cell"); }
-static const cepDT* dt_op_add(void)      { return CEP_DTAW("CEP", "op_add"); }
-static const cepDT* dt_op_update(void)   { return CEP_DTAW("CEP", "op_upd"); }
-static const cepDT* dt_op_delete(void)   { return CEP_DTAW("CEP", "op_delete"); }
-static const cepDT* dt_op_move(void)     { return CEP_DTAW("CEP", "op_move"); }
-static const cepDT* dt_op_clone(void)    { return CEP_DTAW("CEP", "op_clone"); }
+CEP_DEFINE_STATIC_DT(dt_signal_cell, CEP_ACRO("CEP"), CEP_WORD("sig_cell"))
+CEP_DEFINE_STATIC_DT(dt_op_add, CEP_ACRO("CEP"), CEP_WORD("op_add"))
+CEP_DEFINE_STATIC_DT(dt_op_update, CEP_ACRO("CEP"), CEP_WORD("op_upd"))
+CEP_DEFINE_STATIC_DT(dt_op_delete, CEP_ACRO("CEP"), CEP_WORD("op_delete"))
+CEP_DEFINE_STATIC_DT(dt_op_move, CEP_ACRO("CEP"), CEP_WORD("op_move"))
+CEP_DEFINE_STATIC_DT(dt_op_clone, CEP_ACRO("CEP"), CEP_WORD("op_clone"))
 
-static const cepDT* dt_role_parent(void)   { return CEP_DTAW("CEP", "role_parnt"); }
-static const cepDT* dt_role_subject(void)  { return CEP_DTAW("CEP", "role_subj"); }
-static const cepDT* dt_role_source(void)   { return CEP_DTAW("CEP", "role_source"); }
-static const cepDT* dt_role_template(void) { return CEP_DTAW("CEP", "role_templ"); }
+CEP_DEFINE_STATIC_DT(dt_role_parent, CEP_ACRO("CEP"), CEP_WORD("role_parnt"))
+CEP_DEFINE_STATIC_DT(dt_role_subject, CEP_ACRO("CEP"), CEP_WORD("role_subj"))
+CEP_DEFINE_STATIC_DT(dt_role_source, CEP_ACRO("CEP"), CEP_WORD("role_source"))
+CEP_DEFINE_STATIC_DT(dt_role_template, CEP_ACRO("CEP"), CEP_WORD("role_templ"))
 
-static const cepDT* dt_arg_position(void) { return CEP_DTAW("CEP", "arg_pos"); }
-static const cepDT* dt_arg_prepend(void)  { return CEP_DTAW("CEP", "arg_prepend"); }
-static const cepDT* dt_arg_deep(void)     { return CEP_DTAW("CEP", "arg_deep"); }
+CEP_DEFINE_STATIC_DT(dt_arg_position, CEP_ACRO("CEP"), CEP_WORD("arg_pos"))
+CEP_DEFINE_STATIC_DT(dt_arg_prepend, CEP_ACRO("CEP"), CEP_WORD("arg_prepend"))
+CEP_DEFINE_STATIC_DT(dt_arg_deep, CEP_ACRO("CEP"), CEP_WORD("arg_deep"))
 
-static const cepDT* dt_enz_add(void)    { return CEP_DTAW("CEP", "enz_add"); }
-static const cepDT* dt_enz_update(void) { return CEP_DTAW("CEP", "enz_upd"); }
-static const cepDT* dt_enz_delete(void) { return CEP_DTAW("CEP", "enz_del"); }
-static const cepDT* dt_enz_move(void)   { return CEP_DTAW("CEP", "enz_mov"); }
-static const cepDT* dt_enz_clone(void)  { return CEP_DTAW("CEP", "enz_cln"); }
+CEP_DEFINE_STATIC_DT(dt_enz_add, CEP_ACRO("CEP"), CEP_WORD("enz_add"))
+CEP_DEFINE_STATIC_DT(dt_enz_update, CEP_ACRO("CEP"), CEP_WORD("enz_upd"))
+CEP_DEFINE_STATIC_DT(dt_enz_delete, CEP_ACRO("CEP"), CEP_WORD("enz_del"))
+CEP_DEFINE_STATIC_DT(dt_enz_move, CEP_ACRO("CEP"), CEP_WORD("enz_mov"))
+CEP_DEFINE_STATIC_DT(dt_enz_clone, CEP_ACRO("CEP"), CEP_WORD("enz_cln"))
 
 
 static cepCell* cep_cell_enzyme_resolve(const cepPath* path) {

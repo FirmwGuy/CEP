@@ -10,11 +10,11 @@
 
 #include <string.h>
 
-static const cepDT* dt_data_root(void)      { return CEP_DTAW("CEP", "data"); }
-static const cepDT* dt_sys_root(void)       { return CEP_DTAW("CEP", "sys"); }
-static const cepDT* dt_inbox_root(void)     { return CEP_DTAW("CEP", "inbox"); }
-static const cepDT* dt_mailroom_ns_coh(void){ return CEP_DTAW("CEP", "coh"); }
-static const cepDT* dt_mailroom_ns_flow(void){ return CEP_DTAW("CEP", "flow"); }
+CEP_DEFINE_STATIC_DT(dt_data_root,      CEP_ACRO("CEP"), CEP_WORD("data"))
+CEP_DEFINE_STATIC_DT(dt_sys_root,       CEP_ACRO("CEP"), CEP_WORD("sys"))
+CEP_DEFINE_STATIC_DT(dt_inbox_root,     CEP_ACRO("CEP"), CEP_WORD("inbox"))
+CEP_DEFINE_STATIC_DT(dt_mailroom_ns_coh, CEP_ACRO("CEP"), CEP_WORD("coh"))
+CEP_DEFINE_STATIC_DT(dt_mailroom_ns_flow, CEP_ACRO("CEP"), CEP_WORD("flow"))
 
 static bool cep_mailroom_dt_from_text(cepDT* dt, const char* tag) {
     if (!dt || !tag || !tag[0]) {
@@ -50,26 +50,26 @@ static size_t cep_mailroom_router_before_extra_count = 0u;
 static bool cep_mailroom_bootstrap_done = false;
 static bool cep_mailroom_seed_errors_enabled = true;
 
-static const cepDT* dt_sig_sys(void)        { return CEP_DTAW("CEP", "sig_sys"); }
-static const cepDT* dt_sys_init(void)       { return CEP_DTAW("CEP", "init"); }
-static const cepDT* dt_err_cat(void)        { return CEP_DTAW("CEP", "err_cat"); }
-static const cepDT* dt_dictionary(void)     { return CEP_DTAW("CEP", "dictionary"); }
-static const cepDT* dt_list(void)           { return CEP_DTAW("CEP", "list"); }
-static const cepDT* dt_text(void)           { return CEP_DTAW("CEP", "text"); }
-static const cepDT* dt_original(void)       { return CEP_DTAW("CEP", "original"); }
-static const cepDT* dt_outcome(void)        { return CEP_DTAW("CEP", "outcome"); }
-static const cepDT* dt_meta(void)           { return CEP_DTAW("CEP", "meta"); }
-static const cepDT* dt_parents(void)        { return CEP_DTAW("CEP", "parents"); }
-static const cepDT* dt_sig_cell(void)       { return CEP_DTAW("CEP", "sig_cell"); }
-static const cepDT* dt_op_add(void)         { return CEP_DTAW("CEP", "op_add"); }
-static const cepDT* dt_mr_route(void)       { return CEP_DTAW("CEP", "mr_route"); }
-static const cepDT* dt_mr_init(void)        { return CEP_DTAW("CEP", "mr_init"); }
-static const cepDT* dt_coh_ing_be(void)     { return CEP_DTAW("CEP", "coh_ing_be"); }
-static const cepDT* dt_coh_ing_bo(void)     { return CEP_DTAW("CEP", "coh_ing_bo"); }
-static const cepDT* dt_coh_ing_ctx(void)    { return CEP_DTAW("CEP", "coh_ing_ctx"); }
-static const cepDT* dt_fl_ing(void)         { return CEP_DTAW("CEP", "fl_ing"); }
-static const cepDT* dt_ni_ing(void)         { return CEP_DTAW("CEP", "ni_ing"); }
-static const cepDT* dt_inst_ing(void)       { return CEP_DTAW("CEP", "inst_ing"); }
+CEP_DEFINE_STATIC_DT(dt_sig_sys,  CEP_ACRO("CEP"), CEP_WORD("sig_sys"))
+CEP_DEFINE_STATIC_DT(dt_sys_init, CEP_ACRO("CEP"), CEP_WORD("init"))
+CEP_DEFINE_STATIC_DT(dt_err_cat,  CEP_ACRO("CEP"), CEP_WORD("err_cat"))
+CEP_DEFINE_STATIC_DT(dt_dictionary, CEP_ACRO("CEP"), CEP_WORD("dictionary"))
+CEP_DEFINE_STATIC_DT(dt_list,     CEP_ACRO("CEP"), CEP_WORD("list"))
+CEP_DEFINE_STATIC_DT(dt_text,     CEP_ACRO("CEP"), CEP_WORD("text"))
+CEP_DEFINE_STATIC_DT(dt_original, CEP_ACRO("CEP"), CEP_WORD("original"))
+CEP_DEFINE_STATIC_DT(dt_outcome,  CEP_ACRO("CEP"), CEP_WORD("outcome"))
+CEP_DEFINE_STATIC_DT(dt_meta,     CEP_ACRO("CEP"), CEP_WORD("meta"))
+CEP_DEFINE_STATIC_DT(dt_parents,  CEP_ACRO("CEP"), CEP_WORD("parents"))
+CEP_DEFINE_STATIC_DT(dt_sig_cell, CEP_ACRO("CEP"), CEP_WORD("sig_cell"))
+CEP_DEFINE_STATIC_DT(dt_op_add,   CEP_ACRO("CEP"), CEP_WORD("op_add"))
+CEP_DEFINE_STATIC_DT(dt_mr_route, CEP_ACRO("CEP"), CEP_WORD("mr_route"))
+CEP_DEFINE_STATIC_DT(dt_mr_init,  CEP_ACRO("CEP"), CEP_WORD("mr_init"))
+CEP_DEFINE_STATIC_DT(dt_coh_ing_be,  CEP_ACRO("CEP"), CEP_WORD("coh_ing_be"))
+CEP_DEFINE_STATIC_DT(dt_coh_ing_bo,  CEP_ACRO("CEP"), CEP_WORD("coh_ing_bo"))
+CEP_DEFINE_STATIC_DT(dt_coh_ing_ctx, CEP_ACRO("CEP"), CEP_WORD("coh_ing_ctx"))
+CEP_DEFINE_STATIC_DT(dt_fl_ing,   CEP_ACRO("CEP"), CEP_WORD("fl_ing"))
+CEP_DEFINE_STATIC_DT(dt_ni_ing,   CEP_ACRO("CEP"), CEP_WORD("ni_ing"))
+CEP_DEFINE_STATIC_DT(dt_inst_ing, CEP_ACRO("CEP"), CEP_WORD("inst_ing"))
 
 typedef struct {
     const char* code;

@@ -36,45 +36,45 @@ static bool cep_rv_data_root_ready(void) {
     return true;
 }
 
-static const cepDT* dt_flow_root(void)      { return CEP_DTAW("CEP", "flow"); }
-static const cepDT* dt_dictionary(void)     { return CEP_DTAW("CEP", "dictionary"); }
-static const cepDT* dt_text(void)           { return CEP_DTAW("CEP", "text"); }
-static const cepDT* dt_rv_root(void)        { return CEP_DTAW("CEP", "rv"); }
-static const cepDT* dt_sig_sys(void)        { return CEP_DTAW("CEP", "sig_sys"); }
-static const cepDT* dt_sys_init(void)       { return CEP_DTAW("CEP", "init"); }
-static const cepDT* dt_rv_init(void)        { return CEP_DTAW("CEP", "rv_init"); }
-static const cepDT* dt_prof(void)           { return CEP_DTAW("CEP", "prof"); }
-static const cepDT* dt_spawn_beat(void)     { return CEP_DTAW("CEP", "spawn_beat"); }
-static const cepDT* dt_due(void)            { return CEP_DTAW("CEP", "due"); }
-static const cepDT* dt_epoch_k(void)        { return CEP_DTAW("CEP", "epoch_k"); }
-static const cepDT* dt_input_fp(void)       { return CEP_DTAW("CEP", "input_fp"); }
-static const cepDT* dt_cas_hash(void)       { return CEP_DTAW("CEP", "cas_hash"); }
-static const cepDT* dt_state(void)          { return CEP_DTAW("CEP", "state"); }
+CEP_DEFINE_STATIC_DT(dt_flow_root,      CEP_ACRO("CEP"), CEP_WORD("flow"))
+CEP_DEFINE_STATIC_DT(dt_dictionary,     CEP_ACRO("CEP"), CEP_WORD("dictionary"))
+CEP_DEFINE_STATIC_DT(dt_text,           CEP_ACRO("CEP"), CEP_WORD("text"))
+CEP_DEFINE_STATIC_DT(dt_rv_root,        CEP_ACRO("CEP"), CEP_WORD("rv"))
+CEP_DEFINE_STATIC_DT(dt_sig_sys,        CEP_ACRO("CEP"), CEP_WORD("sig_sys"))
+CEP_DEFINE_STATIC_DT(dt_sys_init,       CEP_ACRO("CEP"), CEP_WORD("init"))
+CEP_DEFINE_STATIC_DT(dt_rv_init,        CEP_ACRO("CEP"), CEP_WORD("rv_init"))
+CEP_DEFINE_STATIC_DT(dt_prof,           CEP_ACRO("CEP"), CEP_WORD("prof"))
+CEP_DEFINE_STATIC_DT(dt_spawn_beat,     CEP_ACRO("CEP"), CEP_WORD("spawn_beat"))
+CEP_DEFINE_STATIC_DT(dt_due,            CEP_ACRO("CEP"), CEP_WORD("due"))
+CEP_DEFINE_STATIC_DT(dt_epoch_k,        CEP_ACRO("CEP"), CEP_WORD("epoch_k"))
+CEP_DEFINE_STATIC_DT(dt_input_fp,       CEP_ACRO("CEP"), CEP_WORD("input_fp"))
+CEP_DEFINE_STATIC_DT(dt_cas_hash,       CEP_ACRO("CEP"), CEP_WORD("cas_hash"))
+CEP_DEFINE_STATIC_DT(dt_state,          CEP_ACRO("CEP"), CEP_WORD("state"))
 /* TODO: audit the rendezvous ledger so every entry can reach the full
  * pending|ready|applied|late|timeout|killed|quarantine lifecycle described by
  * the `/data/rv` schema. */
-static const cepDT* dt_on_miss(void)        { return CEP_DTAW("CEP", "on_miss"); }
-static const cepDT* dt_grace_delta(void)    { return CEP_DTAW("CEP", "grace_delta"); }
-static const cepDT* dt_grace_used(void)     { return CEP_DTAW("CEP", "grace_used"); }
-static const cepDT* dt_max_grace(void)      { return CEP_DTAW("CEP", "max_grace"); }
-static const cepDT* dt_deadline(void)       { return CEP_DTAW("CEP", "deadline"); }
-static const cepDT* dt_kill_mode(void)      { return CEP_DTAW("CEP", "kill_mode"); }
-static const cepDT* dt_kill_wait(void)      { return CEP_DTAW("CEP", "kill_wait"); }
-static const cepDT* dt_signal_path(void)    { return CEP_DTAW("CEP", "signal_path"); }
-static const cepDT* dt_ready_beat(void)     { return CEP_DTAW("CEP", "ready_beat"); }
-static const cepDT* dt_applied_beat(void)   { return CEP_DTAW("CEP", "applied_bt"); }
-static const cepDT* dt_payload(void)        { return CEP_DTAW("CEP", "payload"); }
-static const cepDT* dt_inst_id(void)        { return CEP_DTAW("CEP", "inst_id"); }
-static const cepDT* dt_profile(void)        { return CEP_DTAW("CEP", "profile"); }
-static const cepDT* dt_telemetry(void)      { return CEP_DTAW("CEP", "telemetry"); }
+CEP_DEFINE_STATIC_DT(dt_on_miss,        CEP_ACRO("CEP"), CEP_WORD("on_miss"))
+CEP_DEFINE_STATIC_DT(dt_grace_delta,    CEP_ACRO("CEP"), CEP_WORD("grace_delta"))
+CEP_DEFINE_STATIC_DT(dt_grace_used,     CEP_ACRO("CEP"), CEP_WORD("grace_used"))
+CEP_DEFINE_STATIC_DT(dt_max_grace,      CEP_ACRO("CEP"), CEP_WORD("max_grace"))
+CEP_DEFINE_STATIC_DT(dt_deadline,       CEP_ACRO("CEP"), CEP_WORD("deadline"))
+CEP_DEFINE_STATIC_DT(dt_kill_mode,      CEP_ACRO("CEP"), CEP_WORD("kill_mode"))
+CEP_DEFINE_STATIC_DT(dt_kill_wait,      CEP_ACRO("CEP"), CEP_WORD("kill_wait"))
+CEP_DEFINE_STATIC_DT(dt_signal_path,    CEP_ACRO("CEP"), CEP_WORD("signal_path"))
+CEP_DEFINE_STATIC_DT(dt_ready_beat,     CEP_ACRO("CEP"), CEP_WORD("ready_beat"))
+CEP_DEFINE_STATIC_DT(dt_applied_beat,   CEP_ACRO("CEP"), CEP_WORD("applied_bt"))
+CEP_DEFINE_STATIC_DT(dt_payload,        CEP_ACRO("CEP"), CEP_WORD("payload"))
+CEP_DEFINE_STATIC_DT(dt_inst_id,        CEP_ACRO("CEP"), CEP_WORD("inst_id"))
+CEP_DEFINE_STATIC_DT(dt_profile,        CEP_ACRO("CEP"), CEP_WORD("profile"))
+CEP_DEFINE_STATIC_DT(dt_telemetry,      CEP_ACRO("CEP"), CEP_WORD("telemetry"))
 
-static const cepDT* dt_key(void)           { return CEP_DTAW("CEP", "key"); }
-static const cepDT* dt_profile_field(void) { return CEP_DTAW("CEP", "profile"); }
-static const cepDT* dt_defaults(void)      { return CEP_DTAW("CEP", "defaults"); }
-static const cepDT* dt_signal(void)        { return CEP_DTAW("CEP", "signal"); }
-static const cepDT* dt_result(void)        { return CEP_DTAW("CEP", "result"); }
-static const cepDT* dt_due_offset(void)    { return CEP_DTAW("CEP", "due_off"); }
-static const cepDT* dt_deadline_offset(void){ return CEP_DTAW("CEP", "deadl_off"); }
+CEP_DEFINE_STATIC_DT(dt_key,           CEP_ACRO("CEP"), CEP_WORD("key"))
+CEP_DEFINE_STATIC_DT(dt_profile_field, CEP_ACRO("CEP"), CEP_WORD("profile"))
+CEP_DEFINE_STATIC_DT(dt_defaults,      CEP_ACRO("CEP"), CEP_WORD("defaults"))
+CEP_DEFINE_STATIC_DT(dt_signal,        CEP_ACRO("CEP"), CEP_WORD("signal"))
+CEP_DEFINE_STATIC_DT(dt_result,        CEP_ACRO("CEP"), CEP_WORD("result"))
+CEP_DEFINE_STATIC_DT(dt_due_offset,    CEP_ACRO("CEP"), CEP_WORD("due_off"))
+CEP_DEFINE_STATIC_DT(dt_deadline_offset, CEP_ACRO("CEP"), CEP_WORD("deadl_off"))
 
 static cepID cep_rv_text_to_id(const char* text);
 static bool cep_rv_text_to_dt(const char* text, cepDT* out_dt);

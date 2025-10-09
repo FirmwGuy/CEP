@@ -42,93 +42,93 @@ static cepID cep_poc_domain(void) {
         return &dt; \
     }
 
-static const cepDT* dt_dictionary(void)  { return CEP_DTAW("CEP", "dictionary"); }
-static const cepDT* dt_text(void)        { return CEP_DTAW("CEP", "text"); }
-static const cepDT* dt_data(void)        { return CEP_DTAW("CEP", "data"); }
-static const cepDT* dt_sys(void)         { return CEP_DTAW("CEP", "sys"); }
-static const cepDT* dt_tmp(void)         { return CEP_DTAW("CEP", "tmp"); }
-static const cepDT* dt_poc(void)         { return CEP_DTAW("CEP", "poc"); }
-static const cepDT* dt_io(void)          { return CEP_DTAW("CEP", "io"); }
-static const cepDT* dt_hz(void)          { return CEP_DTAW("CEP", "hz"); }
-static const cepDT* dt_index(void)       { return CEP_DTAW("CEP", "index"); }
-static const cepDT* dt_inbox(void)       { return CEP_DTAW("CEP", "inbox"); }
-static const cepDT* dt_adj(void)         { return CEP_DTAW("CEP", "adj"); }
-static const cepDT* dt_summary(void)     { return CEP_DTAW("CEP", "summary"); }
-static const cepDT* dt_recent(void)      { return CEP_DTAW("CEP", "recent"); }
-static const cepDT* dt_original(void)    { return CEP_DTAW("CEP", "original"); }
-static const cepDT* dt_outcome(void)     { return CEP_DTAW("CEP", "outcome"); }
-static const cepDT* dt_enabled(void)     { return CEP_DTAW("CEP", "enabled"); }
-static const cepDT* dt_retention(void)   { return CEP_DTAW("CEP", "retention"); }
-static const cepDT* dt_echo(void)        { return CEP_DTAW("CEP", "echo"); }
-static const cepDT* dt_calc(void)        { return CEP_DTAW("CEP", "calc"); }
-static const cepDT* dt_kv(void)          { return CEP_DTAW("CEP", "kv"); }
-static const cepDT* dt_ans(void)         { return CEP_DTAW("CEP", "ans"); }
-static const cepDT* dt_scenario(void)    { return CEP_DTAW("CEP", "scenario"); }
-static const cepDT* dt_run(void)         { return CEP_DTAW("CEP", "run"); }
-static const cepDT* dt_text_field(void)  { return CEP_DTAW("CEP", "text"); }
-static const cepDT* dt_expr(void)        { return CEP_DTAW("CEP", "expr"); }
-static const cepDT* dt_result(void)      { return CEP_DTAW("CEP", "result"); }
-static const cepDT* dt_inputs(void)      { return CEP_DTAW("CEP", "inputs"); }
-static const cepDT* dt_id(void)          { return CEP_DTAW("CEP", "id"); }
-static const cepDT* dt_key(void)         { return CEP_DTAW("CEP", "key"); }
-static const cepDT* dt_value(void)       { return CEP_DTAW("CEP", "value"); }
-static const cepDT* dt_kind(void)        { return CEP_DTAW("CEP", "kind"); }
-static const cepDT* dt_steps(void)       { return CEP_DTAW("CEP", "steps"); }
-static const cepDT* dt_asserts(void)     { return CEP_DTAW("CEP", "asserts"); }
-static const cepDT* dt_spawns(void)      { return CEP_DTAW("CEP", "spawns"); }
-static const cepDT* dt_expect(void)      { return CEP_DTAW("CEP", "expect"); }
-static const cepDT* dt_path(void)        { return CEP_DTAW("CEP", "path"); }
-static const cepDT* dt_parent(void)      { return CEP_DTAW("CEP", "parent"); }
-static const cepDT* dt_actual(void)      { return CEP_DTAW("CEP", "actual"); }
-static const cepDT* dt_diff(void)        { return CEP_DTAW("CEP", "diff"); }
-static const cepDT* dt_target(void)      { return CEP_DTAW("CEP", "target"); }
-static const cepDT* dt_beat(void)        { return CEP_DTAW("CEP", "beat"); }
-static const cepDT* dt_params(void)      { return CEP_DTAW("CEP", "params"); }
-static const cepDT* dt_flow(void)        { return CEP_DTAW("CEP", "flow"); }
-static const cepDT* dt_decision(void)    { return CEP_DTAW("CEP", "decision"); }
-static const cepDT* dt_validation(void)  { return CEP_DTAW("CEP", "validation"); }
-static const cepDT* dt_evidence(void)    { return CEP_DTAW("CEP", "evidence"); }
-static const cepDT* dt_telemetry(void)   { return CEP_DTAW("CEP", "telemetry"); }
-static const cepDT* dt_site_field(void)  { return CEP_DTAW("CEP", "site"); }
-static const cepDT* dt_meta(void)        { return CEP_DTAW("CEP", "meta"); }
-static const cepDT* dt_variant_field(void){ return CEP_DTAW("CEP", "variant"); }
-static const cepDT* dt_inst_by_var(void) { return CEP_DTAW("CEP", "inst_by_var"); }
-static const cepDT* dt_dec_by_pol(void)  { return CEP_DTAW("CEP", "dec_by_pol"); }
-static const cepDT* dt_choice_field(void){ return CEP_DTAW("CEP", "choice"); }
-static const cepDT* dt_score(void)       { return CEP_DTAW("CEP", "score"); }
-static const cepDT* dt_confidence(void)  { return CEP_DTAW("CEP", "confidence"); }
-static const cepDT* dt_latency(void)     { return CEP_DTAW("CEP", "latency"); }
-static const cepDT* dt_error_flag(void)  { return CEP_DTAW("CEP", "error_flag"); }
-static const cepDT* dt_count_field(void) { return CEP_DTAW("CEP", "count"); }
-static const cepDT* dt_lat_window(void)  { return CEP_DTAW("CEP", "lat_window"); }
-static const cepDT* dt_err_window(void)  { return CEP_DTAW("CEP", "err_window"); }
-static const cepDT* dt_keys(void)        { return CEP_DTAW("CEP", "keys"); }
-static const cepDT* dt_tomb(void)        { return CEP_DTAW("CEP", "tomb"); }
-static const cepDT* dt_parents(void)     { return CEP_DTAW("CEP", "parents"); }
-static const cepDT* dt_policy(void)      { return CEP_DTAW("CEP", "policy"); }
-static const cepDT* dt_arms(void)        { return CEP_DTAW("CEP", "arms"); }
-static const cepDT* dt_epsilon(void)     { return CEP_DTAW("CEP", "epsilon"); }
-static const cepDT* dt_rng_seed(void)    { return CEP_DTAW("CEP", "rng_seed"); }
-static const cepDT* dt_rng_seq(void)     { return CEP_DTAW("CEP", "rng_seq"); }
-static const cepDT* dt_bandit(void)      { return CEP_DTAW("CEP", "bandit"); }
-static const cepDT* dt_choices(void)     { return CEP_DTAW("CEP", "choices"); }
-static const cepDT* dt_calc_expr(void)   { return CEP_DTAW("CEP", "calc_expr"); }
-static const cepDT* dt_kv_prefix(void)   { return CEP_DTAW("CEP", "kv_prefix"); }
-static const cepDT* dt_kv_hist(void)     { return CEP_DTAW("CEP", "kv_hist"); }
-static const cepDT* dt_ids(void)         { return CEP_DTAW("CEP", "ids"); }
-static const cepDT* dt_retain_mode(void) { return CEP_DTAW("CEP", "retain_mode"); }
-static const cepDT* dt_retain_ttl(void)  { return CEP_DTAW("CEP", "retain_ttl"); }
-static const cepDT* dt_retain_upto(void) { return CEP_DTAW("CEP", "retain_upto"); }
+CEP_DEFINE_STATIC_DT(dt_dictionary, CEP_ACRO("CEP"), CEP_WORD("dictionary"))
+CEP_DEFINE_STATIC_DT(dt_text, CEP_ACRO("CEP"), CEP_WORD("text"))
+CEP_DEFINE_STATIC_DT(dt_data, CEP_ACRO("CEP"), CEP_WORD("data"))
+CEP_DEFINE_STATIC_DT(dt_sys, CEP_ACRO("CEP"), CEP_WORD("sys"))
+CEP_DEFINE_STATIC_DT(dt_tmp, CEP_ACRO("CEP"), CEP_WORD("tmp"))
+CEP_DEFINE_STATIC_DT(dt_poc, CEP_ACRO("CEP"), CEP_WORD("poc"))
+CEP_DEFINE_STATIC_DT(dt_io, CEP_ACRO("CEP"), CEP_WORD("io"))
+CEP_DEFINE_STATIC_DT(dt_hz, CEP_ACRO("CEP"), CEP_WORD("hz"))
+CEP_DEFINE_STATIC_DT(dt_index, CEP_ACRO("CEP"), CEP_WORD("index"))
+CEP_DEFINE_STATIC_DT(dt_inbox, CEP_ACRO("CEP"), CEP_WORD("inbox"))
+CEP_DEFINE_STATIC_DT(dt_adj, CEP_ACRO("CEP"), CEP_WORD("adj"))
+CEP_DEFINE_STATIC_DT(dt_summary, CEP_ACRO("CEP"), CEP_WORD("summary"))
+CEP_DEFINE_STATIC_DT(dt_recent, CEP_ACRO("CEP"), CEP_WORD("recent"))
+CEP_DEFINE_STATIC_DT(dt_original, CEP_ACRO("CEP"), CEP_WORD("original"))
+CEP_DEFINE_STATIC_DT(dt_outcome, CEP_ACRO("CEP"), CEP_WORD("outcome"))
+CEP_DEFINE_STATIC_DT(dt_enabled, CEP_ACRO("CEP"), CEP_WORD("enabled"))
+CEP_DEFINE_STATIC_DT(dt_retention, CEP_ACRO("CEP"), CEP_WORD("retention"))
+CEP_DEFINE_STATIC_DT(dt_echo, CEP_ACRO("CEP"), CEP_WORD("echo"))
+CEP_DEFINE_STATIC_DT(dt_calc, CEP_ACRO("CEP"), CEP_WORD("calc"))
+CEP_DEFINE_STATIC_DT(dt_kv, CEP_ACRO("CEP"), CEP_WORD("kv"))
+CEP_DEFINE_STATIC_DT(dt_ans, CEP_ACRO("CEP"), CEP_WORD("ans"))
+CEP_DEFINE_STATIC_DT(dt_scenario, CEP_ACRO("CEP"), CEP_WORD("scenario"))
+CEP_DEFINE_STATIC_DT(dt_run, CEP_ACRO("CEP"), CEP_WORD("run"))
+CEP_DEFINE_STATIC_DT(dt_text_field, CEP_ACRO("CEP"), CEP_WORD("text"))
+CEP_DEFINE_STATIC_DT(dt_expr, CEP_ACRO("CEP"), CEP_WORD("expr"))
+CEP_DEFINE_STATIC_DT(dt_result, CEP_ACRO("CEP"), CEP_WORD("result"))
+CEP_DEFINE_STATIC_DT(dt_inputs, CEP_ACRO("CEP"), CEP_WORD("inputs"))
+CEP_DEFINE_STATIC_DT(dt_id, CEP_ACRO("CEP"), CEP_WORD("id"))
+CEP_DEFINE_STATIC_DT(dt_key, CEP_ACRO("CEP"), CEP_WORD("key"))
+CEP_DEFINE_STATIC_DT(dt_value, CEP_ACRO("CEP"), CEP_WORD("value"))
+CEP_DEFINE_STATIC_DT(dt_kind, CEP_ACRO("CEP"), CEP_WORD("kind"))
+CEP_DEFINE_STATIC_DT(dt_steps, CEP_ACRO("CEP"), CEP_WORD("steps"))
+CEP_DEFINE_STATIC_DT(dt_asserts, CEP_ACRO("CEP"), CEP_WORD("asserts"))
+CEP_DEFINE_STATIC_DT(dt_spawns, CEP_ACRO("CEP"), CEP_WORD("spawns"))
+CEP_DEFINE_STATIC_DT(dt_expect, CEP_ACRO("CEP"), CEP_WORD("expect"))
+CEP_DEFINE_STATIC_DT(dt_path, CEP_ACRO("CEP"), CEP_WORD("path"))
+CEP_DEFINE_STATIC_DT(dt_parent, CEP_ACRO("CEP"), CEP_WORD("parent"))
+CEP_DEFINE_STATIC_DT(dt_actual, CEP_ACRO("CEP"), CEP_WORD("actual"))
+CEP_DEFINE_STATIC_DT(dt_diff, CEP_ACRO("CEP"), CEP_WORD("diff"))
+CEP_DEFINE_STATIC_DT(dt_target, CEP_ACRO("CEP"), CEP_WORD("target"))
+CEP_DEFINE_STATIC_DT(dt_beat, CEP_ACRO("CEP"), CEP_WORD("beat"))
+CEP_DEFINE_STATIC_DT(dt_params, CEP_ACRO("CEP"), CEP_WORD("params"))
+CEP_DEFINE_STATIC_DT(dt_flow, CEP_ACRO("CEP"), CEP_WORD("flow"))
+CEP_DEFINE_STATIC_DT(dt_decision, CEP_ACRO("CEP"), CEP_WORD("decision"))
+CEP_DEFINE_STATIC_DT(dt_validation, CEP_ACRO("CEP"), CEP_WORD("validation"))
+CEP_DEFINE_STATIC_DT(dt_evidence, CEP_ACRO("CEP"), CEP_WORD("evidence"))
+CEP_DEFINE_STATIC_DT(dt_telemetry, CEP_ACRO("CEP"), CEP_WORD("telemetry"))
+CEP_DEFINE_STATIC_DT(dt_site_field, CEP_ACRO("CEP"), CEP_WORD("site"))
+CEP_DEFINE_STATIC_DT(dt_meta, CEP_ACRO("CEP"), CEP_WORD("meta"))
+CEP_DEFINE_STATIC_DT(dt_variant_field, CEP_ACRO("CEP"), CEP_WORD("variant"))
+CEP_DEFINE_STATIC_DT(dt_inst_by_var, CEP_ACRO("CEP"), CEP_WORD("inst_by_var"))
+CEP_DEFINE_STATIC_DT(dt_dec_by_pol, CEP_ACRO("CEP"), CEP_WORD("dec_by_pol"))
+CEP_DEFINE_STATIC_DT(dt_choice_field, CEP_ACRO("CEP"), CEP_WORD("choice"))
+CEP_DEFINE_STATIC_DT(dt_score, CEP_ACRO("CEP"), CEP_WORD("score"))
+CEP_DEFINE_STATIC_DT(dt_confidence, CEP_ACRO("CEP"), CEP_WORD("confidence"))
+CEP_DEFINE_STATIC_DT(dt_latency, CEP_ACRO("CEP"), CEP_WORD("latency"))
+CEP_DEFINE_STATIC_DT(dt_error_flag, CEP_ACRO("CEP"), CEP_WORD("error_flag"))
+CEP_DEFINE_STATIC_DT(dt_count_field, CEP_ACRO("CEP"), CEP_WORD("count"))
+CEP_DEFINE_STATIC_DT(dt_lat_window, CEP_ACRO("CEP"), CEP_WORD("lat_window"))
+CEP_DEFINE_STATIC_DT(dt_err_window, CEP_ACRO("CEP"), CEP_WORD("err_window"))
+CEP_DEFINE_STATIC_DT(dt_keys, CEP_ACRO("CEP"), CEP_WORD("keys"))
+CEP_DEFINE_STATIC_DT(dt_tomb, CEP_ACRO("CEP"), CEP_WORD("tomb"))
+CEP_DEFINE_STATIC_DT(dt_parents, CEP_ACRO("CEP"), CEP_WORD("parents"))
+CEP_DEFINE_STATIC_DT(dt_policy, CEP_ACRO("CEP"), CEP_WORD("policy"))
+CEP_DEFINE_STATIC_DT(dt_arms, CEP_ACRO("CEP"), CEP_WORD("arms"))
+CEP_DEFINE_STATIC_DT(dt_epsilon, CEP_ACRO("CEP"), CEP_WORD("epsilon"))
+CEP_DEFINE_STATIC_DT(dt_rng_seed, CEP_ACRO("CEP"), CEP_WORD("rng_seed"))
+CEP_DEFINE_STATIC_DT(dt_rng_seq, CEP_ACRO("CEP"), CEP_WORD("rng_seq"))
+CEP_DEFINE_STATIC_DT(dt_bandit, CEP_ACRO("CEP"), CEP_WORD("bandit"))
+CEP_DEFINE_STATIC_DT(dt_choices, CEP_ACRO("CEP"), CEP_WORD("choices"))
+CEP_DEFINE_STATIC_DT(dt_calc_expr, CEP_ACRO("CEP"), CEP_WORD("calc_expr"))
+CEP_DEFINE_STATIC_DT(dt_kv_prefix, CEP_ACRO("CEP"), CEP_WORD("kv_prefix"))
+CEP_DEFINE_STATIC_DT(dt_kv_hist, CEP_ACRO("CEP"), CEP_WORD("kv_hist"))
+CEP_DEFINE_STATIC_DT(dt_ids, CEP_ACRO("CEP"), CEP_WORD("ids"))
+CEP_DEFINE_STATIC_DT(dt_retain_mode, CEP_ACRO("CEP"), CEP_WORD("retain_mode"))
+CEP_DEFINE_STATIC_DT(dt_retain_ttl, CEP_ACRO("CEP"), CEP_WORD("retain_ttl"))
+CEP_DEFINE_STATIC_DT(dt_retain_upto, CEP_ACRO("CEP"), CEP_WORD("retain_upto"))
 
-static const cepDT* dt_poc_echo_intent(void)    { return CEP_DTAW("CEP", "poc_echo"); }
-static const cepDT* dt_poc_calc_intent(void)    { return CEP_DTAW("CEP", "poc_calc"); }
-static const cepDT* dt_poc_kv_set_intent(void)  { return CEP_DTAW("CEP", "poc_kv_set"); }
-static const cepDT* dt_poc_kv_get_intent(void)  { return CEP_DTAW("CEP", "poc_kv_get"); }
-static const cepDT* dt_poc_kv_del_intent(void)  { return CEP_DTAW("CEP", "poc_kv_del"); }
+CEP_DEFINE_STATIC_DT(dt_poc_echo_intent, CEP_ACRO("CEP"), CEP_WORD("poc_echo"))
+CEP_DEFINE_STATIC_DT(dt_poc_calc_intent, CEP_ACRO("CEP"), CEP_WORD("poc_calc"))
+CEP_DEFINE_STATIC_DT(dt_poc_kv_set_intent, CEP_ACRO("CEP"), CEP_WORD("poc_kv_set"))
+CEP_DEFINE_STATIC_DT(dt_poc_kv_get_intent, CEP_ACRO("CEP"), CEP_WORD("poc_kv_get"))
+CEP_DEFINE_STATIC_DT(dt_poc_kv_del_intent, CEP_ACRO("CEP"), CEP_WORD("poc_kv_del"))
 CEP_POC_DT_STATIC(dt_poc_scenario_intent, "poc_scenario")
-static const cepDT* dt_poc_run_intent(void)     { return CEP_DTAW("CEP", "poc_run"); }
-static const cepDT* dt_poc_assert_intent(void)  { return CEP_DTAW("CEP", "poc_assert"); }
-static const cepDT* dt_poc_bandit_intent(void)  { return CEP_DTAW("CEP", "poc_bandit"); }
+CEP_DEFINE_STATIC_DT(dt_poc_run_intent, CEP_ACRO("CEP"), CEP_WORD("poc_run"))
+CEP_DEFINE_STATIC_DT(dt_poc_assert_intent, CEP_ACRO("CEP"), CEP_WORD("poc_assert"))
+CEP_DEFINE_STATIC_DT(dt_poc_bandit_intent, CEP_ACRO("CEP"), CEP_WORD("poc_bandit"))
 
 CEP_POC_DT_STATIC(dt_poc_io_ing_echo, "poc_io_ing_echo")
 CEP_POC_DT_STATIC(dt_poc_io_ing_calc, "poc_io_ing_calc")
