@@ -129,6 +129,38 @@ static const cepMailroomErrorEntry CEP_MAILROOM_ERROR_FLOW[] = {
 static bool cep_mailroom_bindings_applied = false;
 static cepEnzymeRegistry* cep_mailroom_registered_registry = NULL;
 
+static void cep_mailroom_free_extra_namespaces(void) {
+    if (!cep_mailroom_extra_namespaces) {
+        cep_mailroom_extra_namespace_count = 0u;
+        return;
+    }
+
+    for (size_t i = 0; i < cep_mailroom_extra_namespace_count; ++i) {
+        cep_free(cep_mailroom_extra_namespaces[i].bucket_dts);
+    }
+
+    cep_free(cep_mailroom_extra_namespaces);
+    cep_mailroom_extra_namespaces = NULL;
+    cep_mailroom_extra_namespace_count = 0u;
+}
+
+static void cep_mailroom_free_router_before(void) {
+    if (cep_mailroom_router_before_extra) {
+        cep_free(cep_mailroom_router_before_extra);
+        cep_mailroom_router_before_extra = NULL;
+    }
+    cep_mailroom_router_before_extra_count = 0u;
+}
+
+void cep_mailroom_shutdown(void) {
+    cep_mailroom_free_extra_namespaces();
+    cep_mailroom_free_router_before();
+    cep_mailroom_bootstrap_done = false;
+    cep_mailroom_seed_errors_enabled = true;
+    cep_mailroom_bindings_applied = false;
+    cep_mailroom_registered_registry = NULL;
+}
+
 static cepCell* cep_mailroom_ensure_dictionary(cepCell* parent, const cepDT* name, unsigned storage) {
     if (!parent || !name) {
         return NULL;

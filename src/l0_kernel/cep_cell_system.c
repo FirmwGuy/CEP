@@ -33,6 +33,11 @@ void cep_cell_system_initiate(void) {
 }
 
 void cep_cell_system_shutdown(void) {
+    if (!cep_cell_system_initialized()) {
+        return;
+    }
+
+    cep_mailroom_shutdown();
     cep_cell_finalize_hard(&CEP_ROOT);
     CEP_0(&CEP_ROOT);
     cep_namepool_reset();

@@ -1208,6 +1208,7 @@ bool cep_rv_capture_scan(void) {
 
     cepLockToken ledger_lock = {0};
     if (!cep_store_lock(ledger, &ledger_lock)) {
+        fprintf(stderr, "cep_rv_commit_apply: ledger lock failed\n");
         return false;
     }
 
@@ -1220,6 +1221,7 @@ bool cep_rv_capture_scan(void) {
 
         cepLockToken entry_lock = {0};
         if (!cep_store_lock(entry, &entry_lock)) {
+            fprintf(stderr, "cep_rv_commit_apply: entry lock failed\n");
             continue;
         }
 
@@ -1286,6 +1288,7 @@ bool cep_rv_capture_scan(void) {
     }
 
     cep_store_unlock(ledger, &ledger_lock);
+    fprintf(stderr, "cep_rv_commit_apply: done\n");
     return true;
 }
 
