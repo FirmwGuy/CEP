@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <errno.h>
 
 
 
@@ -133,6 +134,9 @@ static bool cep_lifecycle_scope_dependencies_ready(cepLifecycleScope scope);
 static cepCell* cep_lifecycle_scope_bucket(cepLifecycleScope scope, bool create);
 static bool cep_lifecycle_store_text(cepCell* parent, const cepDT* name, const char* text);
 static bool cep_lifecycle_store_numeric(cepCell* parent, const cepDT* name, uint64_t value);
+static cepCell* cep_lifecycle_get_dictionary(cepCell* parent, const cepDT* name, bool create);
+static const char* cep_lifecycle_read_text(const cepCell* parent, const cepDT* name);
+static bool cep_lifecycle_read_numeric(const cepCell* parent, const cepDT* name, uint64_t* value_out);
 static bool cep_lifecycle_emit_signal(const cepDT* event_dt, const cepDT* scope_dt, bool immediate);
 static void cep_lifecycle_flush_pending_signals(void);
 
@@ -1066,6 +1070,59 @@ static bool cep_lifecycle_scope_dependencies_ready(cepLifecycleScope scope) {
     return true;
 }
 
+static cepCell* cep_lifecycle_get_dictionary(cepCell* parent, const cepDT* name, bool create) {
+    if (!parent || !name) {
+        return NULL;
+    }
+
+    if (!cep_dt_is_valid(name)) {
+        return NULL;
+    }
+
+    cepStore* store = parent->store;
+    if (!store) {
+        if (!create) {
+            return NULL;
+        }
+        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+        store = cep_store_new(&dict_type, CEP_STORAGE_RED_BLACK_T, CEP_INDEX_BY_NAME);
+        if (!store) {
+            return NULL;
+        }
+        store->owner = parent;
+        parent->store = store;
+    } else {
+        if (!cep_dt_is_valid(&store->dt) || store->indexing != CEP_INDEX_BY_NAME) {
+            return NULL;
+        }
+    }
+
+    cepDT lookup = *name;
+    lookup.glob = 0u;
+
+    cepCell* existing = NULL;
+    if (store->chdCount) {
+        for (cepCell* child = cep_cell_first(parent); child; child = cep_cell_next(parent, child)) {
+            const cepDT* child_name = cep_cell_get_name(child);
+            if (!child_name) {
+                continue;
+            }
+            if (cep_dt_compare(child_name, &lookup) == 0) {
+                existing = child;
+                break;
+            }
+        }
+    }
+
+    if (existing || !create) {
+        return existing;
+    }
+
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepDT name_copy = lookup;
+    return cep_dict_add_dictionary(parent, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+}
+
 static cepCell* cep_lifecycle_scope_bucket(cepLifecycleScope scope, bool create) {
     if (scope >= CEP_LIFECYCLE_SCOPE_COUNT) {
         return NULL;
@@ -1076,10 +1133,7 @@ static cepCell* cep_lifecycle_scope_bucket(cepLifecycleScope scope, bool create)
         return NULL;
     }
 
-    cepCell* lifecycle_root = cep_cell_find_by_name(sys_root, CEP_DTAW("CEP", "state"));
-    if (!lifecycle_root && create) {
-        lifecycle_root = ensure_root_dictionary(sys_root, CEP_DTAW("CEP", "state"));
-    }
+    cepCell* lifecycle_root = cep_lifecycle_get_dictionary(sys_root, CEP_DTAW("CEP", "state"), create);
     if (!lifecycle_root) {
         return NULL;
     }
@@ -1090,15 +1144,7 @@ static cepCell* cep_lifecycle_scope_bucket(cepLifecycleScope scope, bool create)
         return NULL;
     }
 
-    cepDT lookup = *scope_dt;
-    lookup.glob = 0u;
-    cepCell* bucket = cep_cell_find_by_name(lifecycle_root, &lookup);
-    if (!bucket && create) {
-        cepDT type_dt = *CEP_DTAW("CEP", "dictionary");
-        cepDT name_copy = lookup;
-        bucket = cep_dict_add_dictionary(lifecycle_root, &name_copy, &type_dt, CEP_STORAGE_RED_BLACK_T);
-    }
-    return bucket;
+    return cep_lifecycle_get_dictionary(lifecycle_root, scope_dt, create);
 }
 
 static bool cep_lifecycle_store_text(cepCell* parent, const cepDT* name, const char* text) {
@@ -1133,6 +1179,48 @@ static bool cep_lifecycle_store_numeric(cepCell* parent, const cepDT* name, uint
         return false;
     }
     return cep_lifecycle_store_text(parent, name, buffer);
+}
+
+static const char* cep_lifecycle_read_text(const cepCell* parent, const cepDT* name) {
+    if (!parent || !name) {
+        return NULL;
+    }
+
+    cepDT lookup = *name;
+    lookup.glob = 0u;
+
+    cepCell* node = cep_cell_find_by_name(parent, &lookup);
+    if (!node || !cep_cell_has_data(node)) {
+        return NULL;
+    }
+
+    const cepData* data = node->data;
+    if (!data || data->datatype != CEP_DATATYPE_VALUE || !data->size) {
+        return NULL;
+    }
+
+    return (const char*)data->value;
+}
+
+static bool cep_lifecycle_read_numeric(const cepCell* parent, const cepDT* name, uint64_t* value_out) {
+    if (!value_out) {
+        return false;
+    }
+
+    const char* text = cep_lifecycle_read_text(parent, name);
+    if (!text) {
+        return false;
+    }
+
+    errno = 0;
+    char* endptr = NULL;
+    unsigned long long parsed = strtoull(text, &endptr, 10);
+    if (errno != 0 || text == endptr) {
+        return false;
+    }
+
+    *value_out = (uint64_t)parsed;
+    return true;
 }
 
 static bool cep_lifecycle_emit_signal(const cepDT* event_dt, const cepDT* scope_dt, bool immediate) {
@@ -2011,6 +2099,22 @@ bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope) {
         return false;
     }
 
+    const char* existing_status = cep_lifecycle_read_text(bucket, CEP_DTAW("CEP", "status"));
+    if (existing_status && strcmp(existing_status, "ready") == 0) {
+        uint64_t stored_ready = 0u;
+        (void)cep_lifecycle_read_numeric(bucket, CEP_DTAW("CEP", "ready_beat"), &stored_ready);
+        uint64_t stored_td = 0u;
+        (void)cep_lifecycle_read_numeric(bucket, CEP_DTAW("CEP", "td_beat"), &stored_td);
+
+        state->ready = true;
+        state->ready_signal_emitted = true;
+        state->ready_beat = stored_ready;
+        state->teardown = false;
+        state->teardown_signal_emitted = false;
+        state->td_beat = stored_td;
+        return true;
+    }
+
     cepBeatNumber beat = cep_beat_index();
     if (beat == CEP_BEAT_INVALID) {
         beat = 0u;
@@ -2064,6 +2168,22 @@ bool cep_lifecycle_scope_mark_teardown(cepLifecycleScope scope) {
     cepCell* bucket = cep_lifecycle_scope_bucket(scope, true);
     if (!bucket) {
         return false;
+    }
+
+    const char* existing_status = cep_lifecycle_read_text(bucket, CEP_DTAW("CEP", "status"));
+    if (existing_status && strcmp(existing_status, "teardown") == 0) {
+        uint64_t stored_ready = 0u;
+        (void)cep_lifecycle_read_numeric(bucket, CEP_DTAW("CEP", "ready_beat"), &stored_ready);
+        uint64_t stored_td = 0u;
+        (void)cep_lifecycle_read_numeric(bucket, CEP_DTAW("CEP", "td_beat"), &stored_td);
+
+        state->ready = false;
+        state->ready_signal_emitted = true;
+        state->ready_beat = stored_ready;
+        state->teardown = true;
+        state->teardown_signal_emitted = true;
+        state->td_beat = stored_td;
+        return true;
     }
 
     cepBeatNumber beat = cep_beat_index();

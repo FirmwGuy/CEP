@@ -18,8 +18,6 @@ extern "C" {
 bool cep_mailroom_bootstrap(void);
 void cep_mailroom_shutdown(void);
 bool cep_mailroom_register(cepEnzymeRegistry* registry);
-bool cep_mailroom_seed_coh_errors(void);
-bool cep_mailroom_seed_flow_errors(void);
 bool cep_mailroom_add_namespace(const char* namespace_tag,
                                 const char* const bucket_tags[],
                                 size_t bucket_count);

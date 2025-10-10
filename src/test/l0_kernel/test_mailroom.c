@@ -39,6 +39,51 @@ static cepCell* mailroom_expect_dictionary(cepCell* parent, const char* tag) {
     return node;
 }
 
+static cepCell* mailroom_ensure_dictionary(cepCell* parent, const char* tag) {
+    munit_assert_not_null(parent);
+
+    cepDT name = mailroom_dt_from_text(tag);
+    cepCell* node = cep_cell_find_by_name(parent, &name);
+    if (node) {
+        return node;
+    }
+
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepDT name_copy = name;
+    node = cep_dict_add_dictionary(parent, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(node);
+    return node;
+}
+
+static void mailroom_prepare_catalog(void) {
+    cepCell* root = cep_root();
+    cepCell* sys_root = mailroom_ensure_dictionary(root, "sys");
+    cepCell* err_catalog = mailroom_ensure_dictionary(sys_root, "err_cat");
+
+    const char* coh_buckets[] = { "be_create", "bo_upsert", "ctx_upsert" };
+    const char* flow_buckets[] = { "fl_upsert", "ni_upsert", "inst_start", "inst_event", "inst_ctrl" };
+
+    const struct {
+        const char* scope;
+        const char* const* buckets;
+        size_t bucket_count;
+    } configs[] = {
+        { "coh", coh_buckets, cep_lengthof(coh_buckets) },
+        { "flow", flow_buckets, cep_lengthof(flow_buckets) },
+    };
+
+    for (size_t cfg = 0; cfg < cep_lengthof(configs); ++cfg) {
+        const char* scope = configs[cfg].scope;
+        cepCell* scope_node = mailroom_ensure_dictionary(err_catalog, scope);
+        cepCell* mailroom_meta = mailroom_ensure_dictionary(scope_node, "mailroom");
+        cepCell* buckets_node = mailroom_ensure_dictionary(mailroom_meta, "buckets");
+
+        for (size_t b = 0; b < configs[cfg].bucket_count; ++b) {
+            (void)mailroom_ensure_dictionary(buckets_node, configs[cfg].buckets[b]);
+        }
+    }
+}
+
 MunitResult test_mailroom(const MunitParameter params[], void* fixture) {
     test_boot_cycle_prepare(params);
     (void)fixture;
@@ -47,6 +92,7 @@ MunitResult test_mailroom(const MunitParameter params[], void* fixture) {
 
     for (size_t cycle = 0; cycle < 3u; ++cycle) {
         munit_assert_true(cep_l0_bootstrap());
+        mailroom_prepare_catalog();
         munit_assert_true(cep_mailroom_bootstrap());
 
         cepCell* root = cep_root();

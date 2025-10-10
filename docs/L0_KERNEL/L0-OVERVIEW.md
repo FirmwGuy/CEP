@@ -224,7 +224,7 @@ Rendezvous give flows a deterministic staging area for long-running or parallel 
 
 ### G) Mailroom and layer mailboxes
 
-Every intent hits the mailroom before layer ingest enzymes run. `cep_mailroom_bootstrap()` provisions `/data/inbox/{coh,flow}`, seeds `/sys/err_cat/{coh,flow}`, and `cep_mailroom_register()` installs the `mr_route` enzyme so routing happens ahead of ingest packs. Helpers such as `cep_mailroom_add_namespace()` and `cep_mailroom_add_router_before()` let you extend the lobby with extra mailboxes or enforce custom routing order. See `docs/L0_KERNEL/topics/MAILROOM-AND-MAILBOXES.md` for namespace examples, error-catalog seeding, and audit-trail behavior.
+Every intent hits the mailroom before layer ingest enzymes run. `cep_mailroom_bootstrap()` provisions `/data/inbox/**`, mirrors the namespaces described under `/sys/err_cat/<scope>/mailroom/buckets`, and `cep_mailroom_register()` installs the `mr_route` enzyme so routing happens ahead of ingest packs. Helpers such as `cep_mailroom_add_namespace()` and `cep_mailroom_add_router_before()` let you extend the lobby with extra mailboxes or enforce custom routing order. See `docs/L0_KERNEL/topics/MAILROOM-AND-MAILBOXES.md` for namespace examples, catalog expectations, and audit-trail behavior.
 
 ---
 
