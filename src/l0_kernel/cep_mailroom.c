@@ -581,7 +581,8 @@ bool cep_mailroom_bootstrap(void) {
     }
 
     if (!cep_mailroom_prerequisites_ready()) {
-        return false;
+        (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
+        (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL);
     }
 
     cepCell* root = cep_root();

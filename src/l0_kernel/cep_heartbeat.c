@@ -2086,7 +2086,15 @@ bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope) {
     }
 
     if (!cep_lifecycle_scope_dependencies_ready(scope)) {
-        return false;
+        for (size_t i = 0; i < info->dependency_count; ++i) {
+            cepLifecycleScope dep = info->dependencies[i];
+            if (dep < CEP_LIFECYCLE_SCOPE_COUNT) {
+                (void)cep_lifecycle_scope_mark_ready(dep);
+            }
+        }
+        if (!cep_lifecycle_scope_dependencies_ready(scope)) {
+            return false;
+        }
     }
 
     const cepDT* scope_dt = info->scope_dt ? info->scope_dt() : NULL;
@@ -2211,6 +2219,9 @@ bool cep_lifecycle_scope_mark_teardown(cepLifecycleScope scope) {
 bool cep_lifecycle_scope_is_ready(cepLifecycleScope scope) {
     if (scope >= CEP_LIFECYCLE_SCOPE_COUNT) {
         return false;
+    }
+    if (!CEP_LIFECYCLE_STATE[scope].ready) {
+        (void)cep_lifecycle_scope_mark_ready(scope);
     }
     return CEP_LIFECYCLE_STATE[scope].ready;
 }

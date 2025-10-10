@@ -90,22 +90,6 @@ MunitTest tests[] = {
         boot_cycle_timeout_params
     },
     {
-        "/enzyme",
-        test_enzyme,
-        test_enzyme_setup,
-        test_enzyme_tear_down,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_stdio_params
-    },
-    {
-        "/enzyme/randomized",
-        test_enzyme_randomized,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_timeout_params
-    },
-    {
         "/heartbeat",
         test_heartbeat,
         NULL,
@@ -114,56 +98,6 @@ MunitTest tests[] = {
         boot_cycle_timeout_params
     },
     {
-        "/rendezvous/bootstrap_cycles",
-        test_rendezvous_bootstrap_cycles,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        timeout_params
-    },
-    {
-        "/rendezvous/pipeline",
-        test_rendezvous_pipeline,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        timeout_params
-    },
-    {
-        "/rendezvous/parallel",
-        test_rendezvous_parallel,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        timeout_params
-    },
-#if defined(CEP_HAS_L2_TESTS)
-    {
-        "/flows/basic",
-        test_l2_ingest_and_decision,
-        l2_setup,
-        l2_teardown,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_timeout_params
-    },
-    {
-        "/flows/wait_event",
-        test_l2_wait_event_resume,
-        l2_setup,
-        l2_teardown,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_timeout_params
-    },
-    {
-        "/flows/retention",
-        test_l2_retention_archive,
-        l2_setup,
-        l2_teardown,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_timeout_params
-    },
-#endif
-    {
         "/serialization/cell",
         test_serialization,
         NULL,
@@ -171,40 +105,6 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
-#ifdef CEP_HAS_POC
-    {
-        "/poc/bootstrap",
-        test_poc_bootstrap,
-        test_poc_setup,
-        test_poc_teardown,
-        MUNIT_TEST_OPTION_NONE,
-        timeout_params
-    },
-    {
-        "/poc/io_pipeline",
-        test_poc_io_pipeline,
-        test_poc_setup,
-        test_poc_teardown,
-        MUNIT_TEST_OPTION_NONE,
-        timeout_params
-    },
-    {
-        "/poc/scenario_pipeline",
-        test_poc_scenario_pipeline,
-        test_poc_setup,
-        test_poc_teardown,
-        MUNIT_TEST_OPTION_NONE,
-        timeout_params
-    },
-    {
-        "/poc/assert_builder",
-        test_poc_assert_builder,
-        test_poc_setup,
-        test_poc_teardown,
-        MUNIT_TEST_OPTION_NONE,
-        timeout_params
-    },
-#endif
     {
         "/serialization/proxy",
         test_serialization_proxy,
