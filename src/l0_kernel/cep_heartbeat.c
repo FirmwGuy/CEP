@@ -1274,7 +1274,10 @@ static void cep_lifecycle_reload_state(void) {
             (void)cep_lifecycle_read_numeric(scope_node, CEP_DTAW("CEP", "ready_beat"), &ready_beat);
             (void)cep_lifecycle_read_numeric(scope_node, CEP_DTAW("CEP", "td_beat"), &td_beat);
 
-            CEP_LIFECYCLE_STATE[scope_index].ready = false;
+            /* Preserve the fact that the scope reached ready before teardown so
+               dependency checks still see the historical readiness after a
+               restart. */
+            CEP_LIFECYCLE_STATE[scope_index].ready = true;
             CEP_LIFECYCLE_STATE[scope_index].ready_signal_emitted = true;
             CEP_LIFECYCLE_STATE[scope_index].ready_beat = ready_beat;
             CEP_LIFECYCLE_STATE[scope_index].teardown = true;
@@ -1286,6 +1289,10 @@ static void cep_lifecycle_reload_state(void) {
 
 static bool cep_lifecycle_emit_signal(const cepDT* event_dt, const cepDT* scope_dt, bool immediate) {
     if (!event_dt || !scope_dt) {
+        return false;
+    }
+
+    if (!cep_dt_is_valid(event_dt) || !cep_dt_is_valid(scope_dt)) {
         return false;
     }
 

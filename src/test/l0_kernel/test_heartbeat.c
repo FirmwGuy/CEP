@@ -12,6 +12,8 @@
 #include "cep_heartbeat.h"
 #include "cep_enzyme.h"
 #include "cep_l0.h"
+#include "cep_l1_coherence.h"
+#include "cep_l2_flows.h"
 
 
 typedef struct {
@@ -500,13 +502,21 @@ static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[
     test_runtime_shutdown();
 
     munit_assert_true(cep_l0_bootstrap());
-    /* FIXME: re-enable L1/L2 bootstrapping once their startup uses heartbeat impulses. */
+    munit_assert_true(cep_l1_coherence_bootstrap());
+    munit_assert_true(cep_l2_flows_bootstrap());
 
     heartbeat_runtime_start();
+
+    munit_assert_true(cep_heartbeat_resolve_agenda());
+    munit_assert_true(cep_heartbeat_stage_commit());
+    munit_assert_true(cep_heartbeat_resolve_agenda());
+    munit_assert_true(cep_heartbeat_stage_commit());
 
     munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_KERNEL));
     munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL));
     munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_MAILROOM));
+    munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1));
+    munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2));
 
     const char* kernel_status = lifecycle_status_for(CEP_DTAW("CEP", "kernel"));
     munit_assert_not_null(kernel_status);
@@ -520,14 +530,19 @@ static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[
     munit_assert_not_null(mailroom_status);
     munit_assert_string_equal(mailroom_status, "ready");
 
+    const char* l1_status = lifecycle_status_for(CEP_DTAW("CEP", "l1"));
+    munit_assert_not_null(l1_status);
+    munit_assert_string_equal(l1_status, "ready");
 
-    munit_assert_true(cep_heartbeat_resolve_agenda());
-    munit_assert_true(cep_heartbeat_stage_commit());
-    munit_assert_true(cep_heartbeat_resolve_agenda());
-    munit_assert_true(cep_heartbeat_stage_commit());
+    const char* l2_status = lifecycle_status_for(CEP_DTAW("CEP", "l2"));
+    munit_assert_not_null(l2_status);
+    munit_assert_string_equal(l2_status, "ready");
 
-    /* FIXME: once lifecycle signals resume logging under the trimmed bootstrap,
-     * validate the sys_log contents here. */
+    munit_assert_true(sys_log_contains("/CEP:sig_sys/CEP:ready/CEP:kernel"));
+    munit_assert_true(sys_log_contains("/CEP:sig_sys/CEP:ready/CEP:namepool"));
+    munit_assert_true(sys_log_contains("/CEP:sig_sys/CEP:ready/CEP:mailroom"));
+    munit_assert_true(sys_log_contains("/CEP:sig_sys/CEP:ready/CEP:l1"));
+    munit_assert_true(sys_log_contains("/CEP:sig_sys/CEP:ready/CEP:l2"));
 
     munit_assert_true(cep_heartbeat_emit_shutdown());
 
@@ -539,9 +554,19 @@ static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[
     munit_assert_not_null(mailroom_teardown);
     munit_assert_string_equal(mailroom_teardown, "teardown");
 
+    const char* l1_teardown = lifecycle_status_for(CEP_DTAW("CEP", "l1"));
+    munit_assert_not_null(l1_teardown);
+    munit_assert_string_equal(l1_teardown, "teardown");
 
-    /* FIXME: restore sys_log teardown assertions when lifecycle logging returns. */
-    /* FIXME: restore sys_log shutdown assertion when lifecycle logging returns. */
+    const char* l2_teardown = lifecycle_status_for(CEP_DTAW("CEP", "l2"));
+    munit_assert_not_null(l2_teardown);
+    munit_assert_string_equal(l2_teardown, "teardown");
+
+    munit_assert_true(sys_log_contains("/CEP:sig_sys/CEP:teardown/CEP:kernel"));
+    munit_assert_true(sys_log_contains("/CEP:sig_sys/CEP:teardown/CEP:mailroom"));
+    munit_assert_true(sys_log_contains("/CEP:sig_sys/CEP:teardown/CEP:l1"));
+    munit_assert_true(sys_log_contains("/CEP:sig_sys/CEP:teardown/CEP:l2"));
+    munit_assert_true(sys_log_contains("/CEP:sig_sys/CEP:shutdown"));
 
     cep_heartbeat_shutdown();
     return MUNIT_OK;

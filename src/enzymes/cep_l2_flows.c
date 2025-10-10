@@ -4819,7 +4819,11 @@ static bool cep_l2_bootstrap_tmp(void) {
 /* This helper coordinates the whole bootstrap sequence so callers can rely on
  * a single public function to prepare the flow layer. */
 bool cep_l2_flows_bootstrap(void) {
-    if (!cep_l0_bootstrap()) {
+    if (!cep_cell_system_initialized()) {
+        return false;
+    }
+
+    if (!cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1)) {
         return false;
     }
 

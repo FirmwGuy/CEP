@@ -1550,7 +1550,11 @@ static bool cep_l1_bootstrap_tmp(void) {
 }
 
 bool cep_l1_coherence_bootstrap(void) {
-    if (!cep_l0_bootstrap()) {
+    if (!cep_cell_system_initialized()) {
+        return false;
+    }
+
+    if (!cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_MAILROOM)) {
         return false;
     }
 
