@@ -43,6 +43,21 @@ Register via the **registry**; during a live heartbeat, registrations are staged
 
 **Return codes.** Enzymes return `CEP_ENZYME_SUCCESS`, `CEP_ENZYME_RETRY`, or `CEP_ENZYME_FATAL` .
 
+#### 1.1.1 Registry maintenance helpers
+
+Registries live for the lifetime of a process, but tooling and tests often need to clean up descriptors, inspect bindings, or tear everything down between scenarios. These helpers keep that housekeeping predictable.
+
+**Technical details**
+- `size_t cep_enzyme_registry_size(const cepEnzymeRegistry* registry)` reports how many descriptors are currently active, so assertions can prove that bootstrap packs registered what they promised.
+- `void cep_enzyme_registry_reset(cepEnzymeRegistry* registry)` clears both the active and pending tables while keeping the allocation in place; use it in test fixtures that reload descriptors repeatedly.
+- `void cep_enzyme_registry_destroy(cepEnzymeRegistry* registry)` releases the registry and its backing allocations. Destroying a registry invalidates any pending activation, so call it after your heartbeat shuts down.
+- `int cep_enzyme_unregister(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor)` removes a descriptor/query pair when you need to swap out callbacks without recreating the registry.
+- `int cep_cell_unbind_enzyme(cepCell* cell, const cepDT* name)` appends a tombstone to the cell timeline so descendants stop inheriting that binding on the next beat.
+- `const cepEnzymeBinding* cep_cell_enzyme_bindings(const cepCell* cell)` exposes the effective bindings stored on a node; useful for diagnostics or when you need to confirm propagation flags.
+
+**Q&A**
+- *Reset or destroy—when should I pick each?* Call `cep_enzyme_registry_reset()` when you want to reuse the same registry instance (for example, inside a test loop). Use `cep_enzyme_registry_destroy()` only when the registry’s lifetime ends and all descriptors should be dropped permanently.
+
 ### 1.2 Binding enzymes at cells and collecting effective bindings
 
 You can **bind** enzyme identities into the **data or store timeline** of a cell (e.g., “this subtree accepts X”), with flags to **propagate** to descendants or to **tombstone** (un‑bind) an earlier binding. Effective bindings are collected by walking upward and combining “active” with “masked” sets; only propagated entries flow past the target node, and tombstones remove prior matches. See the binding data structure (`cepEnzymeBinding`) and the collector used by resolve (`cep_enzyme_collect_bindings`)  .
@@ -93,6 +108,7 @@ if (cep_beat_phase() == CEP_BEAT_COMPUTE) {
 - `cep_l0_bootstrap()` first ensures the cell system exists, then calls `cep_heartbeat_bootstrap()` to mint `/sys`, `/data`, `/rt`, `/journal`, `/tmp`, and the default enzyme registry.
 - It follows up with `cep_namepool_bootstrap()` so reference identifiers can be interned immediately, and finally `cep_mailroom_bootstrap()` to seed `/data/inbox/{coh,flow}`, `/sys/err_cat`, and the layer error catalogs on `/sys/err_cat/{coh,flow}`.
 - The helper caches its work; subsequent calls return `true` without mutating state unless the cell system has been torn down.
+- `bool cep_cell_system_initialized(void)` tells you whether the low-level cell system is already online, and `void cep_cell_system_ensure(void)` performs the minimum bootstrap if it is not—useful when embedding CEP inside environments with custom startup order.
 
 **Q&A**
 - *Do I call heartbeat or mailroom bootstrap directly anymore?* Not when you have access to `cep_l0_bootstrap()`; call it once at process start (tests included) and higher-level bootstraps will sit atop a consistent base.
@@ -108,6 +124,7 @@ Think of the mailroom as the lobby of the runtime: everyone drops their intents 
 - `cep_mailroom_register()` installs the `mr_route` enzyme on `CEP:sig_cell/op_add` with `before` edges targeting every ingest enzyme (`coh_ing_*`, `fl_ing`, etc.), so routing always happens ahead of layer-specific work.
 - Routed intents keep an audit trail: the mailroom leaves a link behind in the source bucket and copies the staged cell into the downstream inbox. The router also guarantees the shared intent header by creating `original/*`, seeding `outcome` (if missing), and ensuring `meta/parents` exists.
 - You can extend the router by adding new namespace buckets or compatibility shims (for a transition period, link legacy inbox paths into the mailroom so producers can keep using old entrypoints).
+- `void cep_mailroom_shutdown(void)` tears down the staged router state so subsequent bootstraps rebuild the lobby from scratch; invoke it during orderly shutdowns once no more intents are enqueued.
 
 #### 1.6.1 Mailroom extension helpers
 
@@ -132,6 +149,24 @@ Sometimes you need the lobby to recognise brand new tenants. The two helper func
 - *When should I prefer this over the layer-specific macros?* Use `cep_compose_identifier()` any time you need plain L0 naming (for example, mailroom buckets or diagnostics). Layer convenience macros such as `CEP_L1_COMPOSE` still make sense when you are operating entirely inside their schema.
 - *Can I feed the result into the namepool?* Yes. Once composed, hand it to `cep_namepool_intern_cstr()` (or the layer helpers) to obtain a stable `cepID` if you need to reuse the identifier frequently.
 
+### 1.8 Heartbeat runtime accessors
+
+The heartbeat keeps a lot of book-keeping behind the curtain. These accessors expose that state so schedulers, diagnostics, and tests can peek without patching the core loop.
+
+**Technical details**
+- `bool cep_heartbeat_startup(void)` brings the runtime online after bootstrap, wiring the registry, deferred agenda buffers, and journal roots. This is the programmatic “power button” when you build your own loop.
+- `void cep_heartbeat_shutdown(void)` flushes the agenda, releases scratch buffers, and clears lifecycle flags so a future `cep_heartbeat_startup()` call can rebuild the runtime cleanly.
+- `void cep_beat_note_deferred_activation(size_t count)` lets subsystems tell the heartbeat how many descriptors were staged mid-beat; the number is then surfaced through `cep_beat_deferred_activation_count()`.
+- `cepBeatNumber cep_heartbeat_current(void)` and `cepBeatNumber cep_heartbeat_next(void)` report the beat that is executing and the next scheduled beat when the loop is paused.
+- `const cepHeartbeatPolicy* cep_heartbeat_policy(void)` and `const cepHeartbeatTopology* cep_heartbeat_topology(void)` expose the active policy knobs and tree roots so embedders can confirm configuration after a dynamic change.
+- `cepEnzymeRegistry* cep_heartbeat_registry(void)` returns the live registry pointer, saving you from tracking the one `cep_heartbeat_bootstrap()` created.
+- `int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse)` queues a fully populated impulse (signal + target) for a specific beat. Use it when you already built a `cepImpulse` struct or when the signal/target paths live in reusable buffers.
+- `bool cep_heartbeat_process_impulses(void)` drains the queued impulses into the live agenda; call it when you integrate a bespoke event loop and want to stage work without executing a full beat yet.
+- `cepCell* cep_heartbeat_rt_root(void)`, `cep_heartbeat_journal_root(void)`, `cep_heartbeat_env_root(void)`, `cep_heartbeat_data_root(void)`, `cep_heartbeat_cas_root(void)`, `cep_heartbeat_tmp_root(void)`, and `cep_heartbeat_enzymes_root(void)` return the canonical cells for those runtime branches, making it easy to add assertions or inspection hooks without manually traversing from the global root.
+
+**Q&A**
+- *Is `cep_heartbeat_enqueue_impulse()` different from `cep_heartbeat_enqueue_signal()`?* Yes—`enqueue_signal` clones the paths for you from raw `cepPath` pointers, while `enqueue_impulse` lets you hand over a pre-built `cepImpulse` when you already manage its lifetime.
+
 ---
 
 ## 2) Serialization & streams (wire format)
@@ -139,6 +174,19 @@ Sometimes you need the lobby to recognise brand new tenants. The two helper func
 ### 2.1 Chunk framing and the control header
 
 Serialized streams are **chunked**. Each chunk carries a size and ID (class + transaction + sequence). The initial **control header** plants the **magic**, **format version**, **byte order**, and optional **metadata** (`cep_serialization_header_write/read`) . Helpers take care of **big‑endian on the wire** (inline BE conversions) and report exact buffer sizes so you can pre‑allocate (`*_chunk_size`) .
+
+#### 2.1.1 Chunk helper utilities
+
+When you stitch bespoke emitters or parsers alongside the stock helpers, these primitives give you direct control over chunk identifiers and header sizes without duplicating bit-twiddling code.
+
+**Technical details**
+- `uint64_t cep_serialization_chunk_id(uint16_t chunk_class, uint32_t transaction, uint16_t sequence)` composes the 64-bit chunk identifier from its components. Pair it with `cep_serialization_chunk_class/id/sequence` when you need to inspect or construct IDs manually.
+- `uint16_t cep_serialization_chunk_class(uint64_t chunk_id)`, `uint32_t cep_serialization_chunk_transaction(uint64_t chunk_id)`, and `uint16_t cep_serialization_chunk_sequence(uint64_t chunk_id)` unpack the class/transaction/sequence fields from any chunk ID you receive on the wire.
+- `size_t cep_serialization_header_chunk_size(const cepSerializationHeader* header)` tells you exactly how many bytes the control header will consume once encoded, making it easy to reserve buffers ahead of time.
+- `bool cep_serialization_header_read(const uint8_t* chunk, size_t chunk_size, cepSerializationHeader* header)` validates a control chunk and fills the struct back in, freeing you from reimplementing the endianness handling.
+
+**Q&A**
+- *Do I ever need to craft chunk IDs by hand?* Only when you build specialised emitters or run tests that validate error conditions. For ordinary streaming, stick to `cep_serialization_emit_cell()` and let it number chunks for you.
 
 ### 2.2 Manifest and payload
 
@@ -158,6 +206,17 @@ The **reader** (`cep_serialization_reader_*`) ingests chunks, validates ordering
 * For data payloads, the reader recomputes the **content hash** (over `{dt, size, payloadHash}`) using the same hash as the kernel (`cep_hash_bytes`) and rejects mismatches before applying the update  .
 * **Structure synthesis:** if the target path doesn’t exist, the reader creates intermediate dictionaries/lists as needed, but will **not** fabricate a proxy where the type doesn’t match—types must line up with the manifest flags .
 
+#### 2.3.1 Reader lifecycle helpers
+
+Streaming readers often live inside tight loops. These helpers reset or retire them without leaking staged buffers.
+
+**Technical details**
+- `void cep_serialization_reader_reset(cepSerializationReader* reader)` clears staged transactions, error state, and hash caches so the same reader can ingest a fresh stream from the start.
+- `void cep_serialization_reader_destroy(cepSerializationReader* reader)` releases allocations associated with staging buffers, manifests, and blob scratch space. Call it once you are done ingesting streams from that root.
+
+**Q&A**
+- *Why not create a new reader every time?* Reusing a reset reader avoids repeated allocations when you decode many short streams (for example, in tests or on embedded targets).
+
 ### 2.4 Journal metadata helpers
 
 Control headers now carry a tiny record of “which beat emitted this?” so downstream systems can file serialized batches without guessing.
@@ -169,6 +228,7 @@ Control headers now carry a tiny record of “which beat emitted this?” so dow
 - Structure manifests encode an extra byte after every `domain/tag` pair that mirrors the segment’s `glob` flag (`0x01` when set). Data descriptors append the same byte after the payload tag so wildcard hints survive round-trips.
 - During write, the header encodes a 16-byte metadata block: beat (big-endian `uint64_t`), a flag byte (`0x01` for decision replay), and padding. Readers parse it back and set the struct fields when `metadata_length` matches the pattern.
 - You can still inject arbitrary metadata: provide `metadata_length`/`metadata` and leave `journal_metadata_present` `false`; the serializer simply copies your payload.
+- `void cep_serialization_mark_decision_replay(void)` flips the global flag so the next serialized batch advertises that it originated from a replay, mirroring what higher layers use during forensic exports.
 
 ---
 
@@ -180,6 +240,12 @@ When your data lives outside the kernel (files, device handles, remote streams),
 * The “Library” flavor (`cep_proxy_initialize_handle` / `cep_proxy_initialize_stream`) lazily routes to a `cepLibraryBinding` (your adapter): retain/release handles, map/unmap stream windows, read/write chunks, and snapshot/restore both handles and streams. CEP handles **back‑references** and ensures link/shadow invariants even when proxies are moved or cloned  .
 
 > **Tip:** For **streams**, prefer `stream_map`/`unmap` for large sequential I/O and `stream_snapshot` for “publish and ship” payloads during serialization. The serializer will switch between inline payloads and BLOB slices based on the configured threshold  .
+
+**Additional helpers**
+- `void cep_proxy_set_context(cepProxy* proxy, void* context)` refreshes the adapter-side context pointer without tearing down the proxy, handy when a library handle migrates.
+- `void cep_proxy_release_snapshot(cepProxy* proxy)` tells the adapter it can drop any staged snapshot buffers once you finished emitting them.
+- `const cepProxyOps* cep_proxy_ops(const cepProxy* proxy)` gives you the vtable bound to a proxy so diagnostics can confirm which adapter is attached.
+- `void cep_link_initialize(cepCell* link, const cepCell* target)` initialises a link cell in place, preserving backlink bookkeeping, and is the easiest path to turn freshly cloned proxies into references without re-running the high-level builders.
 
 ---
 
@@ -205,6 +271,20 @@ This gives you **stable, interned references** for `CEP_NAMING_REFERENCE` names,
 
 `cep_namepool_intern_pattern*` mirrors the regular helpers but marks the resulting references as glob patterns. Literal references keep their original semantics even if the underlying text includes `*`; only the pattern helpers set the glob hint that propagates into every `cepDT`.
 
+### 4.1 ID utility helpers
+
+Occasionally you need to inspect or craft identifiers yourself—whether to debug a misbehaving tag or to reset the namepool between tests. These helpers expose the same conversions the kernel uses internally.
+
+**Technical details**
+- `cepID cep_id_to_word(cepID word)` and `cepID cep_id_to_acronym(cepID acronym)` pack a lowercase “word” or uppercase “acronym” into a `cepID` slot with the correct naming nibble. Use them when you already validated the raw value and want to skip the text helpers.
+- `bool cep_id_is_glob_star(cepID id)` and `bool cep_id_is_glob_question(cepID id)` tell you whether a reference ID is one of the wildcard sentinels (`*` or `?`). Handy when tooling needs to warn about overly broad matches.
+- `bool cep_word_glob_match_text(const char* pattern, size_t pattern_len, const char* text, size_t text_len)` evaluates a word-style glob (`*` and `?`) against arbitrary ASCII text, mirroring how the dispatcher compares identifiers.
+- `bool cep_namepool_reference_is_glob(cepID id)` reports whether an interned reference was stored via the pattern helpers, so you can separate literal references from glob-capable ones.
+- `void cep_namepool_reset(void)` clears every dynamic entry from the namepool. Reserve it for test harnesses or controlled shutdown paths—it drops all references, so live identifier handles become invalid.
+
+**Q&A**
+- *Should production systems ever call `cep_namepool_reset()`?* No. It is intended for test fixtures or full process teardown. In production, prefer `cep_namepool_release()` on specific IDs so long-lived references remain valid.
+
 ---
 
 ## 5) Locking, history, and deletion semantics
@@ -224,6 +304,56 @@ When you emit derived facts it helps to record “came from these parents” and
 - `cep_cell_content_hash(cell)` recomputes the payload hash (using the kernel’s FNV‑1a) and stores it on the live `cepData` node, returning the 64-bit value for logs.
 - `cep_cell_set_content_hash(cell, hash)` lets you stamp an externally computed checksum without touching the payload.
 - Both helpers follow links to canonical cells and refuse to operate on proxies/handles where a value hash would be meaningless.
+
+### 5.2 Cleanup and hard-delete helpers
+
+When construction fails or you intentionally prune branches, these routines perform the irreversible variants of the usual store/data edits. They honour the append-only contract only insofar as you call them during controlled teardown.
+
+**Technical details**
+- `cepCell* cep_cell_child_pop_hard(cepCell* parent, cepCell* child)` removes a child from its store immediately and returns ownership to the caller—ideal for transactional builders that need to roll back a partially staged node.
+- `void cep_cell_delete_children(cepCell* cell)` queues soft deletes for every child, while `void cep_cell_delete_children_hard(cepCell* cell)` removes them in-place and frees backing storage.
+- `void cep_cell_delete_data_hard(cepCell* cell)` clears the payload history and releases buffers so the node becomes data-less without waiting for GC.
+- `void cep_cell_delete_store(cepCell* cell)` marks the store timeline as deleted; `void cep_cell_delete_store_hard(cepCell* cell)` also frees the store engine immediately.
+- `void cep_cell_dispose(cepCell* cell)` and `void cep_cell_dispose_hard(cepCell* cell)` shut down both data and store sides of a cell (soft vs hard), making it safe to recycle structs from object pools.
+- `void cep_cell_initialize_clone(cepCell* clone, const cepCell* source)` copies the structural metadata from `source` into `clone` so you can duplicate nodes without re-running every individual `initialize` call.
+- `void cep_cell_replace(cepCell* cell, cepCell* replacement)` swaps a live node out for a prepared replacement, preserving parent pointers.
+- `int cep_cell_set_data(cepCell* cell, cepData* data)` and `int cep_cell_set_store(cepCell* cell, cepStore* store)` rebind payloads/stores that you constructed out-of-band.
+- `void cep_cell_timestamp_reset(cepCell* cell)` rewinds the created/modified timestamps—useful in tests that need deterministic snapshots after rebuilding a branch.
+- `void cep_data_history_clear(cepData* data)` and `void cep_data_del(cepData* data)` wipe the append-only history or delete the payload outright; call them only when you are certain no historical replay is required.
+
+**Q&A**
+- *Can I mix hard deletes with replayable history?* Avoid it. Hard deletes are for teardown paths (failed construction, controlled GC). Production mutations should stick to soft deletes so replays and audits remain consistent.
+
+### 5.3 Traversal and ancestry utilities
+
+When you need to walk or query the tree by hand, these helpers expose the same search and iteration primitives the kernel uses internally.
+
+**Technical details**
+- `cepCell* cep_cell_find_by_position_past(const cepCell* parent, size_t index, cepOpCount at)` looks up the child that occupied `index` at a given beat, bridging deterministic replay with positional lookups.
+- `cepCell* cep_cell_prev_past(cepCell* cell, cepOpCount at)` and `cepCell* cep_cell_next(cepCell* cell)` step through siblings while honouring the append-only history.
+- `cepCell* cep_cell_parent(cepCell* cell)` and `size_t cep_cell_siblings(const cepCell* cell)` report ancestry details, while `size_t cep_cell_children(const cepCell* cell)` returns the current child count (zero when no store exists).
+- `cepCell* cep_cell_data_find_by_name(cepCell* cell, const cepDT* name)` and `cepCell* cep_cell_data_find_by_name_past(cepCell* cell, const cepDT* name, cepOpCount at)` locate payload entries by identifier, including historical snapshots.
+- `bool cep_cell_traverse_internal(cepCell* cell, cepTraverse func, void* context, cepEntry* entry)` and `bool cep_cell_deep_traverse_internal(...)` expose the iterator core so specialised walkers can control recursion.
+- `void cep_cell_relink_storage(cepCell* cell, cepStore* store)` swaps the underlying store engine while preserving child nodes—handy when promoting a temporary container to its durable form.
+
+**Q&A**
+- *Do these traversal helpers lock stores for me?* No. Acquire the necessary store/data locks before deep traversals if concurrent mutations are possible.
+
+### 5.4 State and store inspectors
+
+Diagnostics and guards often need quick answers about a node’s shape or payload. These inspectors read state without mutating anything.
+
+**Technical details**
+- `cepID cep_cell_get_autoid(cepCell* parent)` hands you the next numeric ID in a store, matching the auto-ID allocator.
+- `bool cep_cell_has_store(const cepCell* cell)` tells you whether the node currently carries child storage, while the trio `cep_store_is_dictionary/store_is_insertable/store_is_sorted` reveal the storage policy bound to it.
+- Predicates such as `cep_cell_is_deleted`, `cep_cell_is_dictionary`, `cep_cell_is_empty`, `cep_cell_is_f_sorted`, `cep_cell_is_floating`, `cep_cell_is_insertable`, `cep_cell_is_root`, `cep_cell_is_sorted`, and `cep_cell_is_unset` make assertions readable without spelunking internal flags.
+- `cepOpCount cep_cell_latest_timestamp(const cepCell* cell)` returns the newest of created/modified/deleted timestamps; use it when you compare freshness across branches.
+- `int cep_store_compare_cells(const cepCell* a, const cepCell* b)` evaluates the current store ordering function, which is useful when you need to maintain sorted inserts manually.
+- `const void* cep_data_payload(const cepData* data, size_t* size)` and `bool cep_data_equals_bytes(const cepData* data, const void* bytes, size_t len)` examine payload contents without copying.
+- Store predicates (`cep_store_is_dictionary`, `cep_store_is_empty`, `cep_store_is_f_sorted`, `cep_store_is_insertable`, `cep_store_is_sorted`) return `true` when the underlying storage engine matches the named characteristic.
+
+**Q&A**
+- *Why use these inspectors instead of peeking at struct fields?* They encode the exact invariants enforced by the kernel, so you stay compatible even if internal layouts change.
 
 ---
 
