@@ -32,6 +32,110 @@ static cepHeartbeatRuntime CEP_RUNTIME = {
 
 static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
 
+CEP_DEFINE_STATIC_DT(dt_scope_kernel,   CEP_ACRO("CEP"), CEP_WORD("kernel"));
+CEP_DEFINE_STATIC_DT(dt_scope_namepool, CEP_ACRO("CEP"), CEP_WORD("namepool"));
+CEP_DEFINE_STATIC_DT(dt_scope_mailroom, CEP_ACRO("CEP"), CEP_WORD("mailroom"));
+CEP_DEFINE_STATIC_DT(dt_scope_err,      CEP_ACRO("CEP"), CEP_WORD("err"));
+CEP_DEFINE_STATIC_DT(dt_scope_l1,       CEP_ACRO("CEP"), CEP_WORD("l1"));
+CEP_DEFINE_STATIC_DT(dt_scope_l2,       CEP_ACRO("CEP"), CEP_WORD("l2"));
+
+typedef struct {
+    const char*             label;
+    const cepDT*          (*scope_dt)(void);
+    const cepLifecycleScope*dependencies;
+    size_t                  dependency_count;
+} cepLifecycleScopeInfo;
+
+typedef struct {
+    bool            ready;
+    bool            teardown;
+    bool            ready_signal_emitted;
+    bool            teardown_signal_emitted;
+    cepBeatNumber   ready_beat;
+    cepBeatNumber   td_beat;
+} cepLifecycleScopeState;
+
+static const cepLifecycleScope CEP_SCOPE_DEPS_NAMEPOOL[] = {
+    CEP_LIFECYCLE_SCOPE_KERNEL,
+};
+static const cepLifecycleScope CEP_SCOPE_DEPS_MAILROOM[] = {
+    CEP_LIFECYCLE_SCOPE_KERNEL,
+    CEP_LIFECYCLE_SCOPE_NAMEPOOL,
+};
+static const cepLifecycleScope CEP_SCOPE_DEPS_ERRORS[] = {
+    CEP_LIFECYCLE_SCOPE_KERNEL,
+    CEP_LIFECYCLE_SCOPE_NAMEPOOL,
+    CEP_LIFECYCLE_SCOPE_MAILROOM,
+};
+static const cepLifecycleScope CEP_SCOPE_DEPS_L1[] = {
+    CEP_LIFECYCLE_SCOPE_KERNEL,
+    CEP_LIFECYCLE_SCOPE_NAMEPOOL,
+    CEP_LIFECYCLE_SCOPE_MAILROOM,
+};
+static const cepLifecycleScope CEP_SCOPE_DEPS_L2[] = {
+    CEP_LIFECYCLE_SCOPE_KERNEL,
+    CEP_LIFECYCLE_SCOPE_NAMEPOOL,
+    CEP_LIFECYCLE_SCOPE_MAILROOM,
+    CEP_LIFECYCLE_SCOPE_L1,
+};
+
+static const cepLifecycleScopeInfo CEP_LIFECYCLE_SCOPE_INFO[CEP_LIFECYCLE_SCOPE_COUNT] = {
+    [CEP_LIFECYCLE_SCOPE_KERNEL] = {
+        .label = "kernel",
+        .scope_dt = dt_scope_kernel,
+        .dependencies = NULL,
+        .dependency_count = 0u,
+    },
+    [CEP_LIFECYCLE_SCOPE_NAMEPOOL] = {
+        .label = "namepool",
+        .scope_dt = dt_scope_namepool,
+        .dependencies = CEP_SCOPE_DEPS_NAMEPOOL,
+        .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_NAMEPOOL),
+    },
+    [CEP_LIFECYCLE_SCOPE_MAILROOM] = {
+        .label = "mailroom",
+        .scope_dt = dt_scope_mailroom,
+        .dependencies = CEP_SCOPE_DEPS_MAILROOM,
+        .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_MAILROOM),
+    },
+    [CEP_LIFECYCLE_SCOPE_ERRORS] = {
+        .label = "err",
+        .scope_dt = dt_scope_err,
+        .dependencies = CEP_SCOPE_DEPS_ERRORS,
+        .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_ERRORS),
+    },
+    [CEP_LIFECYCLE_SCOPE_L1] = {
+        .label = "l1",
+        .scope_dt = dt_scope_l1,
+        .dependencies = CEP_SCOPE_DEPS_L1,
+        .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_L1),
+    },
+    [CEP_LIFECYCLE_SCOPE_L2] = {
+        .label = "l2",
+        .scope_dt = dt_scope_l2,
+        .dependencies = CEP_SCOPE_DEPS_L2,
+        .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_L2),
+    },
+};
+
+static cepLifecycleScopeState CEP_LIFECYCLE_STATE[CEP_LIFECYCLE_SCOPE_COUNT];
+static const cepLifecycleScope CEP_LIFECYCLE_TEARDOWN_ORDER[] = {
+    CEP_LIFECYCLE_SCOPE_L2,
+    CEP_LIFECYCLE_SCOPE_L1,
+    CEP_LIFECYCLE_SCOPE_ERRORS,
+    CEP_LIFECYCLE_SCOPE_MAILROOM,
+    CEP_LIFECYCLE_SCOPE_NAMEPOOL,
+    CEP_LIFECYCLE_SCOPE_KERNEL,
+};
+
+static void cep_lifecycle_reset_state(void);
+static bool cep_lifecycle_scope_dependencies_ready(cepLifecycleScope scope);
+static cepCell* cep_lifecycle_scope_bucket(cepLifecycleScope scope, bool create);
+static bool cep_lifecycle_store_text(cepCell* parent, const cepDT* name, const char* text);
+static bool cep_lifecycle_store_numeric(cepCell* parent, const cepDT* name, uint64_t value);
+static bool cep_lifecycle_emit_signal(const cepDT* event_dt, const cepDT* scope_dt, bool immediate);
+static void cep_lifecycle_flush_pending_signals(void);
+
 static const cepPath* cep_heartbeat_sys_init_path(void) {
     typedef struct {
         unsigned length;
@@ -904,8 +1008,10 @@ static void cep_runtime_reset_state(bool destroy_registry) {
     memset(&CEP_RUNTIME.policy, 0, sizeof(CEP_RUNTIME.policy));
     CEP_RUNTIME.policy.ensure_directories = true;
     CEP_RUNTIME.deferred_activations = 0u;
-    CEP_RUNTIME.sys_init_emitted = false;
-    CEP_RUNTIME.sys_shutdown_emitted = false;
+   CEP_RUNTIME.sys_init_emitted = false;
+   CEP_RUNTIME.sys_shutdown_emitted = false;
+
+    cep_lifecycle_reset_state();
 }
 
 
@@ -929,6 +1035,157 @@ static cepCell* ensure_root_list(cepCell* root, const cepDT* name) {
         cell = cep_cell_add_list(root, (cepDT*)name, 0, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
     }
     return cell;
+}
+
+static void cep_lifecycle_reset_state(void) {
+    for (size_t i = 0; i < CEP_LIFECYCLE_SCOPE_COUNT; ++i) {
+        CEP_LIFECYCLE_STATE[i].ready = false;
+        CEP_LIFECYCLE_STATE[i].teardown = false;
+        CEP_LIFECYCLE_STATE[i].ready_signal_emitted = false;
+        CEP_LIFECYCLE_STATE[i].teardown_signal_emitted = false;
+        CEP_LIFECYCLE_STATE[i].ready_beat = 0u;
+        CEP_LIFECYCLE_STATE[i].td_beat = 0u;
+    }
+}
+
+static bool cep_lifecycle_scope_dependencies_ready(cepLifecycleScope scope) {
+    if (scope >= CEP_LIFECYCLE_SCOPE_COUNT) {
+        return false;
+    }
+
+    const cepLifecycleScopeInfo* info = &CEP_LIFECYCLE_SCOPE_INFO[scope];
+    for (size_t i = 0; i < info->dependency_count; ++i) {
+        cepLifecycleScope dep = info->dependencies[i];
+        if (dep >= CEP_LIFECYCLE_SCOPE_COUNT) {
+            return false;
+        }
+        if (!CEP_LIFECYCLE_STATE[dep].ready) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static cepCell* cep_lifecycle_scope_bucket(cepLifecycleScope scope, bool create) {
+    if (scope >= CEP_LIFECYCLE_SCOPE_COUNT) {
+        return NULL;
+    }
+
+    cepCell* sys_root = cep_heartbeat_sys_root();
+    if (!sys_root) {
+        return NULL;
+    }
+
+    cepCell* lifecycle_root = cep_cell_find_by_name(sys_root, CEP_DTAW("CEP", "state"));
+    if (!lifecycle_root && create) {
+        lifecycle_root = ensure_root_dictionary(sys_root, CEP_DTAW("CEP", "state"));
+    }
+    if (!lifecycle_root) {
+        return NULL;
+    }
+
+    const cepLifecycleScopeInfo* info = &CEP_LIFECYCLE_SCOPE_INFO[scope];
+    const cepDT* scope_dt = info->scope_dt ? info->scope_dt() : NULL;
+    if (!scope_dt) {
+        return NULL;
+    }
+
+    cepDT lookup = *scope_dt;
+    lookup.glob = 0u;
+    cepCell* bucket = cep_cell_find_by_name(lifecycle_root, &lookup);
+    if (!bucket && create) {
+        cepDT type_dt = *CEP_DTAW("CEP", "dictionary");
+        cepDT name_copy = lookup;
+        bucket = cep_dict_add_dictionary(lifecycle_root, &name_copy, &type_dt, CEP_STORAGE_RED_BLACK_T);
+    }
+    return bucket;
+}
+
+static bool cep_lifecycle_store_text(cepCell* parent, const cepDT* name, const char* text) {
+    if (!parent || !name || !text) {
+        return false;
+    }
+
+    cepDT lookup = *name;
+    lookup.glob = 0u;
+    size_t size = strlen(text) + 1u;
+
+    cepCell* existing = cep_cell_find_by_name(parent, &lookup);
+    if (existing && cep_cell_has_data(existing)) {
+        const cepData* data = existing->data;
+        if (data->datatype == CEP_DATATYPE_VALUE && data->size == size && memcmp(data->value, text, size) == 0) {
+            return true;
+        }
+        cep_cell_remove_hard(existing, NULL);
+    } else if (existing) {
+        cep_cell_remove_hard(existing, NULL);
+    }
+
+    cepDT type_dt = *CEP_DTAW("CEP", "text");
+    cepDT name_copy = lookup;
+    return cep_dict_add_value(parent, &name_copy, &type_dt, (void*)text, size, size) != NULL;
+}
+
+static bool cep_lifecycle_store_numeric(cepCell* parent, const cepDT* name, uint64_t value) {
+    char buffer[32];
+    int written = snprintf(buffer, sizeof buffer, "%" PRIu64, (unsigned long long)value);
+    if (written < 0) {
+        return false;
+    }
+    return cep_lifecycle_store_text(parent, name, buffer);
+}
+
+static bool cep_lifecycle_emit_signal(const cepDT* event_dt, const cepDT* scope_dt, bool immediate) {
+    if (!event_dt || !scope_dt) {
+        return false;
+    }
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[3];
+    } cepStaticPath3;
+
+    cepStaticPath3 path = {
+        .length = 3u,
+        .capacity = 3u,
+        .past = {
+            { .dt = *CEP_DTAW("CEP", "sig_sys"), .timestamp = 0u },
+            { .dt = *event_dt, .timestamp = 0u },
+            { .dt = *scope_dt, .timestamp = 0u },
+        },
+    };
+
+    const cepPath* signal_path = (const cepPath*)&path;
+    if (immediate) {
+        return cep_heartbeat_emit_sys_signal_now(signal_path);
+    }
+    return cep_heartbeat_emit_sys_signal(signal_path);
+}
+
+static void cep_lifecycle_flush_pending_signals(void) {
+    if (!CEP_RUNTIME.running) {
+        return;
+    }
+
+    for (size_t i = 0; i < CEP_LIFECYCLE_SCOPE_COUNT; ++i) {
+        cepLifecycleScopeState* state = &CEP_LIFECYCLE_STATE[i];
+        const cepLifecycleScopeInfo* info = &CEP_LIFECYCLE_SCOPE_INFO[i];
+        const cepDT* scope_dt = info->scope_dt ? info->scope_dt() : NULL;
+        if (!scope_dt) {
+            continue;
+        }
+        if (state->ready && !state->ready_signal_emitted) {
+            if (cep_lifecycle_emit_signal(CEP_DTAW("CEP", "ready"), scope_dt, true)) {
+                state->ready_signal_emitted = true;
+            }
+        }
+        if (state->teardown && !state->teardown_signal_emitted) {
+            if (cep_lifecycle_emit_signal(CEP_DTAW("CEP", "teardown"), scope_dt, true)) {
+                state->teardown_signal_emitted = true;
+            }
+        }
+    }
 }
 
 
@@ -1046,6 +1303,7 @@ bool cep_heartbeat_bootstrap(void) {
         return false;
     }
 
+    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
     return true;
 }
 
@@ -1102,6 +1360,7 @@ bool cep_heartbeat_startup(void) {
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
     cep_beat_begin_capture();
+    cep_lifecycle_flush_pending_signals();
     return true;
 }
 
@@ -1123,6 +1382,7 @@ bool cep_heartbeat_restart(void) {
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
     cep_beat_begin_capture();
+    cep_lifecycle_flush_pending_signals();
     return true;
 }
 
@@ -1147,6 +1407,7 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
         }
     }
     cep_beat_begin_capture();
+    cep_lifecycle_flush_pending_signals();
     return true;
 }
 
@@ -1170,6 +1431,8 @@ bool cep_heartbeat_resolve_agenda(void) {
     if (!cep_rv_commit_apply()) {
         return false;
     }
+
+    cep_lifecycle_flush_pending_signals();
 
     return cep_heartbeat_process_impulses();
 }
@@ -1337,6 +1600,11 @@ bool cep_heartbeat_emit_shutdown(void) {
     if (!CEP_RUNTIME.running) {
         return false;
     }
+
+    for (size_t i = 0; i < cep_lengthof(CEP_LIFECYCLE_TEARDOWN_ORDER); ++i) {
+        (void)cep_lifecycle_scope_mark_teardown(CEP_LIFECYCLE_TEARDOWN_ORDER[i]);
+    }
+    cep_lifecycle_flush_pending_signals();
 
     if (!cep_heartbeat_emit_sys_signal_now(cep_heartbeat_sys_shutdown_path())) {
         return false;
@@ -1715,6 +1983,116 @@ cepCell* cep_heartbeat_tmp_root(void) {
 /** Return the subtree that stores enzyme metadata visible to tooling. */
 cepCell* cep_heartbeat_enzymes_root(void) {
     return CEP_RUNTIME.topology.enzymes;
+}
+
+bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope) {
+    if (scope >= CEP_LIFECYCLE_SCOPE_COUNT) {
+        return false;
+    }
+
+    cepLifecycleScopeState* state = &CEP_LIFECYCLE_STATE[scope];
+    const cepLifecycleScopeInfo* info = &CEP_LIFECYCLE_SCOPE_INFO[scope];
+
+    if (state->ready) {
+        return true;
+    }
+
+    if (!cep_lifecycle_scope_dependencies_ready(scope)) {
+        return false;
+    }
+
+    const cepDT* scope_dt = info->scope_dt ? info->scope_dt() : NULL;
+    if (!scope_dt) {
+        return false;
+    }
+
+    cepCell* bucket = cep_lifecycle_scope_bucket(scope, true);
+    if (!bucket) {
+        return false;
+    }
+
+    cepBeatNumber beat = cep_beat_index();
+    if (beat == CEP_BEAT_INVALID) {
+        beat = 0u;
+    }
+
+    if (!cep_lifecycle_store_text(bucket, CEP_DTAW("CEP", "status"), "ready")) {
+        return false;
+    }
+    (void)cep_lifecycle_store_numeric(bucket, CEP_DTAW("CEP", "ready_beat"), (uint64_t)beat);
+
+    state->ready = true;
+    state->ready_beat = beat;
+    state->teardown = false;
+    state->teardown_signal_emitted = false;
+
+    if (CEP_RUNTIME.running) {
+        if (cep_lifecycle_emit_signal(CEP_DTAW("CEP", "ready"), scope_dt, false)) {
+            state->ready_signal_emitted = true;
+        } else {
+            state->ready_signal_emitted = false;
+        }
+    } else {
+        state->ready_signal_emitted = false;
+    }
+
+    return true;
+}
+
+bool cep_lifecycle_scope_mark_teardown(cepLifecycleScope scope) {
+    if (scope >= CEP_LIFECYCLE_SCOPE_COUNT) {
+        return false;
+    }
+
+    cepLifecycleScopeState* state = &CEP_LIFECYCLE_STATE[scope];
+    const cepLifecycleScopeInfo* info = &CEP_LIFECYCLE_SCOPE_INFO[scope];
+    const cepDT* scope_dt = info->scope_dt ? info->scope_dt() : NULL;
+    if (!scope_dt) {
+        return false;
+    }
+
+    if (state->teardown) {
+        return true;
+    }
+
+    if (!state->ready) {
+        state->teardown = true;
+        state->teardown_signal_emitted = true;
+        return true;
+    }
+
+    cepCell* bucket = cep_lifecycle_scope_bucket(scope, true);
+    if (!bucket) {
+        return false;
+    }
+
+    cepBeatNumber beat = cep_beat_index();
+    if (beat == CEP_BEAT_INVALID) {
+        beat = 0u;
+    }
+
+    if (!cep_lifecycle_store_text(bucket, CEP_DTAW("CEP", "status"), "teardown")) {
+        return false;
+    }
+    (void)cep_lifecycle_store_numeric(bucket, CEP_DTAW("CEP", "td_beat"), (uint64_t)beat);
+
+    state->teardown = true;
+    state->td_beat = beat;
+
+    bool emitted = false;
+    if (CEP_RUNTIME.running) {
+        emitted = cep_lifecycle_emit_signal(CEP_DTAW("CEP", "teardown"), scope_dt, true);
+    }
+    state->teardown_signal_emitted = emitted;
+
+    return true;
+}
+
+bool cep_lifecycle_scope_is_ready(cepLifecycleScope scope) {
+    if (scope >= CEP_LIFECYCLE_SCOPE_COUNT) {
+        return false;
+    }
+    return CEP_LIFECYCLE_STATE[scope].ready;
 }
 
 

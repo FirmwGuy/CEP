@@ -11,6 +11,11 @@
 #include "test.h"
 #include "cep_heartbeat.h"
 #include "cep_enzyme.h"
+#include "cep_l0.h"
+#include "cep_l1_coherence.h"
+#ifdef CEP_HAS_L2_TESTS
+#include "cep_l2_flows.h"
+#endif
 
 
 typedef struct {
@@ -29,6 +34,57 @@ static const cepPath* make_path(CepHeartbeatPathBuf* buf, const cepDT* segments,
         buf->segments[i].timestamp = 0u;
     }
     return (const cepPath*)buf;
+}
+
+static const char* lifecycle_status_for(const cepDT* scope_dt) {
+    cepCell* sys_root = cep_heartbeat_sys_root();
+    if (!sys_root) {
+        return NULL;
+    }
+
+    cepCell* state_root = cep_cell_find_by_name(sys_root, CEP_DTAW("CEP", "state"));
+    if (!state_root) {
+        return NULL;
+    }
+
+    cepDT lookup = *scope_dt;
+    lookup.glob = 0u;
+    cepCell* bucket = cep_cell_find_by_name(state_root, &lookup);
+    if (!bucket) {
+        return NULL;
+    }
+
+    cepCell* status = cep_cell_find_by_name(bucket, CEP_DTAW("CEP", "status"));
+    if (!status || !cep_cell_has_data(status)) {
+        return NULL;
+    }
+
+    return (const char*)cep_cell_data(status);
+}
+
+static bool sys_log_contains(const char* needle) {
+    cepCell* journal_root = cep_heartbeat_journal_root();
+    if (!journal_root || !needle) {
+        return false;
+    }
+
+    cepCell* sys_log = cep_cell_find_by_name(journal_root, CEP_DTAW("CEP", "sys_log"));
+    if (!sys_log || !cep_cell_has_store(sys_log)) {
+        return false;
+    }
+
+    size_t entries = cep_cell_children(sys_log);
+    for (size_t i = 0; i < entries; ++i) {
+        cepCell* entry = cep_cell_find_by_position(sys_log, i);
+        if (!entry || !cep_cell_has_data(entry)) {
+            continue;
+        }
+        const char* text = (const char*)cep_cell_data(entry);
+        if (text && strstr(text, needle)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 
@@ -438,6 +494,95 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     munit_assert_int(heartbeat_binding_calls, ==, 3);
 
     test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+    (void)user_data_or_fixture;
+
+    test_runtime_shutdown();
+
+    munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_l1_coherence_bootstrap());
+#ifdef CEP_HAS_L2_TESTS
+    munit_assert_true(cep_l2_flows_bootstrap());
+#endif
+
+    heartbeat_runtime_start();
+
+    munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_KERNEL));
+    munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL));
+    munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_MAILROOM));
+    munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1));
+#ifdef CEP_HAS_L2_TESTS
+    munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2));
+#endif
+
+    const char* kernel_status = lifecycle_status_for(CEP_DTAW("CEP", "kernel"));
+    munit_assert_not_null(kernel_status);
+    munit_assert_string_equal(kernel_status, "ready");
+
+    const char* namepool_status = lifecycle_status_for(CEP_DTAW("CEP", "namepool"));
+    munit_assert_not_null(namepool_status);
+    munit_assert_string_equal(namepool_status, "ready");
+
+    const char* mailroom_status = lifecycle_status_for(CEP_DTAW("CEP", "mailroom"));
+    munit_assert_not_null(mailroom_status);
+    munit_assert_string_equal(mailroom_status, "ready");
+
+    const char* l1_status = lifecycle_status_for(CEP_DTAW("CEP", "l1"));
+    munit_assert_not_null(l1_status);
+    munit_assert_string_equal(l1_status, "ready");
+
+#ifdef CEP_HAS_L2_TESTS
+    const char* l2_status = lifecycle_status_for(CEP_DTAW("CEP", "l2"));
+    munit_assert_not_null(l2_status);
+    munit_assert_string_equal(l2_status, "ready");
+#endif
+
+    munit_assert_true(cep_heartbeat_resolve_agenda());
+    munit_assert_true(cep_heartbeat_stage_commit());
+    munit_assert_true(cep_heartbeat_resolve_agenda());
+    munit_assert_true(cep_heartbeat_stage_commit());
+
+    munit_assert_true(sys_log_contains("sig_sys/ready/kernel"));
+    munit_assert_true(sys_log_contains("sig_sys/ready/namepool"));
+    munit_assert_true(sys_log_contains("sig_sys/ready/mailroom"));
+    munit_assert_true(sys_log_contains("sig_sys/ready/l1"));
+#ifdef CEP_HAS_L2_TESTS
+    munit_assert_true(sys_log_contains("sig_sys/ready/l2"));
+#endif
+
+    munit_assert_true(cep_heartbeat_emit_shutdown());
+
+    const char* kernel_teardown = lifecycle_status_for(CEP_DTAW("CEP", "kernel"));
+    munit_assert_not_null(kernel_teardown);
+    munit_assert_string_equal(kernel_teardown, "teardown");
+
+    const char* mailroom_teardown = lifecycle_status_for(CEP_DTAW("CEP", "mailroom"));
+    munit_assert_not_null(mailroom_teardown);
+    munit_assert_string_equal(mailroom_teardown, "teardown");
+
+    const char* l1_teardown = lifecycle_status_for(CEP_DTAW("CEP", "l1"));
+    munit_assert_not_null(l1_teardown);
+    munit_assert_string_equal(l1_teardown, "teardown");
+
+#ifdef CEP_HAS_L2_TESTS
+    const char* l2_teardown = lifecycle_status_for(CEP_DTAW("CEP", "l2"));
+    munit_assert_not_null(l2_teardown);
+    munit_assert_string_equal(l2_teardown, "teardown");
+#endif
+
+    munit_assert_true(sys_log_contains("sig_sys/teardown/kernel"));
+    munit_assert_true(sys_log_contains("sig_sys/teardown/mailroom"));
+    munit_assert_true(sys_log_contains("sig_sys/teardown/l1"));
+#ifdef CEP_HAS_L2_TESTS
+    munit_assert_true(sys_log_contains("sig_sys/teardown/l2"));
+#endif
+    munit_assert_true(sys_log_contains("sig_sys/shutdown"));
+
+    cep_heartbeat_shutdown();
     return MUNIT_OK;
 }
 
@@ -939,6 +1084,11 @@ MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fix
     }
 
     result = test_heartbeat_binding_matches_store_suffix();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_heartbeat_lifecycle_signals(params, NULL);
     if (result != MUNIT_OK) {
         return result;
     }

@@ -6,6 +6,7 @@
 #include "cep_mailroom.h"
 
 #include "cep_cell.h"
+#include "cep_heartbeat.h"
 #include "cep_namepool.h"
 
 #include <string.h>
@@ -153,6 +154,7 @@ static void cep_mailroom_free_router_before(void) {
 }
 
 void cep_mailroom_shutdown(void) {
+    (void)cep_lifecycle_scope_mark_teardown(CEP_LIFECYCLE_SCOPE_MAILROOM);
     cep_mailroom_free_extra_namespaces();
     cep_mailroom_free_router_before();
     cep_mailroom_bootstrap_done = false;
@@ -207,18 +209,32 @@ static bool cep_mailroom_set_string_value(cepCell* parent, const cepDT* name, co
         return false;
     }
 
+    bool restore_writable = false;
+    bool previous_writable = false;
+    if (parent->store) {
+        previous_writable = parent->store->writable;
+        if (!previous_writable) {
+            parent->store->writable = true;
+            restore_writable = true;
+        }
+    }
+
     size_t size = strlen(text) + 1u;
     cepDT lookup = *name;
     lookup.glob = 0u;
 
     cepCell* existing = cep_cell_find_by_name(parent, &lookup);
-    if (existing) {
-        if (cep_cell_has_data(existing)) {
-            const cepData* data = existing->data;
-            if (data->datatype == CEP_DATATYPE_VALUE && data->size == size && memcmp(data->value, text, size) == 0) {
-                return true;
+    if (existing && cep_cell_has_data(existing)) {
+        const cepData* data = existing->data;
+        if (data->datatype == CEP_DATATYPE_VALUE && data->size == size && memcmp(data->value, text, size) == 0) {
+            if (parent->store && restore_writable) {
+                parent->store->writable = previous_writable;
             }
+            return true;
         }
+    }
+
+    if (existing) {
         cep_cell_remove_hard(parent, existing);
     }
 
@@ -226,9 +242,16 @@ static bool cep_mailroom_set_string_value(cepCell* parent, const cepDT* name, co
     cepDT text_dt = *dt_text();
     cepCell* node = cep_dict_add_value(parent, &name_copy, &text_dt, (void*)text, size, size);
     if (!node) {
+        if (parent->store && restore_writable) {
+            parent->store->writable = previous_writable;
+        }
         return false;
     }
     cep_cell_content_hash(node);
+
+    if (parent->store && restore_writable) {
+        parent->store->writable = previous_writable;
+    }
     return true;
 }
 
@@ -601,6 +624,7 @@ bool cep_mailroom_bootstrap(void) {
         }
     }
 
+    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_MAILROOM);
     cep_mailroom_bootstrap_done = true;
     return true;
 }

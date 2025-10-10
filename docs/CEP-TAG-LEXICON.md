@@ -65,6 +65,10 @@ when a new behavior needs a fresh word before it lands in code.
 | `stream-log` | core | runtime log for stream adapters. |
 | `sys_log` | core | journal list recording system init/shutdown signal emissions. |
 | `sys` | core | system namespace with counters and configuration. |
+| `ready` | core | lifecycle readiness marker recorded under `/sys/state/<scope>`. |
+| `teardown` | core | lifecycle teardown marker recorded under `/sys/state/<scope>`. |
+| `ready_beat` | core | beat index captured when a scope emitted its ready signal. |
+| `td_beat` | core | beat index captured when a scope entered teardown. |
 | `err_cat` | core | dictionary of canonical error codes referenced by outcomes. |
 | `text` | core | namepool payload store for textual data. |
 | `tmp` | core | scratch list reserved for tooling. |

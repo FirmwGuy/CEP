@@ -468,10 +468,12 @@ Heartbeat init/shutdown pulses now mirror production beats, so tooling and tests
 ### Technical details
 - Call `cep_heartbeat_begin()` right after `cep_heartbeat_configure()` when you want the system-init cascade; follow it with `cep_heartbeat_step()` so `mr_init`, `coh_init`, `fl_init`, and `rv_init` actually execute.
 - `cep_heartbeat_emit_shutdown()` enqueues the shutdown signal on the live agenda, runs the same commit path as a normal beat, and writes a short breadcrumb even when directory logging stays disabled.
-- Each lifecycle emission appends a message under `/journal/sys_log`, giving you an easy way to assert that init/shutdown happened without rummaging through agenda dumps.
+- Each bootstrap helper now marks its subsystem as ready by writing to `/sys/state/<scope>` (`status=ready`, `ready_beat=<n>`) and emitting `CEP:sig_sys/ready/<scope>`. Shutdown walks the scopes in reverse dependency order, records `status=teardown` / `td_beat`, emits `CEP:sig_sys/teardown/<scope>`, and finally logs the traditional `shutdown` pulse.
+- The `/sys/state` dictionary is durable, so tooling can poll readiness/teardown even if the corresponding impulses have already been consumed; readiness helpers return `false` if prerequisites have not finished booting.
 
 ### Q&A
 - *How do I check that init ran during a test?* Inspect `/journal/sys_log` or verify that `cep_heartbeat_sys_root()` picked up the expected namespaces after the first beat—both are populated by the init enzyme.
+- *How do I know a subsystem is ready for work?* Read `/sys/state/<scope>/status` (expect `"ready"`), or call `cep_lifecycle_scope_is_ready(scope)`. Scopes emit deterministic `CEP:sig_sys/ready/<scope>` impulses once bootstraps complete.
 - *Can I replay init mid-run?* Yes. Call `cep_heartbeat_restart()`, then `cep_heartbeat_begin()` and a single `cep_heartbeat_step()`; the sys-log will capture each pulse so you can line them up with assertions.
 - *Will emitting shutdown twice cause trouble?* No. The helper is idempotent; once `sys_shutdown_emitted` flips, subsequent calls simply return `true`.
 

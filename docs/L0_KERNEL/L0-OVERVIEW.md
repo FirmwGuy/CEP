@@ -244,6 +244,7 @@ Every intent hits the mailroom before layer ingest enzymes run. `cep_mailroom_bo
 * **Cloning semantics:** VALUE/DATA clone by copy; HANDLE/STREAM clones appear as **links** to the original to keep external resources authoritative. 
 * **Glob semantics:** enzyme path matching uses DT comparison with wildcard-aware word tags (single-segment `*`) and the reference sentinels (`CEP_ID_GLOB_*`) to match domains/tags flexibly.  
 * **Namepool:** use it when you need text‑to‑ID indirection for `CEP_NAMING_REFERENCE` identifiers; remember to release IDs you no longer need. 
+* **Lifecycle pulses:** each bootstrap flips `/sys/state/<scope>` to `"ready"`, emits `CEP:sig_sys/ready/<scope>`, and shutdown does the inverse via `CEP:sig_sys/teardown/<scope>` plus `status="teardown"`. Tools can poll the state tree even if impulses have already been consumed.
 
 ---
 

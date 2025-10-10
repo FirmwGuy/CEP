@@ -9,6 +9,7 @@
 #include "../l0_kernel/cep_identifier.h"
 #include "../l0_kernel/cep_enzyme.h"
 #include "../l0_kernel/cep_heartbeat.h"
+#include "../l0_kernel/cep_heartbeat.h"
 #include "../l0_kernel/cep_l0.h"
 #include "../l0_kernel/cep_mailroom.h"
 #include "../l0_kernel/cep_namepool.h"
@@ -1607,6 +1608,7 @@ bool cep_l1_coherence_bootstrap(void) {
             cep_l1_bindings_applied = true;
         }
     }
+    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_L1);
     return true;
 }
 

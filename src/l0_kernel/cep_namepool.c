@@ -9,6 +9,7 @@
  */
 
 #include "cep_namepool.h"
+#include "cep_heartbeat.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -509,6 +510,7 @@ bool cep_namepool_bootstrap(void) {
     }
 
     namepool_root = pool;
+    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL);
     return true;
 }
 

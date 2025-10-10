@@ -195,6 +195,20 @@ cepCell*  cep_heartbeat_cas_root(void);
 cepCell*  cep_heartbeat_tmp_root(void);
 cepCell*  cep_heartbeat_enzymes_root(void);
 
+typedef enum {
+    CEP_LIFECYCLE_SCOPE_KERNEL = 0,
+    CEP_LIFECYCLE_SCOPE_NAMEPOOL,
+    CEP_LIFECYCLE_SCOPE_MAILROOM,
+    CEP_LIFECYCLE_SCOPE_ERRORS,
+    CEP_LIFECYCLE_SCOPE_L1,
+    CEP_LIFECYCLE_SCOPE_L2,
+    CEP_LIFECYCLE_SCOPE_COUNT
+} cepLifecycleScope;
+
+bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope);
+bool cep_lifecycle_scope_mark_teardown(cepLifecycleScope scope);
+bool cep_lifecycle_scope_is_ready(cepLifecycleScope scope);
+
 
 #ifdef __cplusplus
 }

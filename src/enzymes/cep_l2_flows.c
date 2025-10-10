@@ -4837,6 +4837,7 @@ bool cep_l2_flows_bootstrap(void) {
     }
 
     (void)cep_namepool_bootstrap();
+    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_L2);
     return true;
 }
 

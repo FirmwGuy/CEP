@@ -22,13 +22,19 @@ bool cep_l0_bootstrap(void) {
         return false;
     }
 
+    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
+
     if (!cep_namepool_bootstrap()) {
         return false;
     }
 
+    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL);
+
     if (!cep_mailroom_bootstrap()) {
         return false;
     }
+
+    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_MAILROOM);
 
     cep_l0_bootstrap_done = true;
     return true;
