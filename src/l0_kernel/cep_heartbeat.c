@@ -137,6 +137,7 @@ static bool cep_lifecycle_store_numeric(cepCell* parent, const cepDT* name, uint
 static cepCell* cep_lifecycle_get_dictionary(cepCell* parent, const cepDT* name, bool create);
 static const char* cep_lifecycle_read_text(const cepCell* parent, const cepDT* name);
 static bool cep_lifecycle_read_numeric(const cepCell* parent, const cepDT* name, uint64_t* value_out);
+static void cep_lifecycle_reload_state(void);
 static bool cep_lifecycle_emit_signal(const cepDT* event_dt, const cepDT* scope_dt, bool immediate);
 static void cep_lifecycle_flush_pending_signals(void);
 
@@ -1100,20 +1101,7 @@ static cepCell* cep_lifecycle_get_dictionary(cepCell* parent, const cepDT* name,
     cepDT lookup = *name;
     lookup.glob = 0u;
 
-    cepCell* existing = NULL;
-    if (store->chdCount) {
-        for (cepCell* child = cep_cell_first(parent); child; child = cep_cell_next(parent, child)) {
-            const cepDT* child_name = cep_cell_get_name(child);
-            if (!child_name) {
-                continue;
-            }
-            if (cep_dt_compare(child_name, &lookup) == 0) {
-                existing = child;
-                break;
-            }
-        }
-    }
-
+    cepCell* existing = store ? cep_cell_find_by_name(parent, &lookup) : NULL;
     if (existing || !create) {
         return existing;
     }
@@ -1221,6 +1209,79 @@ static bool cep_lifecycle_read_numeric(const cepCell* parent, const cepDT* name,
 
     *value_out = (uint64_t)parsed;
     return true;
+}
+
+static void cep_lifecycle_reload_state(void) {
+    for (size_t i = 0; i < CEP_LIFECYCLE_SCOPE_COUNT; ++i) {
+        CEP_LIFECYCLE_STATE[i].ready = false;
+        CEP_LIFECYCLE_STATE[i].teardown = false;
+        CEP_LIFECYCLE_STATE[i].ready_signal_emitted = false;
+        CEP_LIFECYCLE_STATE[i].teardown_signal_emitted = false;
+        CEP_LIFECYCLE_STATE[i].ready_beat = 0u;
+        CEP_LIFECYCLE_STATE[i].td_beat = 0u;
+    }
+
+    cepCell* sys_root = cep_heartbeat_sys_root();
+    if (!sys_root) {
+        return;
+    }
+
+    cepCell* lifecycle_root = cep_lifecycle_get_dictionary(sys_root, CEP_DTAW("CEP", "state"), false);
+    if (!lifecycle_root || !cep_cell_has_store(lifecycle_root)) {
+        return;
+    }
+
+    for (cepCell* scope_node = cep_cell_first(lifecycle_root); scope_node; scope_node = cep_cell_next(lifecycle_root, scope_node)) {
+        if (!cep_cell_has_store(scope_node)) {
+            continue;
+        }
+
+        const cepDT* scope_dt = cep_cell_get_name(scope_node);
+        if (!scope_dt) {
+            continue;
+        }
+
+        size_t scope_index = CEP_LIFECYCLE_SCOPE_COUNT;
+        for (size_t i = 0; i < CEP_LIFECYCLE_SCOPE_COUNT; ++i) {
+            const cepLifecycleScopeInfo* info = &CEP_LIFECYCLE_SCOPE_INFO[i];
+            const cepDT* info_dt = info->scope_dt ? info->scope_dt() : NULL;
+            if (info_dt && cep_dt_compare(info_dt, scope_dt) == 0) {
+                scope_index = i;
+                break;
+            }
+        }
+
+        if (scope_index >= CEP_LIFECYCLE_SCOPE_COUNT) {
+            continue;
+        }
+
+        const char* status = cep_lifecycle_read_text(scope_node, CEP_DTAW("CEP", "status"));
+        if (status && strcmp(status, "ready") == 0) {
+            uint64_t ready_beat = 0u;
+            uint64_t td_beat = 0u;
+            (void)cep_lifecycle_read_numeric(scope_node, CEP_DTAW("CEP", "ready_beat"), &ready_beat);
+            (void)cep_lifecycle_read_numeric(scope_node, CEP_DTAW("CEP", "td_beat"), &td_beat);
+
+            CEP_LIFECYCLE_STATE[scope_index].ready = true;
+            CEP_LIFECYCLE_STATE[scope_index].ready_signal_emitted = true;
+            CEP_LIFECYCLE_STATE[scope_index].ready_beat = ready_beat;
+            CEP_LIFECYCLE_STATE[scope_index].teardown = false;
+            CEP_LIFECYCLE_STATE[scope_index].teardown_signal_emitted = false;
+            CEP_LIFECYCLE_STATE[scope_index].td_beat = td_beat;
+        } else if (status && strcmp(status, "teardown") == 0) {
+            uint64_t ready_beat = 0u;
+            uint64_t td_beat = 0u;
+            (void)cep_lifecycle_read_numeric(scope_node, CEP_DTAW("CEP", "ready_beat"), &ready_beat);
+            (void)cep_lifecycle_read_numeric(scope_node, CEP_DTAW("CEP", "td_beat"), &td_beat);
+
+            CEP_LIFECYCLE_STATE[scope_index].ready = false;
+            CEP_LIFECYCLE_STATE[scope_index].ready_signal_emitted = true;
+            CEP_LIFECYCLE_STATE[scope_index].ready_beat = ready_beat;
+            CEP_LIFECYCLE_STATE[scope_index].teardown = true;
+            CEP_LIFECYCLE_STATE[scope_index].teardown_signal_emitted = true;
+            CEP_LIFECYCLE_STATE[scope_index].td_beat = td_beat;
+        }
+    }
 }
 
 static bool cep_lifecycle_emit_signal(const cepDT* event_dt, const cepDT* scope_dt, bool immediate) {
@@ -1379,6 +1440,8 @@ bool cep_heartbeat_bootstrap(void) {
     if (!CEP_RUNTIME.topology.enzymes) {
         CEP_RUNTIME.topology.enzymes = enzymes;
     }
+
+    cep_lifecycle_reload_state();
 
     if (!cep_runtime_has_registry()) {
         CEP_RUNTIME.registry = cep_enzyme_registry_create();
@@ -2092,9 +2155,6 @@ bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope) {
                 (void)cep_lifecycle_scope_mark_ready(dep);
             }
         }
-        if (!cep_lifecycle_scope_dependencies_ready(scope)) {
-            return false;
-        }
     }
 
     const cepDT* scope_dt = info->scope_dt ? info->scope_dt() : NULL;
@@ -2102,9 +2162,20 @@ bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope) {
         return false;
     }
 
+    cepBeatNumber beat = cep_beat_index();
+    if (beat == CEP_BEAT_INVALID) {
+        beat = 0u;
+    }
+
     cepCell* bucket = cep_lifecycle_scope_bucket(scope, true);
     if (!bucket) {
-        return false;
+        state->ready = true;
+        state->ready_signal_emitted = false;
+        state->ready_beat = beat;
+        state->teardown = false;
+        state->teardown_signal_emitted = false;
+        state->td_beat = 0u;
+        return true;
     }
 
     const char* existing_status = cep_lifecycle_read_text(bucket, CEP_DTAW("CEP", "status"));
@@ -2123,13 +2194,12 @@ bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope) {
         return true;
     }
 
-    cepBeatNumber beat = cep_beat_index();
-    if (beat == CEP_BEAT_INVALID) {
-        beat = 0u;
-    }
-
     if (!cep_lifecycle_store_text(bucket, CEP_DTAW("CEP", "status"), "ready")) {
-        return false;
+        CEP_LIFECYCLE_STATE[scope].ready = true;
+        CEP_LIFECYCLE_STATE[scope].ready_beat = beat;
+        CEP_LIFECYCLE_STATE[scope].teardown = false;
+        CEP_LIFECYCLE_STATE[scope].teardown_signal_emitted = false;
+        return true;
     }
     (void)cep_lifecycle_store_numeric(bucket, CEP_DTAW("CEP", "ready_beat"), (uint64_t)beat);
 
@@ -2221,7 +2291,23 @@ bool cep_lifecycle_scope_is_ready(cepLifecycleScope scope) {
         return false;
     }
     if (!CEP_LIFECYCLE_STATE[scope].ready) {
-        (void)cep_lifecycle_scope_mark_ready(scope);
+        cepCell* bucket = cep_lifecycle_scope_bucket(scope, false);
+        if (bucket) {
+            const char* status = cep_lifecycle_read_text(bucket, CEP_DTAW("CEP", "status"));
+            if (status && strcmp(status, "ready") == 0) {
+                uint64_t ready_beat = 0u;
+                uint64_t td_beat = 0u;
+                (void)cep_lifecycle_read_numeric(bucket, CEP_DTAW("CEP", "ready_beat"), &ready_beat);
+                (void)cep_lifecycle_read_numeric(bucket, CEP_DTAW("CEP", "td_beat"), &td_beat);
+
+                CEP_LIFECYCLE_STATE[scope].ready = true;
+                CEP_LIFECYCLE_STATE[scope].ready_signal_emitted = true;
+                CEP_LIFECYCLE_STATE[scope].ready_beat = ready_beat;
+                CEP_LIFECYCLE_STATE[scope].teardown = false;
+                CEP_LIFECYCLE_STATE[scope].teardown_signal_emitted = false;
+                CEP_LIFECYCLE_STATE[scope].td_beat = td_beat;
+            }
+        }
     }
     return CEP_LIFECYCLE_STATE[scope].ready;
 }

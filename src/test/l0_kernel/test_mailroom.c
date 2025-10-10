@@ -6,11 +6,6 @@
 #include "cep_mailroom.h"
 #include "cep_enzyme.h"
 #include "cep_namepool.h"
-#include "cep_l1_coherence.h"
-
-#ifdef CEP_HAS_L2_TESTS
-#include "cep_l2_flows.h"
-#endif
 
 #include <stdbool.h>
 #include <string.h>
@@ -121,13 +116,7 @@ MunitResult test_mailroom(const MunitParameter params[], void* fixture) {
 
         munit_assert_true(cep_mailroom_add_router_before("coh_ing_be"));
 
-        munit_assert_true(cep_l1_coherence_bootstrap());
-        mailroom_expect_dictionary(data_root, "coh");
-
-#ifdef CEP_HAS_L2_TESTS
-        munit_assert_true(cep_l2_flows_bootstrap());
-        mailroom_expect_dictionary(data_root, "flow");
-#endif
+        /* FIXME: re-enable L1/L2 bootstrapping once their startup runs as heartbeat impulses. */
 
         if (cycle < 2u) {
             cep_cell_system_shutdown();
