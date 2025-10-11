@@ -11,6 +11,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <inttypes.h>
 
 CEP_DEFINE_STATIC_DT(dt_data_root,      CEP_ACRO("CEP"), CEP_WORD("data"))
 CEP_DEFINE_STATIC_DT(dt_sys_root,       CEP_ACRO("CEP"), CEP_WORD("sys"))
@@ -234,7 +235,7 @@ static cepCell* cep_mailroom_ensure_dictionary(cepCell* parent, const cepDT* nam
         return NULL;
     }
 
-    cepDT lookup = *name;
+    cepDT lookup = cep_dt_clean(name);
     lookup.glob = 0u;
 
     cepCell* existing = cep_cell_find_by_name(parent, &lookup);
@@ -393,7 +394,7 @@ static bool cep_mailroom_catalog_has_namespace(const cepDT* ns_dt) {
         return false;
     }
 
-    cepDT lookup = *ns_dt;
+    cepDT lookup = cep_dt_clean(ns_dt);
     lookup.glob = 0u;
     cepCell* scope = cep_cell_find_by_name(err_catalog, &lookup);
     if (!scope || !cep_cell_has_store(scope)) {
@@ -429,7 +430,7 @@ static bool cep_mailroom_set_string_value(cepCell* parent, const cepDT* name, co
     }
 
     size_t size = strlen(text) + 1u;
-    cepDT lookup = *name;
+    cepDT lookup = cep_dt_clean(name);
     lookup.glob = 0u;
 
     cepCell* existing = cep_cell_find_by_name(parent, &lookup);
@@ -766,6 +767,55 @@ bool cep_mailroom_add_router_before(const char* enzyme_tag) {
     return true;
 }
 
+bool cep_mailroom_enqueue_signal(const cepDT* namespace_dt,
+                                 const cepDT* bucket_dt,
+                                 const cepDT* txn_dt) {
+    if (!namespace_dt || !bucket_dt || !txn_dt) {
+        return false;
+    }
+
+    if (!cep_dt_is_valid(namespace_dt) || !cep_dt_is_valid(bucket_dt) || !cep_dt_is_valid(txn_dt)) {
+        return false;
+    }
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[2];
+    } cepPathStatic2;
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[5];
+    } cepPathStatic5;
+
+    cepPathStatic2 signal_path = {
+        .length = 2u,
+        .capacity = 2u,
+        .past = {
+            {.dt = *CEP_DTAW("CEP", "sig_cell"), .timestamp = 0u},
+            {.dt = *CEP_DTAW("CEP", "op_add"), .timestamp = 0u},
+        },
+    };
+
+    cepPathStatic5 target_path = {
+        .length = 5u,
+        .capacity = 5u,
+        .past = {
+            {.dt = *dt_data_root(), .timestamp = 0u},
+            {.dt = *dt_inbox_root(), .timestamp = 0u},
+            {.dt = *namespace_dt, .timestamp = 0u},
+            {.dt = *bucket_dt, .timestamp = 0u},
+            {.dt = *txn_dt, .timestamp = 0u},
+        },
+    };
+
+    return cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID,
+                                        (const cepPath*)&signal_path,
+                                        (const cepPath*)&target_path) == CEP_ENZYME_SUCCESS;
+}
+
 bool cep_mailroom_bootstrap(void) {
     if (cep_mailroom_bootstrap_done) {
         (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_MAILROOM);
@@ -826,10 +876,11 @@ static int cep_mailroom_route(const cepPath* signal_path, const cepPath* target_
         return CEP_ENZYME_SUCCESS;
     }
 
-    const cepDT* txn_name_dt = cep_cell_get_name(txn);
-    if (!txn_name_dt) {
+    const cepDT* txn_name_ptr = cep_cell_get_name(txn);
+    if (!txn_name_ptr) {
         return CEP_ENZYME_SUCCESS;
     }
+    cepDT txn_name = cep_dt_clean(txn_name_ptr);
 
     cepCell* intent_bucket = cep_cell_parent(txn);
     cepCell* ns_node = intent_bucket ? cep_cell_parent(intent_bucket) : NULL;
@@ -852,8 +903,15 @@ static int cep_mailroom_route(const cepPath* signal_path, const cepPath* target_
     if (!dest_bucket_name) {
         return CEP_ENZYME_SUCCESS;
     }
+    cepDT dest_bucket_clean = cep_dt_clean(dest_bucket_name);
 
-    cepCell* layer_root = cep_cell_find_by_name(data_root, cep_cell_get_name(ns_node));
+    const cepDT* ns_name_ptr = cep_cell_get_name(ns_node);
+    if (!ns_name_ptr) {
+        return CEP_ENZYME_SUCCESS;
+    }
+    cepDT ns_clean = cep_dt_clean(ns_name_ptr);
+
+    cepCell* layer_root = cep_cell_find_by_name(data_root, &ns_clean);
     if (!layer_root) {
         return CEP_ENZYME_SUCCESS;
     }
@@ -863,12 +921,12 @@ static int cep_mailroom_route(const cepPath* signal_path, const cepPath* target_
         return CEP_ENZYME_SUCCESS;
     }
 
-    cepCell* dest_bucket = cep_cell_find_by_name(layer_inbox, dest_bucket_name);
+    cepCell* dest_bucket = cep_cell_find_by_name(layer_inbox, &dest_bucket_clean);
     if (!dest_bucket) {
         return CEP_ENZYME_SUCCESS;
     }
 
-    if (cep_cell_find_by_name(dest_bucket, txn_name_dt)) {
+    if (cep_cell_find_by_name(dest_bucket, &txn_name)) {
         cep_cell_remove_hard(txn, NULL);
         return CEP_ENZYME_SUCCESS;
     }
@@ -885,12 +943,53 @@ static int cep_mailroom_route(const cepPath* signal_path, const cepPath* target_
         return CEP_ENZYME_FATAL;
     }
 
-    cepDT audit_name = *txn_name_dt;
+    cepDT audit_name = txn_name;
     cepCell* audit_link = cep_dict_add_link(intent_bucket, &audit_name, inserted);
     if (audit_link) {
         cepCell* parents[] = { audit_link };
         (void)cep_cell_add_parents(inserted, parents, cep_lengthof(parents));
     }
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[2];
+    } cepPathStatic2;
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[5];
+    } cepPathStatic5;
+
+    cepPathStatic2 signal_path_local = {
+        .length = 2u,
+        .capacity = 2u,
+        .past = {
+            {.dt = *dt_sig_cell(), .timestamp = 0u},
+            {.dt = *dt_op_add(), .timestamp = 0u},
+        },
+    };
+
+    cepPathStatic5 target_path_local = {
+        .length = 5u,
+        .capacity = 5u,
+        .past = {
+            {.dt = *dt_data_root(), .timestamp = 0u},
+            {.dt = ns_clean, .timestamp = 0u},
+            {.dt = *dt_inbox_root(), .timestamp = 0u},
+            {.dt = dest_bucket_clean, .timestamp = 0u},
+            {.dt = txn_name, .timestamp = 0u},
+        },
+    };
+
+    if (cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID,
+                                     (const cepPath*)&signal_path_local,
+                                     (const cepPath*)&target_path_local) != CEP_ENZYME_SUCCESS) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    fprintf(stderr, "[debug] routed %" PRIu64 " to inbox\n", (unsigned long long)txn_name.tag);
 
     return CEP_ENZYME_SUCCESS;
 }

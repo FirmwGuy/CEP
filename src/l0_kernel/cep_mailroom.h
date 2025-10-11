@@ -22,6 +22,9 @@ bool cep_mailroom_add_namespace(const char* namespace_tag,
                                 const char* const bucket_tags[],
                                 size_t bucket_count);
 bool cep_mailroom_add_router_before(const char* enzyme_tag);
+bool cep_mailroom_enqueue_signal(const cepDT* namespace_dt,
+                                 const cepDT* bucket_dt,
+                                 const cepDT* txn_dt);
 
 #ifdef __cplusplus
 }

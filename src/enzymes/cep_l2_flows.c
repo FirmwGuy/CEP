@@ -751,6 +751,7 @@ bool cep_l2_definition_intent_init(cepL2DefinitionIntent* intent,
 
     intent->request = request;
     intent->next_step_index = 0u;
+    (void)cep_mailroom_enqueue_signal(dt_flow(), dt_fl_upsert(), &txn_dt);
     return true;
 }
 
@@ -959,6 +960,7 @@ bool cep_l2_niche_intent_init(cepL2NicheIntent* intent,
     }
 
     intent->request = request;
+    (void)cep_mailroom_enqueue_signal(dt_flow(), dt_ni_upsert(), &txn_dt);
     return true;
 }
 
@@ -1005,6 +1007,7 @@ bool cep_l2_instance_start_intent_init(cepL2InstanceStartIntent* intent,
     }
 
     intent->request = request;
+    (void)cep_mailroom_enqueue_signal(dt_flow(), dt_inst_start(), &txn_dt);
     return true;
 }
 
@@ -1074,6 +1077,7 @@ bool cep_l2_instance_event_intent_init(cepL2InstanceEventIntent* intent,
     }
 
     intent->request = request;
+    (void)cep_mailroom_enqueue_signal(dt_flow(), dt_inst_event(), &txn_dt);
     return true;
 }
 
@@ -1129,6 +1133,7 @@ bool cep_l2_instance_control_intent_init(cepL2InstanceControlIntent* intent,
     }
 
     intent->request = request;
+    (void)cep_mailroom_enqueue_signal(dt_flow(), dt_inst_ctrl(), &txn_dt);
     return true;
 }
 

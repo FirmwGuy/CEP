@@ -286,6 +286,8 @@ static bool cep_l1_text_to_dt_bytes(const char* text, size_t length, cepDT* out)
         return false;
     }
 
+    CEP_DT_CLEAN_COPY(out, NULL);
+
     cepID id = cep_namepool_intern(text, length);
     if (!id) {
         return false;
@@ -315,6 +317,7 @@ bool cep_l1_tokens_to_dt(const char* const tokens[], size_t token_count, cepDT* 
         return false;
     }
 
+    CEP_DT_CLEAN_COPY(out_dt, NULL);
     cepID word = cep_text_to_word(canonical);
     if (word) {
         out_dt->domain = cep_domain_cep();
@@ -572,8 +575,16 @@ bool cep_l1_being_intent_init(cepL1BeingIntent* intent,
     if (!success) {
         cep_l1_intent_abort(request);
         memset(intent, 0, sizeof *intent);
+        return false;
     }
-    return success;
+
+    if (!cep_mailroom_enqueue_signal(CEP_DTAW("CEP", "coh"), dt_be_create(), &txn_dt)) {
+        cep_l1_intent_abort(request);
+        memset(intent, 0, sizeof *intent);
+        return false;
+    }
+
+    return true;
 }
 
 /* Assemble a `bo_upsert` request, wiring canonical identifiers, endpoints, and
@@ -651,8 +662,16 @@ bool cep_l1_bond_intent_init(cepL1BondIntent* intent,
     if (!success) {
         cep_l1_intent_abort(request);
         memset(intent, 0, sizeof *intent);
+        return false;
     }
-    return success;
+
+    if (!cep_mailroom_enqueue_signal(CEP_DTAW("CEP", "coh"), dt_bo_upsert(), &txn_dt)) {
+        cep_l1_intent_abort(request);
+        memset(intent, 0, sizeof *intent);
+        return false;
+    }
+
+    return true;
 }
 
 /* Prepare a `ctx_upsert` request with canonical identifiers and ready-made
@@ -729,8 +748,16 @@ bool cep_l1_context_intent_init(cepL1ContextIntent* intent,
     if (!success) {
         cep_l1_intent_abort(request);
         memset(intent, 0, sizeof *intent);
+        return false;
     }
-    return success;
+
+    if (!cep_mailroom_enqueue_signal(CEP_DTAW("CEP", "coh"), dt_ctx_upsert(), &txn_dt)) {
+        cep_l1_intent_abort(request);
+        memset(intent, 0, sizeof *intent);
+        return false;
+    }
+
+    return true;
 }
 
 /* Attach a canonicalised role link and preserve the submitted spelling for
@@ -1038,6 +1065,13 @@ static bool cep_l1_set_number_value(cepCell* parent, const cepDT* name, size_t v
     if (written <= 0 || (size_t)written >= sizeof buffer) {
         return false;
     }
+    if (!name || !cep_dt_is_valid(name)) {
+        fprintf(stderr, "[debug] invalid DT in set_number domain=%" PRIu64 " tag=%" PRIu64 " glob=%u\n",
+                (unsigned long long)(name ? name->domain : 0u),
+                (unsigned long long)(name ? name->tag : 0u),
+                name ? name->glob : 0u);
+        return false;
+    }
     return cep_l1_set_string_value(parent, name, buffer);
 }
 
@@ -1115,6 +1149,10 @@ static bool cep_l1_window_write(cepCell* parent,
         }
 
         size_t value = use_flag ? samples[i].flag : samples[i].value;
+        fprintf(stderr, "[debug] window key %s payload=%zu naming=%u raw=%" PRIu64 " payloadid=%" PRIu64 "\n",
+                key_buf, value, (unsigned)cep_id_naming(key_dt.tag),
+                (unsigned long long)key_dt.tag,
+                (unsigned long long)cep_id(key_dt.tag));
         if (!cep_l1_set_number_value(window, &key_dt, value)) {
             return false;
         }
@@ -2202,7 +2240,7 @@ static bool cep_l1_index_facets(cepCell* ctx, const cepDT* id_dt) {
 
     success = true;
     for (cepCell* facet = cep_cell_first(facets); facet && success; facet = cep_cell_next(facets, facet)) {
-        cepDT facet_name = *cep_cell_get_name(facet);
+        cepDT facet_name = cep_dt_clean(cep_cell_get_name(facet));
         if (!cep_l1_link_child(ctx_bucket, &facet_name, facet)) {
             success = false;
         }
@@ -2723,6 +2761,8 @@ static int cep_l1_enzyme_ingest_be(const cepPath* signal_path, const cepPath* ta
     cepL1StoreLock ledger_lock = {0};
     cepL1StoreLock being_lock = {0};
 
+    fprintf(stderr, "[debug] ingest_be invoked\n");
+
     cepCell* request = cep_l1_resolve_request(target_path);
     if (!cep_l1_request_guard(request, dt_be_create())) {
         return CEP_ENZYME_SUCCESS;
@@ -2785,6 +2825,9 @@ static int cep_l1_enzyme_ingest_be(const cepPath* signal_path, const cepPath* ta
 done:
     cep_l1_store_unlock(&being_lock);
     cep_l1_store_unlock(&ledger_lock);
+    if (result != CEP_ENZYME_SUCCESS) {
+        fprintf(stderr, "[debug] ingest_be status=%d\n", result);
+    }
     return result;
 }
 static int cep_l1_enzyme_ingest_bo(const cepPath* signal_path, const cepPath* target_path) {
@@ -3256,12 +3299,14 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     if (cep_l1_request_guard(request, dt_be_create())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
+            fprintf(stderr, "[debug] adj: be_create extract id failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* being = cep_cell_find_by_name(cep_l1_being_ledger(), &id_dt);
         if (!being || !cep_l1_adj_being(being, &id_dt)) {
+            fprintf(stderr, "[debug] adj: be_create adj_being failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
@@ -3270,12 +3315,14 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     } else if (cep_l1_request_guard(request, dt_bo_upsert())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
+            fprintf(stderr, "[debug] adj: bond extract id failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* bond = cep_cell_find_by_name(cep_l1_bond_ledger(), &id_dt);
         if (!bond) {
+            fprintf(stderr, "[debug] adj: bond lookup failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
@@ -3283,6 +3330,7 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
         cepCell* src_link = cep_cell_find_by_name(bond, dt_src());
         cepCell* dst_link = cep_cell_find_by_name(bond, dt_dst());
         if (!src_link || !dst_link) {
+            fprintf(stderr, "[debug] adj: bond endpoints missing\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
@@ -3295,6 +3343,7 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
         }
 
         if (!cep_l1_adj_bond(bond, &id_dt, src, dst)) {
+            fprintf(stderr, "[debug] adj: adj_bond failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
@@ -3303,17 +3352,20 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     } else if (cep_l1_request_guard(request, dt_ctx_upsert())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
+            fprintf(stderr, "[debug] adj: ctx extract id failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* ctx = cep_cell_find_by_name(cep_l1_context_ledger(), &id_dt);
         if (!ctx) {
+            fprintf(stderr, "[debug] adj: ctx lookup failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         if (!cep_l1_adj_context(ctx, &id_dt)) {
+            fprintf(stderr, "[debug] adj: adj_context failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }

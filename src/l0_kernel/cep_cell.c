@@ -1002,7 +1002,7 @@ static cepStoreHistory* cep_store_history_snapshot(const cepStore* store, const 
         size_t index = 0;
         for (cepCell* child = store_first_child(store); child; child = store_next_child(store, child)) {
             cepStoreHistoryEntry* entry = &history->entries[index++];
-            entry->name     = *cep_cell_get_name(child);
+            entry->name     = cep_dt_clean(cep_cell_get_name(child));
             entry->modified = store->modified;
             entry->alive    = true;
             entry->cell     = child;
@@ -1096,50 +1096,120 @@ static cepShadow* cep_shadow_reserve(cepShadow* shadow, unsigned needed)
 
 static void cep_shadow_attach(cepCell* target, cepCell* link)
 {
-    assert(target && link && !cep_cell_is_link(target));
+    if (!target || !link)
+        return;
+
+    if (cep_cell_is_link(target)) {
+        target = cep_link_pull(target);
+        if (!target)
+            return;
+    }
+
+    assert(cep_cell_is_link(link));
 
     cepCell** singleSlot   = cep_shadow_single_slot(target);
     cepShadow** multiSlot  = cep_shadow_multi_slot(target);
 
+    cepShadow* bucket = multiSlot ? *multiSlot : NULL;
+    cepCell* existingSingle = singleSlot ? *singleSlot : NULL;
+
+    if (target->metacell.shadowing == CEP_SHADOW_NONE) {
+        if (bucket && bucket->count) {
+            target->metacell.shadowing = CEP_SHADOW_MULTIPLE;
+        } else if (existingSingle) {
+            target->metacell.shadowing = CEP_SHADOW_SINGLE;
+        } else if (bucket) {
+            *multiSlot = NULL;
+            cep_free(bucket);
+            bucket = NULL;
+        }
+    }
+
+    if (target->metacell.shadowing == CEP_SHADOW_SINGLE && !existingSingle) {
+        target->metacell.shadowing = CEP_SHADOW_NONE;
+    } else if (target->metacell.shadowing == CEP_SHADOW_MULTIPLE && (!bucket || !bucket->count)) {
+        if (bucket) {
+            cep_free(bucket);
+            *multiSlot = NULL;
+            bucket = NULL;
+        }
+        if (existingSingle) {
+            target->metacell.shadowing = CEP_SHADOW_SINGLE;
+        } else {
+            target->metacell.shadowing = CEP_SHADOW_NONE;
+        }
+    }
+
     switch (target->metacell.shadowing) {
       case CEP_SHADOW_NONE: {
-        *singleSlot = link;
+        if (existingSingle && existingSingle == link)
+            break;
+        if (existingSingle && existingSingle != link) {
+            cepShadow* shadow = cep_shadow_reserve(NULL, 2U);
+            shadow->count = 0U;
+            shadow->cell[shadow->count++] = existingSingle;
+            shadow->cell[shadow->count++] = link;
+            if (singleSlot)
+                *singleSlot = NULL;
+            if (multiSlot)
+                *multiSlot = shadow;
+            target->metacell.shadowing = CEP_SHADOW_MULTIPLE;
+            break;
+        }
+        if (singleSlot)
+            *singleSlot = link;
         target->metacell.shadowing = CEP_SHADOW_SINGLE;
         break;
       }
 
       case CEP_SHADOW_SINGLE: {
-        cepCell* existing = *singleSlot;
-        assert(existing);
+        cepCell* existing = existingSingle;
+        if (!existing) {
+            if (singleSlot)
+                *singleSlot = link;
+            break;
+        }
         if (existing == link)
-            return;
+            break;
 
         cepShadow* shadow = cep_shadow_reserve(NULL, 2U);
         shadow->count = 0U;
         shadow->cell[shadow->count++] = existing;
         shadow->cell[shadow->count++] = link;
 
-        *singleSlot = NULL;
-        *multiSlot  = shadow;
+        if (singleSlot)
+            *singleSlot = NULL;
+        if (multiSlot)
+            *multiSlot  = shadow;
         target->metacell.shadowing = CEP_SHADOW_MULTIPLE;
         break;
       }
 
       case CEP_SHADOW_MULTIPLE: {
-        cepShadow* shadow = *multiSlot;
-        assert(shadow);
+        cepShadow* shadow = bucket;
+        if (!shadow) {
+            shadow = cep_shadow_reserve(NULL, 2U);
+            shadow->count = 0U;
+            if (existingSingle)
+                shadow->cell[shadow->count++] = existingSingle;
+        }
 
         for (unsigned i = 0; i < shadow->count; i++)
-            if (shadow->cell[i] == link)
-                return;
+            if (shadow->cell[i] == link) {
+                if (!bucket && multiSlot)
+                    *multiSlot = shadow;
+                goto shadow_done;
+            }
 
         shadow = cep_shadow_reserve(shadow, shadow->count + 1U);
         shadow->cell[shadow->count++] = link;
-        *multiSlot = shadow;
+        if (multiSlot)
+            *multiSlot = shadow;
         break;
       }
     }
 
+shadow_done:
     link->metacell.targetDead = cep_cell_is_deleted(target);
 }
 
@@ -4204,7 +4274,7 @@ bool cep_cell_child_take(cepCell* cell, cepCell* target) {
     store->modified = snapshot;
 
     CEP_0(target);
-    cepDT name = *cep_cell_get_name(child);
+    cepDT name = cep_dt_clean(cep_cell_get_name(child));
     cep_link_initialize(target, &name, child);
 
     // ToDo: attach link to the snapshot metadata once snapshot-aware links are implemented.
@@ -4238,7 +4308,7 @@ bool cep_cell_child_pop(cepCell* cell, cepCell* target) {
     store->modified = snapshot;
 
     CEP_0(target);
-    cepDT name = *cep_cell_get_name(child);
+    cepDT name = cep_dt_clean(cep_cell_get_name(child));
     cep_link_initialize(target, &name, child);
 
     // ToDo: attach link to the snapshot metadata once snapshot-aware links are implemented.

@@ -1099,7 +1099,7 @@ static cepCell* cep_lifecycle_get_dictionary(cepCell* parent, const cepDT* name,
         }
     }
 
-    cepDT lookup = *name;
+    cepDT lookup = cep_dt_clean(name);
     lookup.glob = 0u;
 
     cepCell* existing = store ? cep_cell_find_by_name(parent, &lookup) : NULL;
@@ -1141,7 +1141,7 @@ static bool cep_lifecycle_store_text(cepCell* parent, const cepDT* name, const c
         return false;
     }
 
-    cepDT lookup = *name;
+    cepDT lookup = cep_dt_clean(name);
     lookup.glob = 0u;
     size_t size = strlen(text) + 1u;
 
@@ -1175,7 +1175,7 @@ static const char* cep_lifecycle_read_text(const cepCell* parent, const cepDT* n
         return NULL;
     }
 
-    cepDT lookup = *name;
+    cepDT lookup = cep_dt_clean(name);
     lookup.glob = 0u;
 
     cepCell* node = cep_cell_find_by_name(parent, &lookup);

@@ -70,6 +70,29 @@ typedef struct {
 
 #define CEP_DT_PTR(p)       ((cepDT*)(p))
 
+#define CEP_DT_CLEAN_COPY(dst_ptr, src_ptr)                                     \
+    do {                                                                        \
+        cepDT* __dst = (dst_ptr);                                               \
+        const cepDT* __src = (src_ptr);                                         \
+        if (__dst) {                                                            \
+            if (__src) {                                                        \
+                __dst->domain = __src->domain;                                  \
+                __dst->tag = __src->tag;                                        \
+                __dst->glob = __src->glob;                                      \
+            } else {                                                            \
+                __dst->domain = 0u;                                             \
+                __dst->tag = 0u;                                                \
+                __dst->glob = 0u;                                               \
+            }                                                                   \
+        }                                                                       \
+    } while (0)
+
+static inline cepDT cep_dt_clean(const cepDT* src) {
+    cepDT cleaned = {0};
+    CEP_DT_CLEAN_COPY(&cleaned, src);
+    return cleaned;
+}
+
 static inline int cep_dt_compare(const cepDT* restrict key, const cepDT* restrict dt)
 {
     if (key->domain > dt->domain)

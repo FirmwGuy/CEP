@@ -77,7 +77,7 @@ static cepID cep_namepool_try_compact(const char* text, size_t length) {
         value = value * 10u + digit;
     }
 
-    if (is_numeric && value <= CEP_AUTOID_MAX && value != cep_id(CEP_AUTOID)) {
+    if (is_numeric && value > 0u && value <= CEP_AUTOID_MAX && value != cep_id(CEP_AUTOID)) {
         return cep_id_to_numeric((cepID)value);
     }
 
