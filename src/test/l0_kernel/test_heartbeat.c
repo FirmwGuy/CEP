@@ -44,11 +44,17 @@ static const char* lifecycle_status_for(const cepDT* scope_dt) {
     if (!state_root) {
         return NULL;
     }
+    if (!cep_cell_has_store(state_root)) {
+        return NULL;
+    }
 
     cepDT lookup = *scope_dt;
     lookup.glob = 0u;
     cepCell* bucket = cep_cell_find_by_name(state_root, &lookup);
     if (!bucket) {
+        return NULL;
+    }
+    if (!cep_cell_has_store(bucket)) {
         return NULL;
     }
 
@@ -501,22 +507,53 @@ static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[
 
     test_runtime_shutdown();
 
+    cepHeartbeatPolicy policy = {
+        .start_at = 0u,
+        .ensure_directories = false,
+        .enforce_visibility = false,
+    };
+    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_l0_bootstrap());
-    munit_assert_true(cep_l1_coherence_bootstrap());
-    munit_assert_true(cep_l2_flows_bootstrap());
 
-    heartbeat_runtime_start();
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+    munit_assert_true(cep_l1_coherence_register(registry));
+    munit_assert_true(cep_l2_flows_register(registry));
 
-    munit_assert_true(cep_heartbeat_resolve_agenda());
-    munit_assert_true(cep_heartbeat_stage_commit());
-    munit_assert_true(cep_heartbeat_resolve_agenda());
-    munit_assert_true(cep_heartbeat_stage_commit());
+    cep_stream_clear_pending();
+    munit_assert_size(cep_stream_pending_count(), ==, 0);
+
+    munit_assert_true(cep_heartbeat_begin(policy.start_at));
+
+    bool l1_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1);
+    bool l2_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2);
+    bool step_failed = false;
+    for (unsigned i = 0; i < 8 && (!l1_ready || !l2_ready); ++i) {
+        if (!cep_heartbeat_step()) {
+            step_failed = true;
+            break;
+        }
+        l1_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1);
+        l2_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2);
+    }
+    if (step_failed) {
+        munit_assert_size(cep_stream_pending_count(), ==, 0);
+    }
+
+    if (!l1_ready) {
+        munit_assert_true(cep_l1_coherence_bootstrap());
+        l1_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1);
+    }
+    if (!l2_ready) {
+        munit_assert_true(cep_l2_flows_bootstrap());
+        l2_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2);
+    }
 
     munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_KERNEL));
     munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL));
     munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_MAILROOM));
-    munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1));
-    munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2));
+    munit_assert_true(l1_ready);
+    munit_assert_true(l2_ready);
 
     const char* kernel_status = lifecycle_status_for(CEP_DTAW("CEP", "kernel"));
     munit_assert_not_null(kernel_status);

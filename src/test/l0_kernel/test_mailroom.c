@@ -89,11 +89,51 @@ MunitResult test_mailroom(const MunitParameter params[], void* fixture) {
     const char* ops_buckets[] = { "ingest", "audit" };
 
     for (size_t cycle = 0; cycle < 3u; ++cycle) {
+        cepHeartbeatPolicy policy = {
+            .start_at = 0u,
+            .ensure_directories = false,
+            .enforce_visibility = false,
+        };
+
+        munit_assert_true(cep_heartbeat_configure(NULL, &policy));
         munit_assert_true(cep_l0_bootstrap());
         mailroom_prepare_catalog();
-        munit_assert_true(cep_mailroom_bootstrap());
-        munit_assert_true(cep_l1_coherence_bootstrap());
-        munit_assert_true(cep_l2_flows_bootstrap());
+        munit_assert_true(cep_mailroom_add_router_before("coh_ing_be"));
+
+        cepEnzymeRegistry* registry = cep_heartbeat_registry();
+        munit_assert_not_null(registry);
+        munit_assert_true(cep_l1_coherence_register(registry));
+        munit_assert_true(cep_l2_flows_register(registry));
+
+        cep_stream_clear_pending();
+        munit_assert_size(cep_stream_pending_count(), ==, 0);
+
+        munit_assert_true(cep_heartbeat_begin(policy.start_at));
+
+        bool l1_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1);
+        bool l2_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2);
+        bool step_failed = false;
+        for (unsigned i = 0; i < 8 && (!l1_ready || !l2_ready); ++i) {
+            if (!cep_heartbeat_step()) {
+                step_failed = true;
+                break;
+            }
+            l1_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1);
+            l2_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2);
+        }
+        if (step_failed) {
+            munit_assert_size(cep_stream_pending_count(), ==, 0);
+        }
+        if (!l1_ready) {
+            munit_assert_true(cep_l1_coherence_bootstrap());
+            l1_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1);
+        }
+        if (!l2_ready) {
+            munit_assert_true(cep_l2_flows_bootstrap());
+            l2_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2);
+        }
+        munit_assert_true(l1_ready);
+        munit_assert_true(l2_ready);
 
         cepCell* root = cep_root();
         cepCell* data_root = mailroom_expect_dictionary(root, "data");
@@ -119,13 +159,8 @@ MunitResult test_mailroom(const MunitParameter params[], void* fixture) {
         mailroom_expect_dictionary(ops_ns, "ingest");
         mailroom_expect_dictionary(ops_ns, "audit");
 
-        munit_assert_true(cep_mailroom_add_router_before("coh_ing_be"));
-
-        if (cycle < 2u) {
-            cep_cell_system_shutdown();
-        }
+        test_runtime_shutdown();
     }
 
-    cep_cell_system_shutdown();
     return MUNIT_OK;
 }
