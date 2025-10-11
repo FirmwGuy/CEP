@@ -82,6 +82,73 @@ static void mailroom_prepare_catalog(void) {
     }
 }
 
+static MunitResult test_mailroom_deferred_registration_ordering(void) {
+    test_runtime_shutdown();
+
+    cepHeartbeatPolicy policy = {
+        .start_at = 0u,
+        .ensure_directories = false,
+        .enforce_visibility = false,
+    };
+
+    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
+    munit_assert_true(cep_l0_bootstrap());
+
+    cepEnzymeRegistry* registry = cep_enzyme_registry_create();
+    munit_assert_not_null(registry);
+
+    munit_assert_true(cep_mailroom_register(registry));
+    munit_assert_true(cep_l1_coherence_register(registry));
+
+    cep_enzyme_registry_activate_pending(registry);
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast past[2];
+    } CepStaticPath2;
+
+    CepStaticPath2 init_path = {
+        .length = 2u,
+        .capacity = 2u,
+        .past = {
+            { .dt = *CEP_DTAW("CEP", "sig_sys"), .timestamp = 0u },
+            { .dt = *CEP_DTAW("CEP", "init"), .timestamp = 0u },
+        },
+    };
+
+    cepImpulse impulse = {
+        .signal_path = (const cepPath*)&init_path,
+        .target_path = NULL,
+    };
+
+    const cepEnzymeDescriptor* ordered[16] = {0};
+    size_t resolved = cep_enzyme_resolve(registry, &impulse, ordered, cep_lengthof(ordered));
+    munit_assert_size(resolved, >, 0u);
+
+    size_t idx_mr_init = SIZE_MAX;
+    size_t idx_coh_init = SIZE_MAX;
+    for (size_t i = 0; i < resolved; ++i) {
+        const cepEnzymeDescriptor* descriptor = ordered[i];
+        if (!descriptor) {
+            continue;
+        }
+        if (cep_dt_compare(&descriptor->name, CEP_DTAW("CEP", "mr_init")) == 0) {
+            idx_mr_init = i;
+        } else if (cep_dt_compare(&descriptor->name, CEP_DTAW("CEP", "coh_init")) == 0) {
+            idx_coh_init = i;
+        }
+    }
+
+    munit_assert_size(idx_mr_init, !=, SIZE_MAX);
+    munit_assert_size(idx_coh_init, !=, SIZE_MAX);
+    munit_assert_true(idx_mr_init < idx_coh_init);
+
+    cep_enzyme_registry_destroy(registry);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
 MunitResult test_mailroom(const MunitParameter params[], void* fixture) {
     test_boot_cycle_prepare(params);
     (void)fixture;
@@ -160,6 +227,13 @@ MunitResult test_mailroom(const MunitParameter params[], void* fixture) {
         mailroom_expect_dictionary(ops_ns, "audit");
 
         test_runtime_shutdown();
+    }
+
+    if (!test_boot_cycle_is_after(params)) {
+        MunitResult order_result = test_mailroom_deferred_registration_ordering();
+        if (order_result != MUNIT_OK) {
+            return order_result;
+        }
     }
 
     return MUNIT_OK;

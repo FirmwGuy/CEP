@@ -3320,6 +3320,7 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
 typedef struct {
     cepEnzymeRegistry* registry;
     size_t             baseline;
+    cepDT              after_mailroom[1];
 } cepL1RegistryRecord;
 
 static cepL1RegistryRecord* cep_l1_records = NULL;
@@ -3348,15 +3349,21 @@ static cepL1RegistryRecord* cep_l1_record_append(cepEnzymeRegistry* registry, si
         }
         cep_l1_records = grown;
         for (size_t i = cep_l1_record_capacity; i < new_capacity; ++i) {
-            cep_l1_records[i].registry = NULL;
-            cep_l1_records[i].baseline = 0u;
-        }
+        cep_l1_records[i].registry = NULL;
+        cep_l1_records[i].baseline = 0u;
+        cep_l1_records[i].after_mailroom[0].domain = 0u;
+        cep_l1_records[i].after_mailroom[0].tag = 0u;
+        cep_l1_records[i].after_mailroom[0].glob = 0u;
+    }
         cep_l1_record_capacity = new_capacity;
     }
 
     cepL1RegistryRecord* record = &cep_l1_records[cep_l1_record_count++];
     record->registry = registry;
     record->baseline = baseline;
+    record->after_mailroom[0].domain = 0u;
+    record->after_mailroom[0].tag = 0u;
+    record->after_mailroom[0].glob = 0u;
     return record;
 }
 
@@ -3454,17 +3461,17 @@ bool cep_l1_coherence_register(cepEnzymeRegistry* registry) {
         },
     };
 
-    cepDT after_mailroom[] = { *CEP_DTAW("CEP", "mr_init") };
-
     cepEnzymeDescriptor init_descriptor = {
         .name = *dt_coh_init(),
         .label = "coh.init",
         .callback = cep_l1_enzyme_init,
         .flags = CEP_ENZYME_FLAG_IDEMPOTENT,
         .match = CEP_ENZYME_MATCH_EXACT,
-        .after = after_mailroom,
-        .after_count = sizeof after_mailroom / sizeof after_mailroom[0],
+        .after = record->after_mailroom,
+        .after_count = cep_lengthof(record->after_mailroom),
     };
+
+    record->after_mailroom[0] = *CEP_DTAW("CEP", "mr_init");
 
     if (cep_enzyme_register(registry, (const cepPath*)&init_path, &init_descriptor) != CEP_ENZYME_SUCCESS) {
         return false;

@@ -17,6 +17,15 @@ Think of CEP's runtime like a stage crew preparing and striking a show. Before t
 - Every lifecycle scope marked ready before `cep_heartbeat_begin()` queues a deferred `CEP:sig_sys/ready/<scope>` impulse. `cep_lifecycle_flush_pending_signals()` sends them once the runtime is running so downstream enzymes can rely on deterministic readiness signals.
 - Impulses emitted inside bootstrap and ready helpers temporarily disable the directory creation flag so system signals remain lightweight even before `/rt/beat/<n>` folders exist.
 
+#### Impulse sequencing during bring-up
+1. `cep_l0_bootstrap()` marks the scopes ready, but the runtime is not running yet, so no impulses fire.
+2. `cep_heartbeat_startup()` sets `CEP_RUNTIME.running = true` and immediately emits the *ready* impulses in enum order:  
+   `/CEP:sig_sys/CEP:ready/CEP:kernel`, `/CEP:sig_sys/CEP:ready/CEP:namepool`, `/CEP:sig_sys/CEP:ready/CEP:mailroom` (plus `/ERR`, `/L1`, `/L2` if they were already bootstrapped). These are immediate signals with a `NULL` target path and are handled entirely inside Layer 0.
+3. `cep_heartbeat_begin()` enqueues `/CEP:sig_sys/CEP:init` for the next beat. That deferred signal is the only startup impulse user code or higher layers commonly bind to—mailroom’s `mr_init` enzyme is attached here, and packs can register their own descriptors on the same path if they need to extend the init choreography.
+4. When L1/L2 bootstraps run after the heartbeat is live, their calls to `cep_lifecycle_scope_mark_ready()` emit deferred `/CEP:sig_sys/CEP:ready/CEP:l1` and `/CEP:sig_sys/CEP:ready/CEP:l2` impulses. User code can hook those signals to observe when a layer becomes usable.
+
+At this stage only Layer 0 consumes the *ready* pulses; effective work (intent routing, ingest, user enzymes) starts after the deferred `/CEP:sig_sys/CEP:init` has executed and the mailroom has reseeded the layer inboxes.
+
 ### Phase 2 - Mailroom activation during startup
 - `cep_mailroom_register(registry)` adds two descriptors to the given registry: `mr_init` bound to `CEP:sig_sys/init` (exact match) and `mr_route` bound to the `CEP:sig_cell/op_add` prefix. The router is flagged as idempotent and inserted before the ingest enzymes declared by Layer 1 (`coh_ing_*`) and Layer 2 (`fl_ing`, `ni_ing`, `inst_ing`); extra names queued through `cep_mailroom_add_router_before()` are appended before registration.
 - When the registry activates on the first beat, `mr_init` replays `cep_mailroom_bootstrap()` so restarts and replays rebuild the lobby even if the process bootstrapped long before. The router also binds itself to `/data/inbox` the first time registration succeeds.
@@ -28,6 +37,10 @@ Think of CEP's runtime like a stage crew preparing and striking a show. Before t
 - `cep_heartbeat_shutdown()` wraps `cep_heartbeat_emit_shutdown()`, resets runtime scratch buffers, clears topology overrides, and calls `cep_cell_system_shutdown()` so the next bootstrap starts from a clean root.
 - `cep_mailroom_shutdown()` clears extra namespace and router caches, marks the mailroom scope as torn down, and lets the next bootstrap reseed the lobby. Because shutdown preserves the structural nodes, replaying a bootstrap reuses existing inbox trees without leaking prior requests.
 - The journal (`/journal/sys_log`) records every lifecycle signal with the beat where it fired and whether it was immediate or deferred, providing an audit trail for both startup and shutdown transitions.
+
+#### Impulse sequencing during teardown
+1. `cep_heartbeat_emit_shutdown()` walks the teardown list `L2 → L1 → ERR → MAILROOM → NAMEPOOL → KERNEL`, emitting `/CEP:sig_sys/CEP:teardown/CEP:<scope>` immediately for each scope. These pulses carry no target path; user enzymes can observe them by registering on the relevant signal if they need to mirror teardown work.
+2. Once all scopes have emitted teardown, the runtime sends `/CEP:sig_sys/CEP:shutdown` (immediate) and processes the batch in the same beat, ensuring log ordering and deterministic cleanup.
 
 ## Q&A
 **Q: What order should I call when bringing CEP online?**  
