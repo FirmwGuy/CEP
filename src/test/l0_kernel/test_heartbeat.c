@@ -536,9 +536,7 @@ static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[
     munit_assert_true(cep_l1_coherence_register(registry));
     munit_assert_true(cep_l2_flows_register(registry));
     munit_assert_true(cep_l1_coherence_bootstrap());
-    munit_assert_true(cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_L1));
     munit_assert_true(cep_l2_flows_bootstrap());
-    munit_assert_true(cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_L2));
 
     munit_assert_true(cep_heartbeat_startup());
     munit_assert_true(cep_heartbeat_begin(policy.start_at));
@@ -580,9 +578,7 @@ static void heartbeat_check_shutdown_case(bool load_layers) {
         munit_assert_true(cep_l1_coherence_register(registry));
         munit_assert_true(cep_l2_flows_register(registry));
         munit_assert_true(cep_l1_coherence_bootstrap());
-        munit_assert_true(cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_L1));
         munit_assert_true(cep_l2_flows_bootstrap());
-        munit_assert_true(cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_L2));
     }
 
     munit_assert_true(cep_heartbeat_startup());
