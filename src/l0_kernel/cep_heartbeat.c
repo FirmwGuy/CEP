@@ -580,6 +580,7 @@ static bool cep_heartbeat_set_numeric_name(cepDT* name, cepBeatNumber beat) {
         return false;
     }
 
+    name->glob = 0u;
     name->domain = CEP_ACRO("HB");
     name->tag = cep_id_to_numeric((cepID)(beat + 1u));
     return true;

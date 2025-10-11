@@ -145,6 +145,12 @@ static MunitResult test_mailroom_deferred_registration_ordering(void) {
     munit_assert_true(idx_mr_init < idx_coh_init);
 
     cep_enzyme_registry_destroy(registry);
+
+    cepEnzymeRegistry* second = cep_enzyme_registry_create();
+    munit_assert_not_null(second);
+    munit_assert_true(cep_mailroom_register(second));
+    munit_assert_true(cep_mailroom_register(second));
+    cep_enzyme_registry_destroy(second);
     test_runtime_shutdown();
     return MUNIT_OK;
 }
@@ -201,6 +207,7 @@ MunitResult test_mailroom(const MunitParameter params[], void* fixture) {
         }
         munit_assert_true(l1_ready);
         munit_assert_true(l2_ready);
+        munit_assert_true(cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_MAILROOM));
 
         cepCell* root = cep_root();
         cepCell* data_root = mailroom_expect_dictionary(root, "data");

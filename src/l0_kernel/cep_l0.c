@@ -34,8 +34,6 @@ bool cep_l0_bootstrap(void) {
         return false;
     }
 
-    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_MAILROOM);
-
     cep_l0_bootstrap_done = true;
     return true;
 }

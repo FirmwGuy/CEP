@@ -163,6 +163,13 @@ static size_t cep_mailroom_router_before_extra_count = 0u;
 
 static bool cep_mailroom_bootstrap_done = false;
 
+typedef struct {
+    cepEnzymeRegistry* registry;
+} cepMailroomRegistryEntry;
+
+static cepMailroomRegistryEntry* cep_mailroom_registrations = NULL;
+static size_t cep_mailroom_registration_count = 0u;
+
 CEP_DEFINE_STATIC_DT(dt_sig_sys,  CEP_ACRO("CEP"), CEP_WORD("sig_sys"))
 CEP_DEFINE_STATIC_DT(dt_sys_init, CEP_ACRO("CEP"), CEP_WORD("init"))
 CEP_DEFINE_STATIC_DT(dt_err_cat,  CEP_ACRO("CEP"), CEP_WORD("err_cat"))
@@ -187,7 +194,6 @@ CEP_DEFINE_STATIC_DT(dt_mailroom_meta, CEP_ACRO("CEP"), CEP_WORD("mailroom"))
 CEP_DEFINE_STATIC_DT(dt_mailroom_buckets, CEP_ACRO("CEP"), CEP_WORD("buckets"))
 
 static bool cep_mailroom_bindings_applied = false;
-static cepEnzymeRegistry* cep_mailroom_registered_registry = NULL;
 
 static void cep_mailroom_free_extra_namespaces(void) {
     if (!cep_mailroom_extra_namespaces) {
@@ -216,9 +222,11 @@ void cep_mailroom_shutdown(void) {
     (void)cep_lifecycle_scope_mark_teardown(CEP_LIFECYCLE_SCOPE_MAILROOM);
     cep_mailroom_free_extra_namespaces();
     cep_mailroom_free_router_before();
+    cep_free(cep_mailroom_registrations);
+    cep_mailroom_registrations = NULL;
+    cep_mailroom_registration_count = 0u;
     cep_mailroom_bootstrap_done = false;
     cep_mailroom_bindings_applied = false;
-    cep_mailroom_registered_registry = NULL;
 }
 
 static cepCell* cep_mailroom_ensure_dictionary(cepCell* parent, const cepDT* name, unsigned storage) {
@@ -449,6 +457,69 @@ static bool cep_mailroom_set_string_value(cepCell* parent, const cepDT* name, co
     return true;
 }
 
+/* Reseed the unified inbox so restarts and replays rebuild the lobby exactly
+ * like a fresh bootstrap, mirroring error catalog buckets and any extra
+ * namespaces packs queued ahead of time. */
+static bool cep_mailroom_reseed_lobby(void) {
+    if (!cep_cell_system_initialized()) {
+        return false;
+    }
+
+    cepCell* root = cep_root();
+    if (!root) {
+        return false;
+    }
+
+    cepCell* data_root = cep_mailroom_ensure_dictionary(root, dt_data_root(), CEP_STORAGE_RED_BLACK_T);
+    if (!data_root) {
+        return false;
+    }
+
+    cepCell* inbox_root = cep_mailroom_ensure_dictionary(data_root, dt_inbox_root(), CEP_STORAGE_RED_BLACK_T);
+    if (!inbox_root) {
+        return false;
+    }
+
+    cepCell* sys_root = cep_cell_find_by_name(root, dt_sys_root());
+    if (!sys_root) {
+        return false;
+    }
+
+    cepCell* err_catalog = cep_cell_find_by_name(sys_root, dt_err_cat());
+    if (!err_catalog) {
+        err_catalog = cep_mailroom_ensure_dictionary(sys_root, dt_err_cat(), CEP_STORAGE_RED_BLACK_T);
+        if (!err_catalog) {
+            return false;
+        }
+    }
+
+    bool seeded_from_catalog = false;
+    if (!cep_mailroom_seed_from_catalog(inbox_root, err_catalog, &seeded_from_catalog)) {
+        return false;
+    }
+
+    if (!seeded_from_catalog) {
+        if (!cep_mailroom_seed_default_namespaces(inbox_root)) {
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < cep_mailroom_extra_namespace_count; ++i) {
+        const cepMailroomNamespaceSpec* spec = &cep_mailroom_extra_namespaces[i];
+        if (!spec || !spec->bucket_count) {
+            continue;
+        }
+        if (!cep_mailroom_seed_namespace(inbox_root,
+                                         &spec->namespace_dt,
+                                         spec->bucket_dts,
+                                         spec->bucket_count)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool cep_mailroom_ensure_shared_header(cepCell* request) {
     if (!request) {
         return false;
@@ -655,7 +726,7 @@ bool cep_mailroom_add_router_before(const char* enzyme_tag) {
         return false;
     }
 
-    if (cep_mailroom_registered_registry) {
+    if (cep_mailroom_registration_count > 0u) {
         /* Router already registered; enforce call order. */
         return false;
     }
@@ -695,76 +766,14 @@ bool cep_mailroom_add_router_before(const char* enzyme_tag) {
     return true;
 }
 
-static bool cep_mailroom_prerequisites_ready(void) {
-    bool kernel_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
-    bool namepool_ready = cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL);
-    return kernel_ready && namepool_ready;
-}
-
 bool cep_mailroom_bootstrap(void) {
     if (cep_mailroom_bootstrap_done) {
         (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_MAILROOM);
         return true;
     }
 
-    if (!cep_cell_system_initialized()) {
+    if (!cep_mailroom_reseed_lobby()) {
         return false;
-    }
-
-    if (!cep_mailroom_prerequisites_ready()) {
-        (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
-        (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL);
-    }
-
-    cepCell* root = cep_root();
-    if (!root) {
-        return false;
-    }
-
-    cepDT data_dt = cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("data"));
-    cepCell* data_root = cep_mailroom_ensure_dictionary(root, &data_dt, CEP_STORAGE_RED_BLACK_T);
-    if (!data_root) {
-        return false;
-    }
-
-    cepDT inbox_dt = cep_dt_make(CEP_ACRO("CEP"), CEP_WORD("inbox"));
-    cepCell* inbox_root = cep_mailroom_ensure_dictionary(data_root, &inbox_dt, CEP_STORAGE_RED_BLACK_T);
-    if (!inbox_root) {
-        return false;
-    }
-
-    cepCell* sys_root = cep_cell_find_by_name(root, dt_sys_root());
-    if (!sys_root) {
-        return false;
-    }
-
-    cepCell* err_catalog = cep_cell_find_by_name(sys_root, dt_err_cat());
-    if (!err_catalog) {
-        err_catalog = cep_mailroom_ensure_dictionary(sys_root, dt_err_cat(), CEP_STORAGE_RED_BLACK_T);
-        if (!err_catalog) {
-            return false;
-        }
-    }
-
-    bool seeded_from_catalog = false;
-    if (!cep_mailroom_seed_from_catalog(inbox_root, err_catalog, &seeded_from_catalog)) {
-        return false;
-    }
-
-    if (!seeded_from_catalog) {
-        if (!cep_mailroom_seed_default_namespaces(inbox_root)) {
-            return false;
-        }
-    }
-
-    for (size_t i = 0; i < cep_mailroom_extra_namespace_count; ++i) {
-        const cepMailroomNamespaceSpec* spec = &cep_mailroom_extra_namespaces[i];
-        if (!spec->bucket_count) {
-            continue;
-        }
-        if (!cep_mailroom_seed_namespace(inbox_root, &spec->namespace_dt, spec->bucket_dts, spec->bucket_count)) {
-            return false;
-        }
     }
 
     (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_MAILROOM);
@@ -798,7 +807,12 @@ static bool cep_mailroom_namespace_supported(const cepCell* ns_node) {
 static int cep_mailroom_enzyme_init(const cepPath* signal, const cepPath* target) {
     (void)signal;
     (void)target;
-    return cep_mailroom_bootstrap() ? CEP_ENZYME_SUCCESS : CEP_ENZYME_FATAL;
+    if (!cep_mailroom_reseed_lobby()) {
+        return CEP_ENZYME_FATAL;
+    }
+    cep_mailroom_bootstrap_done = true;
+    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_MAILROOM);
+    return CEP_ENZYME_SUCCESS;
 }
 
 /* Relocate a freshly added intent from `/data/inbox` into the appropriate layer
@@ -893,9 +907,21 @@ bool cep_mailroom_register(cepEnzymeRegistry* registry) {
         return false;
     }
 
-    if (cep_mailroom_registered_registry == registry) {
-        return true;
+    for (size_t i = 0; i < cep_mailroom_registration_count; ++i) {
+        if (cep_mailroom_registrations[i].registry == registry) {
+            return true;
+        }
     }
+
+    cepMailroomRegistryEntry* grown = cep_realloc(
+        cep_mailroom_registrations,
+        (cep_mailroom_registration_count + 1u) * sizeof(*grown));
+    if (!grown) {
+        return false;
+    }
+    cep_mailroom_registrations = grown;
+
+    size_t registration_slot = cep_mailroom_registration_count;
 
     typedef struct {
         unsigned length;
@@ -944,16 +970,19 @@ bool cep_mailroom_register(cepEnzymeRegistry* registry) {
 
     size_t base_count = cep_lengthof(base_before);
     size_t total_before = base_count + cep_mailroom_router_before_extra_count;
-    cepDT* before_list = cep_malloc(sizeof(*before_list) * total_before);
-    if (!before_list) {
-        return false;
-    }
+    cepDT* before_list = NULL;
+    if (total_before) {
+        before_list = cep_malloc(sizeof(*before_list) * total_before);
+        if (!before_list) {
+            return false;
+        }
 
-    for (size_t i = 0; i < base_count; ++i) {
-        before_list[i] = *base_before[i];
-    }
-    for (size_t i = 0; i < cep_mailroom_router_before_extra_count; ++i) {
-        before_list[base_count + i] = cep_mailroom_router_before_extra[i];
+        for (size_t i = 0; i < base_count; ++i) {
+            before_list[i] = *base_before[i];
+        }
+        for (size_t i = 0; i < cep_mailroom_router_before_extra_count; ++i) {
+            before_list[base_count + i] = cep_mailroom_router_before_extra[i];
+        }
     }
 
     cepEnzymeDescriptor descriptor = {
@@ -972,7 +1001,8 @@ bool cep_mailroom_register(cepEnzymeRegistry* registry) {
         return false;
     }
 
-    cep_mailroom_registered_registry = registry;
+    cep_mailroom_registrations[registration_slot].registry = registry;
+    ++cep_mailroom_registration_count;
 
     if (!cep_mailroom_bindings_applied) {
         cepCell* data_root = cep_cell_find_by_name(cep_root(), dt_data_root());
