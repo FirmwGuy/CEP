@@ -153,6 +153,20 @@ if get_option('tests').enabled()
     install: false,
   )
   test('cep_unit_tests', exe)
+
+  coh_test_srcs = files(
+    'src/test/munit.c',
+    'src/test/watchdog.c',
+    'src/test/enzymes/test_coherence_l1.c',
+  )
+  coh_exe = executable('coh_tests', coh_test_srcs,
+    c_args: exe_cargs,
+    include_directories: inc,
+    link_with: cep_lib,
+    dependencies: test_dependencies,
+    install: false,
+  )
+  test('coherence_l1', coh_exe, timeout: 120, is_parallel: false)
 endif
 
 # CEP server executable (optional; build only if enabled and sources exist)

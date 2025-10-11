@@ -49,6 +49,9 @@ void        test_enzyme_tear_down(void* fixture);
 MunitResult test_cell_operations_enzymes(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_enzyme_randomized(const MunitParameter params[], void* user_data_or_fixture);
 
+void*       coh_setup(const MunitParameter params[], void* user_data);
+void        coh_teardown(void* fixture);
+
 MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization_proxy(const MunitParameter params[], void* user_data_or_fixture);

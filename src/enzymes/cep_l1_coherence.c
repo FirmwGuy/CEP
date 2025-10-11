@@ -92,6 +92,9 @@ CEP_DEFINE_STATIC_DT(dt_retention_root, CEP_ACRO("CEP"), CEP_WORD("retention"))
 CEP_DEFINE_STATIC_DT(dt_sig_sys, CEP_ACRO("CEP"), CEP_WORD("sig_sys"))
 CEP_DEFINE_STATIC_DT(dt_sys_init, CEP_ACRO("CEP"), CEP_WORD("init"))
 CEP_DEFINE_STATIC_DT(dt_coh_init, CEP_ACRO("CEP"), CEP_WORD("coh_init"))
+CEP_DEFINE_STATIC_DT(dt_sys_teardown, CEP_ACRO("CEP"), CEP_WORD("teardown"))
+CEP_DEFINE_STATIC_DT(dt_scope_l1, CEP_ACRO("CEP"), CEP_WORD("l1"))
+CEP_DEFINE_STATIC_DT(dt_coh_shutdown, CEP_ACRO("CEP"), CEP_WORD("coh_shut"))
 
 #define CEP_L1_WINDOW_CAP 8u
 
@@ -121,6 +124,8 @@ static const char* cep_l1_get_string(cepCell* parent, const cepDT* field);
 static bool cep_l1_parse_size_text(const char* text, size_t* out_value);
 static void cep_l1_remove_field(cepCell* parent, const cepDT* field);
 static int cep_l1_enzyme_init(const cepPath* signal, const cepPath* target);
+static int cep_l1_enzyme_shutdown(const cepPath* signal, const cepPath* target);
+static void cep_l1_reset_runtime_state(void);
 
 
 typedef struct {
@@ -1241,6 +1246,16 @@ static int cep_l1_enzyme_init(const cepPath* signal, const cepPath* target) {
     (void)signal;
     (void)target;
     return cep_l1_coherence_bootstrap() ? CEP_ENZYME_SUCCESS : CEP_ENZYME_FATAL;
+}
+
+static int cep_l1_enzyme_shutdown(const cepPath* signal, const cepPath* target) {
+    (void)signal;
+    (void)target;
+
+    cep_l1_reset_runtime_state();
+
+    (void)cep_lifecycle_scope_mark_teardown(CEP_LIFECYCLE_SCOPE_L1);
+    return CEP_ENZYME_SUCCESS;
 }
 
 static bool cep_l1_retention_fetch_config(const char** mode_out, size_t* ttl_out, size_t* upto_out) {
@@ -3327,6 +3342,45 @@ static cepL1RegistryRecord* cep_l1_records = NULL;
 static size_t cep_l1_record_count = 0u;
 static size_t cep_l1_record_capacity = 0u;
 
+static void cep_l1_reset_runtime_state(void) {
+    cepCell* adj_root = cep_l1_adj_root();
+    if (adj_root && cep_cell_has_store(adj_root)) {
+        cep_cell_delete_children_hard(adj_root);
+    }
+
+    cep_l1_index_metric_count = 0u;
+    cep_l1_adj_metric_count = 0u;
+    cep_l1_bindings_applied = false;
+
+    cepCell* coh_root = cep_l1_coh_root();
+    if (coh_root) {
+        (void)cep_cell_unbind_enzyme(coh_root, dt_coh_ing_be());
+        (void)cep_cell_unbind_enzyme(coh_root, dt_coh_ing_bo());
+        (void)cep_cell_unbind_enzyme(coh_root, dt_coh_ing_ctx());
+        (void)cep_cell_unbind_enzyme(coh_root, dt_coh_closure());
+        (void)cep_cell_unbind_enzyme(coh_root, dt_coh_index());
+        (void)cep_cell_unbind_enzyme(coh_root, dt_coh_adj());
+    }
+
+    if (cep_l1_records) {
+        free(cep_l1_records);
+        cep_l1_records = NULL;
+    }
+    cep_l1_record_count = 0u;
+    cep_l1_record_capacity = 0u;
+}
+
+/* Expose the teardown helper so tests and manual restarts can scrub Layer 1
+ * caches and bookkeeping without waiting for the heartbeat. The function wipes
+ * adjacency mirrors, drops registry bookkeeping, and flips the lifecycle flag
+ * so the next bootstrap observes a clean start. */
+void cep_l1_coherence_shutdown(void) {
+    /* Keep the callable helper in sync with the shutdown enzyme so callers
+       can tear Layer 1 down explicitly during tests or manual restarts. */
+    cep_l1_reset_runtime_state();
+    (void)cep_lifecycle_scope_mark_teardown(CEP_LIFECYCLE_SCOPE_L1);
+}
+
 static cepL1RegistryRecord* cep_l1_record_find(cepEnzymeRegistry* registry) {
     for (size_t i = 0; i < cep_l1_record_count; ++i) {
         if (cep_l1_records[i].registry == registry) {
@@ -3451,6 +3505,11 @@ bool cep_l1_coherence_register(cepEnzymeRegistry* registry) {
         unsigned capacity;
         cepPast  past[2];
     } cepPathStatic2;
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[3];
+    } cepPathStatic3;
 
     cepPathStatic2 init_path = {
         .length = 2u,
@@ -3474,6 +3533,28 @@ bool cep_l1_coherence_register(cepEnzymeRegistry* registry) {
     record->after_mailroom[0] = *CEP_DTAW("CEP", "mr_init");
 
     if (cep_enzyme_register(registry, (const cepPath*)&init_path, &init_descriptor) != CEP_ENZYME_SUCCESS) {
+        return false;
+    }
+
+    cepPathStatic3 teardown_path = {
+        .length = 3u,
+        .capacity = 3u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_teardown(), .timestamp = 0u},
+            {.dt = *dt_scope_l1(), .timestamp = 0u},
+        },
+    };
+
+    cepEnzymeDescriptor shutdown_descriptor = {
+        .name = *dt_coh_shutdown(),
+        .label = "coh.shutdown",
+        .callback = cep_l1_enzyme_shutdown,
+        .flags = CEP_ENZYME_FLAG_IDEMPOTENT,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    if (cep_enzyme_register(registry, (const cepPath*)&teardown_path, &shutdown_descriptor) != CEP_ENZYME_SUCCESS) {
         return false;
     }
 

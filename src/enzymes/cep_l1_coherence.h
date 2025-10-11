@@ -117,6 +117,13 @@ bool cep_l1_context_intent_add_facet(cepL1ContextIntent* intent,
                                      bool required,
                                      cepCell** out_facet_cell);
 
+/**
+ * Reset Layer 1 runtime state so subsequent bootstraps observe a clean slate.
+ * The helper clears adjacency caches, drops registry bookkeeping, and marks
+ * the L1 lifecycle scope as torn down so shutdown and restarts stay symmetric.
+ */
+void cep_l1_coherence_shutdown(void);
+
 /* Convenience wrappers for call sites that already have string literals or
    temporaries; the compound literal keeps everything in a single expression. */
 #define CEP_L1_TOKENS_TO_DT(out_dt, ...)                                         \
