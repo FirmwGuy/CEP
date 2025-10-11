@@ -2330,7 +2330,9 @@ static inline bool cep_cell_matches_snapshot(const cepCell* cell, cepOpCount sna
 }
 
 static inline cepCell* store_find_child_by_name_past(const cepStore* store, const cepDT* name, cepOpCount snapshot) {
-    assert(cep_store_valid(store) && cep_dt_is_valid(name));
+    if (!store || !cep_dt_is_valid(name) || !cep_dt_is_valid(&store->dt)) {
+        return NULL;
+    }
 
     if (!store->chdCount)
         return NULL;
@@ -3005,11 +3007,13 @@ static void cep_cell_release_contents(cepCell* cell) {
         if (store) {
             // ToDo: clean shadow.
             cep_store_del(store);
+            cell->store = NULL;
         }
 
         cepData* data = cell->data;
         if (data) {
             cep_data_del(data);
+            cell->data = NULL;
         }
         break;
       }

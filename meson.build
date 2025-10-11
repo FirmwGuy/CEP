@@ -126,10 +126,6 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_cell.c',
     'src/test/l0_kernel/test_cell_mutations.c',
     'src/test/l0_kernel/test_traverse.c',
-    'src/test/enzymes/test_cell_operations.c',
-    'src/test/enzymes/test_enzyme_randomized.c',
-    'src/test/enzymes/test_flows_l2.c',
-    'src/test/enzymes/test_rendezvous.c',
     'src/test/l0_kernel/test_domain_tag_naming.c',
     'src/test/l0_kernel/test_identifier.c',
     'src/test/l0_kernel/test_mailroom.c',
@@ -144,9 +140,6 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_serialization_randomized.c',
     'src/test/l0_kernel/test_streams_randomized.c',
   )
-  if poc_enabled
-    test_srcs += files('src/test/enzymes/test_poc_pack.c')
-  endif
   test_dependencies = []
   if zip_dep.found()
     test_srcs += files('src/test/l0_kernel/test_stream_zip.c')

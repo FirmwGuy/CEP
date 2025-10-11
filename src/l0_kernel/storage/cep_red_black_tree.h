@@ -313,17 +313,16 @@ static inline int rb_traverse_func_break_at_name(cepEntry* entry, uintptr_t name
 
 static inline cepCell* rb_tree_find_by_dt(cepRbTree* tree, const cepDT* dt) {
     cepCell key = {.metacell.domain = dt->domain, .metacell.tag = dt->tag};
-    cepRbTreeNode* tnode = tree->root;
-    do {
+    for (cepRbTreeNode* tnode = tree->root; tnode; ) {
         int cmp = cell_compare_by_name(&key, &tnode->cell, NULL);
-        if (0 > cmp) {
+        if (cmp < 0) {
             tnode = tnode->left;
-        } else if (0 < cmp) {
+        } else if (cmp > 0) {
             tnode = tnode->right;
         } else {
             return &tnode->cell;
         }
-    } while (tnode);
+    }
     return NULL;
 }
 
