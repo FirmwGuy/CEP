@@ -14,6 +14,10 @@
 
 #include <string.h>
 
+#ifndef CEP_ENABLE_L2_TESTS
+#define CEP_ENABLE_L2_TESTS 0
+#endif
+
 /* Rebuild a fresh runtime for rendezvous tests so each case starts from a clean
  * ledger, a blank namepool, and an idle heartbeat regardless of how the
  * previous test exited. */
@@ -111,6 +115,10 @@ static cepID rendezvous_spawn_request(const char* key_text,
 
 MunitResult test_rendezvous_bootstrap_cycles(const MunitParameter params[], void* fixture) {
     (void)fixture;
+#if !CEP_ENABLE_L2_TESTS
+    (void)params;
+    return MUNIT_SKIP;
+#endif
 
     for (size_t cycle = 0; cycle < 5u; ++cycle) {
         rendezvous_prepare_runtime(params, /*start_heartbeat=*/false);

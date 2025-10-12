@@ -13,6 +13,7 @@
 #include "../l0_kernel/cep_serialization.h"
 #include "../l0_kernel/cep_namepool.h"
 #include "cep_rendezvous.h"
+#include "cep_l1_coherence.h"
 
 #include <assert.h>
 #include <stddef.h>
@@ -4829,7 +4830,7 @@ bool cep_l2_flows_bootstrap(void) {
     }
 
     if (!cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1)) {
-        return false;
+        (void)cep_l1_coherence_bootstrap();
     }
 
     cepCell* flow_root = cep_l2_flow_root();

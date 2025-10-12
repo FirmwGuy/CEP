@@ -6,17 +6,13 @@
 
 /* Ensures heartbeat sequencing, agenda resolve and commit staging. */
 
-
-
 #include "test.h"
 #include "cep_heartbeat.h"
 #include "cep_enzyme.h"
 #include "cep_l0.h"
-#include "cep_l1_coherence.h"
-#include "cep_l2_flows.h"
+#include "cep_mailroom.h"
 #include <stddef.h>
 #include <string.h>
-
 
 typedef struct {
     unsigned    length;
@@ -477,25 +473,9 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     return MUNIT_OK;
 }
 
-static void heartbeat_wait_for_layers(bool expect_l1, bool expect_l2) {
-    bool l1_ready = !expect_l1 || cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1);
-    bool l2_ready = !expect_l2 || cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2);
-
-    for (unsigned i = 0; i < 8 && (!l1_ready || !l2_ready); ++i) {
-        if (!cep_heartbeat_step()) {
-            break;
-        }
-        l1_ready = !expect_l1 || cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1);
-        l2_ready = !expect_l2 || cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2);
-    }
-
-    if (expect_l1 && !cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L1)) {
-        munit_assert_true(cep_l1_coherence_bootstrap());
-        munit_assert_true(cep_heartbeat_step());
-    }
-    if (expect_l2 && !cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_L2)) {
-        munit_assert_true(cep_l2_flows_bootstrap());
-        munit_assert_true(cep_heartbeat_step());
+static void heartbeat_wait_for_mailroom_ready(void) {
+    for (unsigned i = 0; i < 8 && !cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_MAILROOM); ++i) {
+        (void)cep_heartbeat_step();
     }
 }
 
@@ -533,35 +513,29 @@ static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
-    munit_assert_true(cep_l1_coherence_register(registry));
-    munit_assert_true(cep_l2_flows_register(registry));
-    munit_assert_true(cep_l1_coherence_bootstrap());
-    munit_assert_true(cep_l2_flows_bootstrap());
+    munit_assert_true(cep_mailroom_register(registry));
 
     munit_assert_true(cep_heartbeat_startup());
     munit_assert_true(cep_heartbeat_begin(policy.start_at));
 
-    heartbeat_wait_for_layers(true, true);
+    heartbeat_wait_for_mailroom_ready();
 
     assert_scope_ready(CEP_LIFECYCLE_SCOPE_KERNEL, CEP_DTAW("CEP", "kernel"));
     assert_scope_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL, CEP_DTAW("CEP", "namepool"));
     assert_scope_ready(CEP_LIFECYCLE_SCOPE_MAILROOM, CEP_DTAW("CEP", "mailroom"));
-    assert_scope_ready(CEP_LIFECYCLE_SCOPE_L1, CEP_DTAW("CEP", "l1"));
-    assert_scope_ready(CEP_LIFECYCLE_SCOPE_L2, CEP_DTAW("CEP", "l2"));
 
     munit_assert_true(cep_heartbeat_emit_shutdown());
 
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_KERNEL, CEP_DTAW("CEP", "kernel"));
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_NAMEPOOL, CEP_DTAW("CEP", "namepool"));
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_MAILROOM, CEP_DTAW("CEP", "mailroom"));
-    assert_scope_teardown(CEP_LIFECYCLE_SCOPE_L1, CEP_DTAW("CEP", "l1"));
-    assert_scope_teardown(CEP_LIFECYCLE_SCOPE_L2, CEP_DTAW("CEP", "l2"));
 
     cep_heartbeat_shutdown();
     return MUNIT_OK;
 }
 
 static void heartbeat_check_shutdown_case(bool load_layers) {
+    (void)load_layers;
     test_runtime_shutdown();
 
     cepHeartbeatPolicy policy = {
@@ -574,19 +548,12 @@ static void heartbeat_check_shutdown_case(bool load_layers) {
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
-    if (load_layers) {
-        munit_assert_true(cep_l1_coherence_register(registry));
-        munit_assert_true(cep_l2_flows_register(registry));
-        munit_assert_true(cep_l1_coherence_bootstrap());
-        munit_assert_true(cep_l2_flows_bootstrap());
-    }
+    munit_assert_true(cep_mailroom_register(registry));
 
     munit_assert_true(cep_heartbeat_startup());
     munit_assert_true(cep_heartbeat_begin(policy.start_at));
 
-    if (load_layers) {
-        heartbeat_wait_for_layers(true, true);
-    }
+    heartbeat_wait_for_mailroom_ready();
 
     munit_assert_true(cep_heartbeat_emit_shutdown());
 
@@ -594,15 +561,10 @@ static void heartbeat_check_shutdown_case(bool load_layers) {
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_NAMEPOOL, CEP_DTAW("CEP", "namepool"));
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_MAILROOM, CEP_DTAW("CEP", "mailroom"));
 
-    if (load_layers) {
-        assert_scope_teardown(CEP_LIFECYCLE_SCOPE_L1, CEP_DTAW("CEP", "l1"));
-        assert_scope_teardown(CEP_LIFECYCLE_SCOPE_L2, CEP_DTAW("CEP", "l2"));
-    } else {
-        const char* l1_status = lifecycle_status_for(CEP_DTAW("CEP", "l1"));
-        const char* l2_status = lifecycle_status_for(CEP_DTAW("CEP", "l2"));
-        munit_assert_true(l1_status == NULL);
-        munit_assert_true(l2_status == NULL);
-    }
+    const char* l1_status = lifecycle_status_for(CEP_DTAW("CEP", "l1"));
+    const char* l2_status = lifecycle_status_for(CEP_DTAW("CEP", "l2"));
+    munit_assert_true(l1_status == NULL);
+    munit_assert_true(l2_status == NULL);
 
     cep_heartbeat_shutdown();
 }

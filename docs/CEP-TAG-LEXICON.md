@@ -100,6 +100,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `coh_index` | ops | enzyme descriptor for coherence indexes. |
 | `coh_adj` | ops | enzyme descriptor for adjacency refresh. |
 | `coh_init` | ops | Coherence bootstrap enzyme triggered during init. |
+| `l1_ready` | ops | readiness signal that triggers L1 maintenance passes. |
 | `out_bonds` | core | adjacency list of outgoing bonds per being. |
 | `in_bonds` | core | adjacency list of inbound bonds per being. |
 | `ctx_by_role` | core | adjacency bucket of contexts grouped by role. |

@@ -96,6 +96,22 @@ CEP_DEFINE_STATIC_DT(dt_sys_teardown, CEP_ACRO("CEP"), CEP_WORD("teardown"))
 CEP_DEFINE_STATIC_DT(dt_scope_l1, CEP_ACRO("CEP"), CEP_WORD("l1"))
 CEP_DEFINE_STATIC_DT(dt_coh_shutdown, CEP_ACRO("CEP"), CEP_WORD("coh_shut"))
 CEP_DEFINE_STATIC_DT(dt_sys_ready, CEP_ACRO("CEP"), CEP_WORD("ready"))
+static const cepDT* dt_l1_ready(void) {
+    static cepDT value;
+    static bool initialized = false;
+    if (!initialized) {
+        static const char tag_text[] = "l1_ready";
+        value.domain = CEP_ACRO("CEP");
+        value.tag = cep_namepool_intern_static(tag_text, sizeof(tag_text) - 1u);
+        if (!value.tag) {
+            (void)cep_namepool_bootstrap();
+            value.tag = cep_namepool_intern(tag_text, sizeof(tag_text) - 1u);
+        }
+        value.glob = cep_id_has_glob_char(value.tag);
+        initialized = true;
+    }
+    return &value;
+}
 
 #define CEP_L1_WINDOW_CAP 8u
 
@@ -127,6 +143,7 @@ static void cep_l1_remove_field(cepCell* parent, const cepDT* field);
 static int cep_l1_enzyme_init(const cepPath* signal, const cepPath* target);
 static int cep_l1_enzyme_shutdown(const cepPath* signal, const cepPath* target);
 static void cep_l1_reset_runtime_state(void);
+static bool cep_l1_emit_scope_ready_signal(void);
 
 
 typedef struct {
@@ -1659,6 +1676,10 @@ bool cep_l1_coherence_bootstrap(void) {
         }
     }
     (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_L1);
+
+    /* Best-effort: queuing the readiness pulse should not block bootstrap if the
+       heartbeat runtime is still configuring. */
+    (void)cep_l1_emit_scope_ready_signal();
     return true;
 }
 
@@ -1688,6 +1709,65 @@ static cepCell* cep_l1_bond_ledger(void) {
 static cepCell* cep_l1_context_ledger(void) {
     cepCell* coh = cep_l1_coh_root();
     return coh ? cep_cell_find_by_name(coh, dt_context()) : NULL;
+}
+
+static bool cep_l1_emit_scope_ready_signal(void) {
+    if (!cep_dt_is_valid(dt_sig_sys()) ||
+        !cep_dt_is_valid(dt_sys_ready()) ||
+        !cep_dt_is_valid(dt_l1_ready()) ||
+        !cep_dt_is_valid(dt_data_root()) ||
+        !cep_dt_is_valid(dt_coh())) {
+        return false;
+    }
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast past[3];
+    } cepPathStatic3;
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast past[2];
+    } cepPathStatic2;
+
+    cepPathStatic3 signal_path = {
+        .length = 3u,
+        .capacity = 3u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_ready(), .timestamp = 0u},
+            {.dt = *dt_l1_ready(), .timestamp = 0u},
+        },
+    };
+
+    cepPathStatic3 legacy_signal_path = {
+        .length = 3u,
+        .capacity = 3u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_ready(), .timestamp = 0u},
+            {.dt = *dt_scope_l1(), .timestamp = 0u},
+        },
+    };
+
+    cepPathStatic2 target_path = {
+        .length = 2u,
+        .capacity = 2u,
+        .past = {
+            {.dt = *dt_data_root(), .timestamp = 0u},
+            {.dt = *dt_coh(), .timestamp = 0u},
+        },
+    };
+
+    bool ok_new = cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID,
+                                               (const cepPath*)&signal_path,
+                                               (const cepPath*)&target_path) == CEP_ENZYME_SUCCESS;
+    bool ok_legacy = cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID,
+                                                  (const cepPath*)&legacy_signal_path,
+                                                  (const cepPath*)&target_path) == CEP_ENZYME_SUCCESS;
+    return ok_new || ok_legacy;
 }
 
 static bool cep_l1_enqueue_ready_signal(cepCell* request) {
@@ -1737,6 +1817,16 @@ static bool cep_l1_enqueue_ready_signal(cepCell* request) {
         .past = {
             {.dt = *dt_sig_sys(), .timestamp = 0u},
             {.dt = *dt_sys_ready(), .timestamp = 0u},
+            {.dt = *dt_l1_ready(), .timestamp = 0u},
+        },
+    };
+
+    cepPathStatic3 legacy_signal_path = {
+        .length = 3u,
+        .capacity = 3u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_ready(), .timestamp = 0u},
             {.dt = *dt_scope_l1(), .timestamp = 0u},
         },
     };
@@ -1753,9 +1843,13 @@ static bool cep_l1_enqueue_ready_signal(cepCell* request) {
         },
     };
 
-    return cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID,
-                                        (const cepPath*)&signal_path,
-                                        (const cepPath*)&target_path) == CEP_ENZYME_SUCCESS;
+    bool ok_new = cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID,
+                                               (const cepPath*)&signal_path,
+                                               (const cepPath*)&target_path) == CEP_ENZYME_SUCCESS;
+    bool ok_legacy = cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID,
+                                                  (const cepPath*)&legacy_signal_path,
+                                                  (const cepPath*)&target_path) == CEP_ENZYME_SUCCESS;
+    return ok_new || ok_legacy;
 }
 
 static cepCell* cep_l1_facet_mirror(void) {

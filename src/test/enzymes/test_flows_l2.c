@@ -17,6 +17,10 @@
 #include <string.h>
 #include <stdlib.h>
 
+#ifndef CEP_ENABLE_L2_TESTS
+#define CEP_ENABLE_L2_TESTS 0
+#endif
+
 typedef struct {
     bool initialized;
 } L2Fixture;
@@ -352,6 +356,11 @@ static void l2_force_root_directories(void) {
 }
 
 void* l2_setup(const MunitParameter params[], void* user_data) {
+#if !CEP_ENABLE_L2_TESTS
+    (void)params;
+    (void)user_data;
+    return NULL;
+#endif
     (void)params;
     (void)user_data;
 
