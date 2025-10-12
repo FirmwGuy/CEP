@@ -49,10 +49,9 @@ MunitResult test_serialization_proxy(const MunitParameter params[], void* user_d
 MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_error_emit_kernel(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_error_emit_enzyme(const MunitParameter params[], void* user_data_or_fixture);
-MunitResult test_rendezvous_ledger_defaults(const MunitParameter params[], void* user_data_or_fixture);
-MunitResult test_rendezvous_bootstrap_cycles(const MunitParameter params[], void* user_data_or_fixture);
-MunitResult test_rendezvous_pipeline(const MunitParameter params[], void* user_data_or_fixture);
-MunitResult test_rendezvous_parallel(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_rendezvous_defaults(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_rendezvous_heartbeat_pipeline(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_rendezvous_kill_and_timeout(const MunitParameter params[], void* user_data_or_fixture);
 #ifdef CEP_HAS_LIBZIP
 MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fixture);
 #endif

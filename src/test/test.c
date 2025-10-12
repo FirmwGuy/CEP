@@ -90,8 +90,24 @@ MunitTest tests[] = {
         boot_cycle_timeout_params
     },
     {
-        "/rendezvous/ledger_defaults",
-        test_rendezvous_ledger_defaults,
+        "/rendezvous/defaults/after_reboot",
+        test_rendezvous_defaults,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_timeout_params
+    },
+    {
+        "/rendezvous/pipeline",
+        test_rendezvous_heartbeat_pipeline,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_timeout_params
+    },
+    {
+        "/rendezvous/kill_timeout",
+        test_rendezvous_kill_and_timeout,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,

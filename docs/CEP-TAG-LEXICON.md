@@ -150,8 +150,10 @@ when a new behavior needs a fresh word before it lands in code.
 | `kill_wait` | core | Beats to wait before enforcing a kill request. |
 | `signal_path` | core | Rendezvous signal path used to wake waiting instances. |
 | `telemetry` | core | Telemetry dictionary copied from rendezvous workers. |
+| `event_flag` | core | Marker used by the kernel to queue a single rendezvous completion event per state change. |
 | `defaults` | core | Profile-specific fallback parameters attached to rendezvous specs. |
 | `rv_init` | ops | Rendezvous bootstrap enzyme triggered during system init. |
+| `rv_route` | ops | Enzyme that mirrors rendezvous completions into `/data/inbox/flow/inst_event`. |
 
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor
