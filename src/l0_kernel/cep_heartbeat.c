@@ -9,7 +9,7 @@
 #include "cep_mailroom.h"
 #include "cep_namepool.h"
 #include "../enzymes/cep_cell_operations.h"
-#include "../enzymes/cep_rendezvous.h"
+#include "cep_rendezvous.h"
 #include "stream/cep_stream_internal.h"
 
 #include <string.h>

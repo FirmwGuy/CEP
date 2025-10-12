@@ -9,10 +9,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "../l0_kernel/cep_cell.h"
-
-#include "../l0_kernel/cep_heartbeat.h"
-#include "../l0_kernel/cep_enzyme.h"
+#include "cep_cell.h"
+#include "cep_heartbeat.h"
+#include "cep_enzyme.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,37 +49,20 @@ typedef enum {
 } cepRvSpawnStatus;
 
 bool cep_rv_bootstrap(void);
-
-/**
- * Build a rendezvous spec from a transform dictionary, merging any
- * profile-specific defaults so callers can hand a ready-to-spawn descriptor
- * directly to `cep_rv_spawn`. The scratch buffer is used when the helper needs
- * to synthesise the signal path from the rendezvous key.
- */
 bool cep_rv_prepare_spec(cepRvSpec* out_spec,
                          const cepCell* spec_node,
                          const cepDT* instance_dt,
                          cepBeatNumber now,
                          char* signal_buffer,
                          size_t signal_capacity);
-
 bool cep_rv_spawn(const cepRvSpec* spec, cepID key);
 cepRvSpawnStatus cep_rv_last_spawn_status(void);
 bool cep_rv_resched(cepID key, uint32_t delta);
 bool cep_rv_kill(cepID key, cepID mode, uint32_t wait_beats);
 bool cep_rv_report(cepID key, const cepCell* telemetry_node);
-
 bool cep_rv_capture_scan(void);
 bool cep_rv_commit_apply(void);
-
-/**
- * @brief Compute the default rendezvous signal path for a given ledger key.
- *
- * The helper writes a canonical path of the form `CEP:sig_rv/<key>` into the
- * supplied buffer and returns true on success.
- */
 bool cep_rv_signal_for_key(const cepDT* key, char* buffer, size_t capacity);
-
 bool cep_rendezvous_register(cepEnzymeRegistry* registry);
 
 #ifdef __cplusplus
