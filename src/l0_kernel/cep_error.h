@@ -28,6 +28,8 @@ typedef struct {
 } cepErrorSpec;
 
 bool cep_error_emit(cepErrLevel level, const cepErrorSpec* spec);
+bool cep_error_bootstrap(void);
+bool cep_error_register(cepEnzymeRegistry* registry);
 
 #ifdef __cplusplus
 }

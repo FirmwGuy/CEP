@@ -10,27 +10,50 @@
 
 #include <string.h>
 
+static cepID ensure_word(const char* text);
+
 static cepCell* error_stage_root(void) {
     cepCell* tmp_root = cep_heartbeat_tmp_root();
     munit_assert_not_null(tmp_root);
 
     cepCell* err_root = cep_cell_find_by_name(tmp_root, CEP_DTAW("CEP", "err"));
-    if (!err_root) {
-        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
-        cepDT name = *CEP_DTAW("CEP", "err");
-        err_root = cep_cell_add_dictionary(tmp_root, &name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
-        munit_assert_not_null(err_root);
-    }
+    munit_assert_not_null(err_root);
 
     cepCell* stage = cep_cell_find_by_name(err_root, CEP_DTAW("CEP", "stage"));
-    if (!stage) {
-        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
-        cepDT name = *CEP_DTAW("CEP", "stage");
-        stage = cep_cell_add_dictionary(err_root, &name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
-        munit_assert_not_null(stage);
-    }
-
+    munit_assert_not_null(stage);
     return stage;
+}
+
+static cepCell* error_event_root(void) {
+    cepCell* data_root = cep_heartbeat_data_root();
+    munit_assert_not_null(data_root);
+
+    cepCell* err_root = cep_cell_find_by_name(data_root, CEP_DTAW("CEP", "err"));
+    munit_assert_not_null(err_root);
+
+    cepCell* event_root = cep_cell_find_by_name(err_root, CEP_DTAW("CEP", "event"));
+    munit_assert_not_null(event_root);
+    return event_root;
+}
+
+static cepCell* error_index_section(const char* tag) {
+    cepCell* data_root = cep_heartbeat_data_root();
+    munit_assert_not_null(data_root);
+
+    cepCell* err_root = cep_cell_find_by_name(data_root, CEP_DTAW("CEP", "err"));
+    munit_assert_not_null(err_root);
+
+    cepCell* index_root = cep_cell_find_by_name(err_root, CEP_DTAW("CEP", "index"));
+    munit_assert_not_null(index_root);
+
+    cepDT section_dt = {
+        .domain = CEP_ACRO("CEP"),
+        .tag = ensure_word(tag),
+        .glob = 0u,
+    };
+    cepCell* section = cep_cell_find_by_name(index_root, &section_dt);
+    munit_assert_not_null(section);
+    return section;
 }
 
 static cepID ensure_word(const char* text) {
@@ -80,7 +103,7 @@ static void ensure_err_code(const char* scope_text, const char* code_text, const
         cepDT msg_name = *CEP_DTAW("CEP", "message");
         cepDT text_type = *CEP_DTAW("CEP", "text");
         size_t len = strlen(message) + 1u;
-        munit_assert_not_null(cep_dict_add_value(created, &msg_name, &text_type, message, len, len));
+        munit_assert_not_null(cep_dict_add_value(created, &msg_name, &text_type, (void*)message, len, len));
     }
 }
 
@@ -209,9 +232,6 @@ MunitResult test_error_emit_enzyme(const MunitParameter params[], void* fixture)
     cep_enzyme_registry_activate_pending(registry);
     munit_assert_int(cep_cell_bind_enzyme(cep_root(), &enzyme_name, true), ==, CEP_ENZYME_SUCCESS);
 
-    cepCell* stage = error_stage_root();
-    size_t before = cep_cell_children(stage);
-
     cepPath* target_path = NULL;
     munit_assert_true(cep_cell_path(cep_root(), &target_path));
 
@@ -226,11 +246,12 @@ MunitResult test_error_emit_enzyme(const MunitParameter params[], void* fixture)
     munit_assert_true(cep_heartbeat_execute_agenda());
     munit_assert_true(cep_heartbeat_stage_commit());
 
-    cepCell* refreshed_stage = error_stage_root();
-    size_t after = cep_cell_children(refreshed_stage);
-    munit_assert_size(after, ==, before + 1u);
+    cepCell* ref_stage = error_stage_root();
+    munit_assert_size(cep_cell_children(ref_stage), ==, 0u);
 
-    cepCell* event = cep_cell_find_by_position(refreshed_stage, after - 1u);
+    cepCell* event_root = error_event_root();
+    munit_assert_size(cep_cell_children(event_root), ==, 1u);
+    cepCell* event = cep_cell_find_by_position(event_root, 0u);
     munit_assert_not_null(event);
 
     const char* emit_kind = error_field_text(event, "emit_kind");
@@ -248,6 +269,30 @@ MunitResult test_error_emit_enzyme(const MunitParameter params[], void* fixture)
     const char* message = error_field_text(event, "message");
     munit_assert_not_null(message);
     munit_assert_string_equal(message, "Mailroom fault");
+
+    cepCell* by_level = error_index_section("by_level");
+    cepCell* usage_bucket = cep_cell_find_by_name(by_level, CEP_DTAW("CEP", "usage"));
+    munit_assert_not_null(usage_bucket);
+    munit_assert_size(cep_cell_children(usage_bucket), ==, 1u);
+    cepCell* level_link = cep_cell_find_by_position(usage_bucket, 0u);
+    munit_assert_not_null(level_link);
+    munit_assert_ptr_equal(cep_link_pull(level_link), event);
+
+    cepCell* by_scope = error_index_section("by_scope");
+    cepCell* scope_bucket = cep_cell_find_by_name(by_scope, CEP_DTAW("CEP", "mailroom"));
+    munit_assert_not_null(scope_bucket);
+    munit_assert_size(cep_cell_children(scope_bucket), ==, 1u);
+    cepCell* scope_link = cep_cell_find_by_position(scope_bucket, 0u);
+    munit_assert_not_null(scope_link);
+    munit_assert_ptr_equal(cep_link_pull(scope_link), event);
+
+    cepCell* by_code = error_index_section("by_code");
+    cepCell* code_bucket = cep_cell_find_by_name(by_code, CEP_DTAW("CEP", "MR001"));
+    munit_assert_not_null(code_bucket);
+    munit_assert_size(cep_cell_children(code_bucket), ==, 1u);
+    cepCell* code_link = cep_cell_find_by_position(code_bucket, 0u);
+    munit_assert_not_null(code_link);
+    munit_assert_ptr_equal(cep_link_pull(code_link), event);
 
     test_runtime_shutdown();
     return MUNIT_OK;

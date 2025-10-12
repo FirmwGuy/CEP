@@ -11,6 +11,7 @@
 
 * **Signals → Enzymes → Work**: register, bind, match, and order enzyme callbacks; how impulses get resolved and executed  .
 * **Serialization & Streams**: emit/ingest chunked cell streams; transactions; manifest & payload; proxy snapshots .
+* **Error Signalling (CEI)**: emit `cep_error_emit()` during kernel or enzyme execution; staged payloads land under `/tmp/err/stage`, the ingestion enzyme writes durable copies to `/data/err/event`, and indexes populate `/data/err/index/{by_level,by_scope,by_code}` for lookups.
 * **Proxies & Libraries**: represent external resources/streams inside cells  .
 * **Naming & Namepool**: compact Domain/Tag IDs, intern/lookup text names  .
 * **Locking, History & “soft” vs “hard”**: data/store locks, append‑only timelines, snapshot traversals  .

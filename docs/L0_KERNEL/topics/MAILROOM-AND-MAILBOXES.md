@@ -10,6 +10,7 @@ The mailroom is CEP’s lobby. Every intent—whether it targets an upper-layer 
 - **Namespaces** (`cep_mailroom_add_namespace()`): lets you register additional mailboxes. Call it before bootstrap (or rely on the automatic reseed after bootstrap) to mirror `/data/inbox/<namespace>/bucket` alongside `/data/<namespace>/inbox/bucket`.
 - **Ordering hints** (`cep_mailroom_add_router_before()`): queue extra enzyme names to insert into the router’s `before` list before `cep_mailroom_register()` runs. Useful when a pack introduces its own ingest enzyme.
 - **Lifecycle**: `cep_l0_bootstrap()` calls the mailroom bootstrap/registration for you. There’s no public `cep_mailroom_reset()` anymore; shutdown simply rebuilds the tree on the next bootstrap.
+- **Error impulses**: CEI (`cep_error_emit`) writes to `/tmp/err/stage` and is processed by its own ingestion enzyme; error traffic does **not** transit the mailroom inbox hierarchy, so mailroom routing policies remain focused on application intents.
 
 ## Q&A
 - **Where do I drop intents?** Use `/data/inbox/<namespace>/<bucket>/<txn>`. The mailroom takes care of the rest.

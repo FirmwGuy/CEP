@@ -17,6 +17,11 @@ CEP_DEFINE_STATIC_DT(dt_err_cat,        CEP_ACRO("CEP"), CEP_WORD("err_cat"));
 CEP_DEFINE_STATIC_DT(dt_dictionary,     CEP_ACRO("CEP"), CEP_WORD("dictionary"));
 CEP_DEFINE_STATIC_DT(dt_list,           CEP_ACRO("CEP"), CEP_WORD("list"));
 CEP_DEFINE_STATIC_DT(dt_text,           CEP_ACRO("CEP"), CEP_WORD("text"));
+CEP_DEFINE_STATIC_DT(dt_event_root,     CEP_ACRO("CEP"), CEP_WORD("event"));
+CEP_DEFINE_STATIC_DT(dt_index_root,     CEP_ACRO("CEP"), CEP_WORD("index"));
+CEP_DEFINE_STATIC_DT(dt_index_by_level, CEP_ACRO("CEP"), CEP_WORD("by_level"));
+CEP_DEFINE_STATIC_DT(dt_index_by_scope, CEP_ACRO("CEP"), CEP_WORD("by_scope"));
+CEP_DEFINE_STATIC_DT(dt_index_by_code,  CEP_ACRO("CEP"), CEP_WORD("by_code"));
 CEP_DEFINE_STATIC_DT(dt_field_code,     CEP_ACRO("CEP"), CEP_WORD("code"));
 CEP_DEFINE_STATIC_DT(dt_field_message,  CEP_ACRO("CEP"), CEP_WORD("message"));
 CEP_DEFINE_STATIC_DT(dt_field_level,    CEP_ACRO("CEP"), CEP_WORD("level"));
@@ -34,6 +39,7 @@ CEP_DEFINE_STATIC_DT(dt_level_critical, CEP_ACRO("CEP"), CEP_WORD("critical"));
 CEP_DEFINE_STATIC_DT(dt_level_usage,    CEP_ACRO("CEP"), CEP_WORD("usage"));
 CEP_DEFINE_STATIC_DT(dt_level_warn,     CEP_ACRO("CEP"), CEP_WORD("warn"));
 CEP_DEFINE_STATIC_DT(dt_level_log,      CEP_ACRO("CEP"), CEP_WORD("log"));
+CEP_DEFINE_STATIC_DT(dt_err_ing_name,   CEP_ACRO("CEP"), CEP_WORD("err_ing"));
 
 static const char* cep_error_level_text(cepErrLevel level) {
     switch (level) {
@@ -55,6 +61,36 @@ static const cepDT* cep_error_level_dt(cepErrLevel level) {
         case CEP_ERR_LOG:      return dt_level_log();
         default:               return NULL;
     }
+}
+
+static cepCell* cep_error_ensure_dictionary_child(cepCell* parent, const cepDT* name, const cepDT* type, unsigned storage) {
+    if (!parent || !name || !type) {
+        return NULL;
+    }
+
+    cepCell* node = cep_cell_find_by_name(parent, name);
+    if (!node) {
+        cepDT name_copy = cep_dt_clean(name);
+        cepDT type_copy = *type;
+        node = cep_cell_add_dictionary(parent, &name_copy, 0, &type_copy, storage);
+    } else if (!cep_cell_has_store(node) || node->store->indexing != CEP_INDEX_BY_NAME) {
+        cep_cell_to_dictionary(node);
+    }
+    return node;
+}
+
+static cepCell* cep_error_ensure_list_child(cepCell* parent, const cepDT* name) {
+    if (!parent || !name) {
+        return NULL;
+    }
+
+    cepCell* node = cep_cell_find_by_name(parent, name);
+    if (!node) {
+        cepDT list_type = *dt_list();
+        cepDT name_copy = cep_dt_clean(name);
+        node = cep_cell_add_list(parent, &name_copy, 0, &list_type, CEP_STORAGE_LINKED_LIST);
+    }
+    return node;
 }
 
 static bool cep_error_id_to_text(cepID id, char* buffer, size_t capacity, size_t* len_out) {
@@ -427,4 +463,281 @@ cleanup:
     }
 
     return success;
+}
+
+static const char* cep_error_field_text(const cepCell* event, const cepDT* field) {
+    if (!event || !field) {
+        return NULL;
+    }
+    cepDT lookup = cep_dt_clean(field);
+    cepCell* node = cep_cell_find_by_name(event, &lookup);
+    if (!node || !cep_cell_has_data(node)) {
+        return NULL;
+    }
+    return (const char*)cep_cell_data(node);
+}
+
+static cepCell* cep_error_data_root(void) {
+    cepCell* data_root = cep_heartbeat_data_root();
+    if (!data_root) {
+        return NULL;
+    }
+
+    cepCell* err_root = cep_error_ensure_dictionary_child(data_root, dt_err_root(), dt_dictionary(), CEP_STORAGE_RED_BLACK_T);
+    if (!err_root) {
+        return NULL;
+    }
+
+    cepCell* event_root = cep_error_ensure_dictionary_child(err_root, dt_event_root(), dt_dictionary(), CEP_STORAGE_RED_BLACK_T);
+    if (!event_root) {
+        return NULL;
+    }
+
+    cepCell* index_root = cep_error_ensure_dictionary_child(err_root, dt_index_root(), dt_dictionary(), CEP_STORAGE_RED_BLACK_T);
+    if (!index_root) {
+        return NULL;
+    }
+
+    if (!cep_error_ensure_dictionary_child(index_root, dt_index_by_level(), dt_dictionary(), CEP_STORAGE_RED_BLACK_T)) {
+        return NULL;
+    }
+    if (!cep_error_ensure_dictionary_child(index_root, dt_index_by_scope(), dt_dictionary(), CEP_STORAGE_RED_BLACK_T)) {
+        return NULL;
+    }
+    if (!cep_error_ensure_dictionary_child(index_root, dt_index_by_code(), dt_dictionary(), CEP_STORAGE_RED_BLACK_T)) {
+        return NULL;
+    }
+
+    return err_root;
+}
+
+static cepCell* cep_error_event_root(void) {
+    cepCell* err_root = cep_error_data_root();
+    if (!err_root) {
+        return NULL;
+    }
+    return cep_cell_find_by_name(err_root, dt_event_root());
+}
+
+static cepCell* cep_error_index_root(void) {
+    cepCell* err_root = cep_error_data_root();
+    if (!err_root) {
+        return NULL;
+    }
+    return cep_cell_find_by_name(err_root, dt_index_root());
+}
+
+static cepCell* cep_error_index_bucket(cepCell* index_root, const cepDT* section_name, const cepDT* bucket_name) {
+    if (!index_root || !section_name || !bucket_name) {
+        return NULL;
+    }
+    cepCell* section = cep_error_ensure_dictionary_child(index_root, section_name, dt_dictionary(), CEP_STORAGE_RED_BLACK_T);
+    if (!section) {
+        return NULL;
+    }
+    return cep_error_ensure_list_child(section, bucket_name);
+}
+
+static bool cep_error_index_append(cepCell* bucket, cepCell* event) {
+    if (!bucket || !event) {
+        return false;
+    }
+    cepDT entry_name = {
+        .domain = CEP_ACRO("CEP"),
+        .tag = CEP_AUTOID,
+        .glob = 0u,
+    };
+    return cep_cell_append_link(bucket, &entry_name, event) != NULL;
+}
+
+static cepID cep_error_text_to_id(const char* text) {
+    if (!text || !*text) {
+        return 0u;
+    }
+
+    cepID id = cep_text_to_word(text);
+    if (!id) {
+        id = cep_text_to_acronym(text);
+    }
+    if (!id) {
+        size_t len = strlen(text);
+        id = cep_namepool_intern(text, len);
+    }
+    return id;
+}
+
+static bool cep_error_text_to_dt(const char* text, cepDT* out) {
+    if (!text || !out) {
+        return false;
+    }
+
+    const char* sep = strchr(text, ':');
+    if (!sep) {
+        return false;
+    }
+
+    size_t domain_len = (size_t)(sep - text);
+    if (domain_len == 0u || domain_len >= 16u) {
+        return false;
+    }
+
+    char domain_buf[32];
+    memcpy(domain_buf, text, domain_len);
+    domain_buf[domain_len] = '\0';
+
+    const char* tag_text = sep + 1;
+    if (!*tag_text) {
+        return false;
+    }
+
+    cepID domain = cep_error_text_to_id(domain_buf);
+    cepID tag = cep_error_text_to_id(tag_text);
+    if (!domain || !tag) {
+        return false;
+    }
+
+    out->domain = domain;
+    out->tag = tag;
+    out->glob = 0u;
+    return true;
+}
+
+static bool cep_error_index_event(cepCell* event, const cepDT* level_dt, const cepDT* scope_dt, const cepDT* code_dt) {
+    if (!event || !level_dt || !scope_dt || !code_dt) {
+        return false;
+    }
+
+    cepCell* index_root = cep_error_index_root();
+    if (!index_root) {
+        return false;
+    }
+
+    cepCell* level_bucket = cep_error_index_bucket(index_root, dt_index_by_level(), level_dt);
+    cepCell* scope_bucket = cep_error_index_bucket(index_root, dt_index_by_scope(), scope_dt);
+    cepCell* code_bucket  = cep_error_index_bucket(index_root, dt_index_by_code(),  code_dt);
+    if (!level_bucket || !scope_bucket || !code_bucket) {
+        return false;
+    }
+
+    bool ok = true;
+    ok = ok && cep_error_index_append(level_bucket, event);
+    ok = ok && cep_error_index_append(scope_bucket, event);
+    ok = ok && cep_error_index_append(code_bucket,  event);
+    return ok;
+}
+
+static void cep_error_remove_stage_event(cepCell* event) {
+    if (!event) {
+        return;
+    }
+    cepCell* parent = cep_cell_parent(event);
+    if (parent) {
+        cep_cell_remove_hard(parent, event);
+    }
+}
+
+static int cep_error_ingest_enzyme(const cepPath* signal, const cepPath* target) {
+    if (!signal || !target || signal->length < 2u) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    cepCell* staged = cep_cell_find_by_path(cep_root(), target);
+    if (!staged) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    const cepDT* level_dt = &signal->past[1].dt;
+    const cepDT* scope_dt = (signal->length >= 3u) ? &signal->past[2].dt : dt_err_scope();
+
+    cepCell* event_root = cep_error_event_root();
+    if (!event_root) {
+        cep_error_remove_stage_event(staged);
+        return CEP_ENZYME_FATAL;
+    }
+
+    cepCell* stored = cep_cell_clone_deep(staged);
+    if (!stored) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    stored->metacell.domain = CEP_ACRO("CEP");
+    stored->metacell.tag = CEP_AUTOID;
+    stored->metacell.glob = 0u;
+
+    cepCell* inserted = cep_cell_add(event_root, 0, stored);
+    cep_free(stored);
+    if (!inserted) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    const char* code_text = cep_error_field_text(inserted, dt_field_code());
+    cepDT code_dt = {0};
+    if (!code_text || !cep_error_text_to_dt(code_text, &code_dt)) {
+        cep_error_remove_stage_event(staged);
+        return CEP_ENZYME_FATAL;
+    }
+
+    if (!cep_error_index_event(inserted, level_dt, scope_dt, &code_dt)) {
+        cep_error_remove_stage_event(staged);
+        return CEP_ENZYME_FATAL;
+    }
+
+    cep_error_remove_stage_event(staged);
+
+    if (cep_dt_compare(level_dt, dt_level_fatal()) == 0) {
+        (void)cep_heartbeat_emit_shutdown();
+    }
+
+    return CEP_ENZYME_SUCCESS;
+}
+
+bool cep_error_bootstrap(void) {
+    return cep_error_stage_root() && cep_error_data_root();
+}
+
+bool cep_error_register(cepEnzymeRegistry* registry) {
+    if (!registry) {
+        return false;
+    }
+
+    static bool registered = false;
+    if (registered) {
+        return true;
+    }
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[1];
+    } cepStaticPath1;
+
+    static cepStaticPath1 signal = {
+        .length = 1u,
+        .capacity = 1u,
+    };
+    static bool path_initialised = false;
+    if (!path_initialised) {
+        signal.past[0].dt = *dt_sig_err();
+        signal.past[0].timestamp = 0u;
+        path_initialised = true;
+    }
+
+    cepEnzymeDescriptor descriptor = {
+        .name = *dt_err_ing_name(),
+        .label = "err.ingest",
+        .before = NULL,
+        .before_count = 0u,
+        .after = NULL,
+        .after_count = 0u,
+        .callback = cep_error_ingest_enzyme,
+        .flags = CEP_ENZYME_FLAG_IDEMPOTENT,
+        .match = CEP_ENZYME_MATCH_PREFIX,
+    };
+
+    if (cep_enzyme_register(registry, (const cepPath*)&signal, &descriptor) != CEP_ENZYME_SUCCESS) {
+        return false;
+    }
+
+    registered = true;
+    return true;
 }

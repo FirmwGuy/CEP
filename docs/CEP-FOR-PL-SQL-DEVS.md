@@ -22,7 +22,7 @@ If you know how to keep Oracle packages humming, you already understand most of 
   - Instead of `USER_OBJECTS`, CEP tracks identifiers through `cep_namepool_*` helpers. Interpreting a `CEP_NAMING_REFERENCE` is similar to looking up a `NAME_ID` in a support table. Use the namepool when your identifiers exceed the 11-character word limit or when you need glob-aware patterns (`CEP_ID_GLOB_MULTI`).
 
 - **Error handling and CEI**
-  - CEI (CEP Error Impulses) will emit failures as structured cells under `/data/err/**` with a deterministic routing tag (`sig_err`). Replace your `raise_application_error` calls with `cep_error_emit()` once the CEI APIs land; the payload will contain `code`, `message`, and references to the offending parents.
+  - CEI (CEP Error Impulses) emits failures with `cep_error_emit()`. Entries stage under `/tmp/err/stage`, ingest into `/data/err/event/<id>`, and are indexed by level, scope, and code under `/data/err/index`. Replace your `raise_application_error` calls with CEI so clients can query by the same keys they would in PL/SQL diagnostic tables.
 
 - **Replacing packages**
   - Migrate package state by modelling it as a subtree under `/data/<package>` with child stores for configuration, caches, and derived facts. Package procedures map to enzymes and helper functions map to plain C utilities that operate on cells.

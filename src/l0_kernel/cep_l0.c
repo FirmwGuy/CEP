@@ -1,6 +1,7 @@
 #include "cep_l0.h"
 
 #include "cep_cell.h"
+#include "cep_error.h"
 #include "cep_heartbeat.h"
 #include "cep_mailroom.h"
 #include "cep_namepool.h"
@@ -34,7 +35,17 @@ bool cep_l0_bootstrap(void) {
         return false;
     }
 
+    if (!cep_error_bootstrap()) {
+        return false;
+    }
+
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    if (!registry || !cep_error_register(registry)) {
+        return false;
+    }
+
     cep_l0_bootstrap_done = true;
+    (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_ERRORS);
     return true;
 }
 

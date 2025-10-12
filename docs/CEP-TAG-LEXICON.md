@@ -44,7 +44,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `inbox` | core | captured impulses queued for the current beat. |
 | `sig_sys` | core | System-level signal namespace emitted during lifecycle hooks. |
-| `sig_err` | core | Error impulse namespace emitted by CEI and kernel diagnostics. |
+| `sig_err` | ops | Error impulse namespace emitted by CEI and kernel diagnostics. |
 | `init` | core | System init signal tag that bootstraps higher layers. |
 | `shutdown` | core | System shutdown signal tag emitted before teardown. |
 | `mr_route` | ops | routing enzyme that moves unified inbox entries into layer inboxes. |
@@ -64,6 +64,11 @@ when a new behavior needs a fresh word before it lands in code.
 | `rt` | core | runtime staging root holding beat journals. |
 | `stage` | core | per-beat stage log recording committed mutations. |
 | `stream-log` | core | runtime log for stream adapters. |
+| `event` | core | CEI event ledger stored under `/data/err/event`. |
+| `index` | core | CEI index dictionary under `/data/err/index`. |
+| `by_level` | core | CEI index bucket keyed by severity level. |
+| `by_scope` | core | CEI index bucket keyed by emitting scope. |
+| `by_code` | core | CEI index bucket keyed by canonical error code. |
 | `sys_log` | core | journal list recording system init/shutdown signal emissions. |
 | `sys` | core | system namespace with counters and configuration. |
 | `ready` | core | lifecycle readiness marker recorded under `/sys/state/<scope>`. |
@@ -73,6 +78,8 @@ when a new behavior needs a fresh word before it lands in code.
 | `err_cat` | core | dictionary of canonical error codes referenced by outcomes. |
 | `text` | core | namepool payload store for textual data. |
 | `tmp` | core | scratch list reserved for tooling. |
+| `emit_kind` | core | CEI payload field identifying the emitter category. |
+| `emit_label` | core | CEI payload field mirroring the descriptor label. |
 
 #### Operational Tags
 | Tag / Pattern | Status | Purpose |
@@ -80,6 +87,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `arg_deep` / `arg_pos` / `arg_prepend` | ops | parameters accepted by cell-operation enzymes. |
 | `enz_add` / `enz_cln` / `enz_del` / `enz_mov` / `enz_upd` | ops | canonical enzyme descriptors registered at bootstrap. |
 | `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | ops | operation identifiers emitted by `sig_cell` payloads. |
+| `err_ing` | ops | CEI ingestion enzyme bound to `sig_err/*`. |
 | `role_parnt` / `role_source` / `role_subj` / `role_templ` | ops | role vocabulary consumed by mutation enzymes. |
 | `sig_cell` | ops | signal namespace for kernel cell operations. |
 
