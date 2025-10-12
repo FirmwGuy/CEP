@@ -456,6 +456,53 @@ static bool cep_rv_copy_telemetry(cepCell* entry, const cepCell* telemetry) {
     return true;
 }
 
+static void cep_rv_seed_defaults(cepCell* entry) {
+    if (!entry) {
+        return;
+    }
+
+    if (!cep_rv_fetch_cstring(entry, dt_epoch_k())) {
+        (void)cep_rv_set_number(entry, dt_epoch_k(), 0u);
+    }
+    if (!cep_rv_fetch_cstring(entry, dt_input_fp())) {
+        (void)cep_rv_set_number(entry, dt_input_fp(), 0u);
+    }
+    if (!cep_rv_fetch_cstring(entry, dt_deadline())) {
+        (void)cep_rv_set_number(entry, dt_deadline(), 0u);
+    }
+    if (!cep_rv_fetch_cstring(entry, dt_grace_delta())) {
+        (void)cep_rv_set_number(entry, dt_grace_delta(), 0u);
+    }
+    if (!cep_rv_fetch_cstring(entry, dt_max_grace())) {
+        (void)cep_rv_set_number(entry, dt_max_grace(), 0u);
+    }
+    if (!cep_rv_fetch_cstring(entry, dt_kill_wait())) {
+        (void)cep_rv_set_number(entry, dt_kill_wait(), 0u);
+    }
+    if (!cep_rv_fetch_cstring(entry, dt_on_miss())) {
+        (void)cep_rv_set_string(entry, dt_on_miss(), "timeout");
+    }
+    if (!cep_rv_fetch_cstring(entry, dt_kill_mode())) {
+        (void)cep_rv_set_string(entry, dt_kill_mode(), "none");
+    }
+    if (!cep_rv_fetch_cstring(entry, dt_cas_hash())) {
+        (void)cep_rv_set_string(entry, dt_cas_hash(), "");
+    }
+    if (!cep_rv_fetch_cstring(entry, dt_grace_used())) {
+        (void)cep_rv_set_number(entry, dt_grace_used(), 0u);
+    }
+
+    cepCell* telemetry = cep_cell_find_by_name(entry, dt_telemetry());
+    if (!telemetry || !cep_cell_has_store(telemetry)) {
+        if (telemetry) {
+            cep_cell_remove_hard(entry, telemetry);
+        }
+        cepDT name_copy = *dt_telemetry();
+        cepDT dict_type = *dt_dictionary();
+        (void)cep_dict_add_dictionary(entry, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    }
+}
+
 static cepID cep_rv_text_to_id(const char* text) {
     if (!text || !*text) {
         return 0;
@@ -803,9 +850,6 @@ bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
         entry = cep_dict_add_dictionary(ledger, &name_dt, &dict_type, CEP_STORAGE_RED_BLACK_T);
     }
 
-    /* TODO: double-check rv_spawn writes the initial `state=pending` record plus
-     * every default ledger field so replay tooling can rely on the schema
-     * without defensive guards. */
     if (!entry) {
         cep_rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_ALLOC;
         return false;
@@ -933,7 +977,8 @@ bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
     cep_rv_set_string(entry, dt_state(), "pending");
     cep_rv_remove_field(entry, dt_ready_beat());
     cep_rv_remove_field(entry, dt_applied_beat());
-    cep_rv_remove_field(entry, dt_grace_used());
+
+    cep_rv_seed_defaults(entry);
 
     cep_store_unlock(entry, &entry_lock);
 

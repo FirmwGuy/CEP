@@ -44,6 +44,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `inbox` | core | captured impulses queued for the current beat. |
 | `sig_sys` | core | System-level signal namespace emitted during lifecycle hooks. |
+| `sig_err` | core | Error impulse namespace emitted by CEI and kernel diagnostics. |
 | `init` | core | System init signal tag that bootstraps higher layers. |
 | `shutdown` | core | System shutdown signal tag emitted before teardown. |
 | `mr_route` | ops | routing enzyme that moves unified inbox entries into layer inboxes. |

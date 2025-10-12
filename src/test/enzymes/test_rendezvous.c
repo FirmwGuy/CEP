@@ -10,6 +10,8 @@
 #include "cep_heartbeat.h"
 #include "cep_rendezvous.h"
 
+#include <inttypes.h>
+#include <stdio.h>
 #include <string.h>
 
 #ifndef CEP_ENABLE_L2_TESTS
@@ -81,6 +83,15 @@ static cepCell* rendezvous_ledger(void) {
     return ledger;
 }
 
+static const char* rendezvous_entry_text(cepCell* entry, const cepDT* field) {
+    cepCell* node = cep_cell_find_by_name(entry, field);
+    if (!node) {
+        return NULL;
+    }
+    munit_assert_true(cep_cell_has_data(node));
+    return (const char*)cep_cell_data(node);
+}
+
 static cepID rendezvous_spawn_request(const char* key_text,
                                       const char* profile,
                                       cepBeatNumber due) {
@@ -93,17 +104,96 @@ static cepID rendezvous_spawn_request(const char* key_text,
     cepID profile_id = cep_text_to_word(profile);
     munit_assert_true(profile_id != 0);
 
-    cepRvSpec spec = {0};
-    spec.key_dt = cep_dt_make(CEP_ACRO("CEP"), key_id);
-    spec.prof = profile_id;
-    spec.due = due;
+cepRvSpec spec = {0};
+spec.key_dt = cep_dt_make(CEP_ACRO("CEP"), key_id);
+spec.prof = profile_id;
+spec.due = due;
 
-    char signal_buf[128];
-    munit_assert_true(cep_rv_signal_for_key(&spec.key_dt, signal_buf, sizeof signal_buf));
-    spec.signal_path = signal_buf;
+char signal_buf[128];
+munit_assert_true(cep_rv_signal_for_key(&spec.key_dt, signal_buf, sizeof signal_buf));
+spec.signal_path = signal_buf;
 
-    munit_assert_true(cep_rv_spawn(&spec, spec.key_dt.tag));
-    return spec.key_dt.tag;
+munit_assert_true(cep_rv_spawn(&spec, spec.key_dt.tag));
+return spec.key_dt.tag;
+}
+
+MunitResult test_rendezvous_ledger_defaults(const MunitParameter params[], void* fixture) {
+    (void)fixture;
+    rendezvous_prepare_runtime(params, /*start_heartbeat=*/true);
+
+    const cepBeatNumber due = 12u;
+    cepID key = rendezvous_spawn_request("defaults", "rv-fixed", due);
+
+    cepCell* ledger = rendezvous_ledger();
+    cepDT key_dt = cep_dt_make(CEP_ACRO("CEP"), key);
+    cepCell* entry = cep_cell_find_by_name(ledger, &key_dt);
+    munit_assert_not_null(entry);
+
+    const char* state = rendezvous_entry_text(entry, CEP_DTAW("CEP", "state"));
+    munit_assert_not_null(state);
+    munit_assert_string_equal(state, "pending");
+
+    const char* spawn_beat = rendezvous_entry_text(entry, CEP_DTAW("CEP", "spawn_beat"));
+    munit_assert_not_null(spawn_beat);
+    munit_assert_string_equal(spawn_beat, "0");
+
+    const char* prof = rendezvous_entry_text(entry, CEP_DTAW("CEP", "prof"));
+    munit_assert_not_null(prof);
+    munit_assert_string_equal(prof, "rv-fixed");
+
+    char due_expected[32];
+    (void)snprintf(due_expected, sizeof due_expected, "%" PRIu64, (uint64_t)due);
+    const char* due_text = rendezvous_entry_text(entry, CEP_DTAW("CEP", "due"));
+    munit_assert_not_null(due_text);
+    munit_assert_string_equal(due_text, due_expected);
+
+    const char* epoch_k = rendezvous_entry_text(entry, CEP_DTAW("CEP", "epoch_k"));
+    munit_assert_not_null(epoch_k);
+    munit_assert_string_equal(epoch_k, "0");
+
+    const char* input_fp = rendezvous_entry_text(entry, CEP_DTAW("CEP", "input_fp"));
+    munit_assert_not_null(input_fp);
+    munit_assert_string_equal(input_fp, "0");
+
+    const char* deadline = rendezvous_entry_text(entry, CEP_DTAW("CEP", "deadline"));
+    munit_assert_not_null(deadline);
+    munit_assert_string_equal(deadline, "0");
+
+    const char* grace_delta = rendezvous_entry_text(entry, CEP_DTAW("CEP", "grace_delta"));
+    munit_assert_not_null(grace_delta);
+    munit_assert_string_equal(grace_delta, "0");
+
+    const char* max_grace = rendezvous_entry_text(entry, CEP_DTAW("CEP", "max_grace"));
+    munit_assert_not_null(max_grace);
+    munit_assert_string_equal(max_grace, "0");
+
+    const char* kill_wait = rendezvous_entry_text(entry, CEP_DTAW("CEP", "kill_wait"));
+    munit_assert_not_null(kill_wait);
+    munit_assert_string_equal(kill_wait, "0");
+
+    const char* on_miss = rendezvous_entry_text(entry, CEP_DTAW("CEP", "on_miss"));
+    munit_assert_not_null(on_miss);
+    munit_assert_string_equal(on_miss, "timeout");
+
+    const char* kill_mode = rendezvous_entry_text(entry, CEP_DTAW("CEP", "kill_mode"));
+    munit_assert_not_null(kill_mode);
+    munit_assert_string_equal(kill_mode, "none");
+
+    const char* cas_hash = rendezvous_entry_text(entry, CEP_DTAW("CEP", "cas_hash"));
+    munit_assert_not_null(cas_hash);
+    munit_assert_size(strlen(cas_hash), ==, 0u);
+
+    const char* grace_used = rendezvous_entry_text(entry, CEP_DTAW("CEP", "grace_used"));
+    munit_assert_not_null(grace_used);
+    munit_assert_string_equal(grace_used, "0");
+
+    cepCell* telemetry = cep_cell_find_by_name(entry, CEP_DTAW("CEP", "telemetry"));
+    munit_assert_not_null(telemetry);
+    munit_assert_true(cep_cell_has_store(telemetry));
+    munit_assert_size(cep_cell_children(telemetry), ==, 0u);
+
+    rendezvous_shutdown_runtime();
+    return MUNIT_OK;
 }
 
 MunitResult test_rendezvous_bootstrap_cycles(const MunitParameter params[], void* fixture) {
@@ -160,6 +250,14 @@ MunitResult test_rendezvous_parallel(const MunitParameter params[], void* fixtur
 }
 
 static MunitTest rendezvous_tests[] = {
+    {
+        "/rendezvous/ledger_defaults",
+        test_rendezvous_ledger_defaults,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL,
+    },
     {
         "/rendezvous/bootstrap_cycles",
         test_rendezvous_bootstrap_cycles,

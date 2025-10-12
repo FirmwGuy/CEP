@@ -90,6 +90,14 @@ MunitTest tests[] = {
         boot_cycle_timeout_params
     },
     {
+        "/rendezvous/ledger_defaults",
+        test_rendezvous_ledger_defaults,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_timeout_params
+    },
+    {
         "/heartbeat",
         test_heartbeat,
         NULL,

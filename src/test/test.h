@@ -47,6 +47,7 @@ MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fix
 MunitResult test_serialization(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization_proxy(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_rendezvous_ledger_defaults(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_rendezvous_bootstrap_cycles(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_rendezvous_pipeline(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_rendezvous_parallel(const MunitParameter params[], void* user_data_or_fixture);
