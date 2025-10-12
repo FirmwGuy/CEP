@@ -11,7 +11,7 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
 | Auto-ID & metadata hygiene | ⚙️ Partial | `cep_store_add_child` assigns auto IDs when tags are primed with `CEP_AUTOID` and flags state changes | ⚙️ Advance the cursor when callers preset IDs; strip system bits in accessors |
 | Data payload lifecycle | ⚙️ Partial | `cep_data_new`, `cep_cell_update`, and `cep_data_history_*` maintain VALUE/DATA payload history with hashes | ⚙️ Finish HANDLE/STREAM read, history, and destructor paths |
 | Child store engines | ⚙️ Partial | Linked list, array, packed queue, RB-tree, and octree back-ends wired through `cep_store_new`; comparator/hash indexes now dedupe through `store_find_child_by_key` | ⚙️ Add shared hash lookups and re-sort helpers for large catalog back-ends |
-| Historical queries | ⚙️ Partial | `cep_cell_find_by_*_past`, `cep_cell_traverse_past`, and deep traversal replay timelines without mutating live data | ⚙️ Provide snapshot payloads for HANDLE/STREAM; replace the global `MAX_DEPTH` guard |
+| Historical queries | ⚙️ Partial | `cep_cell_find_by_*_past`, `cep_cell_traverse_past`, and deep traversal replay timelines without mutating live data | ⚙️ Provide snapshot payloads for HANDLE/STREAM and surface depth telemetry for the adaptive traversal stack |
 | Link handling & shadowing | ⚙️ Partial | Link macros resolve references; soft take/pop expose archived children as links; link shadows now track `targetDead` status for tombstones | 📎 Finish shadow lifecycle hooks (refcounts/GC) and snapshot provenance |
 | Lifecycle & GC | ⚙️ Partial | `cep_cell_finalize` (invariant-safe), `cep_cell_finalize_hard`, `cep_store_del`, and hard delete helpers reclaim stores and payloads | ⚙️ Wire proxy lifecycle, clone support, and shadow-aware teardown |
 | Tooling & safety nets | ⚙️ Partial | Assertions wrap public APIs; Meson builds + unit tests guard regressions | ⚙️ Add adaptive traversal stacks, locks, persistence hooks, and broader coverage |
@@ -29,7 +29,7 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
 - ⚙️ Tighten idempotency for comparator and hash-indexed stores so repeated inserts shortcut on structure checks.
 - ⚙️ Harden auto-ID handling and metadata masking before exposing external name APIs.
 - ⚙️ Deliver HANDLE/STREAM payload persistence, including destructors and snapshot visibility.
-- ⚙️ Replace the global traversal depth guard with an adaptive stack and high-water metrics.
+- ⚙️ Capture high-water metrics for the adaptive traversal stack now that it grows automatically.
 
 ### Backlog Watchlist
 - 📎 Link and shadow cleanup, including refcounting and garbage collection hooks.

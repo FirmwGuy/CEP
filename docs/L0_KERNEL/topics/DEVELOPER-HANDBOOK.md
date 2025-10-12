@@ -168,7 +168,7 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
    - RB-tree: re-sort/re-index helpers when switching compare functions.
    - Octree: reinsert on compare/bound changes; verify traversal ordering contracts.
 ### 5) Path/Traverse Robustness
-   - Replace global `MAX_DEPTH` with adaptive stack allocation; grow on demand and track high-water marks for tuning.
+   - Adaptive stack now grows on demand; add instrumentation to capture depth high-water marks and surface them to tooling.
    - Add internal-order traversal (storage-native sequencing) explicitly verified by tests.
 ### 6) Specialized Stores
    - One-member-only dictionary (organizational convenience) with fast replace semantics.
@@ -232,4 +232,4 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
 - Implement HANDLE/STREAM update/read paths in `cep_cell.c` and add tests.
 - Add hash-based indexing across list/array/tree with a thin hash adapter.
 - Introduce range queries for dictionaries/catalogs (include tests mirroring by-name/by-key behavior).
-- Replace global `MAX_DEPTH` with an adaptive stack in deep traversal + tests for very deep structures.
+- Add regression tests that exercise the adaptive traversal stack at extreme depths and report the high-water metrics.

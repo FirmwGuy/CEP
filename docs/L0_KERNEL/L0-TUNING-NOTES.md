@@ -93,7 +93,7 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 
 **Stack depth**
 
-* DFS uses a fixed “fast stack” (`CEP_MAX_FAST_STACK_DEPTH == 16`) and allocates on heap if deeper. If your trees are deeper, **raise `MAX_DEPTH`** (global) to avoid heap traffic in tight loops (it’s set from `CEP_MAX_FAST_STACK_DEPTH`) .
+* DFS builds on a 16‑frame fast stack and expands automatically; deeper trees transparently grow the stack with heap storage, so you no longer need to tweak a global depth limit. Keep the default unless profiling shows the fast stack threshold needs to move.
 
 **Tuning tips**
 
@@ -190,7 +190,7 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 
 * **Reindexing in a tight loop** (calling `cep_cell_to_dictionary`/`cep_cell_sort` frequently) — creates store history snapshots and reorders siblings; batch or design for the final indexing upfront .
 * **Using packed queue with sorted expectations** — certain sorted ops are intentionally unsupported and assert out; keep it insertion‑only .
-* **Deep trees with default stack** — DFS past 16 levels allocates per recursion step; raise `MAX_DEPTH` for deeply nested schemas .
+* **Deep trees with default stack** — DFS grows beyond the 16‑frame cache by allocating additional frames on demand; no manual knob is required for deep hierarchies.
 * **Over‑linking hot targets** — thousands of backlinks amplify detach/retarget costs; use intermediate grouping or shared library resources instead of CEP links where feasible .
 * **Recording history when not needed** — `cep_cell_update` creates a snapshot each write; prefer `_hard` variant when you can safely drop history for performance .
 
@@ -201,7 +201,7 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 * **Namepool**: `cep_namepool_intern*`, `lookup`, `release` (reduce RAM + compare cost) .
 * **Stores**: `cep_store_new(dt, storage, indexing, ...)` — **pass capacity/bucket hints** for array/queue/hash; octree requires center/subwide/compare; some combos assert by design .
 * **Updates**: `cep_cell_update` (history) vs `cep_cell_update_hard` (no history); `swap=true` for zero‑copy in `DATA` .
-* **Traversal**: `*_traverse`, `*_traverse_internal`, `*_deep_traverse*`; prefer internal for RBT/hash when you care about physical structure; raise `MAX_DEPTH` if needed .
+* **Traversal**: `*_traverse`, `*_traverse_internal`, `*_deep_traverse*`; prefer internal for RBT/hash when you care about physical structure. Stack capacity extends automatically when depth increases.
 * **Locks**: `cep_store_lock` / `cep_data_lock` — short, scoped use; hierarchy checks cost O(depth) per op .
 * **Links**: avoid massive backlink sets on hot targets; detaches are O(k) in number of links .
 * **Enzymes**: set `CEP_ENZYME_CAPACITY_HINT`; keep `before[]/after[]` minimal; consistent DT naming; register outside live beats when possible; activation of pending is explicit and rebuilds indexes once  .

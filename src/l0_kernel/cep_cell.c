@@ -101,9 +101,62 @@ static void cep_shadow_rebind_links(cepCell* target);
 
 #define CEP_MAX_FAST_STACK_DEPTH  16
 
-unsigned MAX_DEPTH = CEP_MAX_FAST_STACK_DEPTH;     // FixMe: (used by path/traverse) better policy than a global for this.
-
 #define cepFunc     void*
+
+typedef struct {
+    cepEntry* data;
+    cepEntry  fast[CEP_MAX_FAST_STACK_DEPTH];
+    size_t    capacity;
+    bool      heap;
+} cepEntryStack;
+
+static inline void cep_entry_stack_init(cepEntryStack* stack) {
+    assert(stack);
+    stack->data = stack->fast;
+    stack->capacity = CEP_MAX_FAST_STACK_DEPTH;
+    stack->heap = false;
+    memset(stack->fast, 0, sizeof stack->fast);
+}
+
+static inline bool cep_entry_stack_reserve(cepEntryStack* stack, size_t requiredDepth) {
+    assert(stack);
+
+    if (requiredDepth < stack->capacity)
+        return true;
+
+    size_t newCapacity = stack->capacity;
+    while (newCapacity <= requiredDepth)
+        newCapacity <<= 1u;
+
+    cepEntry* resized;
+    if (stack->heap) {
+        resized = cep_realloc(stack->data, newCapacity * sizeof *resized);
+        if (!resized)
+            return false;
+    } else {
+        resized = cep_malloc(newCapacity * sizeof *resized);
+        if (!resized)
+            return false;
+        memcpy(resized, stack->data, stack->capacity * sizeof *resized);
+        stack->heap = true;
+    }
+
+    memset(resized + stack->capacity, 0, (newCapacity - stack->capacity) * sizeof *resized);
+    stack->data = resized;
+    stack->capacity = newCapacity;
+    return true;
+}
+
+static inline void cep_entry_stack_destroy(cepEntryStack* stack) {
+    assert(stack);
+
+    if (stack->heap && stack->data)
+        cep_free(stack->data);
+
+    stack->data = stack->fast;
+    stack->capacity = CEP_MAX_FAST_STACK_DEPTH;
+    stack->heap = false;
+}
 
 
 /** Construct a proxy cell by wiring a proxy vtable to the generic cell
@@ -2497,12 +2550,67 @@ static inline bool cep_traverse_past_proxy(cepEntry* entry, void* ctxPtr) {
 
 typedef struct {
     cepEntry    pending;
-    cepEntry    lastEmitted;
+   cepEntry    lastEmitted;
     cepCell*    prev;
     size_t      position;
     bool        hasPending;
     bool        emitted;
 } cepTraversePastFrame;
+
+typedef struct {
+    cepTraversePastFrame* data;
+    cepTraversePastFrame  fast[CEP_MAX_FAST_STACK_DEPTH + 1u];
+    unsigned capacity;
+    bool heap;
+} cepTraversePastFrameBuffer;
+
+static inline void cep_traverse_past_frame_buffer_init(cepTraversePastFrameBuffer* buffer) {
+    assert(buffer);
+    buffer->data = buffer->fast;
+    buffer->capacity = CEP_MAX_FAST_STACK_DEPTH + 1u;
+    buffer->heap = false;
+    memset(buffer->fast, 0, sizeof buffer->fast);
+}
+
+static inline bool cep_traverse_past_frame_buffer_reserve(cepTraversePastFrameBuffer* buffer, unsigned requiredDepth) {
+    assert(buffer);
+
+    if (requiredDepth < buffer->capacity)
+        return true;
+
+    unsigned newCapacity = buffer->capacity;
+    while (newCapacity <= requiredDepth)
+        newCapacity <<= 1u;
+
+    cepTraversePastFrame* resized;
+    if (buffer->heap) {
+        resized = cep_realloc(buffer->data, (size_t)newCapacity * sizeof *resized);
+        if (!resized)
+            return false;
+    } else {
+        resized = cep_malloc((size_t)newCapacity * sizeof *resized);
+        if (!resized)
+            return false;
+        memcpy(resized, buffer->data, (size_t)buffer->capacity * sizeof *resized);
+        buffer->heap = true;
+    }
+
+    memset(resized + buffer->capacity, 0, (size_t)(newCapacity - buffer->capacity) * sizeof *resized);
+    buffer->data = resized;
+    buffer->capacity = newCapacity;
+    return true;
+}
+
+static inline void cep_traverse_past_frame_buffer_destroy(cepTraversePastFrameBuffer* buffer) {
+    assert(buffer);
+
+    if (buffer->heap && buffer->data)
+        cep_free(buffer->data);
+
+    buffer->data = buffer->fast;
+    buffer->capacity = CEP_MAX_FAST_STACK_DEPTH + 1u;
+    buffer->heap = false;
+}
 
 
 typedef struct {
@@ -2512,17 +2620,19 @@ typedef struct {
     cepOpCount            timestamp;
     cepEntry*               userEntry;
     cepEntry                endEntry;
-    cepTraversePastFrame*   frames;
-    unsigned                frameCount;
+    cepTraversePastFrameBuffer* frameBuffer;
     unsigned                maxDepthInUse;
     bool                    aborted;
 } cepDeepTraversePastCtx;
 
 
 static inline bool cep_deep_traverse_past_flush_frame(cepDeepTraversePastCtx* ctx, unsigned depth, cepCell* nextCell) {
-    assert(ctx && depth < ctx->frameCount);
+    assert(ctx);
 
-    cepTraversePastFrame* frame = &ctx->frames[depth];
+    if (!cep_traverse_past_frame_buffer_reserve(ctx->frameBuffer, depth))
+        return false;
+
+    cepTraversePastFrame* frame = &ctx->frameBuffer->data[depth];
 
     frame->pending.next = nextCell;
     *ctx->userEntry     = frame->pending;
@@ -2545,10 +2655,13 @@ static inline bool cep_deep_traverse_past_flush_frame(cepDeepTraversePastCtx* ct
 
 
 static inline bool cep_deep_traverse_past_sync_depth(cepDeepTraversePastCtx* ctx, unsigned depth) {
-    assert(ctx && depth < ctx->frameCount);
+    assert(ctx);
 
     for (unsigned d = ctx->maxDepthInUse; d > depth; d--) {
-        cepTraversePastFrame* frame = &ctx->frames[d];
+        if (!cep_traverse_past_frame_buffer_reserve(ctx->frameBuffer, d))
+            return false;
+
+        cepTraversePastFrame* frame = &ctx->frameBuffer->data[d];
 
         if (frame->hasPending) {
             if (!cep_deep_traverse_past_flush_frame(ctx, d, NULL))
@@ -2574,7 +2687,8 @@ static inline bool cep_deep_traverse_past_proxy(cepEntry* entry, void* ctxPtr) {
         return true;
 
     unsigned depth = entry->depth;
-    assert(depth < ctx->frameCount);
+    if (!cep_traverse_past_frame_buffer_reserve(ctx->frameBuffer, depth))
+        return false;
 
     if (!cep_deep_traverse_past_sync_depth(ctx, depth))
         return false;
@@ -2585,12 +2699,16 @@ static inline bool cep_deep_traverse_past_proxy(cepEntry* entry, void* ctxPtr) {
     if (!cep_entry_has_timestamp(entry, ctx->timestamp))
         return true;
 
-    if (depth && ctx->frames[depth - 1].hasPending) {
-        if (!cep_deep_traverse_past_flush_frame(ctx, depth - 1, entry->cell))
+    if (depth) {
+        if (!cep_traverse_past_frame_buffer_reserve(ctx->frameBuffer, depth - 1))
             return false;
+        if (ctx->frameBuffer->data[depth - 1].hasPending) {
+            if (!cep_deep_traverse_past_flush_frame(ctx, depth - 1, entry->cell))
+                return false;
+        }
     }
 
-    cepTraversePastFrame* frame = &ctx->frames[depth];
+    cepTraversePastFrame* frame = &ctx->frameBuffer->data[depth];
 
     if (frame->hasPending) {
         if (!cep_deep_traverse_past_flush_frame(ctx, depth, entry->cell))
@@ -2611,12 +2729,13 @@ static inline bool cep_deep_traverse_past_end_proxy(cepEntry* entry, void* ctxPt
     cepDeepTraversePastCtx* ctx = ctxPtr;
 
     unsigned depth = entry->depth;
-    assert(depth < ctx->frameCount);
+    if (!cep_traverse_past_frame_buffer_reserve(ctx->frameBuffer, depth))
+        return false;
 
     if (!cep_deep_traverse_past_sync_depth(ctx, depth))
         return false;
 
-    cepTraversePastFrame* frame = &ctx->frames[depth];
+    cepTraversePastFrame* frame = &ctx->frameBuffer->data[depth];
     if (!ctx->endFunc || !frame->emitted)
         return true;
 
@@ -3489,13 +3608,25 @@ void* cep_cell_update_hard(cepCell* cell, size_t size, size_t capacity, void* va
 bool cep_cell_path(const cepCell* cell, cepPath** path) {
     assert(cell && path);
 
-    cepPath* tempPath;
-    if (*path) {
-        tempPath = *path;
-        assert(tempPath->capacity);
+    unsigned initialCapacity = CEP_MAX_FAST_STACK_DEPTH;
+    cepPath* tempPath = *path;
+
+    if (tempPath) {
+        if (!tempPath->capacity) {
+            size_t bytes = sizeof(cepPath) + ((size_t)initialCapacity * sizeof(cepPast));
+            cepPath* resized = cep_realloc(tempPath, bytes);
+            if (!resized)
+                return false;
+            memset(resized->past, 0, (size_t)initialCapacity * sizeof(cepPast));
+            resized->capacity = initialCapacity;
+            tempPath = resized;
+            *path = tempPath;
+        }
     } else {
-        tempPath = cep_dyn_malloc(cepPath, cepPast, MAX_DEPTH);
-        tempPath->capacity = MAX_DEPTH;
+        tempPath = cep_dyn_malloc0(cepPath, cepPast, initialCapacity);
+        if (!tempPath)
+            return false;
+        tempPath->capacity = initialCapacity;
         *path = tempPath;
     }
     tempPath->length = 0;
@@ -3998,11 +4129,8 @@ bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTravers
         userEntry = cep_alloca(sizeof(cepEntry));
     CEP_0(userEntry);
 
-    size_t frameCount = (size_t)MAX_DEPTH + 1;
-    size_t framesSize = frameCount * sizeof(cepTraversePastFrame);
-    bool useHeap = (frameCount > CEP_MAX_FAST_STACK_DEPTH);
-    cepTraversePastFrame* frames = useHeap? cep_malloc(framesSize): cep_alloca(framesSize);
-    memset(frames, 0, framesSize);
+    cepTraversePastFrameBuffer frameBuffer;
+    cep_traverse_past_frame_buffer_init(&frameBuffer);
 
     cepDeepTraversePastCtx ctx = {
         .nodeFunc      = func,
@@ -4010,8 +4138,7 @@ bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTravers
         .context       = context,
         .timestamp     = timestamp,
         .userEntry     = userEntry,
-        .frames        = frames,
-        .frameCount    = (unsigned)frameCount,
+        .frameBuffer   = &frameBuffer,
         .maxDepthInUse = 0,
     };
 
@@ -4027,11 +4154,15 @@ bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTravers
             ok = false;
     }
 
-    if (ok && ctx.frames[0].hasPending)
-        ok = cep_deep_traverse_past_flush_frame(&ctx, 0, NULL);
+    if (ok) {
+        if (!cep_traverse_past_frame_buffer_reserve(ctx.frameBuffer, 0)) {
+            ok = false;
+        } else if (ctx.frameBuffer->data[0].hasPending) {
+            ok = cep_deep_traverse_past_flush_frame(&ctx, 0, NULL);
+        }
+    }
 
-    if (useHeap)
-        cep_free(frames);
+    cep_traverse_past_frame_buffer_destroy(&frameBuffer);
 
     if (!ok)
         return false;
@@ -4062,8 +4193,9 @@ bool cep_cell_deep_traverse(cepCell* cell, cepTraverse func, cepTraverse endFunc
     entry->cell = cep_cell_first(cell);
 
     // Non-recursive version of branch descent:
-    size_t stackSize = MAX_DEPTH * sizeof(cepEntry);
-    cepEntry* stack = (MAX_DEPTH > CEP_MAX_FAST_STACK_DEPTH)?  cep_malloc(stackSize):  cep_alloca(stackSize);
+    cepEntryStack stack;
+    cep_entry_stack_init(&stack);
+
     for (;;) {
         // Ascend to parent if no more siblings in branch.
         if (!entry->cell) {
@@ -4071,16 +4203,16 @@ bool cep_cell_deep_traverse(cepCell* cell, cepTraverse func, cepTraverse endFunc
             depth--;
 
             if (endFunc) {
-                ok = endFunc(&stack[depth], context);
+                ok = endFunc(&stack.data[depth], context);
                 if (!ok)  break;
             }
 
             // Next cell.
-            entry->cell   = stack[depth].next;
-            entry->parent   = stack[depth].parent;
-            entry->prev     = stack[depth].cell;
+            entry->cell     = stack.data[depth].next;
+            entry->parent   = stack.data[depth].parent;
+            entry->prev     = stack.data[depth].cell;
             entry->next     = NULL;
-            entry->position = stack[depth].position + 1;
+            entry->position = stack.data[depth].position + 1;
             entry->depth    = depth;
             continue;
         }
@@ -4117,12 +4249,15 @@ bool cep_cell_deep_traverse(cepCell* cell, cepTraverse func, cepTraverse endFunc
         // Descent to children if it's a book.
         if (cep_cell_children(entry->cell)
         && ((child = cep_cell_first(entry->cell)))) {
-            assert(depth < MAX_DEPTH);
+            if (!cep_entry_stack_reserve(&stack, depth)) {
+                ok = false;
+                break;
+            }
 
-            stack[depth++]  = *entry;
+            stack.data[depth++] = *entry;
 
             entry->parent   = entry->cell;
-            entry->cell   = child;
+            entry->cell     = child;
             entry->prev     = NULL;
             entry->position = 0;
             entry->depth    = depth;
@@ -4136,8 +4271,7 @@ bool cep_cell_deep_traverse(cepCell* cell, cepTraverse func, cepTraverse endFunc
         entry->position += 1;
     }
 
-    if (MAX_DEPTH > CEP_MAX_FAST_STACK_DEPTH)
-        cep_free(stack);
+    cep_entry_stack_destroy(&stack);
 
 return ok;
 }
@@ -4166,8 +4300,8 @@ bool cep_cell_deep_traverse_internal(cepCell* cell, cepTraverse func, cepTravers
     entry->position = 0;
     entry->depth = 0;
 
-    size_t stackSize = MAX_DEPTH * sizeof(cepEntry);
-    cepEntry* stack = (MAX_DEPTH > CEP_MAX_FAST_STACK_DEPTH)? cep_malloc(stackSize): cep_alloca(stackSize);
+    cepEntryStack stack;
+    cep_entry_stack_init(&stack);
 
     for (;;) {
         if (!entry->cell) {
@@ -4175,15 +4309,15 @@ bool cep_cell_deep_traverse_internal(cepCell* cell, cepTraverse func, cepTravers
             depth--;
 
             if (endFunc) {
-                ok = endFunc(&stack[depth], context);
+                ok = endFunc(&stack.data[depth], context);
                 if (!ok)  break;
             }
 
-            entry->cell   = stack[depth].next;
-            entry->parent = stack[depth].parent;
-            entry->prev   = stack[depth].cell;
+            entry->cell   = stack.data[depth].next;
+            entry->parent = stack.data[depth].parent;
+            entry->prev   = stack.data[depth].cell;
             entry->next   = NULL;
-            entry->position = stack[depth].position + 1;
+            entry->position = stack.data[depth].position + 1;
             entry->depth  = depth;
             continue;
         }
@@ -4198,9 +4332,12 @@ bool cep_cell_deep_traverse_internal(cepCell* cell, cepTraverse func, cepTravers
 
         if (entry->cell->store && entry->cell->store->chdCount
         && ((child = store_first_child_internal(entry->cell->store)))) {
-            assert(depth < MAX_DEPTH);
+            if (!cep_entry_stack_reserve(&stack, depth)) {
+                ok = false;
+                break;
+            }
 
-            stack[depth++] = *entry;
+            stack.data[depth++] = *entry;
 
             entry->parent   = entry->cell;
             entry->cell     = child;
@@ -4216,8 +4353,7 @@ bool cep_cell_deep_traverse_internal(cepCell* cell, cepTraverse func, cepTravers
         entry->position += 1;
     }
 
-    if (MAX_DEPTH > CEP_MAX_FAST_STACK_DEPTH)
-        cep_free(stack);
+    cep_entry_stack_destroy(&stack);
 
     return ok;
 }
