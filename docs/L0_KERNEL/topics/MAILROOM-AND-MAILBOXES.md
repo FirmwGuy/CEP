@@ -1,11 +1,11 @@
 # L0 Topic: Mailroom and Layer Mailboxes
 
 ## Introduction
-The mailroom is CEP’s lobby. Every intent—whether it targets coherence, flows, or a custom namespace—lands here first, is normalized, and then routed into the correct layer inbox ahead of the beat. Understanding the mailroom API makes it easy to stitch new namespaces, extend routing, or reason about why a request appears (or doesn’t) in `/data/<layer>/inbox`.
+The mailroom is CEP’s lobby. Every intent—whether it targets an upper-layer pack or a custom namespace—lands here first, is normalized, and then routes into the correct inbox ahead of the beat. Understanding the mailroom API makes it easy to stitch new namespaces, extend routing, or reason about why a request appears (or doesn’t) in `/data/<layer>/inbox`.
 
 ## Technical Details
-- **Bootstrap** (`cep_mailroom_bootstrap()`): brings `/data/inbox/**` online, then reads `/sys/err_cat/<scope>/mailroom/buckets/*` to mirror namespaces and buckets defined by the error catalog. If the catalog is empty it falls back to the built-in `{coh,flow}` defaults so legacy callers keep working, but it never writes error codes itself.
-- **Registration** (`cep_mailroom_register()`): installs the `mr_route` enzyme on `CEP:sig_cell/op_add` with `before` edges for every ingest enzyme (`coh_ing_*`, `fl_ing`, etc.), binds the router to `/data/inbox`, and keeps repeated registrations idempotent.
+- **Bootstrap** (`cep_mailroom_bootstrap()`): brings `/data/inbox/**` online, then reads `/sys/err_cat/<scope>/mailroom/buckets/*` to mirror namespaces and buckets defined by the error catalog. If the catalog is empty it can fall back to any defaults you seed (older deployments still list `{coh,flow}` for compatibility), but it never writes error codes itself.
+- **Registration** (`cep_mailroom_register()`): installs the `mr_route` enzyme on `CEP:sig_cell/op_add` with `before` edges for every ingest enzyme (the ingest tags supplied via `cep_mailroom_add_router_before()` or by upper-layer packs), binds the router to `/data/inbox`, and keeps repeated registrations idempotent.
 - **Routing contract**: when a request hits `/data/inbox/<ns>/<bucket>/<txn>`, the router clones it under `/data/<ns>/inbox/<bucket>/<txn>`, leaves an audit link at the original site, ensures the shared intent header (`original/*`, `outcome`, `meta/parents`) exists, and stops if the downstream inbox is missing (returning `CEP_ENZYME_FATAL`).
 - **Namespaces** (`cep_mailroom_add_namespace()`): lets you register additional mailboxes. Call it before bootstrap (or rely on the automatic reseed after bootstrap) to mirror `/data/inbox/<namespace>/bucket` alongside `/data/<namespace>/inbox/bucket`.
 - **Ordering hints** (`cep_mailroom_add_router_before()`): queue extra enzyme names to insert into the router’s `before` list before `cep_mailroom_register()` runs. Useful when a pack introduces its own ingest enzyme.

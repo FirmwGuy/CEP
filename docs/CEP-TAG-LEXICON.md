@@ -113,10 +113,10 @@ when a new behavior needs a fresh word before it lands in code.
 | `value` | test | generic payload tag for value-type fixtures. |
 | `var_leaf` | test | variant selection fixture in unit tests. |
 
-#### Layer 2 Flow VM Tags
+#### Reserved Upper-Layer Tags
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |
-| `flow` | core | L2 flow root created under `/data`. |
+| `flow` | core | Reserved `/data/flow` root for future upper-layer packs that orchestrate long-running flows. The kernel keeps the tag so external tooling can prepare namespaces in advance. |
 #### Rendezvous Tags
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |

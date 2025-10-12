@@ -13,13 +13,13 @@ Examples of labels (tags) you might use:
 - geom:VECTOR3D, img:RGBA8
 - text:UTF8, hash:SHA256
 
-The kernel doesn’t interpret those bytes. Enzymes (code that knows the domain) and higher layers decide what a tag means. This keeps the kernel small and predictable, while letting meaning, schemas, and conversions evolve freely in L1+.
+The kernel doesn’t interpret those bytes. Enzymes (code that knows the domain) and higher layers decide what a tag means. This keeps the kernel small and predictable, while letting meaning, schemas, and conversions evolve freely in upper-layer packs.
 
 ---
 
 ## 2) Technical Specification
 
-Goal: make L0 deterministic and simple by treating payloads as opaque bytes and attaching only a cepDT tag. All rich typing (fields, units, constraints, shapes) is modeled in L1+ as regular cells and links.
+Goal: make L0 deterministic and simple by treating payloads as opaque bytes and attaching only a cepDT tag. All rich typing (fields, units, constraints, shapes) is modeled in upper-layer packs as regular cells and links.
 
 ### 2.1 Data Model at L0
 
@@ -30,7 +30,7 @@ Goal: make L0 deterministic and simple by treating payloads as opaque bytes and 
 ### 2.2 What L0 Does (and Doesn’t) Do
 
 - Does: store bytes; compare and hash deterministically; keep the cepDT; move/copy/update byte buffers; record/stream bytes.
-- Doesn’t: validate semantics (endianness, UTF‑8, IEEE754), track element width, or enforce shapes (scalar/vector/matrix). Those are enzyme/L1+ concerns.
+- Doesn’t: validate semantics (endianness, UTF‑8, IEEE754), track element width, or enforce shapes (scalar/vector/matrix). Those are enzyme/upper-layer packs concerns.
 
 ### 2.3 Deterministic Ordering and Hashing
 
@@ -46,9 +46,9 @@ L0 doesn’t canonicalize numeric/text formats. Enzymes that write bytes for a g
 Guidelines for enzyme authors:
 - Pick a canonical byte format per tag and stick to it.
 - Prefer little‑endian for numerics unless domain requirements say otherwise.
-- For text, prefer UTF‑8 bytes; normalization rules (if any) belong in L1+.
+- For text, prefer UTF‑8 bytes; normalization rules (if any) belong in upper-layer packs.
 
-### 2.5 L1+ Type Descriptions (Optional but Recommended)
+### 2.5 Upper-Layer Type Descriptions (Optional but Recommended)
 
 While the cepDT is enough for the kernel, higher layers can attach richer meaning in normal CEP ways:
 - Schema cells: a child link like `@type → /types/math/INT32@v1` describing width, range, and encoding.
@@ -68,7 +68,7 @@ Older drafts enumerated built‑in binary types (BOOLEAN, INT32, FLOAT64, UTF8, 
 - BOOLEAN → `core:BOOL` with bytes 0x00 or 0x01.
 - INT32 → `math:INT32` with 4 bytes in chosen endianness (recommend LE).
 - FLOAT64 → `math:FLOAT64` with IEEE‑754 8 bytes.
-- UTF8 → `text:UTF8` with raw UTF‑8 bytes (validation in enzyme/L1+).
+- UTF8 → `text:UTF8` with raw UTF‑8 bytes (validation in enzyme/upper-layer packs).
 - PATH/DT → represent as regular cells and links; when serialized to bytes, use explicit tags like `core:PATH` with a documented encoding.
 
 ---
@@ -84,7 +84,7 @@ Older drafts enumerated built‑in binary types (BOOLEAN, INT32, FLOAT64, UTF8, 
 ## 4) Q&A
 
 Q: Why make native data opaque?
-A: To keep the kernel small, deterministic, and future‑proof. Opaque bytes avoid a built‑in type explosion and push meaning to L1+, where it can evolve without touching L0.
+A: To keep the kernel small, deterministic, and future‑proof. Opaque bytes avoid a built‑in type explosion and push meaning to upper-layer packs, where it can evolve without touching L0.
 
 Q: How do we ensure interoperability if L0 doesn’t canonicalize?
 A: By agreeing on canonical bytes per tag and writing them via enzymes. The cepDT identifies the convention; bytes carry the value.
@@ -96,10 +96,10 @@ Q: What happens if an enzyme doesn’t recognize a tag?
 A: Nothing breaks. The data remains comparable and storable. Unrecognized tags are simply opaque to that enzyme.
 
 Q: How do I model vectors, matrices, or structs now?
-A: Use L1+ schemas and tags (e.g., `geom:VECTOR3F`, `linalg:MATRIX4x4F32`) and document the byte layout. The kernel doesn’t need to know the shape.
+A: Use upper-layer packs schemas and tags (e.g., `geom:VECTOR3F`, `linalg:MATRIX4x4F32`) and document the byte layout. The kernel doesn’t need to know the shape.
 
 Q: Does L0 still validate UTF‑8 or numbers?
-A: No. Validation is up to enzymes and L1+. L0 compares and hashes bytes only.
+A: No. Validation is up to enzymes and upper-layer packs. L0 compares and hashes bytes only.
 
 Q: What about external handles and streams?
 A: They remain supported as opaque representations. When materialized or journaled, they must produce consistent bytes for their tag, so replay remains deterministic.

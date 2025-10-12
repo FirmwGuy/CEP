@@ -1,28 +1,33 @@
-# Layer Bootstrap Policy
+# Bootstrap Policy for Upper Layers
 
 ## Introduction
-Each CEP layer must be able to stand up, run, and shut down without depending on higher layers. This separation keeps the bootstrap choreography deterministic, reduces circular test fixtures, and makes it simpler to reason about which subsystems need to be present when you troubleshoot a failing heartbeat.
+CEP’s kernel (Layer 0) must start, run, and shut down without assuming any higher-layer packs are present. This policy explains how optional packs should compose with the kernel so bootstrap sequences stay deterministic and tests remain modular.
 
 ## Technical Details
-- **Layer 0 (Kernel)**  
-  - Bootstraps only itself (`cep_l0_bootstrap`, `cep_cell_system_ensure`, heartbeat primitives).  
-  - Tests may stub or mock higher-layer behaviour, but must never load L1/L2 helpers.  
-  - Any new L0 API or utility must run under the assumption that no mailroom, coherence, or flow state exists yet.
-- **Layer 1 (Coherence)**  
-  - Builds on L0 primitives, mailroom routing, and namepool services that L0 exposes.  
-  - `cep_l1_coherence_bootstrap` must succeed without registering L2 descriptors.  
-  - Unit tests should initialise the kernel + mailroom directly, enqueue intents, and verify ledgers without starting the flow VM.
-- **Layer 2 (Flows & Rendezvous)**  
-  - May rely on L0 + L1 having finished their bootstrap, but must not require higher experimental layers.  
-  - Flow/Rendezvous tests should explicitly call the L1 bootstrap helpers they depend on; do not add hidden couplings back into the kernel.
-- **Cross-layer tests**  
-  - Integration suites can opt-in to multiple layers, but they must do so explicitly (for example through a feature flag such as `CEP_ENABLE_L2_TESTS`).  
-  - Default CI runs should keep higher layers disabled unless a test proves their readiness signal can complete without affecting lower-layer determinism.
+- **Kernel-first mindset**  
+  - The kernel only guarantees `cep_l0_bootstrap`, heartbeat primitives, the mailroom, and shared services (namepool, journal, storage). All other components are optional.  
+  - Kernel code and tests must succeed with zero upper-layer state; stubbing or mocking those packs is fine, but never require them for basic coverage.
+
+- **Designing an upper-layer pack**  
+  - Treat the pack as a plugin that calls into public L0 APIs. Its bootstrap should probe for prerequisites (for example, mailroom readiness) and bail out cleanly if unavailable.  
+  - Registration should be idempotent. Repeated calls must verify existing descriptors or state rather than mutating blindly.  
+  - Readiness signals belong to the pack itself (e.g., `/CEP:sig_sys/ready/CEP:coherence`). Emit them only after the pack has prepared its storage and registered enzymes.
+
+- **Testing packs**  
+  - Provide explicit helpers (e.g., `bool mypack_bootstrap(void)`) so tests can opt-in.  
+  - Keep pack-specific fixtures in dedicated suites or feature-gated blocks. Kernel CI should run with packs disabled unless a suite explicitly enables them.  
+  - When packs depend on one another, document the ordering and require callers to perform each bootstrap in sequence.
+
+- **Shutdown discipline**  
+  - Offer a `*_shutdown()` routine that releases pack-local resources and marks its lifecycle scope as `teardown`.  
+  - Kernel shutdown (`cep_heartbeat_emit_shutdown`) should succeed whether or not a pack ran; missing teardown hooks must not crash the heartbeat.
 
 ## Q&A
-- **Q: Can a layer pre-load data from a higher layer for convenience?**  
-  A: No. Import any state you need via the layer’s public bootstrap or ingest helpers so the dependency direction stays L0 → L1 → L2.
-- **Q: How do I test optional packs that sit on top of L2?**  
-  A: Create a dedicated test harness that turns those packs on after L2 initialises. Do not add those hooks to the default L0/L1 test paths.
-- **Q: What about feature detection during bootstrap?**  
-  A: Probe lower layers only. If a feature requires a higher layer, gate it behind an explicit config knob and document that dependency in the feature’s README.
+- **Can a pack preload kernel state for convenience?**  
+  No. Import data through the pack’s public bootstrap or ingest helpers so dependency direction stays “kernel → pack”, never the reverse.
+
+- **How do I detect whether a pack is available?**  
+  Expose a feature flag or capability bit (for example, `cep_features_has("coherence")`) rather than probing for internal structures.
+
+- **What about experimental packs under active development?**  
+  Keep them disabled by default. Document setup steps in the pack’s README and add feature gates so production kernels run unchanged while experimentation continues.

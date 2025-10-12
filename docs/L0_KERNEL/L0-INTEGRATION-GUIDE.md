@@ -120,8 +120,8 @@ Think of the mailroom as the lobby of the runtime: everyone drops their intents 
 
 **Technical details**
 
-- `cep_mailroom_bootstrap()` provisions `/data/inbox/**` alongside `/data/coh` and `/data/flow`, ensures `/sys/err_cat` exists, and mirrors whatever namespaces/buckets the catalog publishes under `mailroom/buckets` instead of writing error codes itself.
-- `cep_mailroom_register()` installs the `mr_route` enzyme on `CEP:sig_cell/op_add` with `before` edges targeting every ingest enzyme (`coh_ing_*`, `fl_ing`, etc.), so routing always happens ahead of layer-specific work.
+- `cep_mailroom_bootstrap()` provisions `/data/inbox/**`, ensures `/sys/err_cat` exists, and mirrors whatever namespaces/buckets the catalog publishes under `mailroom/buckets` instead of writing error codes itself. Deployments that rely on upper-layer packs can seed additional namespaces (e.g., `coh`, `flow`) through the catalog or `cep_mailroom_add_namespace()`.
+- `cep_mailroom_register()` installs the `mr_route` enzyme on `CEP:sig_cell/op_add`, inserts it before any ingest descriptors queued via `cep_mailroom_add_router_before()`, and keeps registration idempotent so pack-specific ingest enzymes always run after routing.
 - Routed intents keep an audit trail: the mailroom leaves a link behind in the source bucket and copies the staged cell into the downstream inbox. The router also guarantees the shared intent header by creating `original/*`, seeding `outcome` (if missing), and ensuring `meta/parents` exists.
 - You can extend the router by adding new namespace buckets or compatibility shims (for a transition period, link legacy inbox paths into the mailroom so producers can keep using old entrypoints).
 - `void cep_mailroom_shutdown(void)` tears down the staged router state so subsequent bootstraps rebuild the lobby from scratch; invoke it during orderly shutdowns once no more intents are enqueued.
@@ -146,7 +146,7 @@ Sometimes you need the lobby to recognise brand new tenants. The two helper func
 - If any token is `NULL`, reduces to empty after trimming, or contains a disallowed character, the helper returns `false` without touching the buffer.
 
 **Q&A**
-- *When should I prefer this over the layer-specific macros?* Use `cep_compose_identifier()` any time you need plain L0 naming (for example, mailroom buckets or diagnostics). Layer convenience macros such as `CEP_L1_COMPOSE` still make sense when you are operating entirely inside their schema.
+- *When should I prefer this over the layer-specific macros?* Use `cep_compose_identifier()` any time you need plain L0 naming (for example, mailroom buckets or diagnostics). Pack-specific convenience macros (for example, a coherence helper) still make sense when you are operating entirely inside that schema.
 - *Can I feed the result into the namepool?* Yes. Once composed, hand it to `cep_namepool_intern_cstr()` (or the layer helpers) to obtain a stable `cepID` if you need to reuse the identifier frequently.
 
 ### 1.8 Heartbeat runtime accessors
@@ -466,7 +466,7 @@ The **proxy** keeps your adapter logic isolated. CEP takes care of **shadowing**
 Heartbeat init/shutdown pulses now mirror production beats, so tooling and tests can treat them as first-class events instead of ad-hoc bootstrap helpers.
 
 ### Technical details
-- Call `cep_heartbeat_begin()` right after `cep_heartbeat_configure()` when you want the system-init cascade; follow it with `cep_heartbeat_step()` so `mr_init`, `coh_init`, `fl_init`, and `rv_init` actually execute.
+- Call `cep_heartbeat_begin()` right after `cep_heartbeat_configure()` when you want the system-init cascade; follow it with `cep_heartbeat_step()` so `mr_init`, `rv_init`, and any pack-specific init descriptors you registered actually execute.
 - `cep_heartbeat_emit_shutdown()` enqueues the shutdown signal on the live agenda, runs the same commit path as a normal beat, and writes a short breadcrumb even when directory logging stays disabled.
 - Each bootstrap helper now marks its subsystem as ready by writing to `/sys/state/<scope>` (`status=ready`, `ready_beat=<n>`) and emitting `CEP:sig_sys/ready/<scope>`. Shutdown walks the scopes in reverse dependency order, records `status=teardown` / `td_beat`, emits `CEP:sig_sys/teardown/<scope>`, and finally logs the traditional `shutdown` pulse.
 - The `/sys/state` dictionary is durable, so tooling can poll readiness/teardown even if the corresponding impulses have already been consumed; readiness helpers return `false` if prerequisites have not finished booting.
@@ -485,7 +485,7 @@ Heartbeat init/shutdown pulses now mirror production beats, so tooling and tests
 - *What happens to mid-beat registrations?* They are counted and deferred; the agenda for the current beat never mutates.
 - *When should I call `cep_mailroom_add_namespace()` and `cep_mailroom_add_router_before()`?* During your pack’s bootstrap or registration sequence—before you invoke `cep_mailroom_bootstrap()`/`cep_mailroom_register()`—so the mailroom sees the extra namespaces and dependency edges on the first beat.
 - *What happens if the mailroom already bootstrapped?* `cep_mailroom_add_namespace()` retrofits the new buckets immediately, while `cep_mailroom_add_router_before()` stores the dependency and applies it the next time the mailroom registers; you can safely call them on every initialisation pass.
-- *Do I still call layer bootstraps?* Yes. The mailroom only handles ingress; `cep_l1_coherence_bootstrap()` and `cep_l2_flows_bootstrap()` still provision their ledgers and inboxes.
+- *Do I still call pack bootstraps?* Yes. The mailroom only handles ingress; any optional pack must still run its own bootstrap to provision ledgers, inboxes, or indexes.
 - *What happens if the downstream inbox is missing?* The router aborts the move, leaves the original intent under `/data/inbox`, and returns `CEP_ENZYME_FATAL` so tests catch the misconfiguration.
 - *How do I disable the automatic beat stamp in serialization?* Supply your own `cepSerializationHeader` with `journal_metadata_present = false` (and your own metadata) or set the boolean to `false` before invoking `cep_serialization_emit_cell()`.
 - *What toggles `journal_decision_replay`?* Higher layers set it when replaying stored decisions; the kernel preserves the advisory flag during round-trips.
