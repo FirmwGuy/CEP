@@ -134,7 +134,7 @@ Sometimes you need the lobby to recognise brand new tenants. The two helper func
 - `bool cep_mailroom_add_namespace(const char* namespace_tag, const char* const bucket_tags[], size_t bucket_count)`<br>
   Adds (or extends) a namespace under `/data/inbox/<namespace_tag>/` and mirrors the same buckets under `/data/<namespace_tag>/inbox/`. Call it before `cep_mailroom_bootstrap()` so the inbox hierarchy is created during bootstrap. Repeated calls are idempotent: duplicates are ignored and newly-added buckets are seeded immediately if the mailroom already bootstrapped. Passing `bucket_count==0` skips work; otherwise each entry in `bucket_tags` must be a valid lexicon tag.
 - `bool cep_mailroom_add_router_before(const char* enzyme_tag)`<br>
-  Queues a descriptor name to be inserted into the mailroom router's `before` list the next time `cep_mailroom_register()` runs. Use this when your pack needs routing to happen ahead of additional ingest enzymes (for example, PoC packs that introduce `poc_io_ing_*`). The helper validates uniqueness, so you can register the same tag repeatedly while building layered packs.
+  Queues a descriptor name to be inserted into the mailroom router's `before` list the next time `cep_mailroom_register()` runs. Use this when your pack needs routing to happen ahead of additional ingest enzymes (for example, a custom pack that adds extra ingest stages). The helper validates uniqueness, so you can register the same tag repeatedly while building layered packs.
 
 ### 1.7 Identifier composer helper
 

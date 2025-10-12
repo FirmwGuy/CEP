@@ -73,38 +73,6 @@ when a new behavior needs a fresh word before it lands in code.
 | `text` | core | namepool payload store for textual data. |
 | `tmp` | core | scratch list reserved for tooling. |
 
-#### Layer 1 Coherence Tags
-| Tag / Pattern | Status | Purpose |
-| --- | --- | --- |
-| `coh` | core | L1 coherence root under `/data`. |
-| `being` | core | ledger entry for beings. |
-| `bond` | core | ledger entry for bonds. |
-| `context` | core | ledger entry for contexts. |
-| `facet` | core | global facet mirror keyed by `ctxId:facet`. |
-| `attrs` | core | attribute dictionary reserved for beings or context extras. |
-| `index` | core | dictionary of durable secondary indexes. |
-| `debt` | core | placeholder bucket for closure debts. |
-| `decision` | core | ledger of recorded tie-break decisions for replay. |
-| `inbox` | core | intent inbox for coherence enzymes. |
-| `be_kind` | core | index mapping kind -> beings. |
-| `bo_pair` | core | index mapping `{src,dst,type,dir}` -> bond. |
-| `ctx_type` | core | index mapping type -> contexts. |
-| `fa_ctx` | core | index mapping context -> facet list. |
-| `be_create` | ops | intent envelope for being creation. |
-| `bo_upsert` | ops | intent envelope for bond upsert. |
-| `ctx_upsert` | ops | intent envelope for context upsert. |
-| `coh_ing_be` | ops | enzyme descriptor for being ingestion. |
-| `coh_ing_bo` | ops | enzyme descriptor for bond ingestion. |
-| `coh_ing_ctx` | ops | enzyme descriptor for context ingestion. |
-| `coh_closure` | ops | enzyme descriptor for facet closure. |
-| `coh_index` | ops | enzyme descriptor for coherence indexes. |
-| `coh_adj` | ops | enzyme descriptor for adjacency refresh. |
-| `coh_init` | ops | Coherence bootstrap enzyme triggered during init. |
-| `l1_ready` | ops | readiness signal that triggers L1 maintenance passes. |
-| `out_bonds` | core | adjacency list of outgoing bonds per being. |
-| `in_bonds` | core | adjacency list of inbound bonds per being. |
-| `ctx_by_role` | core | adjacency bucket of contexts grouped by role. |
-
 #### Operational Tags
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |
@@ -149,91 +117,10 @@ when a new behavior needs a fresh word before it lands in code.
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |
 | `flow` | core | L2 flow root created under `/data`. |
-| `program` | core | ledger storing compiled flow programs. |
-| `policy` | core | ledger of decision policies used by flows. |
-| `variant` | core | compiled flow variants linked to programs. |
-| `niche` | core | routing maps that bind contexts to variants. |
-| `guardian` | core | declarative invariant rules enforced by flows. |
-| `instance` | core | runtime instances tracking VM state. |
-| `decision` | core | immutable decision cells recorded for replay. |
-| `dec_archive` | core | archival ledger for decisions retained past their TTL. |
-| `index` | core | durable indexes mirroring flow lookups. |
-| `inbox` | core | intent ingress namespace for L2. |
-| `adj` | core | transient adjacency/cache namespace under `/tmp`. |
-| `fl_upsert` | ops | intent envelope for program/policy/variant/guardian upserts. |
-| `ni_upsert` | ops | intent envelope for niche updates. |
-| `inst_start` | ops | intent envelope for starting flow instances. |
-| `inst_event` | ops | intent envelope for external instance events. |
-| `inst_ctrl` | ops | intent envelope for instance control actions. |
-| `fl_ing` | ops | enzyme descriptor for ingesting flow definitions. |
-| `ni_ing` | ops | enzyme descriptor for ingesting niche intents. |
-| `inst_ing` | ops | enzyme descriptor for ingesting instance intents. |
-| `fl_wake` | ops | enzyme descriptor for correlating events to waits. |
-| `fl_step` | ops | enzyme descriptor for executing VM steps. |
-| `fl_index` | ops | enzyme descriptor for rebuilding L2 indexes. |
-| `fl_adj` | ops | enzyme descriptor for refreshing transient caches. |
-| `fl_init` | ops | Flow bootstrap enzyme triggered during system init. |
-| `fl_*` (`fl_ing`, `fl_wake`, `fl_step`, `fl_index`, `fl_adj`, `fl_upsert`) | ops | reserved prefix for flow enzymes/intents. |
-| `inst_*` (`inst_ing`, `inst_start`, `inst_event`, `inst_ctrl`) | ops | reserved prefix for flow instance enzymes/intents. |
-| `ni_*` (`ni_ing`, `ni_upsert`) | ops | reserved prefix for niche enzymes/intents. |
-| `steps` | core | ordered list of program steps persisted under each flow definition. |
-| `step` | core | container dictionary describing a single program step. |
-| `spec` | core | nested dictionary carrying per-step parameters. |
-| `state` | core | lifecycle flag recorded on flow instances. |
-| `pc` | core | program counter stored with each instance. |
-| `subs` | core | dictionary of active wait subscriptions per instance. |
-| `events` | core | queued external events awaiting consumption by the VM. |
-| `event` | core | link reference from wait entries to a captured event record. |
-| `emits` | core | staged transform outputs stored per instance before commit. |
-| `budget` | core | per-instance clamp state capturing execution ceilings. |
-| `site` | core | identifier for a decision site inside a flow. |
-| `action` | core | control action requested against an instance. |
-| `inst_id` | core | identifier field referencing an existing instance. |
-| `signal_path` | core | signal matcher stored on wait subscriptions and events. |
-| `signal` | core | general-purpose signal identifier metadata. |
-| `status` | core | lifecycle marker used by flow subscriptions and caches. |
-| `payload` | core | dictionary carrying captured event payloads. |
-| `evidence` | core | supporting facts recorded alongside a decision entry. |
-| `validation` | core | replay guard metadata stored for decision verification. |
-| `telemetry` | core | dictionary capturing per-decision evaluation metrics. |
-| `fingerprint` | core | deterministic replay key stored under `validation`. |
-| `retain` | core | retention directive for decision ledger entries. |
-| `retain_mode` | core | canonical retention mode (`permanent`, `ttl`, `archive`). |
-| `retain_ttl` | core | retention window expressed in beats. |
-| `retain_upto` | core | beat when the decision expires under TTL enforcement. |
-| `history` | core | append-only timeline recorded for event lifecycle tracking. |
-| `choice` | core | decision choice recorded for replay. |
-| `step_limit` | core | maximum steps permitted inside the current clamp window. |
-| `steps_used` | core | running count of steps consumed during the active window. |
-| `inst_by_var` | core | index bucket listing instances grouped by variant. |
-| `inst_by_st` | core | index bucket listing instances grouped by state. |
-| `dec_by_pol` | core | index bucket listing decisions grouped by policy. |
-| `by_inst` | core | transient cache containing per-instance summaries. |
-| `sub_count` | core | summary counter of active subscriptions. |
-| `evt_count` | core | summary counter of queued events. |
-| `emit_count` | core | summary counter of staged transform outputs. |
-| `dec_count` | core | summary counter of decisions aggregated per policy. |
-| `inst_count` | core | summary counter of instances grouped under a policy. |
-| `site_count` | core | summary counter of decision sites keyed under a policy. |
-| `latency` | core | heartbeat latency metric stored on adjacency summaries. |
-| `lat_window` | core | rolling latency window maintained on adjacency summaries. |
-| `err_window` | core | rolling error window maintained on policy and adjacency summaries. |
-| `score` | core | recorded policy evaluation score for a decision. |
-| `confidence` | core | recorded confidence level for a decision outcome. |
-| `rng_seed` | core | deterministic seed used when sampling policy decisions. |
-| `rng_seq` | core | deterministic sequence number associated with policy RNG state. |
-| `error_flag` | core | boolean marker noting whether a decision ended in an error state. |
-| `timeout` | core | wait specification field expressing timeout in beats. |
-| `deadline` | core | recorded beat when a wait will time out. |
-| `signal_glob` | core | glob pattern stored alongside wait subscriptions. |
-| `beat` | core | heartbeat counter attached to events or waits. |
-| `origin` | core | marker describing whether an event was targeted or broadcast. |
-
 #### Rendezvous Tags
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |
 | `rv` | core | Rendezvous ledger root stored under `/data`. |
-| `rendezvous` | core | Transform spec dictionary describing rendezvous spawn parameters. |
 | `prof` | core | Rendezvous profile identifier captured on ledger entries. |
 | `spawn_beat` | core | Beat when a rendezvous job was created. |
 | `due` | core | Beat when the rendezvous is due. |
@@ -256,67 +143,6 @@ when a new behavior needs a fresh word before it lands in code.
 | `telemetry` | core | Telemetry dictionary copied from rendezvous workers. |
 | `defaults` | core | Profile-specific fallback parameters attached to rendezvous specs. |
 | `rv_init` | ops | Rendezvous bootstrap enzyme triggered during system init. |
-
-#### PoC Harness Tags
-| Tag / Pattern | Status | Purpose |
-| --- | --- | --- |
-| `poc` | core | PoC sandbox root nested under `/data`. |
-| `io` | core | PoC I/O ledger namespace (`/data/poc/io`). |
-| `hz` | core | Harness ledger namespace (`/data/poc/hz`). |
-| `echo` | core | Echo ledger storing submitted text payloads. |
-| `calc` | core | Calculator ledger storing expressions and results. |
-| `kv` | core | Key/value ledger recording durable entries. |
-| `ans` | core | Key/value answer ledger for read responses. |
-| `scenario` | core | Stored harness scenario definitions. |
-| `run` | core | Harness run ledger capturing execution evidence. |
-| `bandit` | core | Bandit telemetry nested under a run entry. |
-| `choices` | core | List of arm selections recorded per bandit run. |
-| `inputs` | core | Snapshot of referenced scenario inputs stored on run entries. |
-| `params` | core | Run-specific parameters supplied alongside scenarios. |
-| `actual` | core | Observed value captured by harness assertions. |
-| `diff` | core | Structured mismatch details recorded by harness assertions. |
-| `keys` | core | Index bucket listing active key/value entries. |
-| `count` | core | Numeric counter stored on index or adjacency nodes. |
-| `tomb` | core | Tombstone flag marking soft-deleted key/value entries. |
-| `enabled` | core | Toggle under `/sys/poc` gating PoC enzyme execution. |
-| `parent` | core | Provenance link tag used for audit bindings. |
-| `summary` | core | Aggregated metrics dictionary written by index and adjacency passes. |
-| `recent` | core | Transient list of most recent operations surfaced via adjacency. |
-| `calc_expr` | core | Calculator index grouping results by canonicalised expression. |
-| `kv_prefix` | core | Key/value index grouping active keys by prefix. |
-| `kv_hist` | core | Key/value index summarising per-key write history. |
-| `ids` | core | List storing identifier collections copied into index buckets. |
-| `total` | core | Summary field capturing total submissions for a bucket. |
-| `active` | core | Summary field counting active entities within a bucket. |
-| `ok` | core | Summary counter tracking successful outcomes. |
-| `fail` | core | Summary counter tracking failed outcomes. |
-| `wait` | core | Summary counter tracking pending or unprocessed items. |
-| `kset` | core | Summary bucket covering `poc_kv_set` intents. |
-| `kget` | core | Summary bucket covering `poc_kv_get` intents. |
-| `kdel` | core | Summary bucket covering `poc_kv_del` intents. |
-
-| Tag / Pattern | Status | Purpose |
-| --- | --- | --- |
-| `poc_echo` | ops | Intent bucket for PoC echo submissions. |
-| `poc_calc` | ops | Intent bucket for calculator requests. |
-| `poc_kv_set` | ops | Intent bucket for key/value set operations. |
-| `poc_kv_get` | ops | Intent bucket for key/value reads. |
-| `poc_kv_del` | ops | Intent bucket for key/value deletion requests. |
-| `poc_scenario` | ops | Intent bucket for scenario authoring. |
-| `poc_run` | ops | Intent bucket for scenario executions. |
-| `poc_assert` | ops | Intent bucket for harness assertions. |
-| `poc_bandit` | ops | Intent bucket for bandit experiments. |
-| `poc_io_ing_echo` | ops | Enzyme descriptor for echo ingestion. |
-| `poc_io_ing_calc` | ops | Enzyme descriptor for calculator ingestion. |
-| `poc_io_ing_kv` | ops | Enzyme descriptor for key/value ingestion. |
-| `poc_io_index` | ops | Enzyme descriptor refreshing PoC I/O indexes. |
-| `poc_io_adj` | ops | Enzyme descriptor publishing PoC I/O adjacency summaries. |
-| `poc_hz_ing_scenario` | ops | Harness enzyme ingesting scenarios. |
-| `poc_hz_ing_run` | ops | Harness enzyme ingesting runs. |
-| `poc_hz_ing_assert` | ops | Harness enzyme validating assertions. |
-| `poc_hz_ing_bandit` | ops | Harness enzyme coordinating bandit executions. |
-| `poc_hz_index` | ops | Harness index refresh enzyme. |
-| `poc_hz_adj` | ops | Harness adjacency refresh enzyme. |
 
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor

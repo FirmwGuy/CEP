@@ -5,8 +5,6 @@
 
 #include "cep_rendezvous.h"
 
-#include "cep_l2_flows.h"
-
 #include "../l0_kernel/cep_heartbeat.h"
 #include "../l0_kernel/cep_identifier.h"
 #include "../l0_kernel/cep_namepool.h"
@@ -36,7 +34,6 @@ static bool cep_rv_data_root_ready(void) {
     return true;
 }
 
-CEP_DEFINE_STATIC_DT(dt_flow_root,      CEP_ACRO("CEP"), CEP_WORD("flow"))
 CEP_DEFINE_STATIC_DT(dt_dictionary,     CEP_ACRO("CEP"), CEP_WORD("dictionary"))
 CEP_DEFINE_STATIC_DT(dt_text,           CEP_ACRO("CEP"), CEP_WORD("text"))
 CEP_DEFINE_STATIC_DT(dt_rv_root,        CEP_ACRO("CEP"), CEP_WORD("rv"))
@@ -524,28 +521,6 @@ static bool cep_rv_text_to_dt(const char* text, cepDT* out_dt) {
     return true;
 }
 
-static cepCell* cep_rv_flow_root(void) {
-    cep_cell_system_ensure();
-    cepCell* data_root = cep_heartbeat_data_root();
-    if (!data_root) {
-        return NULL;
-    }
-
-    if (!cep_cell_has_store(data_root) || !cep_dt_is_valid(&data_root->store->dt)) {
-        return NULL;
-    }
-
-    cepDT flow_dt = *dt_flow_root();
-    flow_dt.glob = 0u;
-    cepCell* flow_root = cep_cell_find_by_name(data_root, &flow_dt);
-    if (!flow_root) {
-        cepDT dict_type = *dt_dictionary();
-        cepDT flow_name = flow_dt;
-        flow_root = cep_dict_add_dictionary(data_root, &flow_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
-    }
-    return flow_root;
-}
-
 static cepCell* cep_rv_ledger(void) {
     cep_cell_system_ensure();
     cepCell* data_root = cep_heartbeat_data_root();
@@ -566,90 +541,6 @@ static cepCell* cep_rv_ledger(void) {
         ledger = cep_dict_add_dictionary(data_root, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
     }
     return ledger;
-}
-
-static bool cep_rv_enqueue_pipeline(void) {
-    cepCell* flow_root = cep_rv_flow_root();
-    if (!flow_root) {
-        return false;
-    }
-
-    typedef struct {
-        unsigned length;
-        unsigned capacity;
-        cepPast  past[2];
-    } cepPathStatic2;
-
-    cepPathStatic2 signal_path = {
-        .length = 2u,
-        .capacity = 2u,
-        .past = {
-            { .dt = *CEP_DTAW("CEP", "sig_cell"), .timestamp = 0u },
-            { .dt = *CEP_DTAW("CEP", "op_add"),  .timestamp = 0u },
-        },
-    };
-
-    cepPath* target_path = NULL;
-    if (!cep_cell_path(flow_root, &target_path)) {
-        return false;
-    }
-
-    int rc = cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, (const cepPath*)&signal_path, target_path);
-    cep_free(target_path);
-    return rc != CEP_ENZYME_FATAL;
-}
-
-static bool cep_rv_emit_signal_for_request(cepCell* request) {
-    if (!request) {
-        return false;
-    }
-
-    cepPath* target_path = NULL;
-    if (!cep_cell_path(request, &target_path)) {
-        return false;
-    }
-
-    typedef struct {
-        unsigned length;
-        unsigned capacity;
-        cepPast  past[2];
-    } cepPathStatic2;
-
-    cepPathStatic2 signal_path = {
-        .length = 2u,
-        .capacity = 2u,
-        .past = {
-            { .dt = *CEP_DTAW("CEP", "sig_cell"), .timestamp = 0u },
-            { .dt = *CEP_DTAW("CEP", "op_add"),  .timestamp = 0u },
-        },
-    };
-
-    int rc = cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, (const cepPath*)&signal_path, target_path);
-    cep_free(target_path);
-    return rc != CEP_ENZYME_FATAL;
-}
-
-static bool cep_rv_instance_tokens(const cepDT* instance_dt,
-                                   const char* tokens[],
-                                   size_t* token_count,
-                                   char domain_buf[], size_t domain_cap,
-                                   char tag_buf[], size_t tag_cap) {
-    if (!instance_dt || !tokens || !token_count) {
-        return false;
-    }
-
-    if (!cep_rv_id_to_text(instance_dt->domain, domain_buf, domain_cap)) {
-        return false;
-    }
-
-    if (!cep_rv_id_to_text(instance_dt->tag, tag_buf, tag_cap)) {
-        return false;
-    }
-
-    tokens[0] = domain_buf;
-    tokens[1] = tag_buf;
-    *token_count = 2u;
-    return true;
 }
 
 static cepCell* cep_rv_prepare_payload(cepCell* request) {
@@ -776,40 +667,17 @@ static bool cep_rv_emit_event_for_entry(cepCell* entry, const char* state) {
         return false;
     }
 
-    char domain_buf[64];
-    char tag_buf[128];
-    const char* tokens[2];
-    size_t token_count = 0u;
-    if (!cep_rv_instance_tokens(&inst_dt, tokens, &token_count, domain_buf, sizeof domain_buf, tag_buf, sizeof tag_buf)) {
-        return false;
-    }
-
-    char txn_buf[128];
     const cepDT* entry_name = cep_cell_get_name(entry);
     if (!entry_name) {
         return false;
     }
+
     char key_text[128];
     if (!cep_rv_dt_to_text(entry_name, key_text, sizeof key_text)) {
         return false;
     }
 
     cepBeatNumber now = cep_heartbeat_current();
-    int txn_written = snprintf(txn_buf, sizeof txn_buf, "rv-%s-%" PRIu64, key_text, (unsigned long long)now);
-    if (txn_written <= 0 || (size_t)txn_written >= sizeof txn_buf) {
-        return false;
-    }
-
-    cepL2InstanceEventIntent intent = {0};
-    if (!cep_l2_instance_event_intent_init(&intent, txn_buf, signal_path, tokens, token_count)) {
-        return false;
-    }
-
-    cepCell* request = cep_l2_instance_event_intent_request(&intent);
-    if (!request) {
-        return false;
-    }
-
     uint64_t spawn_beat = 0u;
     uint64_t due_value = 0u;
     uint64_t applied_beat = (uint64_t)now;
@@ -831,22 +699,17 @@ static bool cep_rv_emit_event_for_entry(cepCell* entry, const char* state) {
     const char* profile = cep_rv_fetch_cstring(entry, dt_prof());
     const char* cas_hash = cep_rv_fetch_cstring(entry, dt_cas_hash());
 
-    cep_rv_prepare_event_payload(request,
-                                 entry,
-                                 state,
-                                 profile,
-                                 cas_hash,
-                                 key_text,
-                                 signal_path,
-                                 input_fp,
-                                 spawn_beat,
-                                 due_value,
-                                 applied_beat);
-
-    cep_rv_emit_signal_for_request(request);
-    cep_rv_enqueue_pipeline();
-
-    return true;
+    return cep_rv_prepare_event_payload(entry,
+                                        entry,
+                                        state,
+                                        profile,
+                                        cas_hash,
+                                        key_text,
+                                        signal_path,
+                                        input_fp,
+                                        spawn_beat,
+                                        due_value,
+                                        applied_beat);
 }
 
 bool cep_rv_bootstrap(void) {

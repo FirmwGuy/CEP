@@ -12,11 +12,6 @@ cc = meson.get_compiler('c')
 fs = import('fs')
 python_mod = import('python')
 
-poc_enabled = get_option('poc')
-if poc_enabled
-  add_project_arguments('-DCEP_HAS_POC=1', language: 'c')
-endif
-
 # Includes
 inc = include_directories('src/l0_kernel', 'src/test', 'src/enzymes')
 
@@ -59,11 +54,6 @@ endif
 zip_opt = get_option('zip')
 zip_dep = dependency('libzip', required: zip_opt.enabled(), method: 'pkg-config', allow_fallback: true)
 
-poc_sources = []
-if poc_enabled
-  poc_sources += files('src/enzymes/cep_poc_pack.c')
-endif
-
 l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
   'src/l0_kernel/cep_cell_stream.c',
@@ -72,9 +62,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_mailroom.c',
   'src/l0_kernel/cep_identifier.c',
   'src/enzymes/cep_cell_operations.c',
-  'src/enzymes/cep_l1_coherence.c',
   'src/enzymes/cep_rendezvous.c',
-  'src/enzymes/cep_l2_flows.c',
   'src/l0_kernel/stream/cep_stream_stdio.c',
   'src/l0_kernel/stream/cep_stream_effects.c',
   'src/l0_kernel/cep_enzyme_bindings.c',
@@ -84,8 +72,6 @@ l0_srcs = files(
   'src/l0_kernel/cep_namepool.c',
   'src/l0_kernel/cep_serialization.c',
 )
-
-l0_srcs += poc_sources
 
 lib_dependencies = []
 
@@ -154,19 +140,6 @@ if get_option('tests').enabled()
   )
   test('cep_unit_tests', exe)
 
-  coh_test_srcs = files(
-    'src/test/munit.c',
-    'src/test/watchdog.c',
-    'src/test/enzymes/test_coherence_l1.c',
-  )
-  coh_exe = executable('coh_tests', coh_test_srcs,
-    c_args: exe_cargs,
-    include_directories: inc,
-    link_with: cep_lib,
-    dependencies: test_dependencies,
-    install: false,
-  )
-  test('coherence_l1', coh_exe, timeout: 120, is_parallel: false)
 endif
 
 # CEP server executable (optional; build only if enabled and sources exist)

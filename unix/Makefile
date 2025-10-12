@@ -55,8 +55,7 @@ CORE_SRC := $(SRCDIR)/l0_kernel/cep_cell.c \
             $(SRCDIR)/l0_kernel/stream/cep_stream_effects.c \
             $(SRCDIR)/l0_kernel/stream/cep_stream_stdio.c \
             $(SRCDIR)/enzymes/cep_cell_operations.c \
-            $(SRCDIR)/enzymes/cep_l1_coherence.c \
-            $(SRCDIR)/enzymes/cep_l2_flows.c
+            $(SRCDIR)/enzymes/cep_rendezvous.c
 
 ifeq ($(USE_LIBZIP),1)
   CORE_SRC += $(SRCDIR)/l0_kernel/stream/cep_stream_zip.c

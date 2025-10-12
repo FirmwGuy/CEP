@@ -8,8 +8,6 @@
 #include "cep_cell.h"
 #include "cep_namepool.h"
 #include "cep_heartbeat.h"
-#include "cep_l1_coherence.h"
-#include "cep_l2_flows.h"
 #include "cep_rendezvous.h"
 
 #include <string.h>
@@ -31,14 +29,9 @@ static void rendezvous_prepare_runtime(const MunitParameter params[], bool start
     }
 
     munit_assert_true(cep_l0_bootstrap());
-    munit_assert_true(cep_l1_coherence_bootstrap());
-    munit_assert_true(cep_l2_flows_bootstrap());
-
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
 
-    munit_assert_true(cep_l1_coherence_register(registry));
-    munit_assert_true(cep_l2_flows_register(registry));
     munit_assert_true(cep_rv_bootstrap());
 
     if (start_heartbeat) {
