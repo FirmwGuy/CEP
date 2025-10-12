@@ -246,6 +246,7 @@ When your data lives outside the kernel (files, device handles, remote streams),
 - `void cep_proxy_release_snapshot(cepProxy* proxy)` tells the adapter it can drop any staged snapshot buffers once you finished emitting them.
 - `const cepProxyOps* cep_proxy_ops(const cepProxy* proxy)` gives you the vtable bound to a proxy so diagnostics can confirm which adapter is attached.
 - `void cep_link_initialize(cepCell* link, const cepCell* target)` initialises a link cell in place, preserving backlink bookkeeping, and is the easiest path to turn freshly cloned proxies into references without re-running the high-level builders.
+- `cepStreamBinding cep_stream_binding_prepare(const cepData* data)` is a convenience wrapper that normalises HANDLE/STREAM payloads into a `(binding, resource)` pair. Use it whenever you need to call the adapter vtable; it hides the retain/release checks and guarantees that `library->ops` exists before you dereference function pointers.
 
 ---
 

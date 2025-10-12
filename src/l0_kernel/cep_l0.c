@@ -37,3 +37,7 @@ bool cep_l0_bootstrap(void) {
     cep_l0_bootstrap_done = true;
     return true;
 }
+
+void cep_l0_bootstrap_reset(void) {
+    cep_l0_bootstrap_done = false;
+}

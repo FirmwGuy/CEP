@@ -5,6 +5,7 @@
 
 
 #include "cep_cell.h"
+#include "cep_l0.h"
 #include "cep_mailroom.h"
 #include "cep_namepool.h"
 
@@ -33,6 +34,8 @@ void cep_cell_system_initiate(void) {
                                       CEP_DTAA("CEP", "/"),
                                       &dictionary_type,
                                       CEP_STORAGE_RED_BLACK_T );
+
+    cep_l0_bootstrap_reset();
 }
 
 void cep_cell_system_shutdown(void) {
