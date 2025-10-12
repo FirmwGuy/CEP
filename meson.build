@@ -71,6 +71,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_heartbeat.c',
   'src/l0_kernel/cep_namepool.c',
   'src/l0_kernel/cep_serialization.c',
+  'src/l0_kernel/cep_error.c',
 )
 
 lib_dependencies = []
@@ -125,6 +126,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_scheduler_randomized.c',
     'src/test/l0_kernel/test_serialization_randomized.c',
     'src/test/l0_kernel/test_streams_randomized.c',
+    'src/test/l0_kernel/test_error.c',
     'src/test/enzymes/test_rendezvous.c',
   )
   test_dependencies = []

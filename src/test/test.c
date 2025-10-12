@@ -122,6 +122,22 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/error/kernel",
+        test_error_emit_kernel,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_timeout_params
+    },
+    {
+        "/error/enzyme",
+        test_error_emit_enzyme,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_timeout_params
+    },
+    {
         "/stream/stdio",
         test_stream_stdio,
         NULL,

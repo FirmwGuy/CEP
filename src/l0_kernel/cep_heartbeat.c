@@ -29,6 +29,7 @@ static cepHeartbeatRuntime CEP_RUNTIME = {
     .deferred_activations = 0u,
     .sys_init_emitted = false,
     .sys_shutdown_emitted = false,
+    .current_descriptor = NULL,
 };
 
 static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
@@ -1964,8 +1965,10 @@ bool cep_heartbeat_process_impulses(void) {
                     continue;
                 }
 
+                CEP_RUNTIME.current_descriptor = descriptor;
                 size_t before_signals = CEP_RUNTIME.inbox_next.count;
                 int rc = descriptor->callback(impulse.signal_path, impulse.target_path);
+                CEP_RUNTIME.current_descriptor = NULL;
                 size_t after_signals = CEP_RUNTIME.inbox_next.count;
                 bool emitted = after_signals > before_signals;
 
@@ -2177,6 +2180,10 @@ cepCell* cep_heartbeat_tmp_root(void) {
 /** Return the subtree that stores enzyme metadata visible to tooling. */
 cepCell* cep_heartbeat_enzymes_root(void) {
     return CEP_RUNTIME.topology.enzymes;
+}
+
+const cepEnzymeDescriptor* cep_enzyme_current(void) {
+    return CEP_RUNTIME.current_descriptor;
 }
 
 bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope) {

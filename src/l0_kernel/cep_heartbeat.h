@@ -149,6 +149,7 @@ typedef struct {
     size_t                    deferred_activations;
     bool                      sys_init_emitted;
     bool                      sys_shutdown_emitted;
+    const cepEnzymeDescriptor* current_descriptor;
 } cepHeartbeatRuntime;
 
 
