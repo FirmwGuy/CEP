@@ -95,6 +95,7 @@ CEP_DEFINE_STATIC_DT(dt_coh_init, CEP_ACRO("CEP"), CEP_WORD("coh_init"))
 CEP_DEFINE_STATIC_DT(dt_sys_teardown, CEP_ACRO("CEP"), CEP_WORD("teardown"))
 CEP_DEFINE_STATIC_DT(dt_scope_l1, CEP_ACRO("CEP"), CEP_WORD("l1"))
 CEP_DEFINE_STATIC_DT(dt_coh_shutdown, CEP_ACRO("CEP"), CEP_WORD("coh_shut"))
+CEP_DEFINE_STATIC_DT(dt_sys_ready, CEP_ACRO("CEP"), CEP_WORD("ready"))
 
 #define CEP_L1_WINDOW_CAP 8u
 
@@ -1066,10 +1067,6 @@ static bool cep_l1_set_number_value(cepCell* parent, const cepDT* name, size_t v
         return false;
     }
     if (!name || !cep_dt_is_valid(name)) {
-        fprintf(stderr, "[debug] invalid DT in set_number domain=%" PRIu64 " tag=%" PRIu64 " glob=%u\n",
-                (unsigned long long)(name ? name->domain : 0u),
-                (unsigned long long)(name ? name->tag : 0u),
-                name ? name->glob : 0u);
         return false;
     }
     return cep_l1_set_string_value(parent, name, buffer);
@@ -1149,10 +1146,6 @@ static bool cep_l1_window_write(cepCell* parent,
         }
 
         size_t value = use_flag ? samples[i].flag : samples[i].value;
-        fprintf(stderr, "[debug] window key %s payload=%zu naming=%u raw=%" PRIu64 " payloadid=%" PRIu64 "\n",
-                key_buf, value, (unsigned)cep_id_naming(key_dt.tag),
-                (unsigned long long)key_dt.tag,
-                (unsigned long long)cep_id(key_dt.tag));
         if (!cep_l1_set_number_value(window, &key_dt, value)) {
             return false;
         }
@@ -1695,6 +1688,74 @@ static cepCell* cep_l1_bond_ledger(void) {
 static cepCell* cep_l1_context_ledger(void) {
     cepCell* coh = cep_l1_coh_root();
     return coh ? cep_cell_find_by_name(coh, dt_context()) : NULL;
+}
+
+static bool cep_l1_enqueue_ready_signal(cepCell* request) {
+    if (!request) {
+        return false;
+    }
+
+    const cepDT* txn_dt = cep_cell_get_name(request);
+    cepCell* bucket = cep_cell_parent(request);
+    cepCell* inbox = bucket ? cep_cell_parent(bucket) : NULL;
+    cepCell* layer = inbox ? cep_cell_parent(inbox) : NULL;
+    cepCell* data_root = layer ? cep_cell_parent(layer) : NULL;
+
+    if (!txn_dt || !bucket || !inbox || !layer || !data_root) {
+        return false;
+    }
+
+    if (!cep_cell_name_is(inbox, dt_inbox()) ||
+        !cep_cell_name_is(layer, dt_coh()) ||
+        !cep_cell_name_is(data_root, dt_data_root())) {
+        return false;
+    }
+
+    const cepDT* bucket_dt = cep_cell_get_name(bucket);
+    if (!bucket_dt) {
+        return false;
+    }
+
+    cepDT txn_clean = cep_dt_clean(txn_dt);
+    cepDT bucket_clean = cep_dt_clean(bucket_dt);
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast past[5];
+    } cepPathStatic5;
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast past[3];
+    } cepPathStatic3;
+
+    cepPathStatic3 signal_path = {
+        .length = 3u,
+        .capacity = 3u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_ready(), .timestamp = 0u},
+            {.dt = *dt_scope_l1(), .timestamp = 0u},
+        },
+    };
+
+    cepPathStatic5 target_path = {
+        .length = 5u,
+        .capacity = 5u,
+        .past = {
+            {.dt = *dt_data_root(), .timestamp = 0u},
+            {.dt = *dt_coh(), .timestamp = 0u},
+            {.dt = *dt_inbox(), .timestamp = 0u},
+            {.dt = bucket_clean, .timestamp = 0u},
+            {.dt = txn_clean, .timestamp = 0u},
+        },
+    };
+
+    return cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID,
+                                        (const cepPath*)&signal_path,
+                                        (const cepPath*)&target_path) == CEP_ENZYME_SUCCESS;
 }
 
 static cepCell* cep_l1_facet_mirror(void) {
@@ -2758,10 +2819,7 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
 static int cep_l1_enzyme_ingest_be(const cepPath* signal_path, const cepPath* target_path) {
     (void)signal_path;
     int result = CEP_ENZYME_FATAL;
-    cepL1StoreLock ledger_lock = {0};
     cepL1StoreLock being_lock = {0};
-
-    fprintf(stderr, "[debug] ingest_be invoked\n");
 
     cepCell* request = cep_l1_resolve_request(target_path);
     if (!cep_l1_request_guard(request, dt_be_create())) {
@@ -2786,13 +2844,7 @@ static int cep_l1_enzyme_ingest_be(const cepPath* signal_path, const cepPath* ta
         goto done;
     }
 
-    if (!cep_l1_store_lock(ledger, &ledger_lock)) {
-        cep_l1_mark_outcome_error(request, "ledger-lock");
-        goto done;
-    }
-
     cepCell* being = cep_l1_ensure_dictionary(ledger, &id_dt, CEP_STORAGE_RED_BLACK_T);
-    cep_l1_store_unlock(&ledger_lock);
     if (!being) {
         cep_l1_mark_outcome_error(request, "create-failed");
         goto done;
@@ -2821,19 +2873,15 @@ static int cep_l1_enzyme_ingest_be(const cepPath* signal_path, const cepPath* ta
     cep_l1_attach_request_parent(being, request);
     cep_l1_mark_outcome_ok(request);
     result = CEP_ENZYME_SUCCESS;
+    (void)cep_l1_enqueue_ready_signal(request);
 
 done:
     cep_l1_store_unlock(&being_lock);
-    cep_l1_store_unlock(&ledger_lock);
-    if (result != CEP_ENZYME_SUCCESS) {
-        fprintf(stderr, "[debug] ingest_be status=%d\n", result);
-    }
     return result;
 }
 static int cep_l1_enzyme_ingest_bo(const cepPath* signal_path, const cepPath* target_path) {
     (void)signal_path;
     int result = CEP_ENZYME_FATAL;
-    cepL1StoreLock ledger_lock = {0};
     cepL1StoreLock bond_lock = {0};
 
     cepCell* request = cep_l1_resolve_request(target_path);
@@ -2869,13 +2917,7 @@ static int cep_l1_enzyme_ingest_bo(const cepPath* signal_path, const cepPath* ta
         goto done;
     }
 
-    if (!cep_l1_store_lock(ledger, &ledger_lock)) {
-        cep_l1_mark_outcome_error(request, "ledger-lock");
-        goto done;
-    }
-
     cepCell* bond = cep_l1_ensure_dictionary(ledger, &id_dt, CEP_STORAGE_RED_BLACK_T);
-    cep_l1_store_unlock(&ledger_lock);
     if (!bond) {
         cep_l1_mark_outcome_error(request, "create-failed");
         goto done;
@@ -2897,16 +2939,15 @@ static int cep_l1_enzyme_ingest_bo(const cepPath* signal_path, const cepPath* ta
     cep_l1_attach_request_parent(bond, request);
     cep_l1_mark_outcome_ok(request);
     result = CEP_ENZYME_SUCCESS;
+    (void)cep_l1_enqueue_ready_signal(request);
 
 done:
     cep_l1_store_unlock(&bond_lock);
-    cep_l1_store_unlock(&ledger_lock);
     return result;
 }
 static int cep_l1_enzyme_ingest_ctx(const cepPath* signal_path, const cepPath* target_path) {
     (void)signal_path;
     int result = CEP_ENZYME_FATAL;
-    cepL1StoreLock ledger_lock = {0};
     cepL1StoreLock ctx_lock = {0};
     cepL1StoreLock roles_lock = {0};
     cepL1StoreLock facets_lock = {0};
@@ -2934,13 +2975,7 @@ static int cep_l1_enzyme_ingest_ctx(const cepPath* signal_path, const cepPath* t
         goto done;
     }
 
-    if (!cep_l1_store_lock(ledger, &ledger_lock)) {
-        cep_l1_mark_outcome_error(request, "ledger-lock");
-        goto done;
-    }
-
     cepCell* ctx = cep_l1_ensure_dictionary(ledger, &id_dt, CEP_STORAGE_RED_BLACK_T);
-    cep_l1_store_unlock(&ledger_lock);
     if (!ctx) {
         cep_l1_mark_outcome_error(request, "create-failed");
         goto done;
@@ -3039,12 +3074,12 @@ static int cep_l1_enzyme_ingest_ctx(const cepPath* signal_path, const cepPath* t
     cep_l1_attach_request_parent(ctx, request);
     cep_l1_mark_outcome_ok(request);
     result = CEP_ENZYME_SUCCESS;
+    (void)cep_l1_enqueue_ready_signal(request);
 
 done:
     cep_l1_store_unlock(&facets_lock);
     cep_l1_store_unlock(&roles_lock);
     cep_l1_store_unlock(&ctx_lock);
-    cep_l1_store_unlock(&ledger_lock);
     return result;
 }
 static int cep_l1_enzyme_closure(const cepPath* signal_path, const cepPath* target_path) {
@@ -3162,20 +3197,17 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
     if (cep_l1_request_guard(request, dt_be_create())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepCell* being = cep_cell_find_by_name(cep_l1_being_ledger(), &id_dt);
         if (!being) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepCell* kind_cell = cep_cell_find_by_name(being, dt_kind());
         if (!kind_cell || !cep_cell_has_data(kind_cell)) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepDT kind_dt = {0};
@@ -3193,34 +3225,29 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
     } else if (cep_l1_request_guard(request, dt_bo_upsert())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepCell* bond = cep_cell_find_by_name(cep_l1_bond_ledger(), &id_dt);
         if (!bond) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepCell* src_link = cep_cell_find_by_name(bond, dt_src());
         cepCell* dst_link = cep_cell_find_by_name(bond, dt_dst());
         if (!src_link || !dst_link) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepCell* src = cep_link_pull(src_link);
         cepCell* dst = cep_link_pull(dst_link);
         if (!src || !dst) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepCell* type_cell = cep_cell_find_by_name(bond, dt_type());
         if (!type_cell || !cep_cell_has_data(type_cell)) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepDT type_dt = {0};
@@ -3244,20 +3271,17 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
     } else if (cep_l1_request_guard(request, dt_ctx_upsert())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepCell* ctx = cep_cell_find_by_name(cep_l1_context_ledger(), &id_dt);
         if (!ctx) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepCell* type_cell = cep_cell_find_by_name(ctx, dt_type());
         if (!type_cell || !cep_cell_has_data(type_cell)) {
-            cep_l1_metrics_record_index(0u, 1u);
-            return CEP_ENZYME_FATAL;
+            return CEP_ENZYME_RETRY;
         }
 
         cepDT type_dt = {0};
@@ -3282,6 +3306,7 @@ static int cep_l1_enzyme_index(const cepPath* signal_path, const cepPath* target
     if (handled) {
         cep_l1_metrics_record_index(1u, 0u);
         cep_l1_mark_outcome_ok(request);
+        (void)cep_l1_enqueue_ready_signal(request);
     }
 
     return CEP_ENZYME_SUCCESS;
@@ -3299,14 +3324,12 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     if (cep_l1_request_guard(request, dt_be_create())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
-            fprintf(stderr, "[debug] adj: be_create extract id failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* being = cep_cell_find_by_name(cep_l1_being_ledger(), &id_dt);
         if (!being || !cep_l1_adj_being(being, &id_dt)) {
-            fprintf(stderr, "[debug] adj: be_create adj_being failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
@@ -3315,14 +3338,12 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     } else if (cep_l1_request_guard(request, dt_bo_upsert())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
-            fprintf(stderr, "[debug] adj: bond extract id failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* bond = cep_cell_find_by_name(cep_l1_bond_ledger(), &id_dt);
         if (!bond) {
-            fprintf(stderr, "[debug] adj: bond lookup failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
@@ -3330,7 +3351,6 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
         cepCell* src_link = cep_cell_find_by_name(bond, dt_src());
         cepCell* dst_link = cep_cell_find_by_name(bond, dt_dst());
         if (!src_link || !dst_link) {
-            fprintf(stderr, "[debug] adj: bond endpoints missing\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
@@ -3343,7 +3363,6 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
         }
 
         if (!cep_l1_adj_bond(bond, &id_dt, src, dst)) {
-            fprintf(stderr, "[debug] adj: adj_bond failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
@@ -3352,20 +3371,17 @@ static int cep_l1_enzyme_adj(const cepPath* signal_path, const cepPath* target_p
     } else if (cep_l1_request_guard(request, dt_ctx_upsert())) {
         cepDT id_dt = {0};
         if (!cep_l1_extract_identifier(request, dt_id(), NULL, NULL, &id_dt, NULL)) {
-            fprintf(stderr, "[debug] adj: ctx extract id failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         cepCell* ctx = cep_cell_find_by_name(cep_l1_context_ledger(), &id_dt);
         if (!ctx) {
-            fprintf(stderr, "[debug] adj: ctx lookup failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
 
         if (!cep_l1_adj_context(ctx, &id_dt)) {
-            fprintf(stderr, "[debug] adj: adj_context failed\n");
             cep_l1_metrics_record_adj(0u, 1u);
             return CEP_ENZYME_FATAL;
         }
@@ -3619,8 +3635,24 @@ bool cep_l1_coherence_register(cepEnzymeRegistry* registry) {
         },
     };
 
+    cepPathStatic3 ready_signal_path = {
+        .length = 3u,
+        .capacity = 3u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_ready(), .timestamp = 0u},
+            {.dt = *dt_scope_l1(), .timestamp = 0u},
+        },
+    };
+
     for (size_t i = 0; i < sizeof descriptors / sizeof descriptors[0]; ++i) {
-        if (cep_enzyme_register(registry, (const cepPath*)&signal_path, &descriptors[i]) != CEP_ENZYME_SUCCESS) {
+        const cepPath* path = (const cepPath*)&signal_path;
+        if (cep_dt_compare(&descriptors[i].name, dt_coh_adj()) == 0 ||
+            cep_dt_compare(&descriptors[i].name, dt_coh_index()) == 0) {
+            path = (const cepPath*)&ready_signal_path;
+        }
+
+        if (cep_enzyme_register(registry, path, &descriptors[i]) != CEP_ENZYME_SUCCESS) {
             return false;
         }
     }
