@@ -13,6 +13,47 @@
 #include "cep_cell.h"
 #include "stream/cep_stream_internal.h"
 
+CEP_DEFINE_STATIC_DT(dt_journal_name, CEP_ACRO("CEP"), CEP_WORD("journal"));
+CEP_DEFINE_STATIC_DT(dt_journal_entry_name, CEP_ACRO("CEP"), CEP_WORD("entry"));
+CEP_DEFINE_STATIC_DT(dt_stream_log_type, CEP_ACRO("CEP"), CEP_WORD("stream-log"));
+
+typedef struct {
+    const cepLibraryBinding* library;
+    cepCell*                 resource;
+} cepStreamBinding;
+
+static inline cepStreamBinding cep_stream_binding_prepare(const cepData* data) {
+    cepStreamBinding binding = {0};
+
+    if (!data)
+        return binding;
+
+    if (data->datatype != CEP_DATATYPE_HANDLE && data->datatype != CEP_DATATYPE_STREAM)
+        return binding;
+
+    binding.resource = (data->datatype == CEP_DATATYPE_HANDLE)? data->handle: data->stream;
+    if (!binding.resource)
+        return binding;
+
+    binding.library = data->library? cep_library_binding(data->library): NULL;
+    return binding;
+}
+
+static inline bool cep_stream_binding_ready(const cepStreamBinding* binding) {
+    return binding && binding->library && binding->library->ops && binding->resource;
+}
+
+static cepCell* cep_stream_journal_node(cepCell* owner) {
+    cepCell* journal = cep_cell_find_by_name(owner, dt_journal_name());
+    if (!journal) {
+        journal = cep_cell_add_list(owner,
+                                    (cepDT*)dt_journal_name(),
+                                    0,
+                                    (cepDT*)dt_journal_name(),
+                                    CEP_STORAGE_LINKED_LIST);
+    }
+    return journal;
+}
 
 
 typedef struct {
@@ -105,15 +146,7 @@ void cep_stream_journal(cepCell* owner, unsigned flags, uint64_t offset, size_t 
     if (!cep_cell_is_normal(owner))
         return;
 
-    cepCell* journal = cep_cell_find_by_name(owner, CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("journal")));
-    if (!journal) {
-        journal = cep_cell_add_list(owner,
-                                    CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("journal")),
-                                    0,
-                                    CEP_DTAW("CEP", "journal"),
-                                    CEP_STORAGE_LINKED_LIST);
-    }
-
+    cepCell* journal = cep_stream_journal_node(owner);
     if (!journal)
         return;
 
@@ -127,8 +160,8 @@ void cep_stream_journal(cepCell* owner, unsigned flags, uint64_t offset, size_t 
     };
 
     cep_cell_append_value(journal,
-                          CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("entry")),
-                          CEP_DTAW("CEP", "stream-log"),
+                          (cepDT*)dt_journal_entry_name(),
+                          (cepDT*)dt_stream_log_type(),
                           &entry,
                           sizeof entry,
                           sizeof entry);
@@ -196,15 +229,11 @@ bool cep_cell_stream_read(cepCell* cell, uint64_t offset, void* dst, size_t size
 
       case CEP_DATATYPE_HANDLE:
       case CEP_DATATYPE_STREAM: {
-        const cepLibraryBinding* binding = data->library? cep_library_binding(data->library): NULL;
-        if (!binding || !binding->ops || !binding->ops->stream_read)
+        cepStreamBinding binding = cep_stream_binding_prepare(data);
+        if (!cep_stream_binding_ready(&binding) || !binding.library->ops->stream_read)
             break;
 
-        cepCell* resource = (data->datatype == CEP_DATATYPE_HANDLE)? data->handle: data->stream;
-        if (!resource)
-            break;
-
-        ok = binding->ops->stream_read(binding, resource, offset, dst, size, &actual);
+        ok = binding.library->ops->stream_read(binding.library, binding.resource, offset, dst, size, &actual);
         hash = (ok && actual)? cep_hash_bytes(dst, actual): 0;
         break;
       }
@@ -257,8 +286,6 @@ bool cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size
     uint64_t hash = 0;
     bool ok = false;
 
-    const cepLibraryBinding* binding = data->library? cep_library_binding(data->library): NULL;
-
     switch (data->datatype) {
       case CEP_DATATYPE_VALUE:
       case CEP_DATATYPE_DATA: {
@@ -295,18 +322,18 @@ bool cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size
 
       case CEP_DATATYPE_HANDLE:
       case CEP_DATATYPE_STREAM: {
-        cepCell* resource = (data->datatype == CEP_DATATYPE_HANDLE)? data->handle: data->stream;
-        if (!resource)
+        cepStreamBinding binding = cep_stream_binding_prepare(data);
+        if (!cep_stream_binding_ready(&binding))
             break;
 
         uint64_t expected_hash = 0;
-        if (binding && binding->ops && binding->ops->stream_expected_hash) {
-            binding->ops->stream_expected_hash(binding, resource, offset, size, &expected_hash);
+        if (binding.library->ops->stream_expected_hash) {
+            binding.library->ops->stream_expected_hash(binding.library, binding.resource, offset, size, &expected_hash);
         }
 
-        if (!cep_stream_stage_write(cell, data->library, resource, offset, src, size, expected_hash)) {
-            if (binding && binding->ops && binding->ops->stream_write) {
-                ok = binding->ops->stream_write(binding, resource, offset, src, size, &actual);
+        if (!cep_stream_stage_write(cell, data->library, binding.resource, offset, src, size, expected_hash)) {
+            if (binding.library->ops->stream_write) {
+                ok = binding.library->ops->stream_write(binding.library, binding.resource, offset, src, size, &actual);
                 hash = (ok && actual)? cep_hash_bytes(src, actual): 0;
             }
             break;
@@ -393,15 +420,11 @@ bool cep_cell_stream_map(cepCell* cell, uint64_t offset, size_t size, unsigned a
 
       case CEP_DATATYPE_HANDLE:
       case CEP_DATATYPE_STREAM: {
-        const cepLibraryBinding* binding = data->library? cep_library_binding(data->library): NULL;
-        if (!binding || !binding->ops || !binding->ops->stream_map)
+        cepStreamBinding binding = cep_stream_binding_prepare(data);
+        if (!cep_stream_binding_ready(&binding) || !binding.library->ops->stream_map)
             return false;
 
-        cepCell* resource = (data->datatype == CEP_DATATYPE_HANDLE)? data->handle: data->stream;
-        if (!resource)
-            return false;
-
-        return binding->ops->stream_map(binding, resource, offset, size, access, view);
+        return binding.library->ops->stream_map(binding.library, binding.resource, offset, size, access, view);
       }
 
       default:
@@ -496,15 +519,11 @@ bool cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit) {
 
       case CEP_DATATYPE_HANDLE:
       case CEP_DATATYPE_STREAM: {
-        const cepLibraryBinding* binding = data->library? cep_library_binding(data->library): NULL;
-        if (!binding || !binding->ops || !binding->ops->stream_unmap)
+        cepStreamBinding binding = cep_stream_binding_prepare(data);
+        if (!cep_stream_binding_ready(&binding) || !binding.library->ops->stream_unmap)
             break;
 
-        cepCell* resource = (data->datatype == CEP_DATATYPE_HANDLE)? data->handle: data->stream;
-        if (!resource)
-            break;
-
-        ok = binding->ops->stream_unmap(binding, resource, view, commit_allowed);
+        ok = binding.library->ops->stream_unmap(binding.library, binding.resource, view, commit_allowed);
         break;
       }
 
