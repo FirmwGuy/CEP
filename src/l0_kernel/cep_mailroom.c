@@ -19,6 +19,18 @@ CEP_DEFINE_STATIC_DT(dt_inbox_root,     CEP_ACRO("CEP"), CEP_WORD("inbox"))
 CEP_DEFINE_STATIC_DT(dt_mailroom_ns_coh, CEP_ACRO("CEP"), CEP_WORD("coh"))
 CEP_DEFINE_STATIC_DT(dt_mailroom_ns_flow, CEP_ACRO("CEP"), CEP_WORD("flow"))
 CEP_DEFINE_STATIC_DT(dt_sys_log,        CEP_ACRO("CEP"), CEP_WORD("sys_log"))
+CEP_DEFINE_STATIC_DT(dt_dictionary,     CEP_ACRO("CEP"), CEP_WORD("dictionary"))
+CEP_DEFINE_STATIC_DT(dt_list,           CEP_ACRO("CEP"), CEP_WORD("list"))
+CEP_DEFINE_STATIC_DT(dt_text,           CEP_ACRO("CEP"), CEP_WORD("text"))
+CEP_DEFINE_STATIC_DT(dt_original,       CEP_ACRO("CEP"), CEP_WORD("original"))
+CEP_DEFINE_STATIC_DT(dt_outcome,        CEP_ACRO("CEP"), CEP_WORD("outcome"))
+CEP_DEFINE_STATIC_DT(dt_meta,           CEP_ACRO("CEP"), CEP_WORD("meta"))
+CEP_DEFINE_STATIC_DT(dt_parents,        CEP_ACRO("CEP"), CEP_WORD("parents"))
+CEP_DEFINE_STATIC_DT(dt_sig_cell,       CEP_ACRO("CEP"), CEP_WORD("sig_cell"))
+CEP_DEFINE_STATIC_DT(dt_op_add,         CEP_ACRO("CEP"), CEP_WORD("op_add"))
+CEP_DEFINE_STATIC_DT(dt_mailroom_meta,  CEP_ACRO("CEP"), CEP_WORD("mailroom"))
+CEP_DEFINE_STATIC_DT(dt_mailroom_buckets, CEP_ACRO("CEP"), CEP_WORD("buckets"))
+CEP_DEFINE_STATIC_DT(dt_log_payload,    CEP_ACRO("CEP"), CEP_WORD("log"))
 
 static bool cep_mailroom_dt_from_text(cepDT* dt, const char* tag) {
     if (!dt || !tag || !tag[0]) {
@@ -116,10 +128,10 @@ static void cep_mailroom_report_catalog_issue(const cepDT* scope_dt, const char*
     cepCell* sys_log = cep_cell_find_by_name(journal, dt_sys_log());
     if (!sys_log) {
         cepDT name = *dt_sys_log();
-        sys_log = cep_cell_add_list(journal, &name, 0, CEP_DTAW("CEP", "list"), CEP_STORAGE_LINKED_LIST);
-        if (!sys_log) {
+        cepDT type = *dt_list();
+        sys_log = cep_cell_add_list(journal, &name, 0, &type, CEP_STORAGE_LINKED_LIST);
+        if (!sys_log)
             return;
-        }
     }
 
     const char* scope_text = "unknown";
@@ -146,7 +158,8 @@ static void cep_mailroom_report_catalog_issue(const cepDT* scope_dt, const char*
         .glob = 0u,
     };
 
-    (void)cep_cell_append_value(sys_log, &entry_name, CEP_DTAW("CEP", "log"), message, size, size);
+    cepDT payload_type = *dt_log_payload();
+    (void)cep_cell_append_value(sys_log, &entry_name, &payload_type, message, size, size);
     cep_free(message);
 }
 
@@ -174,15 +187,6 @@ static size_t cep_mailroom_registration_count = 0u;
 CEP_DEFINE_STATIC_DT(dt_sig_sys,  CEP_ACRO("CEP"), CEP_WORD("sig_sys"))
 CEP_DEFINE_STATIC_DT(dt_sys_init, CEP_ACRO("CEP"), CEP_WORD("init"))
 CEP_DEFINE_STATIC_DT(dt_err_cat,  CEP_ACRO("CEP"), CEP_WORD("err_cat"))
-CEP_DEFINE_STATIC_DT(dt_dictionary, CEP_ACRO("CEP"), CEP_WORD("dictionary"))
-CEP_DEFINE_STATIC_DT(dt_list,     CEP_ACRO("CEP"), CEP_WORD("list"))
-CEP_DEFINE_STATIC_DT(dt_text,     CEP_ACRO("CEP"), CEP_WORD("text"))
-CEP_DEFINE_STATIC_DT(dt_original, CEP_ACRO("CEP"), CEP_WORD("original"))
-CEP_DEFINE_STATIC_DT(dt_outcome,  CEP_ACRO("CEP"), CEP_WORD("outcome"))
-CEP_DEFINE_STATIC_DT(dt_meta,     CEP_ACRO("CEP"), CEP_WORD("meta"))
-CEP_DEFINE_STATIC_DT(dt_parents,  CEP_ACRO("CEP"), CEP_WORD("parents"))
-CEP_DEFINE_STATIC_DT(dt_sig_cell, CEP_ACRO("CEP"), CEP_WORD("sig_cell"))
-CEP_DEFINE_STATIC_DT(dt_op_add,   CEP_ACRO("CEP"), CEP_WORD("op_add"))
 CEP_DEFINE_STATIC_DT(dt_mr_route, CEP_ACRO("CEP"), CEP_WORD("mr_route"))
 CEP_DEFINE_STATIC_DT(dt_mr_init,  CEP_ACRO("CEP"), CEP_WORD("mr_init"))
 CEP_DEFINE_STATIC_DT(dt_coh_ing_be,  CEP_ACRO("CEP"), CEP_WORD("coh_ing_be"))
@@ -191,8 +195,6 @@ CEP_DEFINE_STATIC_DT(dt_coh_ing_ctx, CEP_ACRO("CEP"), CEP_WORD("coh_ing_ctx"))
 CEP_DEFINE_STATIC_DT(dt_fl_ing,   CEP_ACRO("CEP"), CEP_WORD("fl_ing"))
 CEP_DEFINE_STATIC_DT(dt_ni_ing,   CEP_ACRO("CEP"), CEP_WORD("ni_ing"))
 CEP_DEFINE_STATIC_DT(dt_inst_ing, CEP_ACRO("CEP"), CEP_WORD("inst_ing"))
-CEP_DEFINE_STATIC_DT(dt_mailroom_meta, CEP_ACRO("CEP"), CEP_WORD("mailroom"))
-CEP_DEFINE_STATIC_DT(dt_mailroom_buckets, CEP_ACRO("CEP"), CEP_WORD("buckets"))
 
 static bool cep_mailroom_bindings_applied = false;
 
@@ -243,7 +245,7 @@ static cepCell* cep_mailroom_ensure_dictionary(cepCell* parent, const cepDT* nam
         return existing;
     }
 
-    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepDT dict_type = *dt_dictionary();
     cepDT name_copy = lookup;
     return cep_dict_add_dictionary(parent, &name_copy, &dict_type, storage);
 }
@@ -794,8 +796,8 @@ bool cep_mailroom_enqueue_signal(const cepDT* namespace_dt,
         .length = 2u,
         .capacity = 2u,
         .past = {
-            {.dt = *CEP_DTAW("CEP", "sig_cell"), .timestamp = 0u},
-            {.dt = *CEP_DTAW("CEP", "op_add"), .timestamp = 0u},
+            {.dt = *dt_sig_cell(), .timestamp = 0u},
+            {.dt = *dt_op_add(), .timestamp = 0u},
         },
     };
 

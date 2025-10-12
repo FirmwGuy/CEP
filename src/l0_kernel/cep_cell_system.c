@@ -10,6 +10,8 @@
 
 cepOpCount CEP_OP_COUNT;
 
+CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
+
 cepOpCount cep_cell_timestamp_next(void) {
     cepOpCount next = ++CEP_OP_COUNT;
     if (!next)
@@ -26,9 +28,10 @@ cepCell CEP_ROOT;   // The root cell.
 void cep_cell_system_initiate(void) {
     cep_cell_timestamp_reset();
 
+    cepDT dictionary_type = *dt_dictionary_type();
     cep_cell_initialize_dictionary(   &CEP_ROOT,
                                       CEP_DTAA("CEP", "/"),
-                                      CEP_DTAW("CEP", "dictionary"),
+                                      &dictionary_type,
                                       CEP_STORAGE_RED_BLACK_T );
 }
 

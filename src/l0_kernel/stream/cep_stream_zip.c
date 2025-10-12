@@ -11,6 +11,9 @@
 
 #include <zip.h>
 
+CEP_DEFINE_STATIC_DT(dt_zip_entry_type,  CEP_ACRO("CEP"), CEP_WORD("zip_entry"));
+CEP_DEFINE_STATIC_DT(dt_zip_stream_type, CEP_ACRO("CEP"), CEP_WORD("zip_stream"));
+
 #include <errno.h>
 #include <string.h>
 
@@ -164,9 +167,10 @@ bool cep_zip_entry_init(cepCell* resource, cepDT* name, cepCell* library, const 
     }
     desc->refcount++;
 
+    cepDT entry_type = *dt_zip_entry_type();
     cep_cell_initialize_data(resource,
                              name,
-                             CEP_DTAW("CEP", "zip_entry"),
+                             &entry_type,
                              entry,
                              sizeof *entry,
                              sizeof *entry,
@@ -177,7 +181,8 @@ bool cep_zip_entry_init(cepCell* resource, cepDT* name, cepCell* library, const 
 void cep_zip_stream_init(cepCell* stream, cepDT* name, cepCell* library, cepCell* entry) {
     assert(stream && library && entry);
 
-    cepData* data = cep_data_new(CEP_DTAW("CEP", "zip_stream"),
+    cepDT stream_type = *dt_zip_stream_type();
+    cepData* data = cep_data_new(&stream_type,
                                  CEP_DATATYPE_STREAM,
                                  true,
                                  NULL,

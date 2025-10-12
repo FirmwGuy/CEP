@@ -10,6 +10,8 @@
 
 #include <string.h>
 
+CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
+
 static cepBeatNumber cep_serialization_marked_decision_beat = CEP_BEAT_INVALID;
 
 void cep_serialization_mark_decision_replay(void) {
@@ -1124,10 +1126,11 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
                 return false;
 
             if (!final_segment) {
+                cepDT dict_type = *dt_dictionary_type();
                 child = cep_cell_add_dictionary(current,
                                                 &name,
                                                 0,
-                                                CEP_DTAW("CEP", "dictionary"),
+                                                &dict_type,
                                                 CEP_STORAGE_RED_BLACK_T);
             } else {
                 child = cep_cell_add_empty(current, &name, 0);

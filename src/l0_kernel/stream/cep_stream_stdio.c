@@ -9,6 +9,9 @@
 
 #include <errno.h>
 
+CEP_DEFINE_STATIC_DT(dt_stdio_resource_type, CEP_ACRO("CEP"), CEP_WORD("stdio_res"));
+CEP_DEFINE_STATIC_DT(dt_stdio_stream_type,   CEP_ACRO("CEP"), CEP_WORD("stdio_str"));
+
 typedef struct {
     FILE*     file;
     bool      owner;
@@ -52,9 +55,10 @@ void cep_stdio_resource_init(cepCell* resource, cepDT* name, FILE* file, bool cl
     res->owner = close_on_release;
     res->refcount = 0;
 
+    cepDT resource_type = *dt_stdio_resource_type();
     cep_cell_initialize_data(resource,
                              name,
-                             CEP_DTAW("CEP", "stdio_res"),
+                             &resource_type,
                              res,
                              sizeof *res,
                              sizeof *res,
@@ -65,7 +69,8 @@ void cep_stdio_resource_init(cepCell* resource, cepDT* name, FILE* file, bool cl
 void cep_stdio_stream_init(cepCell* stream, cepDT* name, cepCell* library, cepCell* resource) {
     assert(stream && library && resource);
 
-    cepData* data = cep_data_new(CEP_DTAW("CEP", "stdio_str"),
+    cepDT stream_type = *dt_stdio_stream_type();
+    cepData* data = cep_data_new(&stream_type,
                                  CEP_DATATYPE_STREAM,
                                  true,
                                  NULL,

@@ -17,6 +17,11 @@
 #include <limits.h>
 #include <ctype.h>
 
+CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
+CEP_DEFINE_STATIC_DT(dt_text_type, CEP_ACRO("CEP"), CEP_WORD("text"));
+CEP_DEFINE_STATIC_DT(dt_sys_root_name, CEP_ACRO("CEP"), CEP_WORD("sys"));
+CEP_DEFINE_STATIC_DT(dt_namepool_root_name, CEP_ACRO("CEP"), CEP_WORD("namepool"));
+
 #define CEP_NAMEPOOL_MAX_LENGTH          256u
 #define CEP_NAMEPOOL_SLOT_BITS           12u
 #define CEP_NAMEPOOL_SLOTS_PER_PAGE      (1u << CEP_NAMEPOOL_SLOT_BITS)
@@ -281,7 +286,9 @@ static void cep_namepool_remove_bucket(size_t index) {
 static cepCell* cep_namepool_ensure_dictionary(cepCell* parent, const cepDT* name) {
     cepCell* cell = cep_cell_find_by_name(parent, name);
     if (!cell) {
-        cell = cep_cell_add_dictionary(parent, (cepDT*)name, 0, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_RED_BLACK_T);
+        cepDT dict_type = *dt_dictionary_type();
+        cepDT name_copy = cep_dt_clean(name);
+        cell = cep_cell_add_dictionary(parent, &name_copy, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
     }
     return cell;
 }
@@ -312,10 +319,12 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
     memcpy(copy, text, length);
     copy[length] = '\0';
 
+    cepDT slot_name_copy = slot_name;
+    cepDT text_type = *dt_text_type();
     cepCell* value_cell = cep_cell_add_data(page_cell,
-        &slot_name,
+        &slot_name_copy,
         0,
-        CEP_DTAW("CEP", "text"),
+        &text_type,
         copy,
         length,
         length + 1u,
@@ -491,19 +500,21 @@ bool cep_namepool_bootstrap(void) {
         return false;
     }
 
-    cepDT sys_name = *CEP_DTAW("CEP", "sys");
+    cepDT sys_name = *dt_sys_root_name();
     cepCell* sys = cep_cell_find_by_name(root, &sys_name);
     if (!sys) {
-        sys = cep_cell_add_dictionary(root, &sys_name, 0, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_RED_BLACK_T);
+        cepDT dict_type = *dt_dictionary_type();
+        sys = cep_cell_add_dictionary(root, &sys_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
         if (!sys) {
             return false;
         }
     }
 
-    cepDT pool_name = *CEP_DTAW("CEP", "namepool");
+    cepDT pool_name = *dt_namepool_root_name();
     cepCell* pool = cep_cell_find_by_name(sys, &pool_name);
     if (!pool) {
-        pool = cep_cell_add_dictionary(sys, &pool_name, 0, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_RED_BLACK_T);
+        cepDT dict_type = *dt_dictionary_type();
+        pool = cep_cell_add_dictionary(sys, &pool_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
         if (!pool) {
             return false;
         }

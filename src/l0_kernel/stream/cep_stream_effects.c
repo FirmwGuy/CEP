@@ -8,6 +8,11 @@
 
 #include <string.h>
 
+CEP_DEFINE_STATIC_DT(dt_intent_name,   CEP_ACRO("CEP"), CEP_WORD("intent"));
+CEP_DEFINE_STATIC_DT(dt_outcome_name,  CEP_ACRO("CEP"), CEP_WORD("outcome"));
+CEP_DEFINE_STATIC_DT(dt_entry_name,    CEP_ACRO("CEP"), CEP_WORD("entry"));
+CEP_DEFINE_STATIC_DT(dt_list_type,     CEP_ACRO("CEP"), CEP_WORD("list"));
+
 typedef struct cepStreamWriteIntent {
     cepCell*   stream;
     cepCell*   library;
@@ -27,25 +32,21 @@ static size_t                g_stream_intent_count;
 static size_t                g_stream_intent_capacity;
 
 static cepCell* cep_stream_get_intent_list(cepCell* owner) {
-    cepCell* list = cep_cell_find_by_name(owner, CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("intent")));
+    cepCell* list = cep_cell_find_by_name(owner, dt_intent_name());
     if (!list) {
-        list = cep_cell_add_list(owner,
-                                 CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("intent")),
-                                 0,
-                                 CEP_DTAW("CEP", "intent"),
-                                 CEP_STORAGE_LINKED_LIST);
+        cepDT name_copy = *dt_intent_name();
+        cepDT list_type = *dt_list_type();
+        list = cep_cell_add_list(owner, &name_copy, 0, &list_type, CEP_STORAGE_LINKED_LIST);
     }
     return list;
 }
 
 static cepCell* cep_stream_get_outcome_list(cepCell* owner) {
-    cepCell* list = cep_cell_find_by_name(owner, CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("outcome")));
+    cepCell* list = cep_cell_find_by_name(owner, dt_outcome_name());
     if (!list) {
-        list = cep_cell_add_list(owner,
-                                 CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("outcome")),
-                                 0,
-                                 CEP_DTAW("CEP", "outcome"),
-                                 CEP_STORAGE_LINKED_LIST);
+        cepDT name_copy = *dt_outcome_name();
+        cepDT list_type = *dt_list_type();
+        list = cep_cell_add_list(owner, &name_copy, 0, &list_type, CEP_STORAGE_LINKED_LIST);
     }
     return list;
 }
@@ -54,9 +55,11 @@ static cepCell* cep_stream_append_intent(cepCell* owner, cepStreamIntentEntry* e
     cepCell* list = cep_stream_get_intent_list(owner);
     if (!list)
         return NULL;
+    cepDT entry_name = *dt_entry_name();
+    cepDT intent_type = *dt_intent_name();
     return cep_cell_append_value(list,
-                                 CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("entry")),
-                                 CEP_DTAW("CEP", "intent"),
+                                 &entry_name,
+                                 &intent_type,
                                  (void*)entry,
                                  sizeof *entry,
                                  sizeof *entry);
@@ -66,9 +69,11 @@ static void cep_stream_append_outcome(cepCell* owner, const cepStreamOutcomeEntr
     cepCell* list = cep_stream_get_outcome_list(owner);
     if (!list)
         return;
+    cepDT entry_name = *dt_entry_name();
+    cepDT outcome_type = *dt_outcome_name();
     cep_cell_append_value(list,
-                          CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("entry")),
-                          CEP_DTAW("CEP", "outcome"),
+                          &entry_name,
+                          &outcome_type,
                           (void*)entry,
                           sizeof *entry,
                           sizeof *entry);

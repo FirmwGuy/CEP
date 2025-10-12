@@ -16,6 +16,8 @@
 CEP_DEFINE_STATIC_DT(dt_journal_name, CEP_ACRO("CEP"), CEP_WORD("journal"));
 CEP_DEFINE_STATIC_DT(dt_journal_entry_name, CEP_ACRO("CEP"), CEP_WORD("entry"));
 CEP_DEFINE_STATIC_DT(dt_stream_log_type, CEP_ACRO("CEP"), CEP_WORD("stream-log"));
+CEP_DEFINE_STATIC_DT(dt_library_type, CEP_ACRO("CEP"), CEP_WORD("library"));
+CEP_DEFINE_STATIC_DT(dt_list_type,    CEP_ACRO("CEP"), CEP_WORD("list"));
 
 typedef struct {
     const cepLibraryBinding* library;
@@ -46,10 +48,12 @@ static inline bool cep_stream_binding_ready(const cepStreamBinding* binding) {
 static cepCell* cep_stream_journal_node(cepCell* owner) {
     cepCell* journal = cep_cell_find_by_name(owner, dt_journal_name());
     if (!journal) {
+        cepDT name_copy = *dt_journal_name();
+        cepDT list_type = *dt_list_type();
         journal = cep_cell_add_list(owner,
-                                    (cepDT*)dt_journal_name(),
+                                    &name_copy,
                                     0,
-                                    (cepDT*)dt_journal_name(),
+                                    &list_type,
                                     CEP_STORAGE_LINKED_LIST);
     }
     return journal;
@@ -80,9 +84,10 @@ void cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* 
     binding->ops = ops;
     binding->ctx = context;
 
+    cepDT library_type = *dt_library_type();
     cep_cell_initialize_data(library,
                              name,
-                             CEP_DTAW("CEP", "library"),
+                             &library_type,
                              binding,
                              sizeof *binding,
                              sizeof *binding,

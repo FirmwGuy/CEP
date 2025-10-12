@@ -473,6 +473,11 @@ void cep_data_history_clear(cepData* data) {
 #include "storage/cep_hash_table.h"
 #include "storage/cep_octree.h"
 
+CEP_DEFINE_STATIC_DT(dt_meta_name,       CEP_ACRO("CEP"), CEP_WORD("meta"));
+CEP_DEFINE_STATIC_DT(dt_parents_name,    CEP_ACRO("CEP"), CEP_WORD("parents"));
+CEP_DEFINE_STATIC_DT(dt_parent_tag,      CEP_ACRO("CEP"), CEP_WORD("parent"));
+CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
+CEP_DEFINE_STATIC_DT(dt_list_type,       CEP_ACRO("CEP"), CEP_WORD("list"));
 
 
 
@@ -3313,10 +3318,10 @@ int cep_cell_add_parents(cepCell* derived, cepCell* const* parents, size_t count
         return -1;
     }
 
-    cepCell* meta = cep_cell_find_by_name(derived, CEP_DTAW("CEP", "meta"));
+    cepCell* meta = cep_cell_find_by_name(derived, dt_meta_name());
     if (!meta) {
-        cepDT meta_name = *CEP_DTAW("CEP", "meta");
-        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+        cepDT meta_name = *dt_meta_name();
+        cepDT dict_type = *dt_dictionary_type();
         meta = cep_cell_add_dictionary(derived, &meta_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
         if (!meta) {
             return -1;
@@ -3329,10 +3334,10 @@ int cep_cell_add_parents(cepCell* derived, cepCell* const* parents, size_t count
         meta->store->writable = true;
     }
 
-    cepCell* bucket = cep_cell_find_by_name(meta, CEP_DTAW("CEP", "parents"));
+    cepCell* bucket = cep_cell_find_by_name(meta, dt_parents_name());
     if (!bucket) {
-        cepDT parents_name = *CEP_DTAW("CEP", "parents");
-        cepDT list_type = *CEP_DTAW("CEP", "list");
+        cepDT parents_name = *dt_parents_name();
+        cepDT list_type = *dt_list_type();
         bucket = cep_cell_add_list(meta, &parents_name, 0, &list_type, CEP_STORAGE_LINKED_LIST);
         if (!bucket) {
             if (meta->store) {
@@ -3365,7 +3370,7 @@ int cep_cell_add_parents(cepCell* derived, cepCell* const* parents, size_t count
             continue;
         }
 
-        cepDT parent_tag = *CEP_DTAW("CEP", "parent");
+        cepDT parent_tag = *dt_parent_tag();
         cepCell* link = cep_cell_append_link(bucket, &parent_tag, canonical);
         if (!link) {
             return -1;
