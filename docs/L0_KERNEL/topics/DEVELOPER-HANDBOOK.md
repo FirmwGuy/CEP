@@ -58,6 +58,20 @@
 - `cell->store->dt` labels the child collection. `cep_cell_add_dictionary(child, name, context_dt, type_dt, ...)` uses `name` for the child's metacell and `type_dt` for the store so traversal can recognize record classes ("CEP:being", "CEP:bond", etc.).
 - Rule of thumb: metacell names identity; data/store `dt` signal structure. Mixing them makes history harder to read and breaks discovery helpers.
 
+### Convenience wrappers for common chores
+Layer 0 now ships a handful of ergonomic helpers so contributors can focus on behaviour instead of repeating store boilerplate. They make it easy to normalise links, guarantee writable dictionaries, and copy child trees without remembering the low-level sequencing.
+
+**Technical details**
+- `cep_cell_require_store()` / `cep_cell_require_dictionary_store()` resolve links and confirm the backing store is present (upgrading to a dictionary when needed). Use them whenever you inherit a cell pointer from another subsystem.
+- `cep_cell_ensure_dictionary_child(parent, field, storage)` creates or resolves a dictionary child in one call. It is link-safe and preserves existing metadata, which keeps ledger reuse deterministic.
+- `cep_cell_put_text()` / `cep_cell_put_uint64()` / `cep_cell_put_dt()` replace the common "remove child → format value → add child" dance. They coerce parents into dictionaries, drop old values safely, and update the content hash so monitoring remains consistent.
+- `cep_cell_clear_children()` wipes a store while keeping the container alive, and `cep_cell_copy_children(src, dst, deep)` copies an entire subtree, handling link resolution and memory ownership for you.
+
+**Q&A**
+- **When should I prefer the wrappers over manual calls?** Whenever you are writing Layer‑0 code that needs to mutate dictionaries or copy children—using the wrappers keeps link handling and hashing consistent across modules.
+- **Do the setters allocate when the value text already matches?** No. They remove any existing child first, then insert the new payload; idempotent callers can rely on the helper without pre-checking.
+- **Can I still access the lower-level API?** Absolutely. The wrappers sit on top of the regular `cep_cell_add_*` family, so specialised code can drop down a level when it needs bespoke behaviour.
+
 ### Name Interning
 Short nicknames stay on the label; long nicknames get filed once and every cell just keeps a reference number. You still talk to the cell the same way, but the kernel decides the cheapest way to store the name.
 

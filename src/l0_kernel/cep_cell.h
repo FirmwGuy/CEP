@@ -1146,6 +1146,27 @@ void cep_link_initialize(cepCell* link, cepDT* name, cepCell* target);
  */
 cepCell* cep_link_pull(cepCell* link);
 
+/* Ensure callers outside cep_cell.c can safely reach stores even when the
+   original pointer references a link node. The helpers return false when the
+   cell lacks the requested structure so callers can fall back to initialisation. */
+bool cep_cell_require_store(cepCell** cell, cepStore** store_out);
+bool cep_cell_require_dictionary_store(cepCell** cell);
+bool cep_cell_require_data(cepCell** cell, cepData** data_out);
+
+cepCell* cep_cell_resolve(cepCell* cell);
+cepCell* cep_cell_resolve_child(cepCell* parent, cepCell* child);
+bool     cep_cell_child_belongs_to(const cepCell* parent, const cepCell* child);
+
+cepCell* cep_cell_ensure_dictionary_child(cepCell* parent, const cepDT* name, unsigned storage);
+cepCell* cep_cell_ensure_list_child(cepCell* parent, const cepDT* name, unsigned storage);
+
+bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text);
+bool cep_cell_put_uint64(cepCell* parent, const cepDT* field, uint64_t value);
+bool cep_cell_put_dt(cepCell* parent, const cepDT* field, const cepDT* value);
+
+void cep_cell_clear_children(cepCell* cell);
+bool cep_cell_copy_children(const cepCell* source, cepCell* dest, bool deep_clone);
+
 static inline bool cep_cell_is_insertable(cepCell* cell)  {assert(cep_cell_has_store(cell));  return cell->store? cep_store_is_insertable(cell->store): false;}
 static inline bool cep_cell_is_dictionary(cepCell* cell)  {assert(cep_cell_is_normal(cell));  return cell->store? cep_store_is_dictionary(cell->store): false;}
 static inline bool cep_cell_is_f_sorted(cepCell* cell)    {assert(cep_cell_is_normal(cell));  return cell->store? cep_store_is_f_sorted(cell->store): false;}

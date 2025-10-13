@@ -49,7 +49,6 @@ CEP_DEFINE_STATIC_DT(dt_sys_log_name,   CEP_ACRO("CEP"), CEP_WORD("sys_log"));
 CEP_DEFINE_STATIC_DT(dt_log_payload,    CEP_ACRO("CEP"), CEP_WORD("log"));
 CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
 CEP_DEFINE_STATIC_DT(dt_list_type,      CEP_ACRO("CEP"), CEP_WORD("list"));
-CEP_DEFINE_STATIC_DT(dt_text_type,      CEP_ACRO("CEP"), CEP_WORD("text"));
 CEP_DEFINE_STATIC_DT(dt_state_root,     CEP_ACRO("CEP"), CEP_WORD("state"));
 CEP_DEFINE_STATIC_DT(dt_status_field,   CEP_ACRO("CEP"), CEP_WORD("status"));
 CEP_DEFINE_STATIC_DT(dt_ready_beat_field, CEP_ACRO("CEP"), CEP_WORD("ready_beat"));
@@ -1114,39 +1113,13 @@ static cepCell* cep_lifecycle_get_dictionary(cepCell* parent, const cepDT* name,
         return NULL;
     }
 
-    if (!cep_dt_is_valid(name)) {
-        return NULL;
-    }
-
-    cepStore* store = parent->store;
-    if (!store) {
-        if (!create) {
-            return NULL;
-        }
-        cepDT dict_type = *dt_dictionary_type();
-        store = cep_store_new(&dict_type, CEP_STORAGE_RED_BLACK_T, CEP_INDEX_BY_NAME);
-        if (!store) {
-            return NULL;
-        }
-        store->owner = parent;
-        parent->store = store;
-    } else {
-        if (!cep_dt_is_valid(&store->dt) || store->indexing != CEP_INDEX_BY_NAME) {
-            return NULL;
-        }
-    }
-
     cepDT lookup = cep_dt_clean(name);
     lookup.glob = 0u;
 
-    cepCell* existing = store ? cep_cell_find_by_name(parent, &lookup) : NULL;
-    if (existing || !create) {
-        return existing;
+    if (!create) {
+        return cep_cell_find_by_name(parent, &lookup);
     }
-
-    cepDT dict_type = *dt_dictionary_type();
-    cepDT name_copy = lookup;
-    return cep_dict_add_dictionary(parent, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    return cep_cell_ensure_dictionary_child(parent, &lookup, CEP_STORAGE_RED_BLACK_T);
 }
 
 static cepCell* cep_lifecycle_scope_bucket(cepLifecycleScope scope, bool create) {
@@ -1193,15 +1166,20 @@ static bool cep_lifecycle_store_text(cepCell* parent, const cepDT* name, const c
         cep_cell_remove_hard(existing, NULL);
     }
 
-    cepDT type_dt = *dt_text_type();
+    const cepDT* type_dt = CEP_DTAW("CEP", "text");
     cepDT name_copy = lookup;
-    return cep_dict_add_value(parent, &name_copy, &type_dt, (void*)text, size, size) != NULL;
+    cepCell* node = cep_dict_add_value(parent, &name_copy, (cepDT*)type_dt, (void*)text, size, size);
+    if (node) {
+        cep_cell_content_hash(node);
+        return true;
+    }
+    return false;
 }
 
 static bool cep_lifecycle_store_numeric(cepCell* parent, const cepDT* name, uint64_t value) {
     char buffer[32];
     int written = snprintf(buffer, sizeof buffer, "%" PRIu64, (unsigned long long)value);
-    if (written < 0) {
+    if (written < 0 || (size_t)written >= sizeof buffer) {
         return false;
     }
     return cep_lifecycle_store_text(parent, name, buffer);
@@ -1690,7 +1668,6 @@ bool cep_heartbeat_stage_commit(void) {
 
     cep_heartbeat_impulse_queue_swap(&CEP_RUNTIME.inbox_current, &CEP_RUNTIME.inbox_next);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
-
     cep_beat_begin_capture();
     return true;
 }

@@ -7,6 +7,10 @@
 #include "cep_cell.h"
 
 #include <stdarg.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <inttypes.h>
 
 typedef struct _cepStoreHistoryEntry cepStoreHistoryEntry;
 typedef struct _cepStoreHistory      cepStoreHistory;
@@ -1491,6 +1495,264 @@ cepCell* cep_link_pull(cepCell* link)
     }
 
     return link;
+}
+
+bool cep_cell_require_store(cepCell** cell_ptr, cepStore** store_out) {
+    if (!cell_ptr || !*cell_ptr) {
+        return false;
+    }
+
+    cepCell* cell = *cell_ptr;
+    if (cep_cell_is_void(cell)) {
+        return false;
+    }
+
+    cell = cep_link_pull(cell);
+    if (!cep_cell_is_normal(cell) || !cell->store) {
+        return false;
+    }
+
+    *cell_ptr = cell;
+    if (store_out) {
+        *store_out = cell->store;
+    }
+    return true;
+}
+
+bool cep_cell_require_dictionary_store(cepCell** cell_ptr) {
+    cepStore* store = NULL;
+    if (!cep_cell_require_store(cell_ptr, &store)) {
+        return false;
+    }
+
+    if (store->indexing == CEP_INDEX_BY_NAME) {
+        return true;
+    }
+
+    cep_cell_to_dictionary(*cell_ptr);
+    return cep_cell_require_store(cell_ptr, NULL);
+}
+
+bool cep_cell_require_data(cepCell** cell_ptr, cepData** data_out) {
+    if (!cell_ptr || !*cell_ptr) {
+        return false;
+    }
+
+    cepCell* cell = *cell_ptr;
+    if (cep_cell_is_void(cell)) {
+        return false;
+    }
+
+    cell = cep_link_pull(cell);
+    if (!cep_cell_is_normal(cell) || !cell->data) {
+        return false;
+    }
+
+    *cell_ptr = cell;
+    if (data_out) {
+        *data_out = cell->data;
+    }
+    return true;
+}
+
+cepCell* cep_cell_resolve(cepCell* cell) {
+    if (!cell) {
+        return NULL;
+    }
+    return cep_link_pull(cell);
+}
+
+cepCell* cep_cell_resolve_child(cepCell* parent, cepCell* child) {
+    if (!parent || !child) {
+        return NULL;
+    }
+
+    if (!cep_cell_require_store(&parent, NULL)) {
+        return NULL;
+    }
+
+    child = cep_link_pull(child);
+    if (!child) {
+        return NULL;
+    }
+
+    return (child->parent == parent->store) ? child : NULL;
+}
+
+bool cep_cell_child_belongs_to(const cepCell* parent, const cepCell* child) {
+    if (!parent || !child) {
+        return false;
+    }
+    cepCell* resolved_parent = cep_cell_resolve((cepCell*)parent);
+    cepCell* resolved_child = cep_cell_resolve((cepCell*)child);
+    if (!resolved_parent || !resolved_child) {
+        return false;
+    }
+    if (!cep_cell_has_store(resolved_parent)) {
+        return false;
+    }
+    return resolved_child->parent == resolved_parent->store;
+}
+
+cepCell* cep_cell_ensure_dictionary_child(cepCell* parent, const cepDT* name, unsigned storage) {
+    if (!parent || !name) {
+        return NULL;
+    }
+
+    if (!cep_cell_require_store(&parent, NULL)) {
+        return NULL;
+    }
+
+    cepDT lookup = cep_dt_clean(name);
+    cepCell* child = cep_cell_find_by_name(parent, &lookup);
+    if (child) {
+        if (!cep_cell_require_dictionary_store(&child)) {
+            return NULL;
+        }
+        return child;
+    }
+
+    cepDT name_copy = lookup;
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    unsigned store_kind = storage ? storage : CEP_STORAGE_RED_BLACK_T;
+    return cep_dict_add_dictionary(parent, &name_copy, &dict_type, store_kind);
+}
+
+cepCell* cep_cell_ensure_list_child(cepCell* parent, const cepDT* name, unsigned storage) {
+    if (!parent || !name) {
+        return NULL;
+    }
+
+    if (!cep_cell_require_store(&parent, NULL)) {
+        return NULL;
+    }
+
+    cepDT lookup = cep_dt_clean(name);
+    cepCell* child = cep_cell_find_by_name(parent, &lookup);
+    if (child) {
+        cepCell* resolved = cep_cell_resolve(child);
+        if (!resolved || !cep_cell_has_store(resolved)) {
+            return NULL;
+        }
+        if (resolved->store->indexing != CEP_INDEX_BY_INSERTION) {
+            return NULL;
+        }
+        return resolved;
+    }
+
+    cepDT name_copy = lookup;
+    cepDT list_type = *CEP_DTAW("CEP", "list");
+    unsigned store_kind = storage ? storage : CEP_STORAGE_ARRAY;
+    return cep_dict_add_list(parent, &name_copy, &list_type, store_kind);
+}
+
+bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
+    if (!parent || !field || !text) {
+        return false;
+    }
+
+    if (!cep_cell_require_dictionary_store(&parent)) {
+        return false;
+    }
+
+    cepDT lookup = cep_dt_clean(field);
+    cepCell* existing = cep_cell_find_by_name(parent, &lookup);
+    if (existing) {
+        cep_cell_remove_hard(parent, existing);
+    }
+
+    size_t len = strlen(text) + 1u;
+    const cepDT* payload_ref = CEP_DTAW("CEP", "text");
+    cepDT payload_type = *payload_ref;
+
+    cepCell* node = NULL;
+
+    if (len <= sizeof(((cepData*)0)->value)) {
+        node = cep_dict_add_value(parent, &lookup, &payload_type, (void*)text, len, len);
+    } else {
+        char* copy = cep_malloc(len);
+        if (copy) {
+            memcpy(copy, text, len);
+            node = cep_dict_add_data(parent, &lookup, &payload_type, copy, len, len, cep_free);
+            if (!node) {
+                cep_free(copy);
+            }
+        }
+    }
+
+    if (node) {
+        cep_cell_content_hash(node);
+        return true;
+    }
+
+    return false;
+}
+
+bool cep_cell_put_uint64(cepCell* parent, const cepDT* field, uint64_t value) {
+    char buffer[32];
+    int written = snprintf(buffer, sizeof buffer, "%" PRIu64, (unsigned long long)value);
+    if (written <= 0 || (size_t)written >= sizeof buffer) {
+        return false;
+    }
+    return cep_cell_put_text(parent, field, buffer);
+}
+
+bool cep_cell_put_dt(cepCell* parent, const cepDT* field, const cepDT* value) {
+    if (!parent || !field || !value) {
+        return false;
+    }
+
+    cepCell* container = cep_cell_ensure_dictionary_child(parent, field, CEP_STORAGE_RED_BLACK_T);
+    if (!container) {
+        return false;
+    }
+
+    if (!cep_cell_put_uint64(container, CEP_DTAW("CEP", "domain"), cep_id(value->domain))) {
+        return false;
+    }
+    return cep_cell_put_uint64(container, CEP_DTAW("CEP", "tag"), cep_id(value->tag));
+}
+
+void cep_cell_clear_children(cepCell* cell) {
+    if (!cep_cell_require_store(&cell, NULL)) {
+        return;
+    }
+
+    while (cep_cell_children(cell) > 0u) {
+        cepCell* child = cep_cell_first(cell);
+        cep_cell_remove_hard(cell, child);
+    }
+}
+
+bool cep_cell_copy_children(const cepCell* source, cepCell* dest, bool deep_clone) {
+    if (!dest) {
+        return false;
+    }
+
+    if (!cep_cell_require_store(&dest, NULL)) {
+        return false;
+    }
+
+    cep_cell_clear_children(dest);
+
+    if (!source) {
+        return true;
+    }
+
+    cepCell* resolved_source = cep_cell_resolve((cepCell*)source);
+    if (!resolved_source || !cep_cell_has_store(resolved_source)) {
+        return true;
+    }
+
+    for (cepCell* child = cep_cell_first(resolved_source); child; child = cep_cell_next(resolved_source, child)) {
+        cepCell* clone = deep_clone ? cep_cell_clone_deep(child) : cep_cell_clone(child);
+        if (!clone) {
+            continue;
+        }
+        cep_cell_add(dest, 0, clone);
+        cep_free(clone);
+    }
+    return true;
 }
 
 

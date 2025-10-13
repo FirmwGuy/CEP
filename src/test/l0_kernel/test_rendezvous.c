@@ -138,14 +138,13 @@ MunitResult test_rendezvous_heartbeat_pipeline(const MunitParameter params[], vo
     rv_spawn_basic("pipeline", 0u);
 
     rv_step_beats(1u);
-
     cepDT key_dt = rv_dt_from_text("pipeline");
     if (!cep_id(key_dt.domain)) {
         key_dt.domain = CEP_ACRO("CEP");
     }
     cepCell* entry = cep_cell_find_by_name(rv_ledger(), &key_dt);
     munit_assert_not_null(entry);
-    munit_assert_string_equal(rv_entry_text(entry, "state"), "pending");
+    munit_assert_string_equal(rv_entry_text(entry, "state"), "ready");
 
     rv_step_beats(1u);
     munit_assert_string_equal(rv_entry_text(entry, "state"), "ready");

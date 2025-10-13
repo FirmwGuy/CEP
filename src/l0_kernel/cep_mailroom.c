@@ -21,7 +21,6 @@ CEP_DEFINE_STATIC_DT(dt_mailroom_ns_flow, CEP_ACRO("CEP"), CEP_WORD("flow"))
 CEP_DEFINE_STATIC_DT(dt_sys_log,        CEP_ACRO("CEP"), CEP_WORD("sys_log"))
 CEP_DEFINE_STATIC_DT(dt_dictionary,     CEP_ACRO("CEP"), CEP_WORD("dictionary"))
 CEP_DEFINE_STATIC_DT(dt_list,           CEP_ACRO("CEP"), CEP_WORD("list"))
-CEP_DEFINE_STATIC_DT(dt_text,           CEP_ACRO("CEP"), CEP_WORD("text"))
 CEP_DEFINE_STATIC_DT(dt_original,       CEP_ACRO("CEP"), CEP_WORD("original"))
 CEP_DEFINE_STATIC_DT(dt_outcome,        CEP_ACRO("CEP"), CEP_WORD("outcome"))
 CEP_DEFINE_STATIC_DT(dt_meta,           CEP_ACRO("CEP"), CEP_WORD("meta"))
@@ -236,18 +235,7 @@ static cepCell* cep_mailroom_ensure_dictionary(cepCell* parent, const cepDT* nam
     if (!parent || !name) {
         return NULL;
     }
-
-    cepDT lookup = cep_dt_clean(name);
-    lookup.glob = 0u;
-
-    cepCell* existing = cep_cell_find_by_name(parent, &lookup);
-    if (existing) {
-        return existing;
-    }
-
-    cepDT dict_type = *dt_dictionary();
-    cepDT name_copy = lookup;
-    return cep_dict_add_dictionary(parent, &name_copy, &dict_type, storage);
+    return cep_cell_ensure_dictionary_child(parent, name, storage ? storage : CEP_STORAGE_RED_BLACK_T);
 }
 
 static bool cep_mailroom_seed_namespace(cepCell* inbox,
@@ -420,44 +408,26 @@ static bool cep_mailroom_set_string_value(cepCell* parent, const cepDT* name, co
     if (!parent || !name || !text) {
         return false;
     }
-
-    bool restore_writable = false;
-    bool previous_writable = false;
-    if (parent->store) {
-        previous_writable = parent->store->writable;
-        if (!previous_writable) {
-            parent->store->writable = true;
-            restore_writable = true;
-        }
-    }
-
-    size_t size = strlen(text) + 1u;
-    cepDT lookup = cep_dt_clean(name);
-    lookup.glob = 0u;
-
-    cepCell* existing = cep_cell_find_by_name(parent, &lookup);
-    if (existing) {
-        if (parent->store && restore_writable) {
-            parent->store->writable = previous_writable;
-        }
-        return true;
-    }
-
-    cepDT name_copy = lookup;
-    cepDT text_dt = *dt_text();
-    cepCell* node = cep_dict_add_value(parent, &name_copy, &text_dt, (void*)text, size, size);
-    if (!node) {
-        if (parent->store && restore_writable) {
-            parent->store->writable = previous_writable;
-        }
+    cepCell* resolved = parent;
+    cepStore* store = NULL;
+    if (!cep_cell_require_store(&resolved, &store)) {
         return false;
     }
-    cep_cell_content_hash(node);
 
-    if (parent->store && restore_writable) {
-        parent->store->writable = previous_writable;
+    bool restore = false;
+    unsigned previous = 0u;
+    if (store && !store->writable) {
+        previous = store->writable;
+        store->writable = true;
+        restore = true;
     }
-    return true;
+
+    bool ok = cep_cell_put_text(resolved, name, text);
+
+    if (restore) {
+        store->writable = previous;
+    }
+    return ok;
 }
 
 /* Reseed the unified inbox so restarts and replays rebuild the lobby exactly

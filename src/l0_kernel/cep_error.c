@@ -16,7 +16,6 @@ CEP_DEFINE_STATIC_DT(dt_err_stage,      CEP_ACRO("CEP"), CEP_WORD("stage"));
 CEP_DEFINE_STATIC_DT(dt_err_cat,        CEP_ACRO("CEP"), CEP_WORD("err_cat"));
 CEP_DEFINE_STATIC_DT(dt_dictionary,     CEP_ACRO("CEP"), CEP_WORD("dictionary"));
 CEP_DEFINE_STATIC_DT(dt_list,           CEP_ACRO("CEP"), CEP_WORD("list"));
-CEP_DEFINE_STATIC_DT(dt_text,           CEP_ACRO("CEP"), CEP_WORD("text"));
 CEP_DEFINE_STATIC_DT(dt_event_root,     CEP_ACRO("CEP"), CEP_WORD("event"));
 CEP_DEFINE_STATIC_DT(dt_index_root,     CEP_ACRO("CEP"), CEP_WORD("index"));
 CEP_DEFINE_STATIC_DT(dt_index_by_level, CEP_ACRO("CEP"), CEP_WORD("by_level"));
@@ -167,19 +166,11 @@ static bool cep_error_store_text(cepCell* dict, const cepDT* name, const char* t
     if (!dict || !name || !text) {
         return false;
     }
-    size_t len = strlen(text) + 1u;
-    cepDT name_copy = cep_dt_clean(name);
-    cepDT payload_type = *dt_text();
-    return cep_dict_add_value(dict, &name_copy, &payload_type, (void*)text, len, len) != NULL;
+    return cep_cell_put_text(dict, name, text);
 }
 
 static bool cep_error_store_number(cepCell* dict, const cepDT* name, uint64_t value) {
-    char buffer[32];
-    int written = snprintf(buffer, sizeof buffer, "%" PRIu64, (unsigned long long)value);
-    if (written <= 0 || (size_t)written >= sizeof buffer) {
-        return false;
-    }
-    return cep_error_store_text(dict, name, buffer);
+    return cep_cell_put_uint64(dict, name, value);
 }
 
 static bool cep_error_store_dt(cepCell* dict, const cepDT* name, const cepDT* value) {
@@ -194,16 +185,7 @@ static cepCell* cep_error_ensure_dictionary(cepCell* parent, const cepDT* name) 
     if (!parent || !name) {
         return NULL;
     }
-
-    cepCell* node = cep_cell_find_by_name(parent, name);
-    if (!node) {
-        cepDT type = *dt_dictionary();
-        cepDT name_copy = cep_dt_clean(name);
-        node = cep_cell_add_dictionary(parent, &name_copy, 0, &type, CEP_STORAGE_RED_BLACK_T);
-    } else if (!cep_cell_has_store(node) || node->store->indexing != CEP_INDEX_BY_NAME) {
-        cep_cell_to_dictionary(node);
-    }
-    return node;
+    return cep_cell_ensure_dictionary_child(parent, name, CEP_STORAGE_RED_BLACK_T);
 }
 
 static cepCell* cep_error_stage_root(void) {
