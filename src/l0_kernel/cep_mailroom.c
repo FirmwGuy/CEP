@@ -961,7 +961,6 @@ static int cep_mailroom_route(const cepPath* signal_path, const cepPath* target_
         return CEP_ENZYME_FATAL;
     }
 
-    fprintf(stderr, "[debug] routed %" PRIu64 " to inbox\n", (unsigned long long)txn_name.tag);
 
     return CEP_ENZYME_SUCCESS;
 }

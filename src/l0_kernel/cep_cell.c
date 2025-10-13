@@ -1655,6 +1655,20 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
         return false;
     }
 
+    cepStore* store = NULL;
+    if (!cep_cell_require_store(&parent, &store)) {
+        return false;
+    }
+
+    bool restore_writable = false;
+    unsigned writable_before = 0u;
+    if (store && !store->writable) {
+        writable_before = store->writable;
+        store->writable = true;
+        restore_writable = true;
+    }
+
+    bool success = false;
     cepDT lookup = cep_dt_clean(field);
     cepCell* existing = cep_cell_find_by_name(parent, &lookup);
     if (existing) {
@@ -1669,6 +1683,7 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
 
     if (len <= sizeof(((cepData*)0)->value)) {
         node = cep_dict_add_value(parent, &lookup, &payload_type, (void*)text, len, len);
+        success = (node != NULL);
     } else {
         char* copy = cep_malloc(len);
         if (copy) {
@@ -1676,16 +1691,21 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
             node = cep_dict_add_data(parent, &lookup, &payload_type, copy, len, len, cep_free);
             if (!node) {
                 cep_free(copy);
+            } else {
+                success = true;
             }
         }
     }
 
     if (node) {
         cep_cell_content_hash(node);
-        return true;
     }
 
-    return false;
+    if (restore_writable) {
+        store->writable = writable_before;
+    }
+
+    return success;
 }
 
 bool cep_cell_put_uint64(cepCell* parent, const cepDT* field, uint64_t value) {

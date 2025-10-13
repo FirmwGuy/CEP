@@ -72,6 +72,19 @@ Layer 0 now ships a handful of ergonomic helpers so contributors can focus on be
 - **Do the setters allocate when the value text already matches?** No. They remove any existing child first, then insert the new payload; idempotent callers can rely on the helper without pre-checking.
 - **Can I still access the lower-level API?** Absolutely. The wrappers sit on top of the regular `cep_cell_add_*` family, so specialised code can drop down a level when it needs bespoke behaviour.
 
+### Stability before shaving cycles
+Future you would rather debug readable code than a micro-optimised crash dump. When in doubt, bias towards the approach that keeps ownership obvious, even if it means paying an extra dictionary lookup.
+
+**Technical details**
+- Treat cached child pointers as disposable unless you fully control the store; use domain/tag lookups after structural mutations to avoid dangling references.
+- Leave deliberate `/* OPTIMIZE: ... */` breadcrumbs where a slower path is intentional and explain the data required before revisiting the trade-off.
+- Keep assertions intact—Layer 0 relies on them to catch ownership mistakes the moment they happen.
+
+**Q&A**
+- **Is caching ever okay?** Yes, but only when the data structure cannot swap the node from under you (e.g., you own the store for the duration).
+- **How should I flag potential speedups?** Add a short `/* OPTIMIZE: rationale */` note so future profiling runs know where to focus.
+- **What if profiling shows the lookup dominates the cost?** Document the numbers, then add a guarded fast-path while keeping the safe code path as the default.
+
 ### Name Interning
 Short nicknames stay on the label; long nicknames get filed once and every cell just keeps a reference number. You still talk to the cell the same way, but the kernel decides the cheapest way to store the name.
 
