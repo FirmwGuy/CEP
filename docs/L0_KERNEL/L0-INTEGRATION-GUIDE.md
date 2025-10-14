@@ -168,6 +168,38 @@ The heartbeat keeps a lot of book-keeping behind the curtain. These accessors ex
 **Q&A**
 - *Is `cep_heartbeat_enqueue_impulse()` different from `cep_heartbeat_enqueue_signal()`?* Yes—`enqueue_signal` clones the paths for you from raw `cepPath` pointers, while `enqueue_impulse` lets you hand over a pre-built `cepImpulse` when you already manage its lifetime.
 
+### 1.9 Building cell trees safely (floating → graft)
+
+Layer 0 assumes that new structure is assembled off-tree first and only grafted under `/` once it is internally consistent. Mutating a node that is already anchored (for example, a dictionary under `/data`) risks tripping assertions in `cep_cell_add`/`cep_store_add_child` and can leave partially-built state visible if the process aborts mid-update.
+
+**Recommended workflow**
+
+```c
+cepCell branch = {0};
+cepDT   name   = *CEP_DTAW("CEP", "ledger:entry");
+cepDT   dict   = *CEP_DTAW("CEP", "dictionary");
+
+/* 1. Build the hierarchy as a floating (ungrounded) cell. */
+cep_cell_initialize_dictionary(&branch, &name, &dict, CEP_STORAGE_RED_BLACK_T);
+cep_dict_add_value(&branch, CEP_DTAW("CEP", "state"), CEP_DTAW("CEP", "text"),
+                   "pending", sizeof("pending"), sizeof("pending"));
+
+/* 2. Attach the finished branch in one step. */
+cepCell* ledger = cep_rv_ledger_root();
+cep_cell_add(ledger, 0u, &branch);
+
+/* 3. Drop the temporary shell now that the branch is grounded. */
+cep_cell_finalize(&branch);
+```
+
+**Practical guidelines**
+
+- Keep staging nodes floating (`cep_cell_is_floating`) until you graft them. Use `cep_cell_initialize_*` helpers to prepare dictionaries, lists, or value nodes without touching the live tree.
+- Populate children with the dictionary/list APIs (`cep_dict_add_value`, `cep_dict_add_dictionary`, `cep_cell_copy_children`, …). If any step fails, call `cep_cell_finalize`/`cep_cell_finalize_hard` before returning; no visible state was changed yet.
+- When the branch is ready, attach it with `cep_cell_add`, `cep_dict_add`, or the append helpers. Make sure the destination already exposes a writable store (`cep_cell_ensure_dictionary_child` is the usual guard) so append-only guarantees stay intact.
+- Replacing or removing anchored nodes must go through the store helpers (`cep_cell_remove_hard`, `cep_store_replace_child`). Never keep raw child pointers across mutations—look them up again by path.
+- References: the append-only rules live in `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md`; the rendezvous ledger is a concrete example in `docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md`.
+
 ---
 
 ## 2) Serialization & streams (wire format)

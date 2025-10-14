@@ -72,6 +72,14 @@ typedef struct {
 
 static rvPendingQueue rv_updates = {0};
 
+static cepCell* rv_find_entry(cepCell* ledger, const cepDT* key_dt);
+static const char* rv_default_or(const char* text, const char* fallback);
+static bool rv_build_entry(const cepRvSpec* spec,
+                           const cepDT* normalized_dt,
+                           cepBeatNumber spawn_beat,
+                           cepCell* out_entry);
+static bool rv_graft_entry(cepCell* ledger, const cepDT* normalized_dt, cepCell* new_entry);
+
 static inline bool rv_text_equals(const char* lhs, const char* rhs) {
     if (!lhs || !rhs) {
         return lhs == rhs;
@@ -288,27 +296,7 @@ bool cep_rv_entry_snapshot(cepID key, cepRvEntrySnapshot* snapshot) {
     }
 
     cepDT lookup = cep_dt_make(CEP_ACRO("CEP"), key);
-    printf("DEBUG snapshot lookup domain=%llu tag=%llu\n",
-           (unsigned long long)cep_id(lookup.domain),
-           (unsigned long long)cep_id(lookup.tag));
-    fflush(stdout);
-    cepCell* entry = NULL;
-    for (cepCell* child = cep_cell_first(ledger); child; child = cep_cell_next(ledger, child)) {
-        const cepDT* name = cep_cell_get_name(child);
-        if (!name) {
-            continue;
-        }
-        /* Debugging print could be added here if needed */
-        printf("DEBUG snapshot child domain=%llu tag=%llu\n",
-               (unsigned long long)cep_id(name->domain),
-               (unsigned long long)cep_id(name->tag));
-        fflush(stdout);
-        if (cep_id(name->tag) == cep_id(lookup.tag) &&
-            cep_id(name->domain) == cep_id(lookup.domain)) {
-            entry = child;
-            break;
-        }
-    }
+    cepCell* entry = rv_find_entry(ledger, &lookup);
 
     memset(snapshot, 0, sizeof *snapshot);
     if (!entry) {
@@ -376,10 +364,9 @@ static bool rv_id_to_text(cepID id, char* buffer, size_t capacity) {
     return false;
 }
 
-/** Ensure `/data/rv/<key>` exists (promoting the node to a writable dictionary
-    when reused). Actual entry population must happen off-tree so the caller
-    can attach a fully-formed ledger branch, per the guidelines in
-    docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md. */
+/** Locate the `/data/rv/<key>` entry, promoting it to a writable dictionary if
+    necessary. Construction of new entries is handled off-tree before grafting
+    so this helper should only ever resolve existing nodes. */
 static cepCell* rv_find_entry(cepCell* ledger, const cepDT* key_dt) {
     if (!ledger || !key_dt) {
         return NULL;
@@ -393,27 +380,13 @@ static cepCell* rv_find_entry(cepCell* ledger, const cepDT* key_dt) {
         lookup.domain = CEP_ACRO("CEP");
     }
 
-    cepCell* entry = rv_ensure_dictionary_child(ledger, &lookup);
-    if (entry) {
-        printf("DEBUG rv_find_entry type=%u store=%p\n",
-               (unsigned)entry->metacell.type,
-               (void*)entry->store);
-        if (entry->store) {
-            printf("DEBUG rv_find_entry store dt domain=%llu tag=%llu writable=%u\n",
-                   (unsigned long long)cep_id(entry->store->domain),
-                   (unsigned long long)cep_id(entry->store->tag),
-                   (unsigned)entry->store->writable);
-        }
-        printf("DEBUG rv_find_entry is_void=%d\n", (int)cep_cell_is_void(entry));
-        fflush(stdout);
-    } else {
-        printf("DEBUG rv_find_entry entry null\n");
-        fflush(stdout);
+    cepCell* entry = cep_cell_find_by_name(ledger, &lookup);
+    if (!entry) {
         return NULL;
     }
-
-    cepDT name_copy = lookup;
-    cep_cell_set_name(entry, &name_copy);
+    if (!cep_cell_require_dictionary_store(&entry)) {
+        return NULL;
+    }
     return entry;
 }
 
@@ -421,23 +394,139 @@ static cepCell* rv_find_entry(cepCell* ledger, const cepDT* key_dt) {
     defaults required by docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md.
     Callers should invoke this on a floating dictionary before grafting the
     entry into `/data/rv` so append-only guarantees are preserved. */
-static void rv_seed_defaults(cepCell* entry) {
-    rv_store_number(entry, dt_epoch_k(),        0u);
-    rv_store_number(entry, dt_input_fp(),       0u);
-    rv_store_number(entry, dt_deadline(),       0u);
-    rv_store_number(entry, dt_grace_delta(),    0u);
-    rv_store_number(entry, dt_max_grace(),      0u);
-    rv_store_number(entry, dt_kill_wait(),      0u);
-    rv_store_number(entry, dt_event_flag(),     0u);
-    rv_store_number(entry, dt_grace_used(),     0u);
-    rv_store_string(entry, dt_on_miss(),        "timeout");
-    rv_store_string(entry, dt_kill_mode(),      "none");
-    rv_store_string(entry, dt_cas_hash(),       "");
-
-    cepCell* telemetry = rv_ensure_dictionary_child(entry, dt_telemetry());
-    if (telemetry) {
-        cep_cell_clear_children(telemetry);
+static bool rv_build_entry(const cepRvSpec* spec,
+                           const cepDT* normalized_dt,
+                           cepBeatNumber spawn_beat,
+                           cepCell* out_entry) {
+    if (!spec || !normalized_dt || !out_entry) {
+        return false;
     }
+
+    cepDT name_copy = *normalized_dt;
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cep_cell_initialize_dictionary(out_entry, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+
+    if (!rv_store_string(out_entry, dt_state(), "pending")) {
+        goto build_fail;
+    }
+
+    if (!rv_store_number(out_entry, dt_spawn_beat(), (uint64_t)spawn_beat)) {
+        goto build_fail;
+    }
+    if (!rv_store_number(out_entry, dt_due(), spec->due)) {
+        goto build_fail;
+    }
+
+    if (!rv_store_number(out_entry, dt_epoch_k(), spec->epoch_k)) {
+        goto build_fail;
+    }
+    if (!rv_store_number(out_entry, dt_input_fp(), spec->input_fp)) {
+        goto build_fail;
+    }
+    if (!rv_store_number(out_entry, dt_deadline(), spec->deadline)) {
+        goto build_fail;
+    }
+    if (!rv_store_number(out_entry, dt_grace_delta(), spec->grace_delta)) {
+        goto build_fail;
+    }
+    if (!rv_store_number(out_entry, dt_max_grace(), spec->max_grace)) {
+        goto build_fail;
+    }
+    if (!rv_store_number(out_entry, dt_kill_wait(), spec->kill_wait)) {
+        goto build_fail;
+    }
+    if (!rv_store_number(out_entry, dt_event_flag(), 0u)) {
+        goto build_fail;
+    }
+    if (!rv_store_number(out_entry, dt_grace_used(), 0u)) {
+        goto build_fail;
+    }
+
+    char buffer[128];
+    if (rv_id_to_text(spec->prof, buffer, sizeof buffer)) {
+        if (!rv_store_string(out_entry, dt_prof(), buffer)) {
+            goto build_fail;
+        }
+    } else if (!rv_store_string(out_entry, dt_prof(), "rv-fixed")) {
+        goto build_fail;
+    }
+
+    if (rv_id_to_text(spec->on_miss, buffer, sizeof buffer)) {
+        if (!rv_store_string(out_entry, dt_on_miss(), buffer)) {
+            goto build_fail;
+        }
+    } else if (!rv_store_string(out_entry, dt_on_miss(), "timeout")) {
+        goto build_fail;
+    }
+
+    if (rv_id_to_text(spec->kill_mode, buffer, sizeof buffer)) {
+        if (!rv_store_string(out_entry, dt_kill_mode(), buffer)) {
+            goto build_fail;
+        }
+    } else if (!rv_store_string(out_entry, dt_kill_mode(), "none")) {
+        goto build_fail;
+    }
+
+    if (!rv_store_string(out_entry, dt_cas_hash(), rv_default_or(spec->cas_hash, ""))) {
+        goto build_fail;
+    }
+
+    if (spec->signal_path && *spec->signal_path) {
+        if (!rv_store_string(out_entry, dt_signal_path(), spec->signal_path)) {
+            goto build_fail;
+        }
+    } else {
+        char path[128];
+        if (cep_rv_signal_for_key(normalized_dt, path, sizeof path)) {
+            if (!rv_store_string(out_entry, dt_signal_path(), path)) {
+                goto build_fail;
+            }
+        }
+    }
+
+    if (cep_id(spec->instance_dt.tag) || cep_id(spec->instance_dt.domain)) {
+        char inst_buf[128];
+        if (rv_id_to_text(spec->instance_dt.domain, inst_buf, sizeof inst_buf)) {
+            size_t len = strlen(inst_buf);
+            if (len + 2u < sizeof inst_buf) {
+                inst_buf[len++] = ':';
+                if (rv_id_to_text(spec->instance_dt.tag, inst_buf + len, sizeof inst_buf - len)) {
+                    rv_store_string(out_entry, dt_inst_id(), inst_buf);
+                }
+            }
+        }
+    }
+
+    cepCell* telemetry = rv_ensure_dictionary_child(out_entry, dt_telemetry());
+    if (!telemetry) {
+        goto build_fail;
+    }
+    cep_cell_clear_children(telemetry);
+    if (spec->telemetry && !cep_cell_copy_children(spec->telemetry, telemetry, true)) {
+        goto build_fail;
+    }
+
+    return true;
+
+build_fail:
+    cep_cell_finalize(out_entry);
+    memset(out_entry, 0, sizeof *out_entry);
+    return false;
+}
+
+static bool rv_graft_entry(cepCell* ledger, const cepDT* normalized_dt, cepCell* new_entry) {
+    if (!ledger || !normalized_dt || !new_entry) {
+        return false;
+    }
+
+    cepDT lookup = cep_dt_clean(normalized_dt);
+    cepCell* existing = cep_cell_find_by_name(ledger, &lookup);
+    if (existing) {
+        cep_cell_remove_hard(ledger, existing);
+    }
+
+    cepCell* inserted = cep_cell_add(ledger, 0u, new_entry);
+    return inserted != NULL;
 }
 
 static bool rv_state_emits_event(rvState state) {
@@ -715,82 +804,21 @@ bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
         entry_dt.domain = CEP_ACRO("CEP");
     }
 
-    cepCell* entry = rv_find_entry(ledger, &entry_dt);
-    if (!entry) {
-        rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_ALLOC;
-        return false;
-    }
-
-    if (!rv_store_string(entry, dt_state(), "pending")) {
-        rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_ALLOC;
-        return false;
-    }
-
     cepBeatNumber beat = cep_heartbeat_current();
     if (beat == CEP_BEAT_INVALID) {
         beat = 0u;
     }
-    rv_store_number(entry, dt_spawn_beat(), (uint64_t)beat);
-    rv_store_number(entry, dt_due(), spec->due);
 
-    rv_store_number(entry, dt_epoch_k(),   spec->epoch_k);
-    rv_store_number(entry, dt_input_fp(), spec->input_fp);
-    rv_store_number(entry, dt_deadline(), spec->deadline);
-    rv_store_number(entry, dt_grace_delta(), spec->grace_delta);
-    rv_store_number(entry, dt_max_grace(), spec->max_grace);
-    rv_store_number(entry, dt_kill_wait(), spec->kill_wait);
-
-    char buffer[128];
-    if (rv_id_to_text(spec->prof, buffer, sizeof buffer)) {
-        rv_store_string(entry, dt_prof(), buffer);
-    } else {
-        rv_store_string(entry, dt_prof(), "rv-fixed");
+    cepCell floating = {0};
+    if (!rv_build_entry(spec, &entry_dt, beat, &floating)) {
+        rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_ALLOC;
+        return false;
     }
 
-    if (rv_id_to_text(spec->on_miss, buffer, sizeof buffer)) {
-        rv_store_string(entry, dt_on_miss(), buffer);
-    } else {
-        rv_store_string(entry, dt_on_miss(), "timeout");
-    }
-
-    if (rv_id_to_text(spec->kill_mode, buffer, sizeof buffer)) {
-        rv_store_string(entry, dt_kill_mode(), buffer);
-    } else {
-        rv_store_string(entry, dt_kill_mode(), "none");
-    }
-
-    rv_store_string(entry, dt_cas_hash(), rv_default_or(spec->cas_hash, ""));
-    rv_store_number(entry, dt_grace_used(), 0u);
-
-    if (spec->signal_path && *spec->signal_path) {
-        rv_store_string(entry, dt_signal_path(), spec->signal_path);
-    } else {
-        char path[128];
-        if (cep_rv_signal_for_key(&entry_dt, path, sizeof path)) {
-            rv_store_string(entry, dt_signal_path(), path);
-        }
-    }
-
-    if (cep_id(spec->instance_dt.tag) || cep_id(spec->instance_dt.domain)) {
-        char inst_buf[128];
-        if (rv_id_to_text(spec->instance_dt.domain, inst_buf, sizeof inst_buf)) {
-            size_t len = strlen(inst_buf);
-            if (len + 2u < sizeof inst_buf) {
-                inst_buf[len++] = ':';
-                if (rv_id_to_text(spec->instance_dt.tag, inst_buf + len, sizeof inst_buf - len)) {
-                    rv_store_string(entry, dt_inst_id(), inst_buf);
-                }
-            }
-        }
-    }
-
-    rv_seed_defaults(entry);
-
-    if (spec->telemetry) {
-        cepCell* dest = rv_ensure_dictionary_child(entry, dt_telemetry());
-        if (dest) {
-            cep_cell_copy_children(spec->telemetry, dest, true);
-        }
+    if (!rv_graft_entry(ledger, &entry_dt, &floating)) {
+        cep_cell_finalize(&floating);
+        rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_ALLOC;
+        return false;
     }
 
     rv_last_status = CEP_RV_SPAWN_STATUS_OK;
@@ -929,6 +957,15 @@ bool cep_rv_capture_scan(void) {
         if (!cep_cell_require_dictionary_store(&entry)) {
             continue;
         }
+
+        const char* dbg_state = rv_read_text(entry, dt_state());
+        uint64_t dbg_due = 0u;
+        rv_read_uint64(entry, dt_due(), &dbg_due);
+        printf("DEBUG capture state=%s due=%llu beat=%llu\n",
+               dbg_state ? dbg_state : "(null)",
+               (unsigned long long)dbg_due,
+               (unsigned long long)now);
+        fflush(stdout);
 
         rvPendingUpdate update;
         if (rv_entry_evaluate(entry, now, &update)) {
