@@ -1599,6 +1599,8 @@ cepCell* cep_cell_ensure_dictionary_child(cepCell* parent, const cepDT* name, un
         return NULL;
     }
 
+    /* Ensure the child is a writable dictionary before mutating; see the
+       append-only guidelines in docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md. */
     if (!cep_cell_require_store(&parent, NULL)) {
         return NULL;
     }
@@ -2079,8 +2081,19 @@ static cepCell* cep_store_replace_child(cepStore* store, cepCell* existing, cepC
    sibling ordering intact so historical traversals can rebuild the directory
    (see docs/L0_KERNEL/APPEND-ONLY-AND-IDEMPOTENCY.md).
 */
+/* Insert a child into a parent store, keeping append-only invariants intact.
+   Behaviour is documented in docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md. */
 cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child) {
-    assert(cep_store_valid(store) && !cep_cell_is_void(child));
+    if (!cep_store_valid(store) || cep_cell_is_void(child)) {
+        fprintf(stderr,
+            "DEBUG store_add_child invalid store=%p valid=%d child=%p child_type=%u\n",
+            (void*)store,
+            (int)cep_store_valid(store),
+            (void*)child,
+            child ? child->metacell.type : 0u);
+        fflush(stderr);
+        assert(cep_store_valid(store) && !cep_cell_is_void(child));
+    }
 
     if (!store->writable || cep_store_hierarchy_locked(store->owner))
         return NULL;
@@ -3545,6 +3558,10 @@ void cep_cell_finalize_hard(cepCell* cell) {
 
 
 #define CELL_FOLLOW_LINK_TO_STORE(cell, store, ...)                            \
+    if (cep_cell_is_void(cell)) {                                              \
+        fprintf(stderr, "DEBUG cell_follow void parent=%p\n", (void*)(cell)); \
+        fflush(stderr);                                                       \
+    }                                                                         \
     assert(!cep_cell_is_void(cell));                                           \
     cell = cep_link_pull(CEP_P(cell));                                         \
     cepStore* store = cell->store;                                             \
@@ -3555,7 +3572,8 @@ void cep_cell_finalize_hard(cepCell* cell) {
 /* Insert a child cell into a parent at a specific position or key. Follow 
    links to the owning store and call cep_store_add_child with the supplied 
    context. Let callers compose structures without handling storage-specific 
-   mechanics.
+   mechanics. Behaviour constraints described in
+   docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md.
 */
 cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);

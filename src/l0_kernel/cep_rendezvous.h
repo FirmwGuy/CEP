@@ -38,6 +38,16 @@ typedef struct {
     uint32_t     kill_wait;     /**< Beats to wait after a kill request before escalation. */
 } cepRvSpec;
 
+typedef struct {
+    const char*  state;         /**< Current rendezvous state text. */
+    const char*  prof;          /**< Profile identifier stored on the entry. */
+    const char*  on_miss;       /**< Miss policy recorded on the entry. */
+    const char*  kill_mode;     /**< Kill policy recorded on the entry. */
+    const char*  cas_hash;      /**< CAS hash text stored on the entry. */
+    uint64_t     grace_used;    /**< Number of grace extensions consumed. */
+    const cepCell* entry;       /**< Pointer to the underlying ledger cell (for inspection). */
+} cepRvEntrySnapshot;
+
 typedef enum {
     CEP_RV_SPAWN_STATUS_OK = 0,
     CEP_RV_SPAWN_STATUS_NO_SPEC,
@@ -49,6 +59,7 @@ typedef enum {
 } cepRvSpawnStatus;
 
 bool cep_rv_bootstrap(void);
+cepCell* cep_rv_ledger_root(void);
 bool cep_rv_prepare_spec(cepRvSpec* out_spec,
                          const cepCell* spec_node,
                          const cepDT* instance_dt,
@@ -63,6 +74,7 @@ bool cep_rv_report(cepID key, const cepCell* telemetry_node);
 bool cep_rv_capture_scan(void);
 bool cep_rv_commit_apply(void);
 bool cep_rv_signal_for_key(const cepDT* key, char* buffer, size_t capacity);
+bool cep_rv_entry_snapshot(cepID key, cepRvEntrySnapshot* snapshot);
 bool cep_rendezvous_register(cepEnzymeRegistry* registry);
 
 #ifdef __cplusplus

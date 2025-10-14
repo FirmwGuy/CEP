@@ -25,15 +25,6 @@ static cepDT rv_dt_from_text(const char* tag) {
     return dt;
 }
 
-static cepCell* rv_ledger(void) {
-    cepCell* data_root = cep_heartbeat_data_root();
-    munit_assert_not_null(data_root);
-    cepDT ledger_dt = rv_dt_from_text("rv");
-    cepCell* ledger = cep_cell_find_by_name(data_root, &ledger_dt);
-    munit_assert_not_null(ledger);
-    return ledger;
-}
-
 static const char* rv_entry_text(cepCell* entry, const char* tag_text) {
     cepDT field = rv_dt_from_text(tag_text);
     cepCell* node = cep_cell_find_by_name(entry, &field);
@@ -110,15 +101,24 @@ MunitResult test_rendezvous_defaults(const MunitParameter params[], void* fixtur
     if (!cep_id(defaults_key.domain)) {
         defaults_key.domain = CEP_ACRO("CEP");
     }
-    cepCell* entry = cep_cell_find_by_name(rv_ledger(), &defaults_key);
-    munit_assert_not_null(entry);
+    cepRvEntrySnapshot snapshot = {0};
+    if (!cep_rv_entry_snapshot(defaults_key.tag, &snapshot)) {
+        fputs("snapshot failed for defaults\n", stderr);
+        test_runtime_shutdown();
+        return MUNIT_FAIL;
+    }
 
-    munit_assert_string_equal(rv_entry_text(entry, "state"), "pending");
-    munit_assert_string_equal(rv_entry_text(entry, "prof"), "rv-fixed");
-    munit_assert_string_equal(rv_entry_text(entry, "on_miss"), "timeout");
-    munit_assert_string_equal(rv_entry_text(entry, "kill_mode"), "none");
-    munit_assert_string_equal(rv_entry_text(entry, "cas_hash"), "");
-    munit_assert_string_equal(rv_entry_text(entry, "grace_used"), "0");
+    munit_assert_not_null(snapshot.state);
+    munit_assert_string_equal(snapshot.state, "pending");
+    munit_assert_not_null(snapshot.prof);
+    munit_assert_string_equal(snapshot.prof, "rv-fixed");
+    munit_assert_not_null(snapshot.on_miss);
+    munit_assert_string_equal(snapshot.on_miss, "timeout");
+    munit_assert_not_null(snapshot.kill_mode);
+    munit_assert_string_equal(snapshot.kill_mode, "none");
+    munit_assert_not_null(snapshot.cas_hash);
+    munit_assert_string_equal(snapshot.cas_hash, "");
+    munit_assert_uint64(snapshot.grace_used, ==, 0u);
 
     test_runtime_shutdown();
     return MUNIT_OK;
@@ -142,12 +142,15 @@ MunitResult test_rendezvous_heartbeat_pipeline(const MunitParameter params[], vo
     if (!cep_id(key_dt.domain)) {
         key_dt.domain = CEP_ACRO("CEP");
     }
-    cepCell* entry = cep_cell_find_by_name(rv_ledger(), &key_dt);
-    munit_assert_not_null(entry);
-    munit_assert_string_equal(rv_entry_text(entry, "state"), "ready");
+    cepRvEntrySnapshot pipeline_snapshot = {0};
+    munit_assert_true(cep_rv_entry_snapshot(key_dt.tag, &pipeline_snapshot));
+    munit_assert_not_null(pipeline_snapshot.state);
+    munit_assert_string_equal(pipeline_snapshot.state, "ready");
 
     rv_step_beats(1u);
-    munit_assert_string_equal(rv_entry_text(entry, "state"), "ready");
+    munit_assert_true(cep_rv_entry_snapshot(key_dt.tag, &pipeline_snapshot));
+    munit_assert_not_null(pipeline_snapshot.state);
+    munit_assert_string_equal(pipeline_snapshot.state, "ready");
 
     cepDT telemetry_name = rv_dt_from_text("telemetry");
     cepDT telemetry_type = *CEP_DTAW("CEP", "dictionary");
@@ -195,9 +198,10 @@ MunitResult test_rendezvous_kill_and_timeout(const MunitParameter params[], void
     munit_assert_true(cep_rv_kill(key_dt.tag, CEP_WORD("kill"), 0u));
     rv_step_beats(1u);
 
-    cepCell* entry = cep_cell_find_by_name(rv_ledger(), &key_dt);
-    munit_assert_not_null(entry);
-    munit_assert_string_equal(rv_entry_text(entry, "state"), "killed");
+    cepRvEntrySnapshot kill_snapshot = {0};
+    munit_assert_true(cep_rv_entry_snapshot(key_dt.tag, &kill_snapshot));
+    munit_assert_not_null(kill_snapshot.state);
+    munit_assert_string_equal(kill_snapshot.state, "killed");
 
     cepCell* kill_event = rv_flow_event(&key_dt);
     munit_assert_not_null(kill_event);
@@ -216,9 +220,9 @@ MunitResult test_rendezvous_kill_and_timeout(const MunitParameter params[], void
 
     rv_step_beats(2u);
 
-    entry = cep_cell_find_by_name(rv_ledger(), &key_dt);
-    munit_assert_not_null(entry);
-    munit_assert_string_equal(rv_entry_text(entry, "state"), "timeout");
+    munit_assert_true(cep_rv_entry_snapshot(key_dt.tag, &kill_snapshot));
+    munit_assert_not_null(kill_snapshot.state);
+    munit_assert_string_equal(kill_snapshot.state, "timeout");
 
     cepCell* timeout_event = rv_flow_event(&key_dt);
     munit_assert_not_null(timeout_event);

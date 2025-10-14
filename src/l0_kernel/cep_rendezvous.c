@@ -249,13 +249,85 @@ static cepCell* rv_ensure_dictionary_child(cepCell* parent, const cepDT* name) {
     return cep_cell_ensure_dictionary_child(parent, name, CEP_STORAGE_RED_BLACK_T);
 }
 
-static cepCell* rv_ledger(void) {
+/** Leases (or creates) the `/data/rv` dictionary so rendezvous helpers can
+    graft entries safely. Keep the node grounded while callers perform
+    off-tree construction; see docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md. */
+static cepCell* rv_ledger_internal(void) {
     cep_cell_system_ensure();
     cepCell* data_root = cep_heartbeat_data_root();
     if (!data_root) {
         return NULL;
     }
     return rv_ensure_dictionary_child(data_root, dt_rv_root());
+}
+
+/** Expose the rendezvous ledger root so callers can locate `/data/rv` when
+    orchestrating floating builds. See docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md
+    for the ledger contract. */
+cepCell* cep_rv_ledger_root(void) {
+    static cepCell* cached = NULL;
+    if (cached && !cep_cell_is_deleted(cached)) {
+        return cached;
+    }
+    cached = rv_ledger_internal();
+    return cached;
+}
+
+/** Snapshot the public rendezvous ledger shape without mutating it so tests
+    and tooling can assert defaults. Mirrors the schema documented in
+    docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md. */
+bool cep_rv_entry_snapshot(cepID key, cepRvEntrySnapshot* snapshot) {
+    if (!snapshot) {
+        return false;
+    }
+
+    cepCell* ledger = rv_ledger_internal();
+    if (!ledger) {
+        memset(snapshot, 0, sizeof *snapshot);
+        return false;
+    }
+
+    cepDT lookup = cep_dt_make(CEP_ACRO("CEP"), key);
+    printf("DEBUG snapshot lookup domain=%llu tag=%llu\n",
+           (unsigned long long)cep_id(lookup.domain),
+           (unsigned long long)cep_id(lookup.tag));
+    fflush(stdout);
+    cepCell* entry = NULL;
+    for (cepCell* child = cep_cell_first(ledger); child; child = cep_cell_next(ledger, child)) {
+        const cepDT* name = cep_cell_get_name(child);
+        if (!name) {
+            continue;
+        }
+        /* Debugging print could be added here if needed */
+        printf("DEBUG snapshot child domain=%llu tag=%llu\n",
+               (unsigned long long)cep_id(name->domain),
+               (unsigned long long)cep_id(name->tag));
+        fflush(stdout);
+        if (cep_id(name->tag) == cep_id(lookup.tag) &&
+            cep_id(name->domain) == cep_id(lookup.domain)) {
+            entry = child;
+            break;
+        }
+    }
+
+    memset(snapshot, 0, sizeof *snapshot);
+    if (!entry) {
+        return false;
+    }
+
+    snapshot->entry = entry;
+    snapshot->state = rv_read_text(entry, dt_state());
+    snapshot->prof = rv_read_text(entry, dt_prof());
+    snapshot->on_miss = rv_read_text(entry, dt_on_miss());
+    snapshot->kill_mode = rv_read_text(entry, dt_kill_mode());
+    snapshot->cas_hash = rv_read_text(entry, dt_cas_hash());
+
+    uint64_t grace_used = 0u;
+    if (rv_read_uint64(entry, dt_grace_used(), &grace_used)) {
+        snapshot->grace_used = grace_used;
+    }
+
+    return true;
 }
 
 static bool rv_id_to_text(cepID id, char* buffer, size_t capacity) {
@@ -304,6 +376,10 @@ static bool rv_id_to_text(cepID id, char* buffer, size_t capacity) {
     return false;
 }
 
+/** Ensure `/data/rv/<key>` exists (promoting the node to a writable dictionary
+    when reused). Actual entry population must happen off-tree so the caller
+    can attach a fully-formed ledger branch, per the guidelines in
+    docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md. */
 static cepCell* rv_find_entry(cepCell* ledger, const cepDT* key_dt) {
     if (!ledger || !key_dt) {
         return NULL;
@@ -318,7 +394,21 @@ static cepCell* rv_find_entry(cepCell* ledger, const cepDT* key_dt) {
     }
 
     cepCell* entry = rv_ensure_dictionary_child(ledger, &lookup);
-    if (!entry) {
+    if (entry) {
+        printf("DEBUG rv_find_entry type=%u store=%p\n",
+               (unsigned)entry->metacell.type,
+               (void*)entry->store);
+        if (entry->store) {
+            printf("DEBUG rv_find_entry store dt domain=%llu tag=%llu writable=%u\n",
+                   (unsigned long long)cep_id(entry->store->domain),
+                   (unsigned long long)cep_id(entry->store->tag),
+                   (unsigned)entry->store->writable);
+        }
+        printf("DEBUG rv_find_entry is_void=%d\n", (int)cep_cell_is_void(entry));
+        fflush(stdout);
+    } else {
+        printf("DEBUG rv_find_entry entry null\n");
+        fflush(stdout);
         return NULL;
     }
 
@@ -327,6 +417,10 @@ static cepCell* rv_find_entry(cepCell* ledger, const cepDT* key_dt) {
     return entry;
 }
 
+/** Populate a freshly constructed rendezvous entry with the deterministic
+    defaults required by docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md.
+    Callers should invoke this on a floating dictionary before grafting the
+    entry into `/data/rv` so append-only guarantees are preserved. */
 static void rv_seed_defaults(cepCell* entry) {
     rv_store_number(entry, dt_epoch_k(),        0u);
     rv_store_number(entry, dt_input_fp(),       0u);
@@ -579,7 +673,7 @@ static const char* rv_default_or(const char* text, const char* fallback) {
     records a status code for diagnostics so callers understand why bootstrap
     failed without having to re-run setup logic. */
 bool cep_rv_bootstrap(void) {
-    cepCell* ledger = rv_ledger();
+    cepCell* ledger = rv_ledger_internal();
     rv_last_status = ledger ? CEP_RV_SPAWN_STATUS_OK : CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
     return ledger != NULL;
 }
@@ -594,14 +688,16 @@ cepRvSpawnStatus cep_rv_last_spawn_status(void) {
 /** Populate or update a rendezvous entry with the provided specification,
     recording deterministic defaults and telemetry so replay tooling observes a
     consistent ledger. The function seeds bookkeeping fields, normalises IDs,
-    and keeps optional strings in place even when the caller omits them. */
+    and keeps optional strings in place even when the caller omits them. Refer
+    to docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md for the ledger
+    contract. */
 bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
     if (!spec) {
         rv_last_status = CEP_RV_SPAWN_STATUS_NO_SPEC;
         return false;
     }
 
-    cepCell* ledger = rv_ledger();
+    cepCell* ledger = rv_ledger_internal();
     if (!ledger) {
         rv_last_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
         return false;
@@ -703,7 +799,8 @@ bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
 
 /** Produce the rendezvous signal path for the supplied ledger key so flows can
     subscribe to completion events deterministically. The helper formats
-    `CEP:sig_rv/<tag>` using the canonical domain/tag packing rules. */
+    `CEP:sig_rv/<tag>` using the canonical domain/tag packing rules described in
+    docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#signals. */
 bool cep_rv_signal_for_key(const cepDT* key, char* buffer, size_t capacity) {
     if (!key || !buffer || capacity == 0u) {
         return false;
@@ -721,13 +818,14 @@ bool cep_rv_signal_for_key(const cepDT* key, char* buffer, size_t capacity) {
 
 /** Delay the rendezvous deadline by the requested delta, returning true even
     when the entry does not exist so callers can issue best-effort reschedules
-    without additional lookup boilerplate. */
+    without additional lookup boilerplate. See
+    docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#rescheduling. */
 bool cep_rv_resched(cepID key, uint32_t delta) {
     if (delta == 0u) {
         return true;
     }
 
-    cepCell* ledger = rv_ledger();
+    cepCell* ledger = rv_ledger_internal();
     if (!ledger) {
         return false;
     }
@@ -753,9 +851,10 @@ bool cep_rv_resched(cepID key, uint32_t delta) {
 
 /** Register a kill request for the rendezvous identified by `key`, updating the
     ledger with the requested mode and wait beats so evaluation honours the
-    caller’s policy. */
+    caller’s policy. Reference:
+    docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#kill-and-grace. */
 bool cep_rv_kill(cepID key, cepID mode, uint32_t wait_beats) {
-    cepCell* ledger = rv_ledger();
+    cepCell* ledger = rv_ledger_internal();
     if (!ledger) {
         return false;
     }
@@ -775,9 +874,10 @@ bool cep_rv_kill(cepID key, cepID mode, uint32_t wait_beats) {
 
 /** Copy telemetry produced by the worker back into the rendezvous ledger,
     automatically marking the job as applied and arming the event flag so the
-    heartbeat mirrors the completion into the flow inbox on the next beat. */
+    heartbeat mirrors the completion into the flow inbox on the next beat.
+    Completion flow: docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#completion. */
 bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
-    cepCell* ledger = rv_ledger();
+    cepCell* ledger = rv_ledger_internal();
     if (!ledger) {
         return false;
     }
@@ -805,11 +905,12 @@ bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
 
 /** Scan rendezvous entries at the start of the capture phase, staging state
     transitions and event emissions so commit can apply them without violating
-    deterministic beat ordering. */
+    deterministic beat ordering. Capture/commit workflow:
+    docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#heartbeat. */
 bool cep_rv_capture_scan(void) {
     rv_queue_reset();
 
-    cepCell* ledger = rv_ledger();
+    cepCell* ledger = rv_ledger_internal();
     if (!ledger) {
         return true;
     }
@@ -843,7 +944,8 @@ bool cep_rv_capture_scan(void) {
 /** Apply staged rendezvous mutations during the resolve phase, updating ledger
     state and emitting flow events when completions, timeouts, or kills are
     observed. The function clears the event flag after mirroring so repeated
-    beats do not duplicate flow impulses. */
+    beats do not duplicate flow impulses. See the same heartbeat section in the
+    rendezvous topic doc for sequencing details. */
 bool cep_rv_commit_apply(void) {
     if (rv_updates.count == 0u) {
         return true;
@@ -907,7 +1009,8 @@ bool cep_rv_commit_apply(void) {
 /** Register rendezvous bootstrap and routing enzymes with the supplied
     registry, ensuring the ledger exists ahead of time. The current kernel
     build handles routing internally, so registration is a bootstrap no-op
-    beyond guaranteeing the ledger is ready. */
+    beyond guaranteeing the ledger is ready. Integration steps live in
+    docs/L0_KERNEL/L0-INTEGRATION-GUIDE.md#rendezvous. */
 bool cep_rendezvous_register(cepEnzymeRegistry* registry) {
     (void)registry;
     return cep_rv_bootstrap();
@@ -916,7 +1019,8 @@ bool cep_rendezvous_register(cepEnzymeRegistry* registry) {
 /** Merge rendezvous specification cells into a `cepRvSpec` structure, applying
     defaults when fields are missing and deriving helper values such as signal
     paths. The helper tolerates sparse dictionaries so flows can provide only
-    the knobs they care about. */
+    the knobs they care about. Guidelines live in
+    docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#spawning. */
 bool cep_rv_prepare_spec(cepRvSpec* out_spec,
                          const cepCell* spec_node,
                          const cepDT* instance_dt,

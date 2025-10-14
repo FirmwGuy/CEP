@@ -98,6 +98,13 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
 
 - How do I run tests?
   - `meson test -C build` runs the suite and prints results.
+- How do I run just one test (or pass parameters)?
+  - The harness uses [munit](https://nemequ.github.io/munit/) flags. Run the executable directly:
+    - Discover tests: `./build/cep_tests.exe --list`
+    - Run a single test: `./build/cep_tests.exe --single /CEP/rendezvous/defaults/after_reboot`
+    - Pass parameters: `./build/cep_tests.exe --param boot_cycle after_reboot /CEP/rendezvous/pipeline`
+    - Fail fast / show stderr: `./build/cep_tests.exe --fatal-failures --show-stderr`
+    - Set a deterministic seed: `./build/cep_tests.exe --seed 0x1234abcd`
 
 ## Build Variants and Options
 
