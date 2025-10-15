@@ -5,6 +5,7 @@
 
 
 #include "cep_cell.h"
+#include "cep_heartbeat.h"
 
 #include <stdarg.h>
 #include <stdlib.h>
@@ -91,6 +92,8 @@ static inline cepCell* store_next_child(const cepStore* store, cepCell* child);
 static inline cepCell* store_first_child_internal(const cepStore* store);
 static inline cepCell* store_next_child_internal(const cepStore* store, cepCell* child);
 static inline bool store_traverse_internal(cepStore* store, cepTraverse func, void* context, cepEntry* entry);
+static inline void cep_cell_apply_parent_veil(cepCell* child, const cepCell* parent);
+static const cepCell* cep_cell_top_veiled_ancestor(const cepCell* cell);
 
 static void cep_enzyme_binding_list_destroy(cepEnzymeBinding* bindings) {
     while (bindings) {
@@ -482,6 +485,8 @@ CEP_DEFINE_STATIC_DT(dt_parents_name,    CEP_ACRO("CEP"), CEP_WORD("parents"));
 CEP_DEFINE_STATIC_DT(dt_parent_tag,      CEP_ACRO("CEP"), CEP_WORD("parent"));
 CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
 CEP_DEFINE_STATIC_DT(dt_list_type,       CEP_ACRO("CEP"), CEP_WORD("list"));
+CEP_DEFINE_STATIC_DT(dt_txn_name,        CEP_ACRO("CEP"), CEP_WORD("txn"));
+CEP_DEFINE_STATIC_DT(dt_txn_state_name,  CEP_ACRO("CEP"), CEP_WORD("state"));
 
 
 
@@ -1454,6 +1459,19 @@ void cep_link_set(cepCell* link, cepCell* target)
         assert(!cep_cell_is_link(resolved));
         assert(resolved != link);
         assert(cep_cell_parent(resolved));   // Links to root are not allowed.
+
+        const cepCell* target_veil_root = cep_cell_top_veiled_ancestor(resolved);
+        if (target_veil_root) {
+            if (target_veil_root == resolved) {
+                assert(!"Cannot link to a veiled root before it is unveiled");
+                return;
+            }
+            const cepCell* link_veil_root = cep_cell_top_veiled_ancestor(link);
+            if (link_veil_root != target_veil_root) {
+                assert(!"Links to veiled subtrees must remain inside the veiled ancestor");
+                return;
+            }
+        }
     }
 
     cepCell* current = link->link;
@@ -2069,6 +2087,7 @@ static cepCell* cep_store_replace_child(cepStore* store, cepCell* existing, cepC
     store_check_auto_id(store, existing);
 
     existing->parent = store;
+    cep_cell_apply_parent_veil(existing, store->owner);
     store->modified = timestamp;
 
     return existing;
@@ -2206,6 +2225,7 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
     CEP_0(child);      // This avoids deleting children during move operations.
 
     cell->parent = store;
+    cep_cell_apply_parent_veil(cell, store->owner);
     store->chdCount++;
     store->totCount++;
 
@@ -2264,6 +2284,7 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
     CEP_0(child);
 
     cell->parent = store;
+    cep_cell_apply_parent_veil(cell, store->owner);
     store->chdCount++;
     store->totCount++;
 
@@ -2611,6 +2632,26 @@ static inline bool store_traverse_internal(cepStore* store, cepTraverse func, vo
 
 
 typedef struct {
+    cepTraverse func;
+    void*       context;
+    cepEntry*   userEntry;
+} cepTraverseFilterCtx;
+
+static bool cep_traverse_visible_filter(cepEntry* entry, void* context) {
+    cepTraverseFilterCtx* ctx = context;
+    if (!ctx || !entry)
+        return true;
+
+    if (!entry->cell || !cep_cell_visible_latest(entry->cell, CEP_VIS_DEFAULT))
+        return true;
+
+    *ctx->userEntry = *entry;
+    return ctx->func(ctx->userEntry, ctx->context);
+}
+
+
+
+typedef struct {
     cepTraverse     func;
     void*           context;
     cepOpCount    timestamp;
@@ -2727,6 +2768,115 @@ static inline bool cep_cell_alive_at(const cepCell* cell, cepOpCount timestamp) 
     return true;
 }
 
+bool cep_cell_visible_latest(const cepCell* cell, cepVisibilityMask mask) {
+    return cep_cell_visible_past(cell, 0, mask);
+}
+
+bool cep_cell_visible_past(const cepCell* cell, cepOpCount timestamp, cepVisibilityMask mask) {
+    if (!cell)
+        return false;
+
+    bool alive = cep_cell_alive_at(cell, timestamp);
+    if (!alive && !(mask & CEP_VIS_INCLUDE_DEAD))
+        return false;
+
+    if (cep_cell_is_veiled(cell) && !(mask & CEP_VIS_INCLUDE_VEILED))
+        return false;
+
+    return alive || (mask & CEP_VIS_INCLUDE_DEAD);
+}
+
+static void cep_cell_mark_subtree_veiled(cepCell* cell) {
+    if (!cell)
+        return;
+
+    cell->metacell.veiled = 1u;
+
+    if (cep_cell_is_normal(cell)) {
+        cell->created = 0;
+
+        if (cell->store) {
+            for (cepCell* child = store_first_child(cell->store); child; child = store_next_child(cell->store, child)) {
+                cep_cell_mark_subtree_veiled(child);
+            }
+        }
+    }
+}
+
+static inline void cep_cell_apply_parent_veil(cepCell* child, const cepCell* parent) {
+    if (!child || !parent)
+        return;
+
+    if (!cep_cell_is_veiled(parent))
+        return;
+
+    cep_cell_mark_subtree_veiled(child);
+}
+
+static void cep_cell_unveil_subtree(cepCell* cell, cepOpCount stamp) {
+    if (!cell)
+        return;
+
+    cell->metacell.veiled = 0u;
+
+    if (cep_cell_is_normal(cell)) {
+        if (!cell->created)
+            cell->created = stamp;
+
+        if (cell->store) {
+            for (cepCell* child = store_first_child(cell->store); child; child = store_next_child(cell->store, child)) {
+                cep_cell_unveil_subtree(child, stamp);
+            }
+        }
+    }
+}
+
+static cepCell* cep_txn_ensure_bucket(cepCell* root) {
+    if (!root)
+        return NULL;
+
+    cepCell* meta = cep_cell_find_by_name(root, dt_meta_name());
+    if (!meta) {
+        cepDT meta_name = *dt_meta_name();
+        cepDT dict_type = *dt_dictionary_type();
+        meta = cep_cell_add_dictionary(root, &meta_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        if (!meta)
+            return NULL;
+    }
+
+    cepCell* bucket = cep_cell_find_by_name(meta, dt_txn_name());
+    if (!bucket) {
+        cepDT txn_name = *dt_txn_name();
+        cepDT dict_type = *dt_dictionary_type();
+        bucket = cep_cell_add_dictionary(meta, &txn_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        if (!bucket)
+            return NULL;
+    }
+
+    return bucket;
+}
+
+static bool cep_txn_update_state(cepCell* root, const char* state) {
+    cepCell* bucket = cep_txn_ensure_bucket(root);
+    if (!bucket || !state)
+        return false;
+
+    cepDT state_field = *dt_txn_state_name();
+    return cep_cell_put_text(bucket, &state_field, state);
+}
+
+static const cepCell* cep_cell_top_veiled_ancestor(const cepCell* cell) {
+    const cepCell* top = NULL;
+    for (const cepCell* current = cell; current; current = cep_cell_parent(current)) {
+        if (cep_cell_is_veiled(current)) {
+            top = current;
+        } else if (top) {
+            break;
+        }
+    }
+    return top;
+}
+
 static inline bool cep_entry_has_timestamp(const cepEntry* entry, cepOpCount timestamp) {
     assert(entry);
 
@@ -2749,7 +2899,7 @@ static inline bool cep_entry_has_timestamp(const cepEntry* entry, cepOpCount tim
 }
 
 static inline bool cep_cell_matches_snapshot(const cepCell* cell, cepOpCount snapshot) {
-    return cep_cell_alive_at(cell, snapshot);
+    return cep_cell_visible_past(cell, snapshot, CEP_VIS_DEFAULT);
 }
 
 static inline cepCell* store_find_child_by_name_past(const cepStore* store, const cepDT* name, cepOpCount snapshot) {
@@ -2760,9 +2910,6 @@ static inline cepCell* store_find_child_by_name_past(const cepStore* store, cons
     if (!store->chdCount)
         return NULL;
 
-    if (!snapshot)
-        return store_find_child_by_name(store, name);
-
     cepCell* cell = store_find_child_by_name(store, name);
     if (cell && cep_cell_matches_snapshot(cell, snapshot))
         return cell;
@@ -2772,9 +2919,6 @@ static inline cepCell* store_find_child_by_name_past(const cepStore* store, cons
 
 static inline cepCell* store_find_child_by_position_past(const cepStore* store, size_t position, cepOpCount snapshot) {
     assert(cep_store_valid(store));
-
-    if (!snapshot)
-        return store_find_child_by_position(store, position);
 
     if (!store->chdCount)
         return NULL;
@@ -2794,8 +2938,20 @@ static inline cepCell* store_find_child_by_position_past(const cepStore* store, 
 static inline cepCell* store_find_next_child_by_name_past(const cepStore* store, cepDT* name, uintptr_t* childIdx, cepOpCount snapshot) {
     assert(cep_store_valid(store) && cep_dt_is_valid(name));
 
-    if (!snapshot)
-        return store_find_next_child_by_name(store, name, childIdx);
+    if (!store->chdCount)
+        return NULL;
+
+    if (!childIdx) {
+        cepDT lookup = cep_dt_clean(name);
+        for (cepCell* child = store_first_child(store); child; child = store_next_child(store, child)) {
+            const cepDT* child_name = cep_cell_get_name(child);
+            if (cep_dt_compare(child_name, &lookup) != 0)
+                continue;
+            if (cep_cell_matches_snapshot(child, snapshot))
+                return child;
+        }
+        return NULL;
+    }
 
     cepCell* cell;
     while ((cell = store_find_next_child_by_name(store, name, childIdx))) {
@@ -3580,7 +3736,7 @@ cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
     cepCell* inserted = cep_store_add_child(store, context, child);
     if (inserted && !inserted->created) {
         cepCell* parentCell = store->owner;
-        if (parentCell && !cep_cell_is_floating(parentCell))
+        if (parentCell && !cep_cell_is_floating(parentCell) && !cep_cell_is_veiled(parentCell))
             inserted->created = store->modified;
     }
     return inserted;
@@ -3596,7 +3752,7 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child) {
     cepCell* inserted = cep_store_append_child(store, prepend, child);
     if (inserted && !inserted->created) {
         cepCell* parentCell = store->owner;
-        if (parentCell && !cep_cell_is_floating(parentCell))
+        if (parentCell && !cep_cell_is_floating(parentCell) && !cep_cell_is_veiled(parentCell))
             inserted->created = store->modified;
     }
     return inserted;
@@ -4035,11 +4191,7 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
 */
 cepCell* cep_cell_first_past(const cepCell* cell, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    cepCell* child = store_first_child(store);
-    if (!snapshot)
-        return child;
-
-    for (; child; child = store_next_child(store, child)) {
+    for (cepCell* child = store_first_child(store); child; child = store_next_child(store, child)) {
         if (cep_cell_matches_snapshot(child, snapshot))
             return child;
     }
@@ -4054,11 +4206,7 @@ cepCell* cep_cell_first_past(const cepCell* cell, cepOpCount snapshot) {
 */
 cepCell* cep_cell_last_past(const cepCell* cell, cepOpCount snapshot) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    cepCell* child = store_last_child(store);
-    if (!snapshot)
-        return child;
-
-    for (; child; child = store_prev_child(store, child)) {
+    for (cepCell* child = store_last_child(store); child; child = store_prev_child(store, child)) {
         if (cep_cell_matches_snapshot(child, snapshot))
             return child;
     }
@@ -4157,6 +4305,8 @@ bool cep_cell_indexof(const cepCell* parent, const cepCell* child, size_t* posit
 
     size_t index = 0;
     for (cepCell* current = store_first_child(store); current; current = store_next_child(store, current)) {
+        if (!cep_cell_visible_latest(current, CEP_VIS_DEFAULT))
+            continue;
         if (current == resolvedChild) {
             CEP_PTR_SEC_SET(position, index);
             return true;
@@ -4165,6 +4315,111 @@ bool cep_cell_indexof(const cepCell* parent, const cepCell* child, size_t* posit
     }
 
     return false;
+}
+
+bool cep_txn_begin(cepCell* parent, const cepDT* name, const cepDT* type, cepTxn* txn) {
+    if (!parent || !name || !cep_dt_is_valid(name) || !txn)
+        return false;
+
+    CEP_0(txn);
+
+    cepCell* resolved = cep_link_pull(parent);
+    if (!resolved || !cep_cell_is_normal(resolved))
+        return false;
+
+    cepStore* store = NULL;
+    if (!cep_cell_require_store(&resolved, &store))
+        return false;
+
+    cepDT name_copy = cep_dt_clean(name);
+    if (store_find_child_by_name(store, &name_copy))
+        return false;
+
+    cepDT type_copy = type ? cep_dt_clean(type) : *dt_dictionary_type();
+
+    bool restore_writable = false;
+    unsigned writable_before = 0u;
+    if (store && !store->writable) {
+        writable_before = store->writable;
+        store->writable = 1u;
+        restore_writable = true;
+    }
+
+    cepCell* root = cep_cell_add_dictionary(resolved, &name_copy, 0, &type_copy, CEP_STORAGE_RED_BLACK_T);
+
+    if (restore_writable)
+        store->writable = writable_before;
+
+    if (!root)
+        return false;
+
+    cep_cell_mark_subtree_veiled(root);
+    cep_txn_update_state(root, "building");
+
+    txn->root = root;
+    txn->parent = resolved;
+    txn->begin_beat = cep_beat_index();
+    return true;
+}
+
+bool cep_txn_mark_ready(cepTxn* txn) {
+    if (!txn || !txn->root)
+        return false;
+
+    return cep_txn_update_state(txn->root, "ready");
+}
+
+bool cep_txn_commit(cepTxn* txn) {
+    if (!txn || !txn->root)
+        return false;
+
+    cepCell* root = cep_link_pull(txn->root);
+    if (!root)
+        return false;
+
+    cepLockToken lock = {0};
+    bool locked = false;
+    if (cep_cell_is_normal(root) && root->store) {
+        locked = cep_store_lock(root, &lock);
+        if (!locked)
+            return false;
+    }
+
+    cepOpCount stamp = cep_cell_timestamp_next();
+    cep_cell_unveil_subtree(root, stamp);
+
+    if (locked)
+        cep_store_unlock(root, &lock);
+
+    cep_txn_update_state(root, "committed");
+
+    char note[128];
+    snprintf(note, sizeof note, "txn commit: root=%p beat=%" PRIu64, (void*)root, (unsigned long long)txn->begin_beat);
+    cep_heartbeat_stage_note(note);
+
+    txn->root = NULL;
+    txn->parent = NULL;
+    txn->begin_beat = 0;
+    return true;
+}
+
+void cep_txn_abort(cepTxn* txn) {
+    if (!txn || !txn->root)
+        return;
+
+    cepCell* root = cep_link_pull(txn->root);
+    if (!root)
+        return;
+
+    cep_txn_update_state(root, "aborted");
+    char note[128];
+    snprintf(note, sizeof note, "txn abort: root=%p beat=%" PRIu64, (void*)root, (unsigned long long)txn->begin_beat);
+    cep_heartbeat_stage_note(note);
+    cep_cell_remove_hard(root, NULL);
+
+    txn->root = NULL;
+    txn->parent = NULL;
+    txn->begin_beat = 0;
 }
 
 
@@ -4224,8 +4479,9 @@ cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, c
 
 
 /* Return the previous sibling that exists at a snapshot. Walk backward from 
-   the given child, skipping entries that are hidden at the requested timestamp. 
-   Support reverse iteration across siblings under historical views.
+   the given child, skipping entries that are invisible (veiled or out of
+   scope) at the requested timestamp. Support reverse iteration across siblings
+   under historical views.
 */
 cepCell* cep_cell_prev_past(const cepCell* cell, cepCell* child, cepOpCount snapshot) {
     if (!cell)
@@ -4233,9 +4489,6 @@ cepCell* cep_cell_prev_past(const cepCell* cell, cepCell* child, cepOpCount snap
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
 
     cepCell* prev = store_prev_child(store, child);
-    if (!snapshot)
-        return prev;
-
     while (prev && !cep_cell_matches_snapshot(prev, snapshot))
         prev = store_prev_child(store, prev);
 
@@ -4253,9 +4506,6 @@ cepCell* cep_cell_next_past(const cepCell* cell, cepCell* child, cepOpCount snap
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
 
     cepCell* next = store_next_child(store, child);
-    if (!snapshot)
-        return next;
-
     while (next && !cep_cell_matches_snapshot(next, snapshot))
         next = store_next_child(store, next);
 
@@ -4364,7 +4614,22 @@ cepCell* cep_cell_find_next_by_path_past(const cepCell* start, cepPath* path, ui
     depth. Returning false from the callback aborts the traversal early. */
 bool cep_cell_traverse(cepCell* cell, cepTraverse func, void* context, cepEntry* entry) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    return store_traverse(store, func, context, entry);
+    if (!func)
+        return false;
+
+    cepEntry localEntry;
+    if (!entry) {
+        entry = &localEntry;
+        CEP_0(entry);
+    }
+
+    cepTraverseFilterCtx ctx = {
+        .func = func,
+        .context = context,
+        .userEntry = entry,
+    };
+
+    return store_traverse(store, cep_traverse_visible_filter, &ctx, NULL);
 }
 
 /* Visit direct children using the storage's native layout. Tree stores surface
@@ -4373,7 +4638,22 @@ bool cep_cell_traverse(cepCell* cell, cepTraverse func, void* context, cepEntry*
    both orders coincide. */
 bool cep_cell_traverse_internal(cepCell* cell, cepTraverse func, void* context, cepEntry* entry) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, true);
-    return store_traverse_internal(store, func, context, entry);
+    if (!func)
+        return false;
+
+    cepEntry localEntry;
+    if (!entry) {
+        entry = &localEntry;
+        CEP_0(entry);
+    }
+
+    cepTraverseFilterCtx ctx = {
+        .func = func,
+        .context = context,
+        .userEntry = entry,
+    };
+
+    return store_traverse_internal(store, cep_traverse_visible_filter, &ctx, NULL);
 }
 
 

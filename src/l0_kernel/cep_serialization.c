@@ -324,7 +324,7 @@ static bool cep_serialization_emit_manifest(cepSerializationEmitter* emitter,
     *p++ = (uint8_t)canonical->metacell.type;
 
     uint8_t flags = 0;
-    if (canonical->metacell.hidden)
+    if (canonical->metacell.veiled)
         flags |= 0x01u;
     flags |= (uint8_t)((canonical->metacell.shadowing & 0x03u) << 1);
     if (cep_cell_is_normal(canonical) && canonical->data)
@@ -1147,7 +1147,7 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
     if ((uint8_t)current->metacell.type != stage->cell_type)
         return false;
 
-    current->metacell.hidden = (stage->manifest_flags & 0x01u) ? 1u : 0u;
+    current->metacell.veiled = (stage->manifest_flags & 0x01u) ? 1u : 0u;
 
     if (stage->data.needed) {
         if (!stage->data.complete)

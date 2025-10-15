@@ -470,6 +470,42 @@ cep_proxy_initialize_handle(&fileCell, CEP_DTWA("io","file"), /*handle*/ resourc
 
 The **proxy** keeps your adapter logic isolated. CEP takes care of **shadowing** and **lifecycle** (retain/release around handle/stream pointers) and will serialize a **LIBRARY** chunk with your snapshot bytes for transport   .
 
+### D) Stage a veiled transaction in place
+
+Sometimes you want a finished subtree to appear all at once even though it needs several steps to build. Veiled transactions let you assemble that branch under its final parent while keeping it invisible until you commit.
+
+```c
+cepTxn txn;
+cepDT name = *CEP_DTAW("CEP", "report");
+cepDT kind = *CEP_DTAW("CEP", "dictionary");
+if (!cep_txn_begin(parent, &name, &kind, &txn)) {
+    return CEP_ENZYME_RETRY; // parent missing or name collision
+}
+
+// Populate the veiled subtree.
+cepDT title = *CEP_DTAW("CEP", "title");
+cep_cell_put_text(txn.root, &title, "Q4 revenue snapshot");
+
+if (!validate(txn.root)) {
+    cep_txn_abort(&txn);
+    return CEP_ENZYME_SUCCESS;  // no leak, nothing became visible
+}
+
+cep_txn_mark_ready(&txn);  // optional breadcrumb for observability
+if (!cep_txn_commit(&txn)) {
+    return CEP_ENZYME_RETRY;   // lock contention or heartbeat shutdown
+}
+```
+
+- `cep_txn_begin` fails fast if the parent cannot host the new child (missing store, name collision, or out-of-memory). The helper marks the new subtree veiled and writes `meta/txn/state="building"` so tooling can spot it.
+- While the transaction is veiled the usual readers and resolvers ignore it; use `cep_cell_visible_latest(txn.root, CEP_VIS_INCLUDE_VEILED)` if you need to inspect the staged work.
+- `cep_txn_commit` locks the subtree briefly, stamps zeroed timestamps with the current beat, clears the veil, flips the metadata to `committed`, and records a heartbeat stage note. `cep_txn_abort` tears the branch down without leaking nodes or backlinks.
+
+**Q&A**
+- **What about links or enzymes inside the staged branch?** They are safe to register while veiled. Link targets cannot point outside the veiled ancestor, and enzyme bindings stay dormant until the branch is committed.
+- **Can I reuse the same `cepTxn` after commit?** No. Each commit or abort clears the struct; start a fresh transaction for the next staging cycle.
+- **How do I surface a partially built subtree for debugging?** Call the usual find/traverse helpers with `CEP_VIS_INCLUDE_VEILED`; everything else about the API is unchanged.
+
 ---
 
 ## 7) API cheatsheet (selected)

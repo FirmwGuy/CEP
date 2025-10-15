@@ -140,3 +140,4 @@ Imagine putting a sticky note on a folder that says â€œrun these helpers here.â€
 - **Segment-scoped multi-glob.** The `CEP_ID_GLOB_MULTI` sentinel still matters: it lets an impulse cover any child under a structural branch or any payload descriptor at the leaf without enumerating every value.
 - **Wildcard registry restored.** Alongside the sorted indexes, the dispatcher now maintains a wildcard head index so multi-segment `CEP_ID_GLOB_MULTI` queries trigger without enumerating every branch; literal paths still ride the original sorted arrays.
 - **Policy backlog.** Only TARGET_THEN_SIGNAL dispatch ships; alternate combine modes (OR, TARGET_ONLY, SIGNAL_ONLY, STRICT_BOTH) are staged behind the TODO in `src/l0_kernel/cep_enzyme.c`.
+- **Veiled staging is silent.** Bindings that live under a veiled subtree (including the root created by `cep_txn_begin`) stay invisible to the resolver until the transaction commits and the veil lifts.

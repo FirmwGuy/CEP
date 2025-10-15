@@ -55,6 +55,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `list` | core | store tag for linked-list containers. |
 | `log` | core | log entry tag attached to beat records. |
 | `meta` | core | metadata dictionary attached to runtime cells. |
+| `txn` | core | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
 | `original` | core | dictionary storing pre-canonical text submitted alongside helper-built intents. |
 | `namepool` | core | identifier intern table. |
 | `outcome` | core | execution result record written after enzymes run. |

@@ -331,6 +331,10 @@ static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target, s
         return NULL;
     }
 
+    if (!cep_cell_visible_latest(target, CEP_VIS_DEFAULT)) {
+        return NULL;
+    }
+
     cepEffectiveBinding* active = NULL;
     size_t active_count = 0u;
     size_t active_capacity = 0u;

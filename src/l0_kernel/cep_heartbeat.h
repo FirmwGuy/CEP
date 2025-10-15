@@ -161,6 +161,13 @@ bool  cep_heartbeat_begin(cepBeatNumber beat);
 bool  cep_heartbeat_resolve_agenda(void);
 bool  cep_heartbeat_execute_agenda(void);
 bool  cep_heartbeat_stage_commit(void);
+/**
+ * Emit a short message into the current beat's stage ledger so other layers
+ * can trace significant events (such as veiled transaction commits) alongside
+ * the heartbeat timeline. Returns true when the note was recorded or when
+ * filesystem capture is disabled.
+ */
+bool  cep_heartbeat_stage_note(const char* message);
 bool  cep_heartbeat_step(void);
 bool  cep_heartbeat_emit_shutdown(void);
 void  cep_heartbeat_shutdown(void);

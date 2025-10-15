@@ -814,6 +814,17 @@ static bool cep_heartbeat_record_stage_entry(cepBeatNumber beat, const char* mes
     return cep_heartbeat_append_list_message(stage, message);
 }
 
+bool cep_heartbeat_stage_note(const char* message) {
+    if (!message)
+        return false;
+
+    if (!cep_heartbeat_policy_use_dirs())
+        return true;
+
+    cepBeatNumber beat = (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current;
+    return cep_heartbeat_record_stage_entry(beat, message);
+}
+
 
 static bool cep_heartbeat_scratch_ensure_ordered(cepHeartbeatScratch* scratch, size_t required) {
     if (!scratch) {

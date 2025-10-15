@@ -123,7 +123,7 @@ typedef struct {
     struct {
       struct {
         cepID   type:       2,    /**< Type of cell (dictionary, link, etc). */
-                hidden:     1,    /**< Cell won't appear on listings (it can only be accessed directly). */
+                veiled:     1,    /**< Cell is staged in-tree but invisible to default lookups until unveiled. */
                 shadowing:  2,    /**< If cell has shadowing cells (links pointing to it). */
                 targetDead: 1,    /**< Set (1) if this cell is a link and the target died. */
 
@@ -781,6 +781,49 @@ void cep_store_unlock(cepCell* cell, cepLockToken* token);
 bool cep_data_lock(cepCell* cell, cepLockToken* token);
 void cep_data_unlock(cepCell* cell, cepLockToken* token);
 
+/**
+ * Transactions keep track of an in-situ veiled subtree so callers can stage
+ * work directly beneath its final parent without exposing intermediate state.
+ * The record remembers the provisional root, its parent, and the beat that
+ * started the build so commit or abort flows can react accordingly.
+ */
+typedef struct {
+    cepCell*    root;
+    cepCell*    parent;
+    cepOpCount  begin_beat;
+} cepTxn;
+
+/**
+ * Begin a veiled transaction branch under @p parent so the caller can populate
+ * a subtree in place without surfacing it. The helper creates a fresh
+ * dictionary node named @p name (typed with @p type when provided), marks it
+ * veiled, and fills @p txn with the bookkeeping needed for later commit or
+ * abort.
+ */
+bool cep_txn_begin(cepCell* parent, const cepDT* name, const cepDT* type, cepTxn* txn);
+
+/**
+ * Mark a staged transaction as ready for publication. This updates the
+ * metadata under `meta/txn/state` so tooling and observability can see that
+ * the subtree passed validation and is waiting for commit.
+ */
+bool cep_txn_mark_ready(cepTxn* txn);
+
+/**
+ * Commit a previously staged transaction: the subtree loses its veil, any
+ * zeroed timestamps are stamped with the current beat, and metadata records
+ * the transition to `committed`. Returns false if the transaction was already
+ * cleared or the subtree could not be published.
+ */
+bool cep_txn_commit(cepTxn* txn);
+
+/**
+ * Abort a transaction and tear down the veiled subtree. The helper removes the
+ * provisional root from its parent, releases resources, and clears the
+ * transaction record so callers cannot reuse it accidentally.
+ */
+void cep_txn_abort(cepTxn* txn);
+
 typedef struct _cepStoreNode  cepStoreNode;
 
 struct _cepStoreNode {
@@ -963,6 +1006,7 @@ static inline void  cep_cell_set_name(cepCell* cell, cepDT* name)     {
 #define cep_cell_is_proxy(r)      ((r)->metacell.type == CEP_TYPE_PROXY)
 #define cep_cell_is_link(r)       ((r)->metacell.type == CEP_TYPE_LINK)
 
+#define cep_cell_is_veiled(r)     ((r)->metacell.veiled != 0u)
 #define cep_cell_is_shadowed(r)   ((r)->metacell.shadowing)
 /* #define cep_cell_is_private(r)    ((r)->metacell.priv) */  /* Commented out: 'priv' bitfield is not defined in cepMetacell; avoid invalid access. */
 /* #define cep_cell_is_system(r)     ((r)->metacell.system) */ /* Commented out: 'system' bitfield is not defined in cepMetacell; avoid invalid access. */
@@ -1103,6 +1147,15 @@ static inline const cepDT* cep_cell_get_name(const cepCell* cell) {
     ((cepCell*)cell)->metacell._reserved = 0;
     return &cell->metacell.dt;
 }
+
+typedef enum {
+    CEP_VIS_DEFAULT        = 0u,
+    CEP_VIS_INCLUDE_DEAD   = 1u << 0,
+    CEP_VIS_INCLUDE_VEILED = 1u << 1,
+} cepVisibilityMask;
+
+bool cep_cell_visible_latest(const cepCell* cell, cepVisibilityMask mask);
+bool cep_cell_visible_past(const cepCell* cell, cepOpCount timestamp, cepVisibilityMask mask);
 
 
 static inline void cep_cell_relink_storage(cepCell* cell)     {assert(cep_cell_has_store(cell));  cell->store->owner = cell;}     // Re-links cell with its own children storage.

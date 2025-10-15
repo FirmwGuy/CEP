@@ -237,6 +237,23 @@ Every intent hits the mailroom before layer ingest enzymes run. `cep_mailroom_bo
 
 ---
 
+## Veiled transactions & visibility masks
+
+Veiled subtrees let you build a complex branch exactly where it belongs while keeping curious readers unaware that anything is happening. You can still peek behind the curtain when you need to, but the default view stays calm until you decide to unveil the work.
+
+### Technical details
+- Each cell now carries a `veiled` flag (previously the “hidden” bit). Default helpers such as `cep_cell_first`, `cep_cell_find_by_name`, and the shallow/deep traversal APIs consult this flag through `cepVisibilityMask`, so callers only see unveiled data unless they explicitly request otherwise.
+- `cep_cell_visible_latest/past` expose the visibility mask so diagnostics and tooling can opt into veiled nodes without rewriting traversal code. `CEP_VIS_INCLUDE_VEILED` lifts the curtain; `CEP_VIS_INCLUDE_DEAD` replays tombstoned nodes alongside the usual history filters.
+- The transaction helpers (`cep_txn_begin`, `cep_txn_mark_ready`, `cep_txn_commit`, `cep_txn_abort`) stage a new dictionary child directly under the final parent, mark the entire subtree veiled, and emit `meta/txn/state` breadcrumbs (`building → ready → committed/aborted`). Commit walks the subtree once, stamps missing timestamps, lifts the veil, and records a heartbeat stage note so observers can match the event to a beat.
+- Link plumbing enforces the boundary: top-level veiled roots cannot be linked while veiled, and veiled descendants only accept links from inside the same veiled ancestor. Store insertion paths inherit the veil automatically so any child attached during the transaction stays hidden until commit.
+
+### Q&A
+- **How do I inspect a staged branch while debugging?** Call `cep_cell_visible_latest(root, CEP_VIS_INCLUDE_VEILED)` or pass the same mask into the `_past` variants; the rest of the API stays unchanged.
+- **What happens if commit fails?** `cep_txn_commit` returns `false` and leaves the subtree veiled; you can retry after fixing the underlying issue or call `cep_txn_abort` to tear it down.
+- **Can I link to a veiled node from elsewhere?** No. Veiled parents reject all links until they are unveiled, and children only accept intra-subtree links, keeping accidental early exposure at bay.
+
+---
+
 ## Operational notes & guardrails
 
 * **Locking:** coarse flags exist for child stores and data payloads (`cep_store_lock/cep_data_lock`) and are checked up the ancestry to prevent unsafe mutations. These are **in‑tree logical locks**, not OS‑level primitives; coordinate your own threading policy. 
