@@ -8,8 +8,6 @@
 #include "cep_enzyme.h"
 #include "cep_namepool.h"
 
-#include <stdio.h>
-
 #include <inttypes.h>
 #include <string.h>
 
@@ -58,7 +56,6 @@ static void rv_configure_runtime(void) {
     if (cep_cell_system_initialized()) {
         test_runtime_shutdown();
     }
-    printf("rv_configure_runtime: begin\n"); fflush(stdout);
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
         .ensure_directories = true,
@@ -72,21 +69,20 @@ static void rv_configure_runtime(void) {
     munit_assert_not_null(registry);
     munit_assert_true(cep_rendezvous_register(registry));
     munit_assert_true(cep_heartbeat_begin(policy.start_at));
-    cepID debug_prof = cep_namepool_intern("rv-fixed", strlen("rv-fixed"));
-    printf("bootstrap intern rv-fixed -> %llu\n", (unsigned long long)debug_prof); fflush(stdout);
-    printf("rv_configure_runtime: done\n"); fflush(stdout);
+    bool ready = false;
+    for (unsigned i = 0; i < 4u && !ready; ++i) {
+        munit_assert_true(cep_heartbeat_step());
+        ready = cep_rv_bootstrap();
+    }
+    munit_assert_true(ready);
 }
 
 static void rv_spawn_basic(const char* key_text, uint64_t due) {
-    printf("rv_spawn_basic: key=%s due=%llu\n", key_text, (unsigned long long)due); fflush(stdout);
     cepRvSpec spec = {0};
     spec.key_dt = rv_dt_from_text(key_text);
-    printf("key tag value=%llu\n", (unsigned long long)spec.key_dt.tag); fflush(stdout);
     spec.prof = rv_dt_from_text("rv-fixed").tag;
-    printf("prof tag value=%llu\n", (unsigned long long)spec.prof); fflush(stdout);
     spec.due = due;
     munit_assert_true(cep_rv_spawn(&spec, spec.key_dt.tag));
-    printf("rv_spawn_basic: spawn complete\n"); fflush(stdout);
 }
 
 MunitResult test_rendezvous_defaults(const MunitParameter params[], void* fixture) {
@@ -103,9 +99,8 @@ MunitResult test_rendezvous_defaults(const MunitParameter params[], void* fixtur
     }
     cepRvEntrySnapshot snapshot = {0};
     if (!cep_rv_entry_snapshot(defaults_key.tag, &snapshot)) {
-        fputs("snapshot failed for defaults\n", stderr);
         test_runtime_shutdown();
-        return MUNIT_FAIL;
+        munit_error("snapshot failed for defaults");
     }
 
     munit_assert_not_null(snapshot.state);
@@ -211,7 +206,6 @@ MunitResult test_rendezvous_kill_and_timeout(const MunitParameter params[], void
     cepRvSpec spec = {0};
     spec.key_dt = key_dt;
     spec.prof = rv_dt_from_text("rv-fixed").tag;
-    printf("prof tag value=%llu\n", (unsigned long long)spec.prof); fflush(stdout);
     spec.due = 0u;
     spec.grace_delta = 1u;
     spec.max_grace = 1u;

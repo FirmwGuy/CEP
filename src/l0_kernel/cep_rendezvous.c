@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static cepRvSpawnStatus rv_last_status = CEP_RV_SPAWN_STATUS_OK;
+static cepRvSpawnStatus rv_last_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
 
 CEP_DEFINE_STATIC_DT(dt_rv_root,          CEP_ACRO("CEP"), CEP_WORD("rv"))
 CEP_DEFINE_STATIC_DT(dt_text,             CEP_ACRO("CEP"), CEP_WORD("text"))
@@ -34,6 +34,17 @@ CEP_DEFINE_STATIC_DT(dt_inbox_root,       CEP_ACRO("CEP"), CEP_WORD("inbox"))
 CEP_DEFINE_STATIC_DT(dt_flow_ns,          CEP_ACRO("CEP"), CEP_WORD("flow"))
 CEP_DEFINE_STATIC_DT(dt_flow_inst_event,  CEP_ACRO("CEP"), CEP_WORD("inst_event"))
 CEP_DEFINE_STATIC_DT(dt_outcome,          CEP_ACRO("CEP"), CEP_WORD("outcome"))
+CEP_DEFINE_STATIC_DT(dt_sig_sys,          CEP_ACRO("CEP"), CEP_WORD("sig_sys"))
+CEP_DEFINE_STATIC_DT(dt_sys_init,         CEP_ACRO("CEP"), CEP_WORD("init"))
+CEP_DEFINE_STATIC_DT(dt_rv_init,          CEP_ACRO("CEP"), CEP_WORD("rv_init"))
+
+typedef struct {
+    cepEnzymeRegistry* registry;
+} rvRegistryEntry;
+
+static rvRegistryEntry* rv_registrations = NULL;
+static size_t rv_registration_count = 0u;
+static bool rv_bootstrap_ready = false;
 
 typedef enum {
     RV_STATE_PENDING,
@@ -72,6 +83,9 @@ typedef struct {
 
 static rvPendingQueue rv_updates = {0};
 
+static bool rv_service_is_ready(void);
+static int rv_enzyme_init(const cepPath* signal, const cepPath* target);
+static cepCell* rv_ledger_internal(void);
 static cepCell* rv_find_entry(cepCell* ledger, const cepDT* key_dt);
 static const char* rv_default_or(const char* text, const char* fallback);
 static bool rv_build_entry(const cepRvSpec* spec,
@@ -254,7 +268,37 @@ static bool rv_queue_push(const rvPendingUpdate* update) {
 }
 
 static cepCell* rv_ensure_dictionary_child(cepCell* parent, const cepDT* name) {
-    return cep_cell_ensure_dictionary_child(parent, name, CEP_STORAGE_RED_BLACK_T);
+    cepCell* child = cep_cell_ensure_dictionary_child(parent, name, CEP_STORAGE_RED_BLACK_T);
+    if (!child) {
+        return NULL;
+    }
+    if (!cep_cell_require_dictionary_store(&child)) {
+        return NULL;
+    }
+    return child;
+}
+
+static bool rv_service_is_ready(void) {
+    return rv_bootstrap_ready;
+}
+
+static int rv_enzyme_init(const cepPath* signal, const cepPath* target) {
+    (void)signal;
+    (void)target;
+
+    if (rv_bootstrap_ready) {
+        return CEP_ENZYME_SUCCESS;
+    }
+
+    cepCell* ledger = rv_ledger_internal();
+    if (!ledger) {
+        rv_last_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
+        return CEP_ENZYME_FATAL;
+    }
+
+    rv_bootstrap_ready = true;
+    rv_last_status = CEP_RV_SPAWN_STATUS_OK;
+    return CEP_ENZYME_SUCCESS;
 }
 
 /** Leases (or creates) the `/data/rv` dictionary so rendezvous helpers can
@@ -286,6 +330,11 @@ cepCell* cep_rv_ledger_root(void) {
     docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md. */
 bool cep_rv_entry_snapshot(cepID key, cepRvEntrySnapshot* snapshot) {
     if (!snapshot) {
+        return false;
+    }
+
+    if (!rv_service_is_ready()) {
+        memset(snapshot, 0, sizeof *snapshot);
         return false;
     }
 
@@ -406,7 +455,8 @@ static bool rv_build_entry(const cepRvSpec* spec,
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
     cep_cell_initialize_dictionary(out_entry, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
 
-    if (!rv_store_string(out_entry, dt_state(), "pending")) {
+    const char* initial_state = (spec->due <= (uint64_t)spawn_beat) ? "ready" : "pending";
+    if (!rv_store_string(out_entry, dt_state(), initial_state)) {
         goto build_fail;
     }
 
@@ -514,8 +564,16 @@ build_fail:
     return false;
 }
 
+/** Attach a fully staged rendezvous entry into `/data/rv`, promoting the ledger
+    dictionary before swapping the prior child. The helper expects `new_entry`
+    to originate from `rv_build_entry`, keeping all writes off-tree until the
+    dictionary is complete. */
 static bool rv_graft_entry(cepCell* ledger, const cepDT* normalized_dt, cepCell* new_entry) {
     if (!ledger || !normalized_dt || !new_entry) {
+        return false;
+    }
+
+    if (!cep_cell_require_dictionary_store(&ledger)) {
         return false;
     }
 
@@ -762,6 +820,11 @@ static const char* rv_default_or(const char* text, const char* fallback) {
     records a status code for diagnostics so callers understand why bootstrap
     failed without having to re-run setup logic. */
 bool cep_rv_bootstrap(void) {
+    if (!rv_service_is_ready()) {
+        rv_last_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
+        return false;
+    }
+
     cepCell* ledger = rv_ledger_internal();
     rv_last_status = ledger ? CEP_RV_SPAWN_STATUS_OK : CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
     return ledger != NULL;
@@ -783,6 +846,11 @@ cepRvSpawnStatus cep_rv_last_spawn_status(void) {
 bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
     if (!spec) {
         rv_last_status = CEP_RV_SPAWN_STATUS_NO_SPEC;
+        return false;
+    }
+
+    if (!rv_service_is_ready()) {
+        rv_last_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
         return false;
     }
 
@@ -814,7 +882,6 @@ bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
         rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_ALLOC;
         return false;
     }
-
     if (!rv_graft_entry(ledger, &entry_dt, &floating)) {
         cep_cell_finalize(&floating);
         rv_last_status = CEP_RV_SPAWN_STATUS_ENTRY_ALLOC;
@@ -853,6 +920,10 @@ bool cep_rv_resched(cepID key, uint32_t delta) {
         return true;
     }
 
+    if (!rv_service_is_ready()) {
+        return false;
+    }
+
     cepCell* ledger = rv_ledger_internal();
     if (!ledger) {
         return false;
@@ -882,6 +953,10 @@ bool cep_rv_resched(cepID key, uint32_t delta) {
     caller’s policy. Reference:
     docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#kill-and-grace. */
 bool cep_rv_kill(cepID key, cepID mode, uint32_t wait_beats) {
+    if (!rv_service_is_ready()) {
+        return false;
+    }
+
     cepCell* ledger = rv_ledger_internal();
     if (!ledger) {
         return false;
@@ -905,6 +980,10 @@ bool cep_rv_kill(cepID key, cepID mode, uint32_t wait_beats) {
     heartbeat mirrors the completion into the flow inbox on the next beat.
     Completion flow: docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#completion. */
 bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
+    if (!rv_service_is_ready()) {
+        return false;
+    }
+
     cepCell* ledger = rv_ledger_internal();
     if (!ledger) {
         return false;
@@ -916,19 +995,28 @@ bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
         return false;
     }
 
-    cepCell* telemetry = rv_ensure_dictionary_child(entry, dt_telemetry());
-    if (!telemetry) {
+    cepDT telemetry_name = *dt_telemetry();
+    cepCell* telemetry = cep_cell_find_by_name(entry, &telemetry_name);
+    if (telemetry) {
+        if (!cep_cell_require_dictionary_store(&telemetry)) {
+            return false;
+        }
+        cep_cell_clear_children(telemetry);
+    } else {
+        telemetry = rv_ensure_dictionary_child(entry, dt_telemetry());
+        if (!telemetry) {
+            return false;
+        }
+    }
+
+    if (telemetry_node && !cep_cell_copy_children(telemetry_node, telemetry, true)) {
         return false;
     }
 
-    if (!cep_cell_copy_children(telemetry_node, telemetry, true)) {
+    if (!cep_cell_put_text(entry, dt_state(), "applied")) {
         return false;
     }
-
-    if (!rv_store_string(entry, dt_state(), "applied")) {
-        return false;
-    }
-    return rv_store_number(entry, dt_event_flag(), 1u);
+    return cep_cell_put_uint64(entry, dt_event_flag(), 1u);
 }
 
 /** Scan rendezvous entries at the start of the capture phase, staging state
@@ -936,6 +1024,11 @@ bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
     deterministic beat ordering. Capture/commit workflow:
     docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#heartbeat. */
 bool cep_rv_capture_scan(void) {
+    if (!rv_service_is_ready()) {
+        rv_queue_reset();
+        return true;
+    }
+
     rv_queue_reset();
 
     cepCell* ledger = rv_ledger_internal();
@@ -958,15 +1051,6 @@ bool cep_rv_capture_scan(void) {
             continue;
         }
 
-        const char* dbg_state = rv_read_text(entry, dt_state());
-        uint64_t dbg_due = 0u;
-        rv_read_uint64(entry, dt_due(), &dbg_due);
-        printf("DEBUG capture state=%s due=%llu beat=%llu\n",
-               dbg_state ? dbg_state : "(null)",
-               (unsigned long long)dbg_due,
-               (unsigned long long)now);
-        fflush(stdout);
-
         rvPendingUpdate update;
         if (rv_entry_evaluate(entry, now, &update)) {
             if (!rv_queue_push(&update)) {
@@ -984,6 +1068,11 @@ bool cep_rv_capture_scan(void) {
     beats do not duplicate flow impulses. See the same heartbeat section in the
     rendezvous topic doc for sequencing details. */
 bool cep_rv_commit_apply(void) {
+    if (!rv_service_is_ready()) {
+        rv_queue_reset();
+        return true;
+    }
+
     if (rv_updates.count == 0u) {
         return true;
     }
@@ -1043,14 +1132,57 @@ bool cep_rv_commit_apply(void) {
     return true;
 }
 
-/** Register rendezvous bootstrap and routing enzymes with the supplied
-    registry, ensuring the ledger exists ahead of time. The current kernel
-    build handles routing internally, so registration is a bootstrap no-op
-    beyond guaranteeing the ledger is ready. Integration steps live in
-    docs/L0_KERNEL/L0-INTEGRATION-GUIDE.md#rendezvous. */
+/** Register rendezvous bootstrap enzyme with the supplied registry so the
+    heartbeat readies the ledger during the system init impulse. */
 bool cep_rendezvous_register(cepEnzymeRegistry* registry) {
-    (void)registry;
-    return cep_rv_bootstrap();
+    if (!registry) {
+        return false;
+    }
+
+    for (size_t i = 0; i < rv_registration_count; ++i) {
+        if (rv_registrations[i].registry == registry) {
+            return true;
+        }
+    }
+
+    typedef struct {
+        unsigned length;
+        unsigned capacity;
+        cepPast  past[2];
+    } cepPathStatic2;
+
+    cepPathStatic2 init_path = {
+        .length = 2u,
+        .capacity = 2u,
+        .past = {
+            {.dt = *dt_sig_sys(), .timestamp = 0u},
+            {.dt = *dt_sys_init(), .timestamp = 0u},
+        },
+    };
+
+    cepEnzymeDescriptor descriptor = {
+        .name = *dt_rv_init(),
+        .label = "rendezvous.init",
+        .callback = rv_enzyme_init,
+        .flags = CEP_ENZYME_FLAG_IDEMPOTENT,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    if (cep_enzyme_register(registry, (const cepPath*)&init_path, &descriptor) != CEP_ENZYME_SUCCESS) {
+        return false;
+    }
+
+    rvRegistryEntry* grown = cep_realloc(rv_registrations,
+                                         (rv_registration_count + 1u) * sizeof(*grown));
+    if (!grown) {
+        return false;
+    }
+
+    rv_registrations = grown;
+    rv_registrations[rv_registration_count++].registry = registry;
+    rv_bootstrap_ready = false;
+    rv_last_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
+    return true;
 }
 
 /** Merge rendezvous specification cells into a `cepRvSpec` structure, applying

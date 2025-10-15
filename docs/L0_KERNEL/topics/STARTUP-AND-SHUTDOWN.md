@@ -3,6 +3,8 @@
 ## Introduction
 Think of CEP's runtime like a stage crew preparing and striking a show. Before the lights go up, the crew lays out the scenery (cell system), checks power and comms (heartbeat and namepool), and opens the lobby doors (mailroom). When the curtain falls they reverse the choreography so the next performance can start from a clean slate without loose props or missed cues.
 
+> **Developer reminder:** Every new Layer‑0 facility should participate in this impulse choreography. When in doubt, bind your bootstrap to the existing `CEP:sig_sys/ready/*` and `CEP:sig_sys/init` pulses instead of open-coding bespoke startup checks—future you (or the next teammate) will thank you.
+
 ## Technical Details
 ### Phase 0 - Bootstrapping prerequisites
 - `cep_l0_bootstrap()` is the public convenience entry point. It calls `cep_cell_system_ensure()`, `cep_heartbeat_bootstrap()`, `cep_namepool_bootstrap()`, `cep_mailroom_bootstrap()`, and `cep_error_bootstrap()` in order, marking each lifecycle scope ready as it succeeds (`CEP_LIFECYCLE_SCOPE_KERNEL`, `NAMEPOOL`, `MAILROOM`, `ERRORS` respectively).
@@ -12,6 +14,7 @@ Think of CEP's runtime like a stage crew preparing and striking a show. Before t
 - `cep_mailroom_bootstrap()` expects both kernel and namepool scopes to be ready; if they are not, it marks them ready before proceeding. The helper ensures `/data/inbox` exists, seeds namespaces either from `/sys/err_cat/<scope>/mailroom/buckets/*` or from any defaults registered ahead of time (older deployments may still seed `{coh, flow}` via the catalog for compatibility), mirrors any extra namespaces declared via `cep_mailroom_add_namespace()`, and records readiness for the mailroom lifecycle scope. `cep_error_bootstrap()` then provisions `/tmp/err/stage` and `/data/err/{event,index}` so CEI emission and ingestion have a home before the first beat.
 
 - `cep_error_bootstrap()` runs after the mailroom. It primes the CEI staging area (`/tmp/err/stage`), durable ledgers (`/data/err/event`), and index roots (`/data/err/index/{by_level,by_scope,by_code}`), and marks the `ERRORS` lifecycle scope ready so downstream packs can rely on the error ledger from the outset.
+- `cep_rendezvous_register()` hooks its bootstrap enzyme into `CEP:sig_sys/init` and emits a one-shot readiness impulse during the first beat. The rendezvous implementation defers opening `/data/rv` for writes until that impulse completes; calls that arrive earlier report `CEP_RV_SPAWN_STATUS_LEDGER_MISSING` rather than mutating a half-initialised ledger.
 
 ### Phase 1 - Starting the heartbeat loop
 - After configuration (optional `cep_heartbeat_configure()`), call `cep_heartbeat_startup()` to reset the beat counter, clear dispatch queues, and open the capture phase. This does not advance time yet; it only primes the runtime.
@@ -27,6 +30,8 @@ Think of CEP's runtime like a stage crew preparing and striking a show. Before t
 4. When an upper-layer pack bootstraps after the heartbeat is live, its call to `cep_lifecycle_scope_mark_ready()` emits a deferred `/CEP:sig_sys/CEP:ready/CEP:<scope>` impulse. User code can hook those signals to observe when a pack becomes usable. User code can hook those signals to observe when a layer becomes usable.
 
 At this stage only Layer 0 consumes the *ready* pulses; effective work (intent routing, ingest, user enzymes) starts after the deferred `/CEP:sig_sys/CEP:init` has executed and the mailroom has reseeded the layer inboxes.
+
+Once the runtime processes the rendezvous readiness impulse, `cep_rv_bootstrap()` begins returning success and `cep_rv_spawn()` shifts from `CEP_RV_SPAWN_STATUS_LEDGER_MISSING` to `CEP_RV_SPAWN_STATUS_OK`; no additional polling is required by callers.
 
 ### Phase 2 - Mailroom activation during startup
 - `cep_mailroom_register(registry)` adds two descriptors to the given registry: `mr_init` bound to `CEP:sig_sys/init` (exact match) and `mr_route` bound to the `CEP:sig_cell/op_add` prefix. The router is flagged as idempotent and inserted before any ingest enzymes queued via `cep_mailroom_add_router_before()` or supplied by upper-layer packs, ensuring routing always happens ahead of pack-specific work. After the mailroom registers, `cep_error_register()` hooks the CEI ingest enzyme on the same registry so `CEP:sig_err/*` impulses are durably recorded before user packs run.
@@ -59,3 +64,11 @@ Use `cep_heartbeat_restart()`. It clears runtime caches, reuses the configured t
 
 **Q: Where can I confirm lifecycle transitions?**  
 Check `/sys/state/<scope>` for the recorded `status`, `ready_beat`, and `td_beat` fields, and `/journal/sys_log` for the textual impulses (`mailroom.catalog ...`, `CEP:sig_sys/ready/<scope>`, `CEP:sig_sys/shutdown`, etc.) emitted during startup and shutdown.
+
+## Layer-0 Operating Principles
+- **Append-only cells.** Stage replacements off-tree and graft them in one shot. Direct in-place edits of `/data` break replay guarantees.
+- **Phase discipline.** Capture, compute, commit is the only legal mutation flow. Let the phase helpers (`cep_beat_begin_*`, capture/commit enzymes, etc.) drive writes.
+- **Impulse bootstrap.** New services hook into the existing `CEP:sig_sys/ready/*` and `CEP:sig_sys/init` signals. Avoid bespoke readiness checks that bypass the heartbeat.
+- **Link-safe helpers.** Always use `cep_cell_require_dictionary_store`, `cep_cell_clear_children`, `cep_cell_copy_children`, and related APIs so link promotion and store upgrades stay consistent.
+- **Path-based lookups.** Treat `cepCell*` pointers as ephemeral; re-resolve by path whenever you cross a phase boundary so store promotion or replay cannot strand stale handles.
+- **Public-surface tests.** Layer-0 test suites step the heartbeat and call exported APIs. Reaching around the surface hides lifecycle regressions that impulses would have exposed.
