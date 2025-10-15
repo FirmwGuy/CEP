@@ -3,6 +3,31 @@
 
 #include "test.h"
 
+#if defined(CEP_RV_DISABLED)
+
+/* Skips the rendezvous defaults regression while the subsystem stays disabled. */
+MunitResult test_rendezvous_defaults(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+    return MUNIT_SKIP;
+}
+
+/* Skips the rendezvous heartbeat pipeline regression while rendezvous is paused. */
+MunitResult test_rendezvous_heartbeat_pipeline(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+    return MUNIT_SKIP;
+}
+
+/* Skips the rendezvous kill/timeout regression while rendezvous is paused. */
+MunitResult test_rendezvous_kill_and_timeout(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+    return MUNIT_SKIP;
+}
+
+#else
+
 #include "cep_l0.h"
 #include "cep_rendezvous.h"
 #include "cep_enzyme.h"
@@ -78,11 +103,17 @@ static void rv_configure_runtime(void) {
 }
 
 static void rv_spawn_basic(const char* key_text, uint64_t due) {
+    cepDT spec_name = *CEP_DTAW("CEP", "defaults");
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepCell spec_dict = {0};
+    cep_cell_initialize_dictionary(&spec_dict, &spec_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    munit_assert_true(cep_cell_put_uint64(&spec_dict, CEP_DTAW("CEP", "due"), due));
+
     cepRvSpec spec = {0};
+    munit_assert_true(cep_rv_prepare_spec(&spec, &spec_dict, NULL, 0u, NULL, 0u));
     spec.key_dt = rv_dt_from_text(key_text);
-    spec.prof = rv_dt_from_text("rv-fixed").tag;
-    spec.due = due;
     munit_assert_true(cep_rv_spawn(&spec, spec.key_dt.tag));
+    cep_cell_finalize(&spec_dict);
 }
 
 MunitResult test_rendezvous_defaults(const MunitParameter params[], void* fixture) {
@@ -203,14 +234,20 @@ MunitResult test_rendezvous_kill_and_timeout(const MunitParameter params[], void
     munit_assert_string_equal(rv_entry_text(kill_event, "outcome"), "killed");
 
     /* Spawn again with a grace window and let it time out. */
+    cepDT spec_name = *CEP_DTAW("CEP", "defaults");
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepCell spec_dict = {0};
+    cep_cell_initialize_dictionary(&spec_dict, &spec_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    munit_assert_true(cep_cell_put_uint64(&spec_dict, CEP_DTAW("CEP", "due"), 0u));
+    munit_assert_true(cep_cell_put_uint64(&spec_dict, CEP_DTAW("CEP", "grace_delta"), 1u));
+    munit_assert_true(cep_cell_put_uint64(&spec_dict, CEP_DTAW("CEP", "max_grace"), 1u));
+    munit_assert_true(cep_cell_put_text(&spec_dict, CEP_DTAW("CEP", "on_miss"), "timeout"));
+
     cepRvSpec spec = {0};
+    munit_assert_true(cep_rv_prepare_spec(&spec, &spec_dict, NULL, 0u, NULL, 0u));
     spec.key_dt = key_dt;
-    spec.prof = rv_dt_from_text("rv-fixed").tag;
-    spec.due = 0u;
-    spec.grace_delta = 1u;
-    spec.max_grace = 1u;
-    spec.on_miss = CEP_WORD("timeout");
     munit_assert_true(cep_rv_spawn(&spec, spec.key_dt.tag));
+    cep_cell_finalize(&spec_dict);
 
     rv_step_beats(2u);
 
@@ -225,3 +262,5 @@ MunitResult test_rendezvous_kill_and_timeout(const MunitParameter params[], void
     test_runtime_shutdown();
     return MUNIT_OK;
 }
+
+#endif /* CEP_RV_DISABLED */

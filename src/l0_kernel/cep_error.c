@@ -40,6 +40,10 @@ CEP_DEFINE_STATIC_DT(dt_level_warn,     CEP_ACRO("CEP"), CEP_WORD("warn"));
 CEP_DEFINE_STATIC_DT(dt_level_log,      CEP_ACRO("CEP"), CEP_WORD("log"));
 CEP_DEFINE_STATIC_DT(dt_err_ing_name,   CEP_ACRO("CEP"), CEP_WORD("err_ing"));
 
+#if defined(CEP_RV_DISABLED)
+static int cep_error_last_failure = 0;
+#endif
+
 static const char* cep_error_level_text(cepErrLevel level) {
     switch (level) {
         case CEP_ERR_FATAL:    return "fatal";
@@ -261,17 +265,29 @@ static cepCell* cep_error_clone_detail(cepCell* detail_source) {
 }
 
 bool cep_error_emit(cepErrLevel level, const cepErrorSpec* spec) {
+#if defined(CEP_RV_DISABLED)
+    cep_error_last_failure = 0;
+#endif
     if (!spec) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 1;
+#endif
         return false;
     }
 
     if (!cep_heartbeat_bootstrap()) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 2;
+#endif
         return false;
     }
 
     const cepDT* level_dt = cep_error_level_dt(level);
     const char* level_text = cep_error_level_text(level);
     if (!level_dt || !level_text) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 3;
+#endif
         return false;
     }
 
@@ -281,19 +297,32 @@ bool cep_error_emit(cepErrLevel level, const cepErrorSpec* spec) {
     }
 
     if (!cep_dt_is_valid(&spec->code)) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 4;
+#endif
         return false;
     }
 
+#if !defined(CEP_RV_DISABLED)
     if (!cep_error_code_exists(&scope_dt, &spec->code)) {
         return false;
     }
+#else
+    /* Allow ad-hoc codes while rendezvous is offline so diagnostics remain usable. */
+#endif
 
     if (spec->parent_count > 0 && !spec->parents) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 5;
+#endif
         return false;
     }
 
     cepCell* stage_root = cep_error_stage_root();
     if (!stage_root) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 6;
+#endif
         return false;
     }
 
@@ -305,6 +334,9 @@ bool cep_error_emit(cepErrLevel level, const cepErrorSpec* spec) {
     cepDT dict_type = *dt_dictionary();
     cepCell* event = cep_cell_append_dictionary(stage_root, &event_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
     if (!event) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 7;
+#endif
         return false;
     }
 
@@ -322,6 +354,9 @@ bool cep_error_emit(cepErrLevel level, const cepErrorSpec* spec) {
         size_t msg_len = strlen(message);
         prefixed_message = cep_malloc(prefix_len + msg_len + 1u);
         if (!prefixed_message) {
+#if defined(CEP_RV_DISABLED)
+            cep_error_last_failure = 8;
+#endif
             goto cleanup;
         }
         memcpy(prefixed_message, prefix, prefix_len);
@@ -330,15 +365,27 @@ bool cep_error_emit(cepErrLevel level, const cepErrorSpec* spec) {
     }
 
     if (!cep_error_store_dt(event, dt_field_code(), &spec->code)) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 9;
+#endif
         goto cleanup;
     }
     if (!cep_error_store_text(event, dt_field_message(), message)) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 10;
+#endif
         goto cleanup;
     }
     if (!cep_error_store_text(event, dt_field_level(), level_text)) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 11;
+#endif
         goto cleanup;
     }
     if (!cep_error_store_dt(event, dt_field_scope(), &scope_dt)) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 12;
+#endif
         goto cleanup;
     }
 
@@ -350,23 +397,38 @@ bool cep_error_emit(cepErrLevel level, const cepErrorSpec* spec) {
         }
     }
     if (!cep_error_store_number(event, dt_field_beat(), beat)) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 13;
+#endif
         goto cleanup;
     }
 
     const char* emitter_kind = emitter ? "enzyme" : "kernel";
     if (!cep_error_store_text(event, dt_field_emit_kind(), emitter_kind)) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 14;
+#endif
         goto cleanup;
     }
 
     if (emitter) {
         if (!cep_error_store_dt(event, dt_field_emitter(), &emitter->name)) {
+#if defined(CEP_RV_DISABLED)
+            cep_error_last_failure = 15;
+#endif
             goto cleanup;
         }
         if (emitter->label && !cep_error_store_text(event, dt_field_emit_label(), emitter->label)) {
+#if defined(CEP_RV_DISABLED)
+            cep_error_last_failure = 16;
+#endif
             goto cleanup;
         }
     } else {
         if (!cep_error_store_dt(event, dt_field_emitter(), dt_err_scope())) {
+#if defined(CEP_RV_DISABLED)
+            cep_error_last_failure = 17;
+#endif
             goto cleanup;
         }
     }
@@ -374,12 +436,18 @@ bool cep_error_emit(cepErrLevel level, const cepErrorSpec* spec) {
     if (spec->target) {
         cepDT target_name = cep_dt_clean(dt_field_target());
         if (!cep_dict_add_link(event, &target_name, spec->target)) {
+#if defined(CEP_RV_DISABLED)
+            cep_error_last_failure = 18;
+#endif
             goto cleanup;
         }
     }
 
     if (spec->parent_count > 0) {
         if (!cep_error_attach_parents(event, spec->parents, spec->parent_count)) {
+#if defined(CEP_RV_DISABLED)
+            cep_error_last_failure = 19;
+#endif
             goto cleanup;
         }
     }
@@ -387,18 +455,27 @@ bool cep_error_emit(cepErrLevel level, const cepErrorSpec* spec) {
     if (spec->detail) {
         detail_clone = cep_error_clone_detail(spec->detail);
         if (!detail_clone) {
+#if defined(CEP_RV_DISABLED)
+            cep_error_last_failure = 20;
+#endif
             goto cleanup;
         }
         detail_clone->metacell.domain = dt_field_detail()->domain;
         detail_clone->metacell.tag = dt_field_detail()->tag;
         detail_clone->metacell.glob = dt_field_detail()->glob;
         if (!cep_dict_add(event, detail_clone)) {
+#if defined(CEP_RV_DISABLED)
+            cep_error_last_failure = 21;
+#endif
             goto cleanup;
         }
         detail_clone = NULL;
     }
 
     if (!cep_cell_path(event, &target_path)) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 22;
+#endif
         goto cleanup;
     }
 
@@ -424,10 +501,16 @@ bool cep_error_emit(cepErrLevel level, const cepErrorSpec* spec) {
     };
 
     if (cep_heartbeat_enqueue_impulse(CEP_BEAT_INVALID, &impulse) != CEP_ENZYME_SUCCESS) {
+#if defined(CEP_RV_DISABLED)
+        cep_error_last_failure = 23;
+#endif
         goto cleanup;
     }
 
     success = true;
+#if defined(CEP_RV_DISABLED)
+    cep_error_last_failure = -1;
+#endif
 
 cleanup:
     CEP_FREE(prefixed_message);

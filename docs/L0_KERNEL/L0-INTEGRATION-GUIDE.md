@@ -487,7 +487,7 @@ The **proxy** keeps your adapter logic isolated. CEP takes care of **shadowing**
 
 ## 8) Integration guidance & gotchas
 
-* **Rendezvous refresh.** Call `cep_rendezvous_register()` during your bootstrap so `rv_init` seeds defaults and `rv_route` mirrors completions into `/data/inbox/flow/inst_event`. Use `cep_rv_prepare_spec()` alongside `cep_rv_spawn()`/`cep_rv_report()` to manage jobs while the heartbeat clears `event_flag` markers automatically.
+* **Rendezvous refresh.** Call `cep_rendezvous_register()` during your bootstrap so `rv_init` seeds defaults and `rv_route` mirrors completions into `/data/inbox/flow/inst_event`. Build specs off-tree with `cep_rv_prepare_spec()`, then let `cep_rv_spawn()`/`cep_rv_report()` stage ledger updates in floating dictionaries before grafting so the heartbeat clears `event_flag` markers without mutating `/data/rv` mid-flight.
 * **Don’t mutate mid‑beat registrations.** Register enzymes freely, but let CEP **activate** them between beats (`activate_pending`) to avoid agenda drift .
 * **Prefer soft deletes** for observability; reserve hard deletes for GC or error recovery workflows. Past traversals depend on timestamps and history lists .
 * **Respect locks**. Both **data** and **store** locks check the *entire ancestor chain*; if anything is locked above, mutations are denied to keep invariants intact  .

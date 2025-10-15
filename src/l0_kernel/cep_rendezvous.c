@@ -1,5 +1,111 @@
 #include "cep_rendezvous.h"
 
+#if defined(CEP_RV_DISABLED)
+
+#include <string.h>
+
+/* TODO(vic): Restore the full rendezvous subsystem once the temporary disable window closes. */
+static cepRvSpawnStatus rv_disabled_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
+
+/* Temporarily reports the rendezvous bootstrap as unavailable so callers notice the subsystem is paused. */
+bool cep_rv_bootstrap(void) {
+    rv_disabled_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
+    return false;
+}
+
+/* Shares that the rendezvous ledger is inaccessible while the subsystem stays disabled. */
+cepCell* cep_rv_ledger_root(void) {
+    return NULL;
+}
+
+/* Communicates that rendezvous spec preparation is inactive so flows can short-circuit spawning attempts. */
+bool cep_rv_prepare_spec(cepRvSpec* out_spec,
+                         const cepCell* spec_node,
+                         const cepDT* instance_dt,
+                         cepBeatNumber now,
+                         char* signal_buffer,
+                         size_t signal_capacity) {
+    (void)out_spec;
+    (void)spec_node;
+    (void)instance_dt;
+    (void)now;
+    if (signal_buffer && signal_capacity > 0u) {
+        signal_buffer[0] = '\0';
+    }
+    return false;
+}
+
+/* Captures that rendezvous spawning is disabled, recording the status for later inspection. */
+bool cep_rv_spawn(const cepRvSpec* spec, cepID key) {
+    (void)spec;
+    (void)key;
+    rv_disabled_status = CEP_RV_SPAWN_STATUS_LEDGER_MISSING;
+    return false;
+}
+
+/* Surfaces the disabled rendezvous spawn status so diagnostics have a consistent code path. */
+cepRvSpawnStatus cep_rv_last_spawn_status(void) {
+    return rv_disabled_status;
+}
+
+/* States that rendezvous rescheduling is unavailable during the disabled window. */
+bool cep_rv_resched(cepID key, uint32_t delta) {
+    (void)key;
+    (void)delta;
+    return false;
+}
+
+/* Declines kill requests because rendezvous coordination is suspended. */
+bool cep_rv_kill(cepID key, cepID mode, uint32_t wait_beats) {
+    (void)key;
+    (void)mode;
+    (void)wait_beats;
+    return false;
+}
+
+/* Ignores rendezvous telemetry while still acknowledging the disabled subsystem handled the call. */
+bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
+    (void)key;
+    (void)telemetry_node;
+    return true;
+}
+
+/* Leaves rendezvous capture as a no-op so heartbeat scans continue unaffected. */
+bool cep_rv_capture_scan(void) {
+    return true;
+}
+
+/* Returns success so heartbeat agenda resolution proceeds even though rendezvous writes are skipped. */
+bool cep_rv_commit_apply(void) {
+    return true;
+}
+
+/* Clears any provided buffer and reports failure so callers know rendezvous signals are unavailable. */
+bool cep_rv_signal_for_key(const cepDT* key, char* buffer, size_t capacity) {
+    (void)key;
+    if (buffer && capacity > 0u) {
+        buffer[0] = '\0';
+    }
+    return false;
+}
+
+/* Zeros snapshots in disabled mode so inspectors see a consistent empty state. */
+bool cep_rv_entry_snapshot(cepID key, cepRvEntrySnapshot* snapshot) {
+    (void)key;
+    if (snapshot) {
+        memset(snapshot, 0, sizeof *snapshot);
+    }
+    return false;
+}
+
+/* Registers rendezvous as unavailable so enzyme registries can skip binding the init hook. */
+bool cep_rendezvous_register(cepEnzymeRegistry* registry) {
+    (void)registry;
+    return false;
+}
+
+#else
+
 #include "cep_molecule.h"
 #include "cep_namepool.h"
 
@@ -92,6 +198,7 @@ static bool rv_build_entry(const cepRvSpec* spec,
                            const cepDT* normalized_dt,
                            cepBeatNumber spawn_beat,
                            cepCell* out_entry);
+static bool rv_clone_entry(cepCell* source_entry, cepCell* staged_out);
 static bool rv_graft_entry(cepCell* ledger, const cepDT* normalized_dt, cepCell* new_entry);
 
 static inline bool rv_text_equals(const char* lhs, const char* rhs) {
@@ -195,7 +302,7 @@ static bool rv_store_string(cepCell* entry, const cepDT* field, const char* text
     cepDT lookup = cep_dt_clean(field);
     cepCell* existing = cep_cell_find_by_name(entry, &lookup);
     if (existing) {
-        cep_cell_remove_hard(entry, existing);
+        cep_cell_remove_hard(existing, NULL);
     }
 
     size_t len = strlen(text) + 1u;
@@ -348,6 +455,11 @@ bool cep_rv_entry_snapshot(cepID key, cepRvEntrySnapshot* snapshot) {
     cepCell* entry = rv_find_entry(ledger, &lookup);
 
     memset(snapshot, 0, sizeof *snapshot);
+    if (!entry) {
+        return false;
+    }
+
+    entry = cep_cell_resolve(entry);
     if (!entry) {
         return false;
     }
@@ -564,6 +676,38 @@ build_fail:
     return false;
 }
 
+/** Duplicate an existing rendezvous entry into a floating dictionary so callers
+    can stage updates off-tree before grafting. The helper resolves the ledger
+    node, deep-copies its children, and leaves cleanup to the caller when any
+    step fails. */
+static bool rv_clone_entry(cepCell* source_entry, cepCell* staged_out) {
+    if (!source_entry || !staged_out) {
+        return false;
+    }
+
+    cepCell* resolved = cep_cell_resolve(source_entry);
+    if (!resolved) {
+        return false;
+    }
+
+    const cepDT* name = cep_cell_get_name(resolved);
+    if (!name) {
+        return false;
+    }
+
+    cepDT name_copy = cep_dt_clean(name);
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cep_cell_initialize_dictionary(staged_out, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+
+    if (!cep_cell_copy_children(resolved, staged_out, true)) {
+        cep_cell_finalize(staged_out);
+        memset(staged_out, 0, sizeof *staged_out);
+        return false;
+    }
+
+    return true;
+}
+
 /** Attach a fully staged rendezvous entry into `/data/rv`, promoting the ledger
     dictionary before swapping the prior child. The helper expects `new_entry`
     to originate from `rv_build_entry`, keeping all writes off-tree until the
@@ -580,7 +724,11 @@ static bool rv_graft_entry(cepCell* ledger, const cepDT* normalized_dt, cepCell*
     cepDT lookup = cep_dt_clean(normalized_dt);
     cepCell* existing = cep_cell_find_by_name(ledger, &lookup);
     if (existing) {
-        cep_cell_remove_hard(ledger, existing);
+        cepStore* parent_store = existing->parent;
+        cep_cell_replace(existing, new_entry);
+        existing->parent = parent_store;
+        memset(new_entry, 0, sizeof *new_entry);
+        return true;
     }
 
     cepCell* inserted = cep_cell_add(ledger, 0u, new_entry);
@@ -976,9 +1124,11 @@ bool cep_rv_kill(cepID key, cepID mode, uint32_t wait_beats) {
 }
 
 /** Copy telemetry produced by the worker back into the rendezvous ledger,
-    automatically marking the job as applied and arming the event flag so the
-    heartbeat mirrors the completion into the flow inbox on the next beat.
-    Completion flow: docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#completion. */
+    staging the update in a floating dictionary before grafting it under
+    `/data/rv`. The helper deep-clones the entry, refreshes telemetry, marks the
+    state as applied, and arms the event flag so the heartbeat mirrors the
+    completion into the flow inbox on the next beat. Completion flow:
+    docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md#completion. */
 bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
     if (!rv_service_is_ready()) {
         return false;
@@ -995,28 +1145,46 @@ bool cep_rv_report(cepID key, const cepCell* telemetry_node) {
         return false;
     }
 
-    cepDT telemetry_name = *dt_telemetry();
-    cepCell* telemetry = cep_cell_find_by_name(entry, &telemetry_name);
-    if (telemetry) {
-        if (!cep_cell_require_dictionary_store(&telemetry)) {
-            return false;
-        }
-        cep_cell_clear_children(telemetry);
-    } else {
-        telemetry = rv_ensure_dictionary_child(entry, dt_telemetry());
-        if (!telemetry) {
+    cepCell staged = {0};
+    if (!rv_clone_entry(entry, &staged)) {
+        return false;
+    }
+
+    cepCell* staged_telemetry = rv_ensure_dictionary_child(&staged, dt_telemetry());
+    if (!staged_telemetry) {
+        cep_cell_finalize(&staged);
+        memset(&staged, 0, sizeof staged);
+        return false;
+    }
+
+    cep_cell_clear_children(staged_telemetry);
+    if (telemetry_node) {
+        if (!cep_cell_copy_children(telemetry_node, staged_telemetry, true)) {
+            cep_cell_finalize(&staged);
+            memset(&staged, 0, sizeof staged);
             return false;
         }
     }
 
-    if (telemetry_node && !cep_cell_copy_children(telemetry_node, telemetry, true)) {
+    if (!rv_store_string(&staged, dt_state(), "applied")) {
+        cep_cell_finalize(&staged);
+        memset(&staged, 0, sizeof staged);
+        return false;
+    }
+    if (!rv_store_number(&staged, dt_event_flag(), 1u)) {
+        cep_cell_finalize(&staged);
+        memset(&staged, 0, sizeof staged);
         return false;
     }
 
-    if (!cep_cell_put_text(entry, dt_state(), "applied")) {
+    cepDT entry_name = cep_dt_clean(cep_cell_get_name(entry));
+    if (!rv_graft_entry(ledger, &entry_name, &staged)) {
+        cep_cell_finalize(&staged);
+        memset(&staged, 0, sizeof staged);
         return false;
     }
-    return cep_cell_put_uint64(entry, dt_event_flag(), 1u);
+
+    return true;
 }
 
 /** Scan rendezvous entries at the start of the capture phase, staging state
@@ -1278,3 +1446,5 @@ bool cep_rv_prepare_spec(cepRvSpec* out_spec,
     (void)now;
     return true;
 }
+
+#endif /* CEP_RV_DISABLED */

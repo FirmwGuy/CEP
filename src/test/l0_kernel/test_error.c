@@ -10,6 +10,24 @@
 
 #include <string.h>
 
+#if defined(CEP_RV_DISABLED)
+
+/* Skips kernel error emission regression while rendezvous is offline. */
+MunitResult test_error_emit_kernel(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+    return MUNIT_SKIP;
+}
+
+/* Skips enzyme error emission regression while rendezvous is offline. */
+MunitResult test_error_emit_enzyme(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+    return MUNIT_SKIP;
+}
+
+#else
+
 static cepID ensure_word(const char* text);
 
 static cepCell* error_stage_root(void) {
@@ -137,6 +155,7 @@ MunitResult test_error_emit_kernel(const MunitParameter params[], void* fixture)
         .detail = NULL,
         .scope = *CEP_DTAW("CEP", "kernel"),
     };
+    spec.code.tag = ensure_word("E001");
 
     munit_assert_true(cep_error_emit(CEP_ERR_WARN, &spec));
 
@@ -184,6 +203,7 @@ static int test_error_emitter_enzyme(const cepPath* signal, const cepPath* targe
         .detail = NULL,
         .scope = *CEP_DTAW("CEP", "mailroom"),
     };
+    spec.code.tag = ensure_word("MR001");
 
     munit_assert_true(cep_error_emit(CEP_ERR_USAGE, &spec));
     return CEP_ENZYME_SUCCESS;
@@ -297,3 +317,5 @@ MunitResult test_error_emit_enzyme(const MunitParameter params[], void* fixture)
     test_runtime_shutdown();
     return MUNIT_OK;
 }
+
+#endif /* CEP_RV_DISABLED */

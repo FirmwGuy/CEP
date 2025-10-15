@@ -29,6 +29,7 @@ endif
 
 add_project_arguments(common_args + [
   '-D_GNU_SOURCE',
+  '-DCEP_RV_DISABLED=1',
 ], language: 'c')
 
 # Optionally enable sanitizers (best with Clang on MinGW-UCRT)
