@@ -2920,6 +2920,9 @@ static inline cepCell* store_find_child_by_name_past(const cepStore* store, cons
 static inline cepCell* store_find_child_by_position_past(const cepStore* store, size_t position, cepOpCount snapshot) {
     assert(cep_store_valid(store));
 
+    if (!snapshot)
+        return store_find_child_by_position(store, position);
+
     if (!store->chdCount)
         return NULL;
 
@@ -2937,6 +2940,9 @@ static inline cepCell* store_find_child_by_position_past(const cepStore* store, 
 
 static inline cepCell* store_find_next_child_by_name_past(const cepStore* store, cepDT* name, uintptr_t* childIdx, cepOpCount snapshot) {
     assert(cep_store_valid(store) && cep_dt_is_valid(name));
+
+    if (!snapshot)
+        return store_find_next_child_by_name(store, name, childIdx);
 
     if (!store->chdCount)
         return NULL;

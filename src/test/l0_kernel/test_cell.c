@@ -22,6 +22,58 @@ static cepCell* test_find_by_child_name(cepCell* parent, const cepCell* child) {
     return (cepCell*)child;
 }
 
+static void test_cell_txn_commit(void) {
+    cepDT parent_name = *CEP_DTAW("CEP", "txn_prnt");
+    cepDT dict_type   = *CEP_DTAW("CEP", "dictionary");
+    cepCell* parent = cep_cell_add_dictionary(cep_root(), &parent_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    assert_not_null(parent);
+
+    cepTxn txn;
+    cepDT staged_name = *CEP_DTAW("CEP", "txn_child");
+    assert_true(cep_txn_begin(parent, &staged_name, &dict_type, &txn));
+    assert_not_null(txn.root);
+    assert_true(cep_cell_is_veiled(txn.root));
+    assert_null(cep_cell_find_by_name(parent, &staged_name));
+    assert_true(cep_cell_visible_latest(txn.root, CEP_VIS_INCLUDE_VEILED));
+
+    cepDT field_name = *CEP_DTAW("CEP", "title");
+    const char payload[] = "draft";
+    assert_true(cep_cell_put_text(txn.root, &field_name, payload));
+
+    assert_true(cep_txn_mark_ready(&txn));
+    assert_true(cep_txn_commit(&txn));
+
+    cepCell* committed = cep_cell_find_by_name(parent, &staged_name);
+    assert_not_null(committed);
+    assert_false(cep_cell_is_veiled(committed));
+
+    cepCell* found_value = cep_cell_find_by_name(committed, &field_name);
+    assert_not_null(found_value);
+    munit_assert_string_equal((const char*)cep_cell_data(found_value), payload);
+
+    cep_cell_delete_hard(parent);
+}
+
+static void test_cell_txn_abort(void) {
+    cepDT parent_name = *CEP_DTAW("CEP", "txn_parb");
+    cepDT dict_type   = *CEP_DTAW("CEP", "dictionary");
+    cepCell* parent = cep_cell_add_dictionary(cep_root(), &parent_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    assert_not_null(parent);
+
+    cepTxn txn;
+    cepDT staged_name = *CEP_DTAW("CEP", "txn_abrt");
+    assert_true(cep_txn_begin(parent, &staged_name, &dict_type, &txn));
+    assert_not_null(txn.root);
+    assert_true(cep_cell_is_veiled(txn.root));
+
+    cep_txn_abort(&txn);
+
+    assert_null(cep_cell_find_by_name(parent, &staged_name));
+    assert_null(txn.root);
+
+    cep_cell_delete_hard(parent);
+}
+
 static void test_cell_print(cepCell* cell, char *sval) {
     if (!cell) {
         strcpy(sval, "Void");
@@ -934,6 +986,9 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
 
     test_cell_links_shadowing();
     test_cell_links_shadow_dead_flag();
+
+    test_cell_txn_commit();
+    test_cell_txn_abort();
 
     if (watchdog)
         test_watchdog_signal(watchdog);
