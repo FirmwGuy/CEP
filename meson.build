@@ -60,10 +60,8 @@ l0_srcs = files(
   'src/l0_kernel/cep_cell_stream.c',
   'src/l0_kernel/cep_cell_system.c',
   'src/l0_kernel/cep_l0.c',
-  'src/l0_kernel/cep_mailroom.c',
   'src/l0_kernel/cep_identifier.c',
   'src/enzymes/cep_cell_operations.c',
-  'src/l0_kernel/cep_rendezvous.c',
   'src/l0_kernel/stream/cep_stream_stdio.c',
   'src/l0_kernel/stream/cep_stream_effects.c',
   'src/l0_kernel/cep_enzyme_bindings.c',
@@ -72,7 +70,6 @@ l0_srcs = files(
   'src/l0_kernel/cep_heartbeat.c',
   'src/l0_kernel/cep_namepool.c',
   'src/l0_kernel/cep_serialization.c',
-  'src/l0_kernel/cep_error.c',
 )
 
 lib_dependencies = []
@@ -116,8 +113,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_traverse.c',
     'src/test/l0_kernel/test_domain_tag_naming.c',
     'src/test/l0_kernel/test_identifier.c',
-    'src/test/l0_kernel/test_mailroom.c',
-    'src/test/l0_kernel/test_enzyme.c',
+      'src/test/l0_kernel/test_enzyme.c',
     'src/test/l0_kernel/test_heartbeat.c',
     'src/test/l0_kernel/test_stream.c',
     'src/test/l0_kernel/test_serialization.c',
@@ -127,9 +123,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_scheduler_randomized.c',
     'src/test/l0_kernel/test_serialization_randomized.c',
     'src/test/l0_kernel/test_streams_randomized.c',
-    'src/test/l0_kernel/test_error.c',
-    'src/test/l0_kernel/test_rendezvous.c',
-  )
+    )
   test_dependencies = []
   if zip_dep.found()
     test_srcs += files('src/test/l0_kernel/test_stream_zip.c')

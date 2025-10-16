@@ -10,7 +10,6 @@
 #include "cep_heartbeat.h"
 #include "cep_enzyme.h"
 #include "cep_l0.h"
-#include "cep_mailroom.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -473,12 +472,6 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     return MUNIT_OK;
 }
 
-static void heartbeat_wait_for_mailroom_ready(void) {
-    for (unsigned i = 0; i < 8 && !cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_MAILROOM); ++i) {
-        (void)cep_heartbeat_step();
-    }
-}
-
 static void assert_scope_ready(cepLifecycleScope scope, const cepDT* scope_dt) {
     const char* status = lifecycle_status_for(scope_dt);
     if (status) {
@@ -511,24 +504,17 @@ static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_l0_bootstrap());
 
-    cepEnzymeRegistry* registry = cep_heartbeat_registry();
-    munit_assert_not_null(registry);
-    munit_assert_true(cep_mailroom_register(registry));
-
     munit_assert_true(cep_heartbeat_startup());
     munit_assert_true(cep_heartbeat_begin(policy.start_at));
-
-    heartbeat_wait_for_mailroom_ready();
+    munit_assert_true(cep_heartbeat_step());
 
     assert_scope_ready(CEP_LIFECYCLE_SCOPE_KERNEL, CEP_DTAW("CEP", "kernel"));
     assert_scope_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL, CEP_DTAW("CEP", "namepool"));
-    assert_scope_ready(CEP_LIFECYCLE_SCOPE_MAILROOM, CEP_DTAW("CEP", "mailroom"));
 
     munit_assert_true(cep_heartbeat_emit_shutdown());
 
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_KERNEL, CEP_DTAW("CEP", "kernel"));
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_NAMEPOOL, CEP_DTAW("CEP", "namepool"));
-    assert_scope_teardown(CEP_LIFECYCLE_SCOPE_MAILROOM, CEP_DTAW("CEP", "mailroom"));
 
     cep_heartbeat_shutdown();
     return MUNIT_OK;
@@ -546,20 +532,14 @@ static void heartbeat_check_shutdown_case(bool load_layers) {
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_l0_bootstrap());
 
-    cepEnzymeRegistry* registry = cep_heartbeat_registry();
-    munit_assert_not_null(registry);
-    munit_assert_true(cep_mailroom_register(registry));
-
     munit_assert_true(cep_heartbeat_startup());
     munit_assert_true(cep_heartbeat_begin(policy.start_at));
-
-    heartbeat_wait_for_mailroom_ready();
+    munit_assert_true(cep_heartbeat_step());
 
     munit_assert_true(cep_heartbeat_emit_shutdown());
 
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_KERNEL, CEP_DTAW("CEP", "kernel"));
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_NAMEPOOL, CEP_DTAW("CEP", "namepool"));
-    assert_scope_teardown(CEP_LIFECYCLE_SCOPE_MAILROOM, CEP_DTAW("CEP", "mailroom"));
 
     const char* l1_status = lifecycle_status_for(CEP_DTAW("CEP", "l1"));
     const char* l2_status = lifecycle_status_for(CEP_DTAW("CEP", "l2"));
@@ -572,31 +552,6 @@ static void heartbeat_check_shutdown_case(bool load_layers) {
 static MunitResult test_heartbeat_shutdown_sequences(void) {
     heartbeat_check_shutdown_case(false);
     heartbeat_check_shutdown_case(true);
-    return MUNIT_OK;
-}
-
-static MunitResult test_heartbeat_error_scope_ready(void) {
-    test_runtime_shutdown();
-
-    cepHeartbeatPolicy policy = {
-        .start_at = 0u,
-        .ensure_directories = false,
-        .enforce_visibility = false,
-    };
-    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    munit_assert_true(cep_l0_bootstrap());
-
-    munit_assert_true(cep_heartbeat_startup());
-    munit_assert_true(cep_heartbeat_begin(policy.start_at));
-
-    munit_assert_true(cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_ERRORS));
-    if (!cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_ERRORS)) {
-        munit_assert_true(cep_heartbeat_step());
-    }
-
-    assert_scope_ready(CEP_LIFECYCLE_SCOPE_ERRORS, CEP_DTAW("CEP", "err"));
-
-    cep_heartbeat_shutdown();
     return MUNIT_OK;
 }
 
@@ -1108,11 +1063,6 @@ MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fix
     }
 
     result = test_heartbeat_shutdown_sequences();
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_error_scope_ready();
     if (result != MUNIT_OK) {
         return result;
     }

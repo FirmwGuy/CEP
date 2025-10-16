@@ -2,8 +2,7 @@
 set -euo pipefail
 
 # Capture deterministic logs for key kernel behaviours so future refactors
-# have a quick way to compare agenda ordering, mailroom routing, and
-# rendezvous bookkeeping.
+# have a quick way to compare agenda ordering while TODOs cover the new ingest/scheduler work.
 
 script_dir=$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "${script_dir}/.." && pwd)
@@ -33,8 +32,6 @@ fi
 
 declare -a tests=(
     "/CEP/heartbeat"
-    "/CEP/mailroom"
-    "/CEP/rendezvous/ledger_defaults"
 )
 
 for test in "${tests[@]}"; do

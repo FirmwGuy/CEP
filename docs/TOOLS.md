@@ -4,7 +4,7 @@ CEP bundles a handful of helper scripts in `tools/` so you can keep the build ar
 
 ## Technical Details
 - **`tools/capture-fixtures.sh`**  
-  Runs `build/cep_tests.exe` with a fixed seed, archives the full log to `build/fixtures/cep_tests_full.log`, and extracts focussed snippets for the heartbeat, mailroom, and rendezvous suites. Use it before risky refactors to grab a baseline, or after a change to compare the new agenda routing with the saved logs.
+  Runs `build/cep_tests.exe` with a fixed seed, archives the full log to `build/fixtures/cep_tests_full.log`, and extracts focussed heartbeat snippets. Use it before risky refactors to grab a baseline, or after a change to compare the new agenda routing with the saved logs.
 - **`tools/check_unused_tags.py`**  
   Scans `docs/CEP-TAG-LEXICON.md` for tag identifiers and reports which ones do not appear anywhere else in the repository. Handy when extending the lexicon or pruning obsolete entries. Invoke with `python tools/check_unused_tags.py` from the project root.
 - **`tools/fix_doxygen_toc.py`**  
@@ -22,4 +22,4 @@ CEP bundles a handful of helper scripts in `tools/` so you can keep the build ar
 - **Can I run the scripts from outside the repo root?**  
   Most helpers assume the current working directory is the project root so they can resolve relative paths. When in doubt, `cd` into the repository before executing them.
 - **How do I keep fixture logs from growing stale?**  
-  Re-run `tools/capture-fixtures.sh` whenever you intentionally change heartbeat ordering, mailroom routing, or rendezvous defaults, then review and commit the updated files under `build/fixtures/` if they form part of your baseline artefacts.
+  Re-run `tools/capture-fixtures.sh` whenever you intentionally change heartbeat ordering, then review and commit the updated files under `build/fixtures/` if they form part of your baseline artefacts.

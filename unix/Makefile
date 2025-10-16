@@ -44,7 +44,6 @@ endif
 CORE_SRC := $(SRCDIR)/l0_kernel/cep_cell.c \
             $(SRCDIR)/l0_kernel/cep_cell_stream.c \
             $(SRCDIR)/l0_kernel/cep_cell_system.c \
-            $(SRCDIR)/l0_kernel/cep_mailroom.c \
             $(SRCDIR)/l0_kernel/cep_identifier.c \
             $(SRCDIR)/l0_kernel/cep_enzyme.c \
             $(SRCDIR)/l0_kernel/cep_enzyme_bindings.c \
@@ -55,7 +54,6 @@ CORE_SRC := $(SRCDIR)/l0_kernel/cep_cell.c \
             $(SRCDIR)/l0_kernel/stream/cep_stream_effects.c \
             $(SRCDIR)/l0_kernel/stream/cep_stream_stdio.c \
             $(SRCDIR)/enzymes/cep_cell_operations.c \
-            $(SRCDIR)/enzymes/cep_rendezvous.c
 
 ifeq ($(USE_LIBZIP),1)
   CORE_SRC += $(SRCDIR)/l0_kernel/stream/cep_stream_zip.c

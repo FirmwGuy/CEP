@@ -5,11 +5,11 @@ CEP’s kernel (Layer 0) must start, run, and shut down without assuming any h
 
 ## Technical Details
 - **Kernel-first mindset**  
-  - The kernel only guarantees `cep_l0_bootstrap`, heartbeat primitives, the mailroom, and shared services (namepool, journal, storage). All other components are optional.  
+  - The kernel only guarantees `cep_l0_bootstrap`, heartbeat primitives, and shared services (namepool, journal, storage). All other components are optional.  
   - Kernel code and tests must succeed with zero upper-layer state; stubbing or mocking those packs is fine, but never require them for basic coverage.
 
 - **Designing an upper-layer pack**  
-  - Treat the pack as a plugin that calls into public L0 APIs. Its bootstrap should probe for prerequisites (for example, mailroom readiness) and bail out cleanly if unavailable.  
+  - Treat the pack as a plugin that calls into public L0 APIs. Its bootstrap should probe for prerequisites (for example, heartbeat readiness) and bail out cleanly if unavailable.  
   - Registration should be idempotent. Repeated calls must verify existing descriptors or state rather than mutating blindly.  
   - Readiness signals belong to the pack itself (e.g., `/CEP:sig_sys/ready/CEP:coherence`). Emit them only after the pack has prepared its storage and registered enzymes.
 

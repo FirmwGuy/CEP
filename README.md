@@ -158,7 +158,7 @@ See [`docs/CEP.md`](./docs/CEP.md) for the full conceptual framework, glossary, 
 ## Current Implementation Snapshot
 - **L0 Kernel** – Deterministic heartbeats, append-only cell stores, serialization, and stream adapters ship under `src/l0_kernel`.
 - **L1 Coherence** – The enzyme pack in `src/enzymes/cep_l1_coherence.*` manages beings, bonds, contexts, closure debts, indexes, and adjacency mirrors. Reference docs live under `docs/L1_COHERENCE`.
-- **L2 Flows** – Bootstrap/registration helpers (`cep_l2_flows_bootstrap/register`) and the new intent builders in `src/enzymes/cep_l2_flows.*` let you compose definition/niche/instance intents without touching raw mailroom structures. See `docs/L2_FLOW` for integration notes.
+- **L2 Flows** – Bootstrap/registration helpers (`cep_l2_flows_bootstrap/register`) and the new intent builders in `src/enzymes/cep_l2_flows.*` let you compose definition/niche/instance intents without relying on the retired mailroom structures. See `docs/L2_FLOW` for integration notes.
 - **Layers 3–5** – Concepts are documented in `docs/CEP.md`; concrete code is still in planning.
 
 ---

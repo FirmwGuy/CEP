@@ -6,7 +6,6 @@
 
 #include "cep_cell.h"
 #include "cep_l0.h"
-#include "cep_mailroom.h"
 #include "cep_namepool.h"
 
 cepOpCount CEP_OP_COUNT;
@@ -43,7 +42,6 @@ void cep_cell_system_shutdown(void) {
         return;
     }
 
-    cep_mailroom_shutdown();
     cep_cell_finalize_hard(&CEP_ROOT);
     CEP_0(&CEP_ROOT);
     cep_namepool_reset();

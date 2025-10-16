@@ -11,7 +11,7 @@
 
 * **Signals → Enzymes → Work**: register, bind, match, and order enzyme callbacks; how impulses get resolved and executed  .
 * **Serialization & Streams**: emit/ingest chunked cell streams; transactions; manifest & payload; proxy snapshots .
-* **Error Signalling (CEI)**: emit `cep_error_emit()` during kernel or enzyme execution; staged payloads land under `/tmp/err/stage`, the ingestion enzyme writes durable copies to `/data/err/event`, and indexes populate `/data/err/index/{by_level,by_scope,by_code}` for lookups.
+* **Diagnostics**: the legacy CEI channel was retired; capture faults via bespoke enzymes (log to `/journal/sys_log`, raise TODO stubs) until the replacement diagnostics surface ships.
 * **Proxies & Libraries**: represent external resources/streams inside cells  .
 * **Naming & Namepool**: compact Domain/Tag IDs, intern/lookup text names  .
 * **Locking, History & “soft” vs “hard”**: data/store locks, append‑only timelines, snapshot traversals  .
@@ -103,40 +103,29 @@ if (cep_beat_phase() == CEP_BEAT_COMPUTE) {
 
 ### 1.5 L0 bootstrap helper
 
-**In plain words.** `cep_l0_bootstrap()` is the one button that brings the heartbeat, namepool, and mailroom online so higher layers can assume the lobby is ready before they touch anything.
+**In plain words.** `cep_l0_bootstrap()` is the one button that brings the heartbeat and namepool online so higher layers land on a stable base before they touch anything.
 
 **Technical details**
 - `cep_l0_bootstrap()` first ensures the cell system exists, then calls `cep_heartbeat_bootstrap()` to mint `/sys`, `/data`, `/rt`, `/journal`, `/tmp`, and the default enzyme registry.
-- It follows up with `cep_namepool_bootstrap()` so reference identifiers can be interned immediately, and finally `cep_mailroom_bootstrap()` to provision `/data/inbox/**`, ensure `/sys/err_cat` exists, and mirror the namespaces declared under `/sys/err_cat/<scope>/mailroom/buckets`.
+- It follows up with `cep_namepool_bootstrap()` so reference identifiers can be interned immediately.
 - The helper caches its work; subsequent calls return `true` without mutating state unless the cell system has been torn down.
 - `bool cep_cell_system_initialized(void)` tells you whether the low-level cell system is already online, and `void cep_cell_system_ensure(void)` performs the minimum bootstrap if it is not—useful when embedding CEP inside environments with custom startup order.
 
 **Q&A**
-- *Do I call heartbeat or mailroom bootstrap directly anymore?* Not when you have access to `cep_l0_bootstrap()`; call it once at process start (tests included) and higher-level bootstraps will sit atop a consistent base.
+- *Do I call heartbeat directly anymore?* Not when you have access to `cep_l0_bootstrap()`; call it once at process start (tests included) and higher-level bootstraps will sit atop a consistent base.
 - *What if my embedder wants to customise the heartbeat topology?* Configure the heartbeat afterwards with `cep_heartbeat_configure()`—the bootstrap only creates missing roots, it doesn’t lock you out of overrides.
 
-### 1.6 Unified mailroom router
+### 1.6 Ingest responsibilities after the mailroom
 
-Think of the mailroom as the lobby of the runtime: everyone drops their intents at the same desk and the kernel forwards them to the right layer before any work begins.
-
-**Technical details**
-
-- `cep_mailroom_bootstrap()` provisions `/data/inbox/**`, ensures `/sys/err_cat` exists, and mirrors whatever namespaces/buckets the catalog publishes under `mailroom/buckets` instead of writing error codes itself. Deployments that rely on upper-layer packs can seed additional namespaces (e.g., `coh`, `flow`) through the catalog or `cep_mailroom_add_namespace()`.
-- `cep_mailroom_register()` installs the `mr_route` enzyme on `CEP:sig_cell/op_add`, inserts it before any ingest descriptors queued via `cep_mailroom_add_router_before()`, and keeps registration idempotent so pack-specific ingest enzymes always run after routing.
-- Routed intents keep an audit trail: the mailroom stages work in place with `cep_txn_begin/commit`, keeps the branch veiled until commit, then lifts the veil under `/data/<ns>/inbox/<bucket>/<txn>`. Commit leaves an audit link behind, updates `meta/txn/state` to `committed`, and guarantees the shared header (`original/*`, `outcome`, `meta/parents`) exists.
-- Packs that need to seed requests programmatically can call `cep_mailroom_stage_request()`; it wraps the same transactional staging the router uses, returning the published cell once the audit link lands and the request is visible to default traversal.
-- You can extend the router by adding new namespace buckets or compatibility shims (for a transition period, link legacy inbox paths into the mailroom so producers can keep using old entrypoints).
-- `void cep_mailroom_shutdown(void)` tears down the staged router state so subsequent bootstraps rebuild the lobby from scratch; invoke it during orderly shutdowns once no more intents are enqueued.
-
-#### 1.6.1 Mailroom extension helpers
-
-Sometimes you need the lobby to recognise brand new tenants. The two helper functions below let integrators register additional namespaces or slot custom enzymes ahead of the router without touching the built-in wiring.
+**In plain words.** Layer 0 no longer runs a shared lobby. Route intents inside your own pack bootstraps and keep transactional staging close to the data you own.
 
 **Technical details**
-- `bool cep_mailroom_add_namespace(const char* namespace_tag, const char* const bucket_tags[], size_t bucket_count)`<br>
-  Adds (or extends) a namespace under `/data/inbox/<namespace_tag>/` and mirrors the same buckets under `/data/<namespace_tag>/inbox/`. Call it before `cep_mailroom_bootstrap()` so the inbox hierarchy is created during bootstrap. Repeated calls are idempotent: duplicates are ignored and newly-added buckets are seeded immediately if the mailroom already bootstrapped. Passing `bucket_count==0` skips work; otherwise each entry in `bucket_tags` must be a valid lexicon tag.
-- `bool cep_mailroom_add_router_before(const char* enzyme_tag)`<br>
-  Queues a descriptor name to be inserted into the mailroom router's `before` list the next time `cep_mailroom_register()` runs. Use this when your pack needs routing to happen ahead of additional ingest enzymes (for example, a custom pack that adds extra ingest stages). The helper validates uniqueness, so you can register the same tag repeatedly while building layered packs.
+- Register pack-specific routing enzymes ahead of ingest descriptors when you still need a lobby-style fan-out. Reuse the `cep_txn_*` helpers if you require veiled staging before grafting requests.
+- When you remove legacy mailroom calls, leave a `TODO` near any temporary no-op stub so downstream refactors can wire the new dispatcher explicitly.
+
+**Q&A**
+- *What replaced `cep_mailroom_stage_request()`?* Nothing in the kernel. Copy the staging pattern into your own pack (or wrap it as a helper) so the new ingress path remains explicit.
+- *Can I keep `cep_mailroom_*` calls around for compatibility?* No—the APIs are gone. Replace them with pack-owned routers or direct writes into the correct inbox cells.
 
 ### 1.7 Identifier composer helper
 
@@ -148,7 +137,7 @@ Sometimes you need the lobby to recognise brand new tenants. The two helper func
 - If any token is `NULL`, reduces to empty after trimming, or contains a disallowed character, the helper returns `false` without touching the buffer.
 
 **Q&A**
-- *When should I prefer this over the layer-specific macros?* Use `cep_compose_identifier()` any time you need plain L0 naming (for example, mailroom buckets or diagnostics). Pack-specific convenience macros (for example, a coherence helper) still make sense when you are operating entirely inside that schema.
+- *When should I prefer this over the layer-specific macros?* Use `cep_compose_identifier()` any time you need plain L0 naming (for example, error buckets or diagnostics). Pack-specific convenience macros (for example, a coherence helper) still make sense when you are operating entirely inside that schema.
 - *Can I feed the result into the namepool?* Yes. Once composed, hand it to `cep_namepool_intern_cstr()` (or the layer helpers) to obtain a stable `cepID` if you need to reuse the identifier frequently.
 
 ### 1.8 Heartbeat runtime accessors
@@ -186,8 +175,8 @@ cep_dict_add_value(&branch, CEP_DTAW("CEP", "state"), CEP_DTAW("CEP", "text"),
                    "pending", sizeof("pending"), sizeof("pending"));
 
 /* 2. Attach the finished branch in one step. */
-cepCell* ledger = cep_rv_ledger_root();
-cep_cell_add(ledger, 0u, &branch);
+cepCell* target = cep_heartbeat_data_root();
+cep_cell_add(target, 0u, &branch);
 
 /* 3. Drop the temporary shell now that the branch is grounded. */
 cep_cell_finalize(&branch);
@@ -199,7 +188,7 @@ cep_cell_finalize(&branch);
 - Populate children with the dictionary/list APIs (`cep_dict_add_value`, `cep_dict_add_dictionary`, `cep_cell_copy_children`, …). If any step fails, call `cep_cell_finalize`/`cep_cell_finalize_hard` before returning; no visible state was changed yet.
 - When the branch is ready, attach it with `cep_cell_add`, `cep_dict_add`, or the append helpers. Make sure the destination already exposes a writable store (`cep_cell_ensure_dictionary_child` is the usual guard) so append-only guarantees stay intact.
 - Replacing or removing anchored nodes must go through the store helpers (`cep_cell_remove_hard`, `cep_store_replace_child`). Never keep raw child pointers across mutations—look them up again by path.
-- References: the append-only rules live in `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md`; the rendezvous ledger is a concrete example in `docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md`.
+- References: the append-only rules live in `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md`.
 
 ---
 
@@ -524,7 +513,7 @@ if (!cep_txn_commit(&txn)) {
 
 ## 8) Integration guidance & gotchas
 
-* **Rendezvous refresh.** Call `cep_rendezvous_register()` during your bootstrap so `rv_init` seeds defaults and `rv_route` mirrors completions into `/data/inbox/flow/inst_event`. Build specs off-tree with `cep_rv_prepare_spec()`, then let `cep_rv_spawn()`/`cep_rv_report()` stage ledger updates in floating dictionaries before grafting so the heartbeat clears `event_flag` markers without mutating `/data/rv` mid-flight.
+* **Rendezvous refresh (retired).** The rendezvous helpers were removed; strip old registration calls and leave a `TODO` where a replacement scheduler still needs to land.
 * **Don’t mutate mid‑beat registrations.** Register enzymes freely, but let CEP **activate** them between beats (`activate_pending`) to avoid agenda drift .
 * **Prefer soft deletes** for observability; reserve hard deletes for GC or error recovery workflows. Past traversals depend on timestamps and history lists .
 * **Respect locks**. Both **data** and **store** locks check the *entire ancestor chain*; if anything is locked above, mutations are denied to keep invariants intact  .
@@ -538,7 +527,7 @@ if (!cep_txn_commit(&txn)) {
 Heartbeat init/shutdown pulses now mirror production beats, so tooling and tests can treat them as first-class events instead of ad-hoc bootstrap helpers.
 
 ### Technical details
-- Call `cep_heartbeat_begin()` right after `cep_heartbeat_configure()` when you want the system-init cascade; follow it with `cep_heartbeat_step()` so `mr_init`, `rv_init`, and any pack-specific init descriptors you registered actually execute.
+- Call `cep_heartbeat_begin()` right after `cep_heartbeat_configure()` when you want the system-init cascade; follow it with `cep_heartbeat_step()` so any pack-specific init descriptors you registered actually execute.
 - `cep_heartbeat_emit_shutdown()` enqueues the shutdown signal on the live agenda, runs the same commit path as a normal beat, and writes a short breadcrumb even when directory logging stays disabled.
 - Each bootstrap helper now marks its subsystem as ready by writing to `/sys/state/<scope>` (`status=ready`, `ready_beat=<n>`) and emitting `CEP:sig_sys/ready/<scope>`. Shutdown walks the scopes in reverse dependency order, records `status=teardown` / `td_beat`, emits `CEP:sig_sys/teardown/<scope>`, and finally logs the traditional `shutdown` pulse.
 - The `/sys/state` dictionary is durable, so tooling can poll readiness/teardown even if the corresponding impulses have already been consumed; readiness helpers return `false` if prerequisites have not finished booting.
@@ -555,10 +544,9 @@ Heartbeat init/shutdown pulses now mirror production beats, so tooling and tests
 
 - *Do I need to call the phase helpers manually?* No. They are wired into `cep_heartbeat_resolve_agenda()` and `cep_heartbeat_stage_commit()`. Manual calls are only for bespoke schedulers.
 - *What happens to mid-beat registrations?* They are counted and deferred; the agenda for the current beat never mutates.
-- *When should I call `cep_mailroom_add_namespace()` and `cep_mailroom_add_router_before()`?* During your pack’s bootstrap or registration sequence—before you invoke `cep_mailroom_bootstrap()`/`cep_mailroom_register()`—so the mailroom sees the extra namespaces and dependency edges on the first beat.
-- *What happens if the mailroom already bootstrapped?* `cep_mailroom_add_namespace()` retrofits the new buckets immediately, while `cep_mailroom_add_router_before()` stores the dependency and applies it the next time the mailroom registers; you can safely call them on every initialisation pass.
-- *Do I still call pack bootstraps?* Yes. The mailroom only handles ingress; any optional pack must still run its own bootstrap to provision ledgers, inboxes, or indexes.
-- *What happens if the downstream inbox is missing?* The router aborts the move, leaves the original intent under `/data/inbox`, and returns `CEP_ENZYME_FATAL` so tests catch the misconfiguration.
+- *What should I do with old `cep_mailroom_*` calls?* Delete them. Register pack-owned routing enzymes or write directly into your target inboxes, and leave a `TODO` where replacements still need to land.
+- *How do I stage intents safely without the mailroom?* Wrap your writes with `cep_txn_begin()`/`cep_txn_commit()` (or an equivalent helper) inside your pack so veiled staging and audit links stay explicit.
+- *Do I still call pack bootstraps?* Yes. Each optional pack must provision its own ledgers, inboxes, or indexes before handling impulses.
 - *How do I disable the automatic beat stamp in serialization?* Supply your own `cepSerializationHeader` with `journal_metadata_present = false` (and your own metadata) or set the boolean to `false` before invoking `cep_serialization_emit_cell()`.
 - *What toggles `journal_decision_replay`?* Higher layers set it when replaying stored decisions; the kernel preserves the advisory flag during round-trips.
 - *Do parent links survive hard deletes?* They are regular links, so removing the parent turns them into shadow entries flagged via the existing link lifecycle—useful when diagnosing stale references.

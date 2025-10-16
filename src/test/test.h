@@ -35,7 +35,6 @@ void        test_traverse_tear_down(void* fixture);
 
 MunitResult test_domain_tag_naming(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_identifier(const MunitParameter params[], void* user_data_or_fixture);
-MunitResult test_mailroom(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_enzyme_setup(const MunitParameter params[], void* user_data);
@@ -47,11 +46,6 @@ MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fix
 MunitResult test_serialization(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization_proxy(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_fixture);
-MunitResult test_error_emit_kernel(const MunitParameter params[], void* user_data_or_fixture);
-MunitResult test_error_emit_enzyme(const MunitParameter params[], void* user_data_or_fixture);
-MunitResult test_rendezvous_defaults(const MunitParameter params[], void* user_data_or_fixture);
-MunitResult test_rendezvous_heartbeat_pipeline(const MunitParameter params[], void* user_data_or_fixture);
-MunitResult test_rendezvous_kill_and_timeout(const MunitParameter params[], void* user_data_or_fixture);
 #ifdef CEP_HAS_LIBZIP
 MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fixture);
 #endif

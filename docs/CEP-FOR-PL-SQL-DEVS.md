@@ -16,17 +16,17 @@ If you know how to keep Oracle packages humming, you already understand most of 
   - `cep_enzyme_register()` installs the descriptor (metadata + before/after dependencies) and `cep_cell_bind_enzyme()` is your synonym for “attach this procedure to that schema object.” Because the heartbeat resolves enzyme graphs ahead of execution, circular dependencies are surfaced as soon as you register.
 
 - **Mailroom as message queue**
-  - `/data/inbox/**` is the shared queue that replaces your polling tables. `mr_route` now stages requests with `cep_txn_*`, keeps them veiled while headers are populated, clones them into per-namespace inboxes (`/data/flow/inbox/**`, `/data/coh/inbox/**`), and enriches them with standard headers (`original`, `outcome`, `meta/parents`, `meta/txn/state`). If you ever built an `INBOUND_REQUESTS` table with triggers to fan out work, the mailroom is the hardened version of that pattern.
+  - The old `/data/inbox/**` lobby was removed. Packs that still need a fan-out queue must register their own routing enzymes (reuse `cep_txn_*` if you want the same veiled staging) and leave a `TODO` while the new dispatcher is under construction.
 
 - **Namepool vs. dictionary tables**
   - Instead of `USER_OBJECTS`, CEP tracks identifiers through `cep_namepool_*` helpers. Interpreting a `CEP_NAMING_REFERENCE` is similar to looking up a `NAME_ID` in a support table. Use the namepool when your identifiers exceed the 11-character word limit or when you need glob-aware patterns (`CEP_ID_GLOB_MULTI`).
 
 - **Error handling and CEI**
-  - CEI (CEP Error Impulses) emits failures with `cep_error_emit()`. Entries stage under `/tmp/err/stage`, ingest into `/data/err/event/<id>`, and are indexed by level, scope, and code under `/data/err/index`. Replace your `raise_application_error` calls with CEI so clients can query by the same keys they would in PL/SQL diagnostic tables.
+  - The legacy CEI (CEP Error Impulses) channel was removed. Route diagnostics through your own enzymes (for example, append summaries under `/journal/sys_log`) and leave a `TODO` until the replacement surface arrives.
 
 - **Replacing packages**
   - Migrate package state by modelling it as a subtree under `/data/<package>` with child stores for configuration, caches, and derived facts. Package procedures map to enzymes and helper functions map to plain C utilities that operate on cells.
-  - Declarative policies (timeouts, kill modes, grace periods) live alongside rendezvous entries. What used to be a `DBMS_SCHEDULER` job becomes a rendezvous entry with `due`, `deadline`, and `grace_*` fields.
+  - The rendezvous scheduler was removed. Model long-running jobs inside your own pack (for now leave a `TODO` where a replacement needs to schedule beats).
 
 - **Testing mind-set**
   - Unit tests ship with the repository (see `src/test/l0_kernel`) and rely on munit. Harness helpers such as `test_boot_cycle_prepare` mimic packages that rerun initialization blocks. When you need a PL/SQL-like fixture (set up schema, run procedure, assert tables), use the heartbeat boot helpers, mutate the tree, and inspect `/data/**` or `/journal/**`.
@@ -36,13 +36,13 @@ If you know how to keep Oracle packages humming, you already understand most of 
 
 ## Q&A
 - **Can I still rely on declarative constraints?**  
-  CEP layer zero does not enforce SQL constraints. You model invariants with enzymes, rendezvous policies, or upper-layer packs. Think of it as moving from `ALTER TABLE ... ADD CONSTRAINT` to deterministic hooks that run each beat.
+  CEP layer zero does not enforce SQL constraints. You model invariants with enzymes or upper-layer packs. Think of it as moving from `ALTER TABLE ... ADD CONSTRAINT` to deterministic hooks that run each beat.
 
 - **Where do I log?**  
-  Use `cep_mailroom_report_catalog_issue` or bespoke enzymes that append to `/journal/sys_log`. Since every mutation is already journaled, avoid extra tables for audit trails unless you need a different projection.
+  Emit diagnostics with bespoke enzymes that append to `/journal/sys_log`. Since every mutation is already journaled, avoid extra tables for audit trails unless you need a different projection.
 
 - **How do I run something at startup like an `AFTER STARTUP` trigger?**  
-  Register an enzyme on `CEP:sig_sys/init`. The heartbeat queues the signal on the first beat and your enzyme can prime caches or seed mailroom namespaces before other work begins.
+  Register an enzyme on `CEP:sig_sys/init`. The heartbeat queues the signal on the first beat, giving you a clean hook to prime caches or seed pack-specific namespaces before other work begins.
 
 - **What happens to long transactions or session state?**  
   Break them into deterministic beats. Rendezvous entries encapsulate long-running external work and hold state between beats (deadline, telemetry, completion status). Session buffers can live under `/rt/beat/<n>` or `/tmp/**` depending on durability needs.

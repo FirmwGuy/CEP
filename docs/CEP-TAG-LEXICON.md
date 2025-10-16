@@ -44,11 +44,8 @@ when a new behavior needs a fresh word before it lands in code.
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `inbox` | core | captured impulses queued for the current beat. |
 | `sig_sys` | core | System-level signal namespace emitted during lifecycle hooks. |
-| `sig_err` | ops | Error impulse namespace emitted by CEI and kernel diagnostics. |
 | `init` | core | System init signal tag that bootstraps higher layers. |
 | `shutdown` | core | System shutdown signal tag emitted before teardown. |
-| `mr_route` | ops | routing enzyme that moves unified inbox entries into layer inboxes. |
-| `mr_init` | ops | Mailroom bootstrap enzyme bound to the system init signal. |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |
 | `lib` | core | library snapshot directory for proxied streams. |
@@ -65,18 +62,12 @@ when a new behavior needs a fresh word before it lands in code.
 | `rt` | core | runtime staging root holding beat journals. |
 | `stage` | core | per-beat stage log recording committed mutations. |
 | `stream-log` | core | runtime log for stream adapters. |
-| `event` | core | CEI event ledger stored under `/data/err/event`. |
-| `index` | core | CEI index dictionary under `/data/err/index`. |
-| `by_level` | core | CEI index bucket keyed by severity level. |
-| `by_scope` | core | CEI index bucket keyed by emitting scope. |
-| `by_code` | core | CEI index bucket keyed by canonical error code. |
 | `sys_log` | core | journal list recording system init/shutdown signal emissions. |
 | `sys` | core | system namespace with counters and configuration. |
 | `ready` | core | lifecycle readiness marker recorded under `/sys/state/<scope>`. |
 | `teardown` | core | lifecycle teardown marker recorded under `/sys/state/<scope>`. |
 | `ready_beat` | core | beat index captured when a scope emitted its ready signal. |
 | `td_beat` | core | beat index captured when a scope entered teardown. |
-| `err_cat` | core | dictionary of canonical error codes referenced by outcomes. |
 | `text` | core | namepool payload store for textual data. |
 | `tmp` | core | scratch list reserved for tooling. |
 | `emit_kind` | core | CEI payload field identifying the emitter category. |
@@ -88,7 +79,6 @@ when a new behavior needs a fresh word before it lands in code.
 | `arg_deep` / `arg_pos` / `arg_prepend` | ops | parameters accepted by cell-operation enzymes. |
 | `enz_add` / `enz_cln` / `enz_del` / `enz_mov` / `enz_upd` | ops | canonical enzyme descriptors registered at bootstrap. |
 | `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | ops | operation identifiers emitted by `sig_cell` payloads. |
-| `err_ing` | ops | CEI ingestion enzyme bound to `sig_err/*`. |
 | `role_parnt` / `role_source` / `role_subj` / `role_templ` | ops | role vocabulary consumed by mutation enzymes. |
 | `sig_cell` | ops | signal namespace for kernel cell operations. |
 
@@ -127,35 +117,6 @@ when a new behavior needs a fresh word before it lands in code.
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |
 | `flow` | core | Reserved `/data/flow` root for future upper-layer packs that orchestrate long-running flows. The kernel keeps the tag so external tooling can prepare namespaces in advance. |
-#### Rendezvous Tags
-| Tag / Pattern | Status | Purpose |
-| --- | --- | --- |
-| `rv` | core | Rendezvous ledger root stored under `/data`. |
-| `prof` | core | Rendezvous profile identifier captured on ledger entries. |
-| `spawn_beat` | core | Beat when a rendezvous job was created. |
-| `due` | core | Beat when the rendezvous is due. |
-| `due_off` | core | Relative due offset expressed in beats. |
-| `deadline` | core | Hard beat deadline recorded on ledger entries. |
-| `deadl_off` | core | Deadline offset applied relative to the due beat. |
-| `ready_beat` | core | Beat when a rendezvous entered the ready state. |
-| `applied_bt` | core | Beat when a rendezvous outcome was applied. |
-| `epoch_k` | core | Rendezvous cadence interval for periodic jobs. |
-| `input_fp` | core | Fingerprint of rendezvous inputs and code. |
-| `cas_hash` | core | Content-addressed hash for rendezvous payloads staged in CAS. |
-| `state` | core | Current rendezvous state (`pending`, `ready`, etc.). |
-| `on_miss` | core | Policy captured for rendezvous misses. |
-| `grace_delta` | core | Beat delta applied when extending a rendezvous via grace. |
-| `grace_used` | core | Number of grace extensions already consumed. |
-| `max_grace` | core | Maximum number of grace extensions allowed. |
-| `kill_mode` | core | Kill policy recorded for rendezvous cancellation. |
-| `kill_wait` | core | Beats to wait before enforcing a kill request. |
-| `signal_path` | core | Rendezvous signal path used to wake waiting instances. |
-| `telemetry` | core | Telemetry dictionary copied from rendezvous workers. |
-| `event_flag` | core | Marker used by the kernel to queue a single rendezvous completion event per state change. |
-| `defaults` | core | Profile-specific fallback parameters attached to rendezvous specs. |
-| `rv_init` | ops | Rendezvous bootstrap enzyme triggered during system init. |
-| `rv_route` | ops | Enzyme that mirrors rendezvous completions into `/data/inbox/flow/inst_event`. |
-
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor
   declarations. Emitting them outside the heartbeat dispatcher is undefined.

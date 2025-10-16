@@ -218,13 +218,13 @@ Wrap an external stream behind a library binding. Your `cepLibraryOps` implement
 
 ### F) Rendezvous, pipelines, and threads
 
-Rendezvous give flows a deterministic staging area for long-running or parallel work. The helper APIs in `cep_rendezvous.h` cover spec preparation, spawn/reschedule/kill/report, and the capture/commit enzymes. Entries live under `/data/rv/{key}` with the documented fields (`prof`, `spawn_beat`, `due`, `epoch_k`, `input_fp`, `cas_hash`, `state`, `on_miss`, `grace_delta`, `max_grace`, `deadline`, `kill_mode`, `kill_wait`, `telemetry/*`). Wait steps subscribe to the rendezvous signal path (`CEP:sig_rv/<key>`), and the rv→flow bridge emits instance events when `state` reaches `applied`, `timeout`, or `killed`. See `docs/L0_KERNEL/topics/RENDEZVOUS-AND-THREADING.md` for details on profiles (`rv-fixed`, `rv-epoch`, `rv-cas`, `observer`, `spec`), ledger expectations, and pipeline integration.
+Rendezvous used to provide a deterministic staging area for long-running work; the feature has been retired. Remove old `cep_rendezvous_*` calls and leave a `TODO` where a replacement scheduler still needs to land.
 
 ---
 
 ### G) Mailroom and layer mailboxes
 
-Every intent hits the mailroom before layer ingest enzymes run. `cep_mailroom_bootstrap()` provisions `/data/inbox/**`, mirrors the namespaces described under `/sys/err_cat/<scope>/mailroom/buckets`, and `cep_mailroom_register()` installs the `mr_route` enzyme so routing happens ahead of ingest packs. Helpers such as `cep_mailroom_add_namespace()` and `cep_mailroom_add_router_before()` let you extend the lobby with extra mailboxes or enforce custom routing order. See `docs/L0_KERNEL/topics/MAILROOM-AND-MAILBOXES.md` for namespace examples, catalog expectations, and audit-trail behavior.
+Layer-specific packs now route intents themselves; the shared mailroom was removed. Register your own routing enzymes (or write directly into pack inboxes) and document the new path with a `TODO` if the replacement router has not landed yet.
 
 ---
 

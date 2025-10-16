@@ -11,10 +11,6 @@
 #include "test.h"
 
 
-static MunitParameterEnum timeout_params[] = {
-    {"timeout", NULL},
-    {NULL, NULL}
-};
 
 static char* boot_cycle_values[] = {
     TEST_BOOT_CYCLE_FRESH,
@@ -38,14 +34,6 @@ static MunitParameterEnum boot_cycle_text_params[] = {
     {"text", NULL},
     {NULL, NULL}
 };
-
-static MunitParameterEnum boot_cycle_stdio_params[] = {
-    {"boot_cycle", boot_cycle_values},
-    {"stdio", NULL},
-    {NULL, NULL}
-};
-
-
 
 
 MunitTest tests[] = {
@@ -82,38 +70,6 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
-        "/mailroom",
-        test_mailroom,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_timeout_params
-    },
-    {
-        "/rendezvous/defaults/after_reboot",
-        test_rendezvous_defaults,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_timeout_params
-    },
-    {
-        "/rendezvous/pipeline",
-        test_rendezvous_heartbeat_pipeline,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_timeout_params
-    },
-    {
-        "/rendezvous/kill_timeout",
-        test_rendezvous_kill_and_timeout,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_timeout_params
-    },
-    {
         "/heartbeat",
         test_heartbeat,
         NULL,
@@ -136,22 +92,6 @@ MunitTest tests[] = {
         NULL,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
-    },
-    {
-        "/error/kernel",
-        test_error_emit_kernel,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_timeout_params
-    },
-    {
-        "/error/enzyme",
-        test_error_emit_enzyme,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_timeout_params
     },
     {
         "/stream/stdio",

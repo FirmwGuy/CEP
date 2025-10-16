@@ -6,10 +6,8 @@
 
 #include "cep_heartbeat.h"
 #include "cep_heartbeat_internal.h"
-#include "cep_mailroom.h"
 #include "cep_namepool.h"
 #include "../enzymes/cep_cell_operations.h"
-#include "cep_rendezvous.h"
 #include "stream/cep_stream_internal.h"
 
 #include <string.h>
@@ -36,8 +34,6 @@ static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
 
 CEP_DEFINE_STATIC_DT(dt_scope_kernel,   CEP_ACRO("CEP"), CEP_WORD("kernel"));
 CEP_DEFINE_STATIC_DT(dt_scope_namepool, CEP_ACRO("CEP"), CEP_WORD("namepool"));
-CEP_DEFINE_STATIC_DT(dt_scope_mailroom, CEP_ACRO("CEP"), CEP_WORD("mailroom"));
-CEP_DEFINE_STATIC_DT(dt_scope_err,      CEP_ACRO("CEP"), CEP_WORD("err"));
 CEP_DEFINE_STATIC_DT(dt_scope_l1,       CEP_ACRO("CEP"), CEP_WORD("l1"));
 CEP_DEFINE_STATIC_DT(dt_scope_l2,       CEP_ACRO("CEP"), CEP_WORD("l2"));
 CEP_DEFINE_STATIC_DT(dt_signal_sys,     CEP_ACRO("CEP"), CEP_WORD("sig_sys"));
@@ -86,24 +82,13 @@ typedef struct {
 static const cepLifecycleScope CEP_SCOPE_DEPS_NAMEPOOL[] = {
     CEP_LIFECYCLE_SCOPE_KERNEL,
 };
-static const cepLifecycleScope CEP_SCOPE_DEPS_MAILROOM[] = {
-    CEP_LIFECYCLE_SCOPE_KERNEL,
-    CEP_LIFECYCLE_SCOPE_NAMEPOOL,
-};
-static const cepLifecycleScope CEP_SCOPE_DEPS_ERRORS[] = {
-    CEP_LIFECYCLE_SCOPE_KERNEL,
-    CEP_LIFECYCLE_SCOPE_NAMEPOOL,
-    CEP_LIFECYCLE_SCOPE_MAILROOM,
-};
 static const cepLifecycleScope CEP_SCOPE_DEPS_L1[] = {
     CEP_LIFECYCLE_SCOPE_KERNEL,
     CEP_LIFECYCLE_SCOPE_NAMEPOOL,
-    CEP_LIFECYCLE_SCOPE_MAILROOM,
 };
 static const cepLifecycleScope CEP_SCOPE_DEPS_L2[] = {
     CEP_LIFECYCLE_SCOPE_KERNEL,
     CEP_LIFECYCLE_SCOPE_NAMEPOOL,
-    CEP_LIFECYCLE_SCOPE_MAILROOM,
     CEP_LIFECYCLE_SCOPE_L1,
 };
 
@@ -119,18 +104,6 @@ static const cepLifecycleScopeInfo CEP_LIFECYCLE_SCOPE_INFO[CEP_LIFECYCLE_SCOPE_
         .scope_dt = dt_scope_namepool,
         .dependencies = CEP_SCOPE_DEPS_NAMEPOOL,
         .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_NAMEPOOL),
-    },
-    [CEP_LIFECYCLE_SCOPE_MAILROOM] = {
-        .label = "mailroom",
-        .scope_dt = dt_scope_mailroom,
-        .dependencies = CEP_SCOPE_DEPS_MAILROOM,
-        .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_MAILROOM),
-    },
-    [CEP_LIFECYCLE_SCOPE_ERRORS] = {
-        .label = "err",
-        .scope_dt = dt_scope_err,
-        .dependencies = CEP_SCOPE_DEPS_ERRORS,
-        .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_ERRORS),
     },
     [CEP_LIFECYCLE_SCOPE_L1] = {
         .label = "l1",
@@ -150,8 +123,6 @@ static cepLifecycleScopeState CEP_LIFECYCLE_STATE[CEP_LIFECYCLE_SCOPE_COUNT];
 static const cepLifecycleScope CEP_LIFECYCLE_TEARDOWN_ORDER[] = {
     CEP_LIFECYCLE_SCOPE_L2,
     CEP_LIFECYCLE_SCOPE_L1,
-    CEP_LIFECYCLE_SCOPE_ERRORS,
-    CEP_LIFECYCLE_SCOPE_MAILROOM,
     CEP_LIFECYCLE_SCOPE_NAMEPOOL,
     CEP_LIFECYCLE_SCOPE_KERNEL,
 };
@@ -1613,10 +1584,6 @@ bool cep_heartbeat_resolve_agenda(void) {
         cep_enzyme_registry_activate_pending(CEP_RUNTIME.registry);
     }
 
-    if (!cep_rv_commit_apply()) {
-        return false;
-    }
-
     cep_lifecycle_flush_pending_signals();
 
     return cep_heartbeat_process_impulses();
@@ -1730,7 +1697,6 @@ void cep_beat_note_deferred_activation(size_t count) {
 void cep_beat_begin_capture(void) {
     CEP_RUNTIME.phase = CEP_BEAT_CAPTURE;
     CEP_RUNTIME.deferred_activations = 0u;
-    (void)cep_rv_capture_scan();
 }
 
 
