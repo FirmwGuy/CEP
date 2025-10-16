@@ -16,7 +16,7 @@ If you know how to keep Oracle packages humming, you already understand most of 
   - `cep_enzyme_register()` installs the descriptor (metadata + before/after dependencies) and `cep_cell_bind_enzyme()` is your synonym for “attach this procedure to that schema object.” Because the heartbeat resolves enzyme graphs ahead of execution, circular dependencies are surfaced as soon as you register.
 
 - **Mailroom as message queue**
-  - `/data/inbox/**` is the shared queue that replaces your polling tables. `mr_route` clones requests into per-namespace inboxes (`/data/flow/inbox/**`, `/data/coh/inbox/**`) and enriches them with standard headers (`original`, `outcome`, `meta/parents`). If you ever built an `INBOUND_REQUESTS` table with triggers to fan out work, the mailroom is the hardened version of that pattern.
+  - `/data/inbox/**` is the shared queue that replaces your polling tables. `mr_route` now stages requests with `cep_txn_*`, keeps them veiled while headers are populated, clones them into per-namespace inboxes (`/data/flow/inbox/**`, `/data/coh/inbox/**`), and enriches them with standard headers (`original`, `outcome`, `meta/parents`, `meta/txn/state`). If you ever built an `INBOUND_REQUESTS` table with triggers to fan out work, the mailroom is the hardened version of that pattern.
 
 - **Namepool vs. dictionary tables**
   - Instead of `USER_OBJECTS`, CEP tracks identifiers through `cep_namepool_*` helpers. Interpreting a `CEP_NAMING_REFERENCE` is similar to looking up a `NAME_ID` in a support table. Use the namepool when your identifiers exceed the 11-character word limit or when you need glob-aware patterns (`CEP_ID_GLOB_MULTI`).

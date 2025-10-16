@@ -9,6 +9,7 @@
 #include "cep_heartbeat.h"
 #include <stdbool.h>
 #include <string.h>
+#include <stdio.h>
 
 static cepDT mailroom_dt_from_text(const char* text);
 static int mailroom_stub_noop(const cepPath* signal, const cepPath* target) {
@@ -218,6 +219,77 @@ MunitResult test_mailroom(const MunitParameter params[], void* fixture) {
         cepCell* ops_ns = mailroom_expect_dictionary(inbox_root, "ops");
         mailroom_expect_dictionary(ops_ns, "ingest");
         mailroom_expect_dictionary(ops_ns, "audit");
+
+        cepCell* coh_layer = mailroom_ensure_dictionary(data_root, "coh");
+        cepCell* coh_layer_inbox = mailroom_ensure_dictionary(coh_layer, "inbox");
+        cepCell* coh_layer_bucket = mailroom_ensure_dictionary(coh_layer_inbox, "be_create");
+        cepCell* intent_bucket = mailroom_expect_dictionary(coh_ns, "be_create");
+
+        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+
+        cepDT stage_name = mailroom_dt_from_text("stage_ok");
+        cepCell* stage_req = cep_dict_add_dictionary(intent_bucket, &stage_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        munit_assert_not_null(stage_req);
+        cepCell* stage_original = mailroom_ensure_dictionary(stage_req, "original");
+        cepCell* stage_payload = mailroom_ensure_dictionary(stage_original, "payload");
+        munit_assert_true(cep_cell_put_text(stage_payload, CEP_DTAW("CEP", "value"), "42"));
+
+        cepDT coh_ns_dt = mailroom_dt_from_text("coh");
+        cepDT be_create_dt = mailroom_dt_from_text("be_create");
+
+        cepCell* staged = NULL;
+        munit_assert_true(cep_mailroom_stage_request(intent_bucket,
+                                                     coh_layer_bucket,
+                                                     &coh_ns_dt,
+                                                     &be_create_dt,
+                                                     &stage_name,
+                                                     stage_req,
+                                                     &staged));
+        munit_assert_not_null(staged);
+        munit_assert_ptr_equal(staged, cep_cell_find_by_name(coh_layer_bucket, &stage_name));
+        munit_assert_true(!cep_cell_is_veiled(staged));
+
+        const char* staged_outcome = (const char*)cep_cell_data_find_by_name(staged, CEP_DTAW("CEP", "outcome"));
+        munit_assert_not_null(staged_outcome);
+        munit_assert_string_equal(staged_outcome, "pending");
+
+        cepCell* staged_original = cep_cell_find_by_name(staged, CEP_DTAW("CEP", "original"));
+        munit_assert_not_null(staged_original);
+        cepCell* staged_payload = cep_cell_find_by_name(staged_original, CEP_DTAW("CEP", "payload"));
+        munit_assert_not_null(staged_payload);
+        const char* staged_value = (const char*)cep_cell_data_find_by_name(staged_payload, CEP_DTAW("CEP", "value"));
+        munit_assert_not_null(staged_value);
+        munit_assert_string_equal(staged_value, "42");
+
+        cepCell* audit_entry = cep_cell_find_by_name(intent_bucket, &stage_name);
+        munit_assert_not_null(audit_entry);
+        munit_assert_true(cep_cell_is_link(audit_entry));
+        munit_assert_ptr_equal(cep_link_pull(audit_entry), staged);
+
+        cep_cell_remove_hard(audit_entry, NULL);
+        cep_cell_remove_hard(staged, NULL);
+
+        cepDT conflict_name = mailroom_dt_from_text("stage_conflict");
+        cepCell* conflict_req = cep_dict_add_dictionary(intent_bucket, &conflict_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        munit_assert_not_null(conflict_req);
+        cepCell* conflict_existing = cep_dict_add_dictionary(coh_layer_bucket, &conflict_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        munit_assert_not_null(conflict_existing);
+
+        cepCell* conflict_result = NULL;
+        munit_assert_false(cep_mailroom_stage_request(intent_bucket,
+                                                      coh_layer_bucket,
+                                                      &coh_ns_dt,
+                                                      &be_create_dt,
+                                                      &conflict_name,
+                                                      conflict_req,
+                                                      &conflict_result));
+        munit_assert_null(conflict_result);
+        munit_assert_not_null(cep_cell_find_by_name(intent_bucket, &conflict_name));
+
+        cep_cell_remove_hard(conflict_existing, NULL);
+        cepCell* restored_conflict = cep_cell_find_by_name(intent_bucket, &conflict_name);
+        munit_assert_not_null(restored_conflict);
+        cep_cell_remove_hard(restored_conflict, NULL);
 
         test_runtime_shutdown();
     }

@@ -2861,8 +2861,52 @@ static bool cep_txn_update_state(cepCell* root, const char* state) {
     if (!bucket || !state)
         return false;
 
+    if (cep_cell_is_void(bucket))
+        return false;
+
     cepDT state_field = *dt_txn_state_name();
-    return cep_cell_put_text(bucket, &state_field, state);
+    cepDT payload_type = *CEP_DTAW("CEP", "text");
+
+    cepCell* writable_bucket = bucket;
+    cepStore* bucket_store = NULL;
+    bool restore_bucket_writable = false;
+    unsigned bucket_writable_before = 0u;
+
+    if (cep_cell_require_store(&writable_bucket, &bucket_store) && bucket_store && !bucket_store->writable) {
+        bucket_writable_before = bucket_store->writable;
+        bucket_store->writable = 1u;
+        restore_bucket_writable = true;
+    }
+
+    cepCell* existing = cep_cell_find_by_name(writable_bucket, &state_field);
+    if (existing) {
+        cep_cell_remove_hard(existing, NULL);
+    }
+
+    cepCell* inserted = NULL;
+    size_t len = strlen(state) + 1u;
+    if (len <= sizeof(((cepData*)0)->value)) {
+        inserted = cep_dict_add_value(writable_bucket, &state_field, &payload_type, (void*)state, len, len);
+    } else {
+        char* copy = cep_malloc(len);
+        if (!copy) {
+            if (restore_bucket_writable && bucket_store) {
+                bucket_store->writable = bucket_writable_before;
+            }
+            return false;
+        }
+        memcpy(copy, state, len);
+        inserted = cep_dict_add_data(writable_bucket, &state_field, &payload_type, copy, len, len, cep_free);
+        if (!inserted) {
+            cep_free(copy);
+        }
+    }
+
+    if (restore_bucket_writable && bucket_store) {
+        bucket_store->writable = bucket_writable_before;
+    }
+
+    return inserted != NULL;
 }
 
 static const cepCell* cep_cell_top_veiled_ancestor(const cepCell* cell) {

@@ -534,6 +534,111 @@ static bool cep_mailroom_ensure_shared_header(cepCell* request) {
     return ok;
 }
 
+static void cep_mailroom_log_stage_issue(const char* phase,
+                                         const cepDT* namespace_dt,
+                                         const cepDT* bucket_dt,
+                                         const cepDT* txn_dt) {
+    const char* ns_text = "unknown";
+    const char* bucket_text = "unknown";
+    const char* txn_text = "unknown";
+
+    char ns_buffer[96];
+    char bucket_buffer[64];
+    char txn_buffer[64];
+
+    if (namespace_dt && cep_mailroom_scope_to_text(namespace_dt, ns_buffer, sizeof ns_buffer)) {
+        ns_text = ns_buffer;
+    }
+    if (bucket_dt && cep_mailroom_id_to_text(bucket_dt->tag, bucket_buffer, sizeof bucket_buffer, NULL)) {
+        bucket_text = bucket_buffer;
+    }
+    if (txn_dt && cep_mailroom_id_to_text(txn_dt->tag, txn_buffer, sizeof txn_buffer, NULL)) {
+        txn_text = txn_buffer;
+    }
+
+    char note[256];
+    (void)snprintf(note,
+                   sizeof note,
+                   "mailroom.stage_request phase=%s ns=%.63s bucket=%.63s txn=%.63s",
+                   phase ? phase : "unknown",
+                   ns_text,
+                   bucket_text,
+                   txn_text);
+    cep_heartbeat_stage_note(note);
+}
+
+/* Stage a requested inbox entry via `cep_txn_*` so the downstream request only
+ * becomes visible when the transaction commits. The helper clones the original
+ * payload into the target namespace, applies the shared header, creates the
+ * audit link back in `/data/inbox`, and restores the original intent if any
+ * step fails along the way. */
+bool cep_mailroom_stage_request(cepCell* intent_bucket,
+                                cepCell* dest_bucket,
+                                const cepDT* namespace_dt,
+                                const cepDT* bucket_dt,
+                                const cepDT* txn_name,
+                                cepCell* original_request,
+                                cepCell** staged_out) {
+    if (!intent_bucket || !dest_bucket || !namespace_dt || !bucket_dt || !txn_name || !original_request) {
+        return false;
+    }
+
+    cepDT cleaned_name = cep_dt_clean(txn_name);
+
+    cepTxn txn = {0};
+    cepDT dict_type = *dt_dictionary();
+    if (!cep_txn_begin(dest_bucket, &cleaned_name, &dict_type, &txn)) {
+        cep_mailroom_log_stage_issue("txn_begin", namespace_dt, bucket_dt, txn_name);
+        return false;
+    }
+
+    cepCell* staged = txn.root;
+    if (!staged) {
+        cep_mailroom_log_stage_issue("txn_root", namespace_dt, bucket_dt, txn_name);
+        goto abort_txn;
+    }
+
+    if (!cep_cell_copy_children(original_request, staged, true)) {
+        cep_mailroom_log_stage_issue("clone", namespace_dt, bucket_dt, txn_name);
+        goto abort_txn;
+    }
+
+    if (!cep_mailroom_ensure_shared_header(staged)) {
+        cep_mailroom_log_stage_issue("header", namespace_dt, bucket_dt, txn_name);
+        goto abort_txn;
+    }
+
+    if (!cep_txn_mark_ready(&txn)) {
+        cep_mailroom_log_stage_issue("mark_ready", namespace_dt, bucket_dt, txn_name);
+        goto abort_txn;
+    }
+
+    if (!cep_txn_commit(&txn)) {
+        cep_mailroom_log_stage_issue("commit", namespace_dt, bucket_dt, txn_name);
+        goto abort_txn;
+    }
+
+    cep_cell_remove_hard(original_request, NULL);
+
+    cepCell* audit_link = cep_dict_add_link(intent_bucket, &cleaned_name, staged);
+    if (!audit_link) {
+        cep_mailroom_log_stage_issue("audit_link", namespace_dt, bucket_dt, txn_name);
+        return false;
+    }
+
+    cepCell* parents[] = { audit_link };
+    (void)cep_cell_add_parents(staged, parents, cep_lengthof(parents));
+
+    if (staged_out) {
+        *staged_out = staged;
+    }
+    return true;
+
+abort_txn:
+    cep_txn_abort(&txn);
+    return false;
+}
+
 /* Prepare the unified mailroom branches so producers can target `/data/inbox`
  * while existing layers still receive intents under their traditional inboxes. */
 bool cep_mailroom_add_namespace(const char* namespace_tag,
@@ -903,23 +1008,18 @@ static int cep_mailroom_route(const cepPath* signal_path, const cepPath* target_
         return CEP_ENZYME_SUCCESS;
     }
 
-    cepCell moved = {0};
-    cep_cell_remove_hard(txn, &moved);
-    cepCell* inserted = cep_cell_add(dest_bucket, 0, &moved);
+    cepCell* inserted = NULL;
+    if (!cep_mailroom_stage_request(intent_bucket,
+                                    dest_bucket,
+                                    &ns_clean,
+                                    &dest_bucket_clean,
+                                    &txn_name,
+                                    txn,
+                                    &inserted)) {
+        return CEP_ENZYME_FATAL;
+    }
     if (!inserted) {
-        cep_cell_finalize_hard(&moved);
         return CEP_ENZYME_FATAL;
-    }
-
-    if (!cep_mailroom_ensure_shared_header(inserted)) {
-        return CEP_ENZYME_FATAL;
-    }
-
-    cepDT audit_name = txn_name;
-    cepCell* audit_link = cep_dict_add_link(intent_bucket, &audit_name, inserted);
-    if (audit_link) {
-        cepCell* parents[] = { audit_link };
-        (void)cep_cell_add_parents(inserted, parents, cep_lengthof(parents));
     }
 
     typedef struct {
@@ -955,14 +1055,11 @@ static int cep_mailroom_route(const cepPath* signal_path, const cepPath* target_
         },
     };
 
-    if (cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID,
-                                     (const cepPath*)&signal_path_local,
-                                     (const cepPath*)&target_path_local) != CEP_ENZYME_SUCCESS) {
-        return CEP_ENZYME_FATAL;
-    }
-
-
-    return CEP_ENZYME_SUCCESS;
+    return (cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID,
+                                         (const cepPath*)&signal_path_local,
+                                         (const cepPath*)&target_path_local) == CEP_ENZYME_SUCCESS)
+        ? CEP_ENZYME_SUCCESS
+        : CEP_ENZYME_FATAL;
 }
 
 /* Stage the mailroom router on the registry so routing happens before the L1

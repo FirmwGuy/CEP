@@ -11,6 +11,8 @@
 
 #include "cep_enzyme.h"
 
+typedef struct _cepCell cepCell;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -25,6 +27,13 @@ bool cep_mailroom_add_router_before(const char* enzyme_tag);
 bool cep_mailroom_enqueue_signal(const cepDT* namespace_dt,
                                  const cepDT* bucket_dt,
                                  const cepDT* txn_dt);
+bool cep_mailroom_stage_request(cepCell* intent_bucket,
+                                cepCell* dest_bucket,
+                                const cepDT* namespace_dt,
+                                const cepDT* bucket_dt,
+                                const cepDT* txn_name,
+                                cepCell* original_request,
+                                cepCell** staged_out);
 
 #ifdef __cplusplus
 }
