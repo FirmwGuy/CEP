@@ -158,6 +158,19 @@ The heartbeat keeps a lot of book-keeping behind the curtain. These accessors ex
 **Q&A**
 - *Is `cep_heartbeat_enqueue_impulse()` different from `cep_heartbeat_enqueue_signal()`?* Yes—`enqueue_signal` clones the paths for you from raw `cepPath` pointers, while `enqueue_impulse` lets you hand over a pre-built `cepImpulse` when you already manage its lifetime.
 
+### 1.8.1 Raw traversal helpers
+
+**In plain words.** Use the `_all` traversal helpers when you need to see every stored child—including veiled, deleted, or staging-only nodes—without lifting their veils in the visible view.
+
+**Technical details**
+- `cep_cell_first_all` / `cep_cell_next_all` / `cep_cell_last_all` / `cep_cell_prev_all` mirror the regular sibling iterators but walk the store’s physical ordering, so recursive sealers and diagnostics can enumerate hidden entries safely.
+- The helpers resolve the parent link once, then return the stored `cepCell*` pointer exactly as it lives in the backing store; links remain untouched unless you resolve them explicitly.
+- `cep_cell_deep_traverse_all` now delegates to the same raw helpers, guaranteeing that depth-first walks cover every descendant before sealing or hashing a branch.
+
+**Q&A**
+- *Does raw iteration change snapshot behaviour for callers?* No. The helpers simply expose what is already stored. Regular `_past` and latest helpers keep filtering by visibility unless you opt into the `_all` variants.
+- *Do I need extra locks first?* Follow the same locking discipline you would for visible traversals. The `_all` family never acquires additional locks on your behalf.
+
 ### 1.9 Building cell trees safely (floating → graft)
 
 Layer 0 assumes that new structure is assembled off-tree first and only grafted under `/` once it is internally consistent. Mutating a node that is already anchored (for example, a dictionary under `/data`) risks tripping assertions in `cep_cell_add`/`cep_store_add_child` and can leave partially-built state visible if the process aborts mid-update.

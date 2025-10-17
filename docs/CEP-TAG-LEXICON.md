@@ -107,6 +107,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `test_lck_*` (`test_lck_ch`, `test_lck_in`) | test | lock hierarchy fixtures. |
 | `tst_enz*` (`tst_enza`, `tst_enzb`, `tst_enzc`, `tst_enzi`, `tst_enzj`, `tst_enzk`, `tst_enzl`, `tst_enzm`, `tst_enzo`, `tst_enzp`, `tst_enzq`, `tst_enzr`) | test | randomized enzyme descriptors used by registry fuzz tests. |
 | `tst_*` (`tst_a`, `tst_b`, `tst_branch`, `tst_child`, `tst_chld`, `tst_clone`, `tst_data`, `tst_dedup`, `tst_drop`, `tst_empty`, `tst_far`, `tst_head`, `tst_keep_a`, `tst_keep_b`, `tst_leaf`, `tst_list`, `tst_mask`, `tst_mid`, `tst_nop`, `tst_path`, `tst_remove`, `tst_root`, `tst_sig`, `tst_stor`, `tst_tree`, `tst_update`, `tst_val`, `tst_value`) | test | generic test scaffolding tags. |
+| `raw_all_sib` | test | veiled sibling fixture used by raw traversal helper tests. |
 | `value` | test | generic payload tag for value-type fixtures. |
 | `var_leaf` | test | variant selection fixture in unit tests. |
 

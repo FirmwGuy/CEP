@@ -91,6 +91,8 @@ static inline cepCell* store_last_child(const cepStore* store);
 static inline cepCell* store_next_child(const cepStore* store, cepCell* child);
 static inline cepCell* store_first_child_internal(const cepStore* store);
 static inline cepCell* store_next_child_internal(const cepStore* store, cepCell* child);
+static inline cepCell* store_last_child_internal(const cepStore* store);
+static inline cepCell* store_prev_child_internal(const cepStore* store, cepCell* child);
 static inline bool store_traverse_internal(cepStore* store, cepTraverse func, void* context, cepEntry* entry);
 static inline void cep_cell_apply_parent_veil(cepCell* child, const cepCell* parent);
 static const cepCell* cep_cell_top_veiled_ancestor(const cepCell* cell);
@@ -1908,27 +1910,49 @@ bool cep_cell_set_immutable(cepCell* cell) {
     return true;
 }
 
+typedef struct {
+    bool ok;
+} cepSealImmutableCtx;
+
+static bool cep_branch_seal_descendant(cepEntry* entry, void* ctx) {
+    cepSealImmutableCtx* state = ctx;
+    if (!entry || !entry->cell)
+        return true;
+
+    cepCell* stored = entry->cell;
+    cepCell* resolved = cep_cell_resolve(stored);
+    if (!resolved || !cep_cell_is_normal(resolved)) {
+        state->ok = false;
+        return false;
+    }
+
+    if (!cep_cell_set_immutable(resolved)) {
+        state->ok = false;
+        return false;
+    }
+
+    resolved->metacell.veiled = 0u;
+    if (stored == resolved)
+        stored->metacell.veiled = 0u;
+
+    return true;
+}
+
 static bool cep_branch_seal_immutable_impl(cepCell* node) {
     if (!cep_cell_set_immutable(node)) {
         return false;
     }
 
-    cepStore* store = node->store;
-    if (!store) {
+    node->metacell.veiled = 0u;
+
+    if (!node->store || !node->store->chdCount)
         return true;
-    }
 
-    for (cepCell* child = store_first_child(store); child; child = store_next_child(store, child)) {
-        cepCell* resolved_child = cep_cell_resolve(child);
-        if (!resolved_child || !cep_cell_is_normal(resolved_child)) {
-            return false;
-        }
-        if (!cep_branch_seal_immutable_impl(resolved_child)) {
-            return false;
-        }
-    }
+    cepSealImmutableCtx ctx = {.ok = true};
+    if (!cep_cell_deep_traverse_all(node, cep_branch_seal_descendant, NULL, &ctx, NULL))
+        ctx.ok = false;
 
-    return true;
+    return ctx.ok;
 }
 
 /** Recursively seal @p root (and optionally its descendants) so the subtree
@@ -2104,28 +2128,33 @@ static int cep_digest_child_compare(const void* lhs, const void* rhs) {
     return cep_dt_compare(&a->name, &b->name);
 }
 
-static bool cep_cell_digest_compute(const cepCell* cell, uint8_t out[32]);
+static bool cep_cell_digest_compute_ex(const cepCell* cell, bool skip_name, uint8_t out[32]);
 
-static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell) {
+static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell, bool skip_name) {
     cepCell* resolved = cep_cell_resolve((cepCell*)cell);
     if (!resolved || !cep_cell_is_normal(resolved)) {
+        fprintf(stderr, "digest_walk: resolve/normal failed\n");
         return false;
     }
 
     if (!cep_cell_is_immutable(resolved)) {
+        fprintf(stderr, "digest_walk: node not immutable\n");
         return false;
     }
 
     cepDT name = cep_dt_clean(&resolved->metacell.dt);
     uint8_t marker = 'N';
-    cep_sha256_update(ctx, &marker, 1u);
     uint8_t buffer[8];
-    cep_digest_write_u64(buffer, (uint64_t)name.domain);
-    cep_sha256_update(ctx, buffer, sizeof buffer);
-    cep_digest_write_u64(buffer, (uint64_t)name.tag);
-    cep_sha256_update(ctx, buffer, sizeof buffer);
+    if (!skip_name) {
+        cep_sha256_update(ctx, &marker, 1u);
+        cep_digest_write_u64(buffer, (uint64_t)name.domain);
+        cep_sha256_update(ctx, buffer, sizeof buffer);
+        cep_digest_write_u64(buffer, (uint64_t)name.tag);
+        cep_sha256_update(ctx, buffer, sizeof buffer);
+        uint8_t glob = (uint8_t)name.glob;
+        cep_sha256_update(ctx, &glob, 1u);
+    }
     uint8_t glob = (uint8_t)name.glob;
-    cep_sha256_update(ctx, &glob, 1u);
 
     marker = 'Y';
     cep_sha256_update(ctx, &marker, 1u);
@@ -2206,14 +2235,18 @@ static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell) {
         }
 
         size_t index = 0u;
-        for (cepCell* child = cep_cell_first(resolved); child && index < child_count; child = cep_cell_next(resolved, child)) {
+        for (cepCell* child = cep_cell_first_all(resolved);
+             child && index < child_count;
+             child = cep_cell_next_all(resolved, child)) {
             cepCell* resolved_child = cep_cell_resolve(child);
             if (!resolved_child || !cep_cell_is_normal(resolved_child)) {
+                fprintf(stderr, "digest_walk: child resolve failed\n");
                 cep_free(entries);
                 return false;
             }
 
             if (!cep_cell_is_immutable(resolved_child)) {
+                fprintf(stderr, "digest_walk: child not immutable\n");
                 cep_free(entries);
                 return false;
             }
@@ -2225,6 +2258,7 @@ static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell) {
         }
 
         if (index != child_count) {
+            fprintf(stderr, "digest_walk: child count mismatch %zu/%zu\n", index, child_count);
             cep_free(entries);
             return false;
         }
@@ -2245,7 +2279,8 @@ static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell) {
             cep_sha256_update(ctx, &marker, 1u);
 
             uint8_t child_hash[32];
-            if (!cep_cell_digest_compute(entries[i].cell, child_hash)) {
+            if (!cep_cell_digest_compute_ex(entries[i].cell, false, child_hash)) {
+                fprintf(stderr, "digest_walk: child digest failure\n");
                 cep_free(entries);
                 return false;
             }
@@ -2258,10 +2293,10 @@ static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell) {
     return true;
 }
 
-static bool cep_cell_digest_compute(const cepCell* cell, uint8_t out[32]) {
+static bool cep_cell_digest_compute_ex(const cepCell* cell, bool skip_name, uint8_t out[32]) {
     cepSha256Ctx ctx;
     cep_sha256_init(&ctx);
-    if (!cep_cell_digest_walk(&ctx, cell)) {
+    if (!cep_cell_digest_walk(&ctx, cell, skip_name)) {
         return false;
     }
     cep_sha256_final(&ctx, out);
@@ -2276,9 +2311,8 @@ bool cep_cell_digest(const cepCell* immutable_root, cepDigestAlgo algo, uint8_t 
         return false;
     }
 
-    return cep_cell_digest_compute(immutable_root, out);
+    return cep_cell_digest_compute_ex(immutable_root, true, out);
 }
-
 
 static bool cep_data_structural_equal(const cepData* existing, const cepData* incoming)
 {
@@ -3285,10 +3319,10 @@ static void cep_cell_mark_subtree_veiled(cepCell* cell) {
     if (cep_cell_is_normal(cell)) {
         cell->created = 0;
 
-        if (cell->store) {
-            for (cepCell* child = store_first_child(cell->store); child; child = store_next_child(cell->store, child)) {
-                cep_cell_mark_subtree_veiled(child);
-            }
+        for (cepCell* child = cep_cell_first_all(cell);
+             child;
+             child = cep_cell_next_all(cell, child)) {
+            cep_cell_mark_subtree_veiled(child);
         }
     }
 }
@@ -3313,10 +3347,10 @@ static void cep_cell_unveil_subtree(cepCell* cell, cepOpCount stamp) {
         if (!cell->created)
             cell->created = stamp;
 
-        if (cell->store) {
-            for (cepCell* child = store_first_child(cell->store); child; child = store_next_child(cell->store, child)) {
-                cep_cell_unveil_subtree(child, stamp);
-            }
+        for (cepCell* child = cep_cell_first_all(cell);
+             child;
+             child = cep_cell_next_all(cell, child)) {
+            cep_cell_unveil_subtree(child, stamp);
         }
     }
 }
@@ -4799,6 +4833,47 @@ cepCell* cep_cell_find_by_key(const cepCell* cell, cepCell* key, cepCompare comp
 }
 
 
+/** Return the first stored child without visibility filters so sealing and
+    digesting helpers can walk veiled or deleted entries before they become
+    visible. The helper resolves the parent link and delegates to the raw store
+    iteration so callers stay decoupled from backend-specific details. */
+cepCell* cep_cell_first_all(const cepCell* cell) {
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+    return store_first_child_internal(store);
+}
+
+/** Return the last stored child using the raw traversal order, exposing the
+    storage layout instead of the snapshot view. Useful when callers need to
+    inspect the physical tail of a branch regardless of veil state. */
+cepCell* cep_cell_last_all(const cepCell* cell) {
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+    return store_last_child_internal(store);
+}
+
+/** Advance to the next stored child without applying snapshot visibility so
+    recursive sealing can reach every veiled bucket. Mirrors the visible helper
+    by tolerating a NULL parent and falling back to the child’s store link. */
+cepCell* cep_cell_next_all(const cepCell* cell, cepCell* child) {
+    if (!child)
+        return NULL;
+    if (!cell)
+        cell = cep_cell_parent(child);
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+    return store_next_child_internal(store, child);
+}
+
+/** Step backwards through the raw sibling list to cover hidden entries while
+    keeping the calling convention aligned with `cep_cell_prev`. */
+cepCell* cep_cell_prev_all(const cepCell* cell, cepCell* child) {
+    if (!child)
+        return NULL;
+    if (!cell)
+        cell = cep_cell_parent(child);
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+    return store_prev_child_internal(store, child);
+}
+
+
 static inline cepCell* store_first_child_internal(const cepStore* store) {
     assert(cep_store_valid(store));
 
@@ -4832,6 +4907,55 @@ static inline cepCell* store_next_child_internal(const cepStore* store, cepCell*
 
       default:
         return store_next_child(store, child);
+    }
+}
+
+static inline cepCell* store_last_child_internal(const cepStore* store) {
+    assert(cep_store_valid(store));
+
+    if (!store->chdCount)
+        return NULL;
+
+    switch (store->storage) {
+      case CEP_STORAGE_RED_BLACK_T:
+      case CEP_STORAGE_HASH_TABLE: {
+        cepCell* last = store_first_child_internal(store);
+        if (!last)
+            return NULL;
+        for (cepCell* next = store_next_child_internal(store, last);
+             next;
+             next = store_next_child_internal(store, next)) {
+            last = next;
+        }
+        return last;
+      }
+
+      default:
+        return store_last_child(store);
+    }
+}
+
+static inline cepCell* store_prev_child_internal(const cepStore* store, cepCell* child) {
+    assert(cep_store_valid(store));
+    if (!child)
+        return NULL;
+
+    switch (store->storage) {
+      case CEP_STORAGE_RED_BLACK_T:
+      case CEP_STORAGE_HASH_TABLE: {
+        cepCell* prev = NULL;
+        for (cepCell* current = store_first_child_internal(store);
+             current;
+             current = store_next_child_internal(store, current)) {
+            if (current == child)
+                return prev;
+            prev = current;
+        }
+        return NULL;
+      }
+
+      default:
+        return store_prev_child(store, child);
     }
 }
 
@@ -5521,7 +5645,7 @@ bool cep_cell_deep_traverse_all(cepCell* cell, cepTraverse func, cepTraverse end
         entry = cep_alloca(sizeof(cepEntry));
     CEP_0(entry);
     entry->parent = cell;
-    entry->cell = store_first_child(store);
+    entry->cell = store_first_child_internal(store);
     entry->prev = NULL;
     entry->position = 0;
     entry->depth = 0;
@@ -5539,7 +5663,7 @@ bool cep_cell_deep_traverse_all(cepCell* cell, cepTraverse func, cepTraverse end
                 if (!ok)  break;
             }
 
-            entry->cell   = store_next_child(stack.data[depth].parent->store, stack.data[depth].cell);
+            entry->cell   = store_next_child_internal(stack.data[depth].parent->store, stack.data[depth].cell);
             entry->parent = stack.data[depth].parent;
             entry->prev   = stack.data[depth].cell;
             entry->next   = NULL;
@@ -5549,7 +5673,7 @@ bool cep_cell_deep_traverse_all(cepCell* cell, cepTraverse func, cepTraverse end
         }
 
       NEXT_ALL_SIBLING:
-        entry->next = store_next_child(entry->parent->store, entry->cell);
+        entry->next = store_next_child_internal(entry->parent->store, entry->cell);
 
         if (func) {
             ok = func(entry, context);
@@ -5557,7 +5681,7 @@ bool cep_cell_deep_traverse_all(cepCell* cell, cepTraverse func, cepTraverse end
         }
 
         if (entry->cell->store && entry->cell->store->chdCount
-        && ((child = store_first_child(entry->cell->store)))) {
+        && ((child = store_first_child_internal(entry->cell->store)))) {
             if (!cep_entry_stack_reserve(&stack, depth)) {
                 ok = false;
                 break;

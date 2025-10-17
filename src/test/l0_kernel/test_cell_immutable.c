@@ -13,6 +13,8 @@
 #include "test.h"
 #include "cep_cell.h"
 
+#include <stdio.h>
+
 #include <string.h>
 
 static void test_seal_leaf_blocks_mutations(void) {
@@ -207,7 +209,7 @@ static void test_sealed_visibility_survives_unveil(void) {
     cepSealOptions opt = {.recursive = true};
     munit_assert_true(cep_branch_seal_immutable(txn.root, opt));
     munit_assert_true(cep_cell_is_immutable(txn.root));
-    munit_assert_true(cep_cell_is_veiled(txn.root));
+    munit_assert_false(cep_cell_is_veiled(txn.root));
     munit_assert_true(cep_txn_commit(&txn));
 
     cepCell* sealed_branch = cep_cell_find_by_name(parent, &branch_name);
