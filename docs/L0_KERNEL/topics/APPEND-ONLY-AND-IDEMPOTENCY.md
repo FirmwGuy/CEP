@@ -52,6 +52,13 @@ CEP implements append-only storage through two complementary timelines: `cepData
 - Keep comparisons local: only the head of the relevant chain must be inspected to decide idempotency; deep history traversal is optional and on-demand.
 - Catalog-oriented stores update `store->past` whenever the user-facing sorting key changes so past ordering remains derivable; child nodes do not yet keep individual `past` chains.
 
+### Immutable subtrees and canonical digests
+- `cep_cell_set_immutable` flips a node into read-only mode while the cell is still veiled (or floating) so the branch appears sealed as soon as it becomes visible. The helper resolves links, checks that the node has not been unveiled yet, sets the `immutable` bit, and marks any attached payload/store as non-writable.
+- `cep_branch_seal_immutable(root, {.recursive = true})` walks an entire staged subtree, sealing every normal node before commit. Use it inside a veil (for example, a transaction root) to guarantee the branch is immutable on first visibility.
+- Once sealed, mutation helpers (`cep_cell_update`, `cep_cell_add`, `cep_cell_remove_hard`, `cep_cell_delete`, etc.) short-circuit: they return `NULL`/`false` instead of mutating, leaving the append-only history untouched. Attempting to rename or reparent an immutable node is also ignored. A TODO placeholder remains for surfacing `err.immutable_cell` diagnostics once the new error channel lands.
+- Immutable children do *not* inherit automatic cleanup from their parents; delete the parent before sealing or plan to keep the branch resident. Future GC paths may add explicit teardown hooks.
+- `cep_cell_digest(node, CEP_DIGEST_SHA256, out)` produces a canonical SHA-256 fingerprint for a sealed subtree (name, payload, store layout, and child digests in name order). Workflows can capture this digest before and after a change to prove the structure stayed untouched.
+
 ## Q&A
 - What problem does append-only solve?
   - It guarantees that every historical state stays available while still making the latest view fast to read, which is essential for auditing and recovery.

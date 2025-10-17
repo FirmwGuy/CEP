@@ -46,12 +46,28 @@ MunitTest tests[] = {
         boot_cycle_timeout_params  // Parameters.
     },
     {
+        "/cell/immutable",
+        test_cell_immutable,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
         "/traverse",
         test_traverse,
         test_traverse_setup,
         test_traverse_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_timeout_params  // Parameters.
+    },
+    {
+        "/traverse/all",
+        test_traverse_all,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
     },
     {
         "/domain_tag_naming",

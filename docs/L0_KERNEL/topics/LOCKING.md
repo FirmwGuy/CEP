@@ -13,3 +13,4 @@ Locking lets you "freeze" a portion of the tree so structure or payloads stay pu
 - **Do locks stop reads?** No. Traversal, serialization, and read-only mapping still work; only structural or payload mutations are blocked.
 - **Can I nest locks?** Yes. You can lock a parent and then a child, but the second call will fail until the parent is unlocked—locks freeze whole subtrees.
 - **What happens if I try to write while locked?** The helper returns `false`/`NULL`, and stream write/map helpers emit error journal entries instead of committing changes.
+- **How do locks interact with immutable subtrees?** Immutability wins. Once `cep_cell_set_immutable` (or the recursive seal helper) runs, the branch ignores mutation requests regardless of lock state; the writable bits stay cleared so lock calls simply short-circuit with the usual `false`/`NULL` response.

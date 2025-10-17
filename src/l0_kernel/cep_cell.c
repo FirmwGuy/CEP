@@ -95,6 +95,10 @@ static inline bool store_traverse_internal(cepStore* store, cepTraverse func, vo
 static inline void cep_cell_apply_parent_veil(cepCell* child, const cepCell* parent);
 static const cepCell* cep_cell_top_veiled_ancestor(const cepCell* cell);
 
+static inline bool cep_store_owner_is_immutable(const cepStore* store) {
+    return store && store->owner && cep_cell_is_immutable(store->owner);
+}
+
 static void cep_enzyme_binding_list_destroy(cepEnzymeBinding* bindings) {
     while (bindings) {
         cepEnzymeBinding* next = bindings->next;
@@ -1617,6 +1621,17 @@ cepCell* cep_cell_ensure_dictionary_child(cepCell* parent, const cepDT* name, un
         return NULL;
     }
 
+    cepCell* owner = cep_cell_resolve(parent);
+    if (!owner || !cep_cell_is_normal(owner)) {
+        return NULL;
+    }
+
+    if (cep_cell_is_immutable(owner)) {
+        return NULL;
+    }
+
+    parent = owner;
+
     /* Ensure the child is a writable dictionary before mutating; see the
        append-only guidelines in docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md. */
     if (!cep_cell_require_store(&parent, NULL)) {
@@ -1626,10 +1641,22 @@ cepCell* cep_cell_ensure_dictionary_child(cepCell* parent, const cepDT* name, un
     cepDT lookup = cep_dt_clean(name);
     cepCell* child = cep_cell_find_by_name(parent, &lookup);
     if (child) {
-        if (!cep_cell_require_dictionary_store(&child)) {
+        cepCell* resolved = cep_cell_resolve(child);
+        if (!resolved || !cep_cell_is_normal(resolved)) {
             return NULL;
         }
-        return child;
+
+        if (cep_cell_is_immutable(resolved)) {
+            if (!resolved->store || resolved->store->indexing != CEP_INDEX_BY_NAME) {
+                return NULL;
+            }
+            return resolved;
+        }
+
+        if (!cep_cell_require_dictionary_store(&resolved)) {
+            return NULL;
+        }
+        return resolved;
     }
 
     cepDT name_copy = lookup;
@@ -1643,6 +1670,17 @@ cepCell* cep_cell_ensure_list_child(cepCell* parent, const cepDT* name, unsigned
         return NULL;
     }
 
+    cepCell* owner = cep_cell_resolve(parent);
+    if (!owner || !cep_cell_is_normal(owner)) {
+        return NULL;
+    }
+
+    if (cep_cell_is_immutable(owner)) {
+        return NULL;
+    }
+
+    parent = owner;
+
     if (!cep_cell_require_store(&parent, NULL)) {
         return NULL;
     }
@@ -1654,6 +1692,14 @@ cepCell* cep_cell_ensure_list_child(cepCell* parent, const cepDT* name, unsigned
         if (!resolved || !cep_cell_has_store(resolved)) {
             return NULL;
         }
+
+        if (cep_cell_is_immutable(resolved)) {
+            if (resolved->store->indexing != CEP_INDEX_BY_INSERTION) {
+                return NULL;
+            }
+            return resolved;
+        }
+
         if (resolved->store->indexing != CEP_INDEX_BY_INSERTION) {
             return NULL;
         }
@@ -1671,12 +1717,21 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
         return false;
     }
 
-    if (!cep_cell_require_dictionary_store(&parent)) {
+    cepCell* owner = cep_cell_resolve(parent);
+    if (!owner || !cep_cell_is_normal(owner)) {
         return false;
     }
 
-    cepStore* store = NULL;
-    if (!cep_cell_require_store(&parent, &store)) {
+    if (cep_cell_is_immutable(owner)) {
+        return false;
+    }
+
+    if (!cep_cell_require_dictionary_store(&owner)) {
+        return false;
+    }
+
+    cepStore* store = owner->store;
+    if (!store) {
         return false;
     }
 
@@ -1690,9 +1745,9 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
 
     bool success = false;
     cepDT lookup = cep_dt_clean(field);
-    cepCell* existing = cep_cell_find_by_name(parent, &lookup);
+    cepCell* existing = cep_cell_find_by_name(owner, &lookup);
     if (existing) {
-        cep_cell_remove_hard(parent, existing);
+        cep_cell_remove_hard(owner, existing);
     }
 
     size_t len = strlen(text) + 1u;
@@ -1702,13 +1757,13 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
     cepCell* node = NULL;
 
     if (len <= sizeof(((cepData*)0)->value)) {
-        node = cep_dict_add_value(parent, &lookup, &payload_type, (void*)text, len, len);
+        node = cep_dict_add_value(owner, &lookup, &payload_type, (void*)text, len, len);
         success = (node != NULL);
     } else {
         char* copy = cep_malloc(len);
         if (copy) {
             memcpy(copy, text, len);
-            node = cep_dict_add_data(parent, &lookup, &payload_type, copy, len, len, cep_free);
+            node = cep_dict_add_data(owner, &lookup, &payload_type, copy, len, len, cep_free);
             if (!node) {
                 cep_free(copy);
             } else {
@@ -1742,7 +1797,20 @@ bool cep_cell_put_dt(cepCell* parent, const cepDT* field, const cepDT* value) {
         return false;
     }
 
-    cepCell* container = cep_cell_ensure_dictionary_child(parent, field, CEP_STORAGE_RED_BLACK_T);
+    cepCell* owner = cep_cell_resolve(parent);
+    if (!owner || !cep_cell_is_normal(owner)) {
+        return false;
+    }
+
+    if (cep_cell_is_immutable(owner)) {
+        return false;
+    }
+
+    if (!cep_cell_require_dictionary_store(&owner)) {
+        return false;
+    }
+
+    cepCell* container = cep_cell_ensure_dictionary_child(owner, field, CEP_STORAGE_RED_BLACK_T);
     if (!container) {
         return false;
     }
@@ -1758,6 +1826,10 @@ void cep_cell_clear_children(cepCell* cell) {
         return;
     }
 
+    if (cep_cell_is_immutable(cell)) {
+        return;
+    }
+
     while (cep_cell_children(cell) > 0u) {
         cepCell* child = cep_cell_first(cell);
         cep_cell_remove_hard(cell, child);
@@ -1770,6 +1842,10 @@ bool cep_cell_copy_children(const cepCell* source, cepCell* dest, bool deep_clon
     }
 
     if (!cep_cell_require_store(&dest, NULL)) {
+        return false;
+    }
+
+    if (cep_cell_is_immutable(dest)) {
         return false;
     }
 
@@ -1793,6 +1869,414 @@ bool cep_cell_copy_children(const cepCell* source, cepCell* dest, bool deep_clon
         cep_free(clone);
     }
     return true;
+}
+
+/** Freeze @p cell so subsequent mutations refuse to run. The helper resolves
+    links, verifies the target is either veiled or floating (unless it was
+    already sealed), flips the immutable bit, and marks attached payloads and
+    stores read-only so existing mutation guards short-circuit quickly. */
+bool cep_cell_set_immutable(cepCell* cell) {
+    if (!cell) {
+        return false;
+    }
+
+    cepCell* resolved = cep_cell_resolve(cell);
+    if (!resolved || !cep_cell_is_normal(resolved)) {
+        return false;
+    }
+
+    bool already = cep_cell_is_immutable(resolved);
+    if (!already) {
+        bool staged = cep_cell_is_floating(resolved) || cep_cell_is_veiled(resolved);
+        if (!staged && resolved->parent && resolved->parent->owner) {
+            staged = cep_cell_is_veiled(resolved->parent->owner);
+        }
+        if (!staged) {
+            return false;
+        }
+        resolved->metacell.immutable = 1u;
+    }
+
+    if (resolved->data) {
+        resolved->data->writable = false;
+    }
+
+    if (resolved->store) {
+        resolved->store->writable = 0u;
+    }
+
+    return true;
+}
+
+static bool cep_branch_seal_immutable_impl(cepCell* node) {
+    if (!cep_cell_set_immutable(node)) {
+        return false;
+    }
+
+    cepStore* store = node->store;
+    if (!store) {
+        return true;
+    }
+
+    for (cepCell* child = store_first_child(store); child; child = store_next_child(store, child)) {
+        cepCell* resolved_child = cep_cell_resolve(child);
+        if (!resolved_child || !cep_cell_is_normal(resolved_child)) {
+            return false;
+        }
+        if (!cep_branch_seal_immutable_impl(resolved_child)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/** Recursively seal @p root (and optionally its descendants) so the subtree
+    surfaces as immutable once unveiled. When @p opt.recursive is true the
+    helper walks every child, ensuring the branch is entirely immutable before
+    it becomes visible; otherwise it only marks the root. */
+bool cep_branch_seal_immutable(cepCell* root, cepSealOptions opt) {
+    if (!root) {
+        return false;
+    }
+
+    cepCell* resolved = cep_cell_resolve(root);
+    if (!resolved || !cep_cell_is_normal(resolved)) {
+        return false;
+    }
+
+    if (opt.recursive) {
+        return cep_branch_seal_immutable_impl(resolved);
+    }
+
+    return cep_cell_set_immutable(resolved);
+}
+
+typedef struct {
+    uint32_t state[8];
+    uint64_t bitlen;
+    size_t   buffer_len;
+    uint8_t  buffer[64];
+} cepSha256Ctx;
+
+static const uint32_t cep_sha256_k[64] = {
+    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+    0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+    0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+    0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+    0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u, 0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+    0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+    0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+    0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u, 0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+};
+
+#define CEP_SHA256_ROTR(x, n)   (((x) >> (n)) | ((x) << (32u - (n))))
+#define CEP_SHA256_CH(x, y, z)  (((x) & (y)) ^ (~(x) & (z)))
+#define CEP_SHA256_MAJ(x, y, z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
+#define CEP_SHA256_BIGSIG0(x)   (CEP_SHA256_ROTR(x, 2u) ^ CEP_SHA256_ROTR(x, 13u) ^ CEP_SHA256_ROTR(x, 22u))
+#define CEP_SHA256_BIGSIG1(x)   (CEP_SHA256_ROTR(x, 6u) ^ CEP_SHA256_ROTR(x, 11u) ^ CEP_SHA256_ROTR(x, 25u))
+#define CEP_SHA256_SMALLSIG0(x) (CEP_SHA256_ROTR(x, 7u) ^ CEP_SHA256_ROTR(x, 18u) ^ ((x) >> 3u))
+#define CEP_SHA256_SMALLSIG1(x) (CEP_SHA256_ROTR(x, 17u) ^ CEP_SHA256_ROTR(x, 19u) ^ ((x) >> 10u))
+
+static void cep_sha256_transform(cepSha256Ctx* ctx, const uint8_t block[64]) {
+    uint32_t w[64];
+    for (unsigned i = 0; i < 16; ++i) {
+        size_t offset = i * 4u;
+        w[i] = ((uint32_t)block[offset] << 24)
+             | ((uint32_t)block[offset + 1u] << 16)
+             | ((uint32_t)block[offset + 2u] << 8)
+             | ((uint32_t)block[offset + 3u]);
+    }
+    for (unsigned i = 16; i < 64; ++i) {
+        w[i] = CEP_SHA256_SMALLSIG1(w[i - 2u]) + w[i - 7u] + CEP_SHA256_SMALLSIG0(w[i - 15u]) + w[i - 16u];
+    }
+
+    uint32_t a = ctx->state[0];
+    uint32_t b = ctx->state[1];
+    uint32_t c = ctx->state[2];
+    uint32_t d = ctx->state[3];
+    uint32_t e = ctx->state[4];
+    uint32_t f = ctx->state[5];
+    uint32_t g = ctx->state[6];
+    uint32_t h = ctx->state[7];
+
+    for (unsigned i = 0; i < 64; ++i) {
+        uint32_t temp1 = h + CEP_SHA256_BIGSIG1(e) + CEP_SHA256_CH(e, f, g) + cep_sha256_k[i] + w[i];
+        uint32_t temp2 = CEP_SHA256_BIGSIG0(a) + CEP_SHA256_MAJ(a, b, c);
+        h = g;
+        g = f;
+        f = e;
+        e = d + temp1;
+        d = c;
+        c = b;
+        b = a;
+        a = temp1 + temp2;
+    }
+
+    ctx->state[0] += a;
+    ctx->state[1] += b;
+    ctx->state[2] += c;
+    ctx->state[3] += d;
+    ctx->state[4] += e;
+    ctx->state[5] += f;
+    ctx->state[6] += g;
+    ctx->state[7] += h;
+}
+
+static void cep_sha256_init(cepSha256Ctx* ctx) {
+    ctx->state[0] = 0x6a09e667u;
+    ctx->state[1] = 0xbb67ae85u;
+    ctx->state[2] = 0x3c6ef372u;
+    ctx->state[3] = 0xa54ff53au;
+    ctx->state[4] = 0x510e527fu;
+    ctx->state[5] = 0x9b05688cu;
+    ctx->state[6] = 0x1f83d9abu;
+    ctx->state[7] = 0x5be0cd19u;
+    ctx->bitlen = 0u;
+    ctx->buffer_len = 0u;
+    memset(ctx->buffer, 0, sizeof ctx->buffer);
+}
+
+static void cep_sha256_update(cepSha256Ctx* ctx, const void* data, size_t len) {
+    const uint8_t* bytes = (const uint8_t*)data;
+    while (len > 0u) {
+        size_t copy = 64u - ctx->buffer_len;
+        if (copy > len)
+            copy = len;
+
+        memcpy(ctx->buffer + ctx->buffer_len, bytes, copy);
+        ctx->buffer_len += copy;
+        bytes += copy;
+        len -= copy;
+
+        if (ctx->buffer_len == 64u) {
+            cep_sha256_transform(ctx, ctx->buffer);
+            ctx->bitlen += 512u;
+            ctx->buffer_len = 0u;
+        }
+    }
+}
+
+static void cep_digest_write_u32(uint8_t out[4], uint32_t value) {
+    out[0] = (uint8_t)((value >> 24) & 0xFFu);
+    out[1] = (uint8_t)((value >> 16) & 0xFFu);
+    out[2] = (uint8_t)((value >> 8) & 0xFFu);
+    out[3] = (uint8_t)(value & 0xFFu);
+}
+
+static void cep_digest_write_u64(uint8_t out[8], uint64_t value) {
+    for (unsigned i = 0; i < 8u; ++i) {
+        out[i] = (uint8_t)((value >> (56u - (i * 8u))) & 0xFFu);
+    }
+}
+
+static void cep_sha256_final(cepSha256Ctx* ctx, uint8_t out[32]) {
+    uint64_t total_bits = ctx->bitlen + ((uint64_t)ctx->buffer_len * 8u);
+
+    ctx->buffer[ctx->buffer_len++] = 0x80u;
+
+    if (ctx->buffer_len > 56u) {
+        while (ctx->buffer_len < 64u)
+            ctx->buffer[ctx->buffer_len++] = 0u;
+        cep_sha256_transform(ctx, ctx->buffer);
+        ctx->buffer_len = 0u;
+    }
+
+    while (ctx->buffer_len < 56u)
+        ctx->buffer[ctx->buffer_len++] = 0u;
+
+    cep_digest_write_u64(ctx->buffer + 56u, total_bits);
+    cep_sha256_transform(ctx, ctx->buffer);
+
+    for (unsigned i = 0; i < 8u; ++i)
+        cep_digest_write_u32(out + (i * 4u), ctx->state[i]);
+}
+
+typedef struct {
+    cepCell* cell;
+    cepDT    name;
+    bool     is_link;
+} cepDigestChild;
+
+static int cep_digest_child_compare(const void* lhs, const void* rhs) {
+    const cepDigestChild* a = (const cepDigestChild*)lhs;
+    const cepDigestChild* b = (const cepDigestChild*)rhs;
+    return cep_dt_compare(&a->name, &b->name);
+}
+
+static bool cep_cell_digest_compute(const cepCell* cell, uint8_t out[32]);
+
+static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell) {
+    cepCell* resolved = cep_cell_resolve((cepCell*)cell);
+    if (!resolved || !cep_cell_is_normal(resolved)) {
+        return false;
+    }
+
+    if (!cep_cell_is_immutable(resolved)) {
+        return false;
+    }
+
+    cepDT name = cep_dt_clean(&resolved->metacell.dt);
+    uint8_t marker = 'N';
+    cep_sha256_update(ctx, &marker, 1u);
+    uint8_t buffer[8];
+    cep_digest_write_u64(buffer, (uint64_t)name.domain);
+    cep_sha256_update(ctx, buffer, sizeof buffer);
+    cep_digest_write_u64(buffer, (uint64_t)name.tag);
+    cep_sha256_update(ctx, buffer, sizeof buffer);
+    uint8_t glob = (uint8_t)name.glob;
+    cep_sha256_update(ctx, &glob, 1u);
+
+    marker = 'Y';
+    cep_sha256_update(ctx, &marker, 1u);
+    uint8_t type = (uint8_t)resolved->metacell.type;
+    cep_sha256_update(ctx, &type, 1u);
+
+    marker = 'I';
+    cep_sha256_update(ctx, &marker, 1u);
+    uint8_t immutable = (uint8_t)(resolved->metacell.immutable != 0u);
+    cep_sha256_update(ctx, &immutable, 1u);
+
+    marker = 'D';
+    cep_sha256_update(ctx, &marker, 1u);
+    bool has_data = resolved->data && !resolved->data->deleted;
+    uint8_t present = has_data ? 1u : 0u;
+    cep_sha256_update(ctx, &present, 1u);
+    if (has_data) {
+        cepDT data_dt = cep_dt_clean(&resolved->data->dt);
+        cep_digest_write_u64(buffer, (uint64_t)data_dt.domain);
+        cep_sha256_update(ctx, buffer, sizeof buffer);
+        cep_digest_write_u64(buffer, (uint64_t)data_dt.tag);
+        cep_sha256_update(ctx, buffer, sizeof buffer);
+        glob = (uint8_t)data_dt.glob;
+        cep_sha256_update(ctx, &glob, 1u);
+
+        uint8_t datatype = (uint8_t)resolved->data->datatype;
+        cep_sha256_update(ctx, &datatype, 1u);
+
+        cep_digest_write_u64(buffer, resolved->data->size);
+        cep_sha256_update(ctx, buffer, sizeof buffer);
+
+        switch (resolved->data->datatype) {
+          case CEP_DATATYPE_VALUE: {
+            cep_sha256_update(ctx, resolved->data->value, resolved->data->size);
+            break;
+          }
+          case CEP_DATATYPE_DATA: {
+            if (resolved->data->data && resolved->data->size) {
+                cep_sha256_update(ctx, resolved->data->data, resolved->data->size);
+            }
+            break;
+          }
+          default:
+            return false;
+        }
+    }
+
+    marker = 'S';
+    cep_sha256_update(ctx, &marker, 1u);
+    bool has_store = resolved->store && !resolved->store->deleted;
+    present = has_store ? 1u : 0u;
+    cep_sha256_update(ctx, &present, 1u);
+    if (has_store) {
+        cepDT store_dt = cep_dt_clean(&resolved->store->dt);
+        cep_digest_write_u64(buffer, (uint64_t)store_dt.domain);
+        cep_sha256_update(ctx, buffer, sizeof buffer);
+        cep_digest_write_u64(buffer, (uint64_t)store_dt.tag);
+        cep_sha256_update(ctx, buffer, sizeof buffer);
+        glob = (uint8_t)store_dt.glob;
+        cep_sha256_update(ctx, &glob, 1u);
+
+        uint8_t storage = (uint8_t)resolved->store->storage;
+        uint8_t indexing = (uint8_t)resolved->store->indexing;
+        cep_sha256_update(ctx, &storage, 1u);
+        cep_sha256_update(ctx, &indexing, 1u);
+    }
+
+    size_t child_count = has_store ? cep_cell_children(resolved) : 0u;
+    marker = 'C';
+    cep_sha256_update(ctx, &marker, 1u);
+    cep_digest_write_u64(buffer, (uint64_t)child_count);
+    cep_sha256_update(ctx, buffer, sizeof buffer);
+
+    if (child_count) {
+        cepDigestChild* entries = cep_malloc(child_count * sizeof(*entries));
+        if (!entries) {
+            return false;
+        }
+
+        size_t index = 0u;
+        for (cepCell* child = cep_cell_first(resolved); child && index < child_count; child = cep_cell_next(resolved, child)) {
+            cepCell* resolved_child = cep_cell_resolve(child);
+            if (!resolved_child || !cep_cell_is_normal(resolved_child)) {
+                cep_free(entries);
+                return false;
+            }
+
+            if (!cep_cell_is_immutable(resolved_child)) {
+                cep_free(entries);
+                return false;
+            }
+
+            entries[index].cell = resolved_child;
+            entries[index].name = cep_dt_clean(cep_cell_get_name(child));
+            entries[index].is_link = cep_cell_is_link(child);
+            index++;
+        }
+
+        if (index != child_count) {
+            cep_free(entries);
+            return false;
+        }
+
+        qsort(entries, child_count, sizeof(*entries), cep_digest_child_compare);
+
+        for (size_t i = 0; i < child_count; ++i) {
+            marker = 'n';
+            cep_sha256_update(ctx, &marker, 1u);
+            cep_digest_write_u64(buffer, (uint64_t)entries[i].name.domain);
+            cep_sha256_update(ctx, buffer, sizeof buffer);
+            cep_digest_write_u64(buffer, (uint64_t)entries[i].name.tag);
+            cep_sha256_update(ctx, buffer, sizeof buffer);
+            glob = (uint8_t)entries[i].name.glob;
+            cep_sha256_update(ctx, &glob, 1u);
+
+            marker = entries[i].is_link ? 'L' : 'c';
+            cep_sha256_update(ctx, &marker, 1u);
+
+            uint8_t child_hash[32];
+            if (!cep_cell_digest_compute(entries[i].cell, child_hash)) {
+                cep_free(entries);
+                return false;
+            }
+            cep_sha256_update(ctx, child_hash, sizeof child_hash);
+        }
+
+        cep_free(entries);
+    }
+
+    return true;
+}
+
+static bool cep_cell_digest_compute(const cepCell* cell, uint8_t out[32]) {
+    cepSha256Ctx ctx;
+    cep_sha256_init(&ctx);
+    if (!cep_cell_digest_walk(&ctx, cell)) {
+        return false;
+    }
+    cep_sha256_final(&ctx, out);
+    return true;
+}
+
+/** Produce a canonical SHA-256 digest for @p immutable_root so tooling can
+    fingerprint sealed subtrees. Only the SHA-256 algorithm is currently
+    supported; the function rejects mutable nodes or unsupported payload types. */
+bool cep_cell_digest(const cepCell* immutable_root, cepDigestAlgo algo, uint8_t out[32]) {
+    if (!immutable_root || !out || algo != CEP_DIGEST_SHA256) {
+        return false;
+    }
+
+    return cep_cell_digest_compute(immutable_root, out);
 }
 
 
@@ -2113,6 +2597,12 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
         fflush(stderr);
         assert(cep_store_valid(store) && !cep_cell_is_void(child));
     }
+
+    if (cep_store_owner_is_immutable(store))
+        return NULL;
+
+    if (cep_store_owner_is_immutable(store))
+        return NULL;
 
     if (!store->writable || cep_store_hierarchy_locked(store->owner))
         return NULL;
@@ -2945,7 +3435,6 @@ static inline bool cep_entry_has_timestamp(const cepEntry* entry, cepOpCount tim
 static inline bool cep_cell_matches_snapshot(const cepCell* cell, cepOpCount snapshot) {
     return cep_cell_visible_past(cell, snapshot, CEP_VIS_DEFAULT);
 }
-
 static inline cepCell* store_find_child_by_name_past(const cepStore* store, const cepDT* name, cepOpCount snapshot) {
     if (!store || !cep_dt_is_valid(name) || !cep_dt_is_valid(&store->dt)) {
         return NULL;
@@ -3418,6 +3907,9 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
 static inline bool store_take_cell(cepStore* store, cepCell* target) {
     assert(cep_store_valid(store) && target);
 
+    if (cep_store_owner_is_immutable(store) || cep_cell_is_immutable(target))
+        return false;
+
     if (!store->chdCount || !store->writable || cep_store_hierarchy_locked(store->owner))
         return false;
 
@@ -3461,6 +3953,9 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
 */
 static inline bool store_pop_child(cepStore* store, cepCell* target) {
     assert(cep_store_valid(store) && target);
+
+    if (cep_store_owner_is_immutable(store) || cep_cell_is_immutable(target))
+        return false;
 
     if (!store->chdCount || !store->writable || cep_store_hierarchy_locked(store->owner))
         return false;
@@ -3783,6 +4278,8 @@ void cep_cell_finalize_hard(cepCell* cell) {
 */
 cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+    if (cep_cell_is_immutable(cell))
+        return NULL;
     cepCell* inserted = cep_store_add_child(store, context, child);
     if (inserted && !inserted->created) {
         cepCell* parentCell = store->owner;
@@ -3799,6 +4296,8 @@ cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
 */
 cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+    if (cep_cell_is_immutable(cell))
+        return NULL;
     cepCell* inserted = cep_store_append_child(store, prepend, child);
     if (inserted && !inserted->created) {
         cepCell* parentCell = store->owner;
@@ -3821,6 +4320,10 @@ int cep_cell_add_parents(cepCell* derived, cepCell* const* parents, size_t count
 
     derived = cep_link_pull(derived);
     if (!derived || !cep_cell_is_normal(derived)) {
+        return -1;
+    }
+
+    if (cep_cell_is_immutable(derived)) {
         return -1;
     }
 
@@ -3998,6 +4501,9 @@ void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, 
 
     cell = cep_link_pull(cell);
 
+    if (cep_cell_is_immutable(cell))
+        return NULL;
+
     cepData* data = cell->data;
     if CEP_NOT_ASSERT(data)
         return NULL;
@@ -4095,6 +4601,9 @@ void* cep_cell_update_hard(cepCell* cell, size_t size, size_t capacity, void* va
     assert(!cep_cell_is_void(cell) && size && capacity);
 
     cell = cep_link_pull(cell);
+
+    if (cep_cell_is_immutable(cell))
+        return NULL;
 
     cepData* data = cell->data;
     if CEP_NOT_ASSERT(data)
@@ -4993,6 +5502,91 @@ bool cep_cell_deep_traverse_internal(cepCell* cell, cepTraverse func, cepTravers
     return ok;
 }
 
+/* Depth-first traversal that ignores visibility filters. This variant walks
+   every descendant (even veiled or deleted nodes) using the logical ordering
+   semantics. It is intended for low-level chores such as sealing or digesting
+   staged subtrees; avoid it in user-facing code so traversal semantics stay
+   consistent with the visible view. */
+bool cep_cell_deep_traverse_all(cepCell* cell, cepTraverse func, cepTraverse endFunc, void* context, cepEntry* entry) {
+    assert(!cep_cell_is_void(cell) && (func || endFunc));
+
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
+    if (!store->chdCount)
+        return true;
+
+    bool ok = true;
+    cepCell* child;
+    unsigned depth = 0;
+    if (!entry)
+        entry = cep_alloca(sizeof(cepEntry));
+    CEP_0(entry);
+    entry->parent = cell;
+    entry->cell = store_first_child(store);
+    entry->prev = NULL;
+    entry->position = 0;
+    entry->depth = 0;
+
+    cepEntryStack stack;
+    cep_entry_stack_init(&stack);
+
+    for (;;) {
+        if (!entry->cell) {
+            if CEP_RARELY(!depth)  break;
+            depth--;
+
+            if (endFunc) {
+                ok = endFunc(&stack.data[depth], context);
+                if (!ok)  break;
+            }
+
+            entry->cell   = store_next_child(stack.data[depth].parent->store, stack.data[depth].cell);
+            entry->parent = stack.data[depth].parent;
+            entry->prev   = stack.data[depth].cell;
+            entry->next   = NULL;
+            entry->position = stack.data[depth].position + 1;
+            entry->depth  = depth;
+            continue;
+        }
+
+      NEXT_ALL_SIBLING:
+        entry->next = store_next_child(entry->parent->store, entry->cell);
+
+        if (func) {
+            ok = func(entry, context);
+            if (!ok)  break;
+        }
+
+        if (entry->cell->store && entry->cell->store->chdCount
+        && ((child = store_first_child(entry->cell->store)))) {
+            if (!cep_entry_stack_reserve(&stack, depth)) {
+                ok = false;
+                break;
+            }
+
+            stack.data[depth++] = *entry;
+
+            entry->parent   = entry->cell;
+            entry->cell     = child;
+            entry->prev     = NULL;
+            entry->position = 0;
+            entry->depth    = depth;
+
+            goto NEXT_ALL_SIBLING;
+        }
+
+        entry->prev     = entry->cell;
+        entry->cell     = entry->next;
+        entry->position += 1;
+    }
+
+    cep_entry_stack_destroy(&stack);
+
+    if (!ok)
+        return false;
+
+    return true;
+}
+
 
 
 
@@ -5115,6 +5709,8 @@ bool cep_cell_child_pop_hard(cepCell* cell, cepCell* target) {
 void cep_cell_remove_hard(cepCell* cell, cepCell* target) {
     assert(cell && !cep_cell_is_root(cell));
     cepStore* store = cell->parent;
+    if (!store || cep_store_owner_is_immutable(store) || cep_cell_is_immutable(cell))
+        return;
     store_remove_child(store, cell, target);
 }
 

@@ -216,18 +216,6 @@ Wrap an external stream behind a library binding. Your `cepLibraryOps` implement
 
 ---
 
-### F) Rendezvous, pipelines, and threads
-
-Rendezvous used to provide a deterministic staging area for long-running work; the feature has been retired. Remove old `cep_rendezvous_*` calls and leave a `TODO` where a replacement scheduler still needs to land.
-
----
-
-### G) Mailroom and layer mailboxes
-
-Layer-specific packs now route intents themselves; the shared mailroom was removed. Register your own routing enzymes (or write directly into pack inboxes) and document the new path with a `TODO` if the replacement router has not landed yet.
-
----
-
 ## Design choices that unlock potential
 
 * **Idempotency and append‑only history.** Most “writes” create a new point on a timeline; readers can ask “as of beat X” without branching logic. Reindexing captures a one‑time snapshot of layout to preserve historical traversal; normal operations rely solely on timestamps. 

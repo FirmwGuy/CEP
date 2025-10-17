@@ -130,7 +130,8 @@ typedef struct {
                 domain:     CEP_NAME_BITS;
       };
       struct {
-        cepID   _reserved:  5,
+        cepID   _reserved:  4,
+                immutable:  1,    /**< Cell is immutable (read-only). */
                 glob:       1,    /**< Glob character present. */
                 tag:        CEP_NAME_BITS;
       };
@@ -992,9 +993,32 @@ cepCell* cep_cell_clone_deep(const cepCell* cell);
 #define cep_cell_initialize_catalog(r, name, type_dt, storage, ...)               cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(type_dt, storage, CEP_INDEX_BY_FUNCTION, ##__VA_ARGS__))
 #define cep_cell_initialize_spatial(r, name, type_dt, center, subwide, compare)   cep_cell_initialize(r, CEP_TYPE_NORMAL, name, NULL, cep_store_new(type_dt, CEP_STORAGE_OCTREE, CEP_INDEX_BY_FUNCTION, center, subwide, compare))
 
-static inline void  cep_cell_set_tag_id(cepCell* cell, cepID id)      {assert(cell && cep_id_valid(id));  CEP_ID_SET(cell->metacell.tag, id);}
+static inline bool cep_cell_is_immutable(const cepCell* cell) {
+    if (!cell) {
+        return false;
+    }
+
+    if (cell->metacell.type == CEP_TYPE_VOID) {
+        return false;
+    }
+
+    if (!cep_dt_is_valid(&cell->metacell.dt)) {
+        return false;
+    }
+
+    return cell->metacell.immutable != 0u;
+}
+
+static inline void  cep_cell_set_tag_id(cepCell* cell, cepID id)      {
+    assert(cell && cep_id_valid(id));
+    if (cep_cell_is_immutable(cell))
+        return;
+    CEP_ID_SET(cell->metacell.tag, id);
+}
 static inline void  cep_cell_set_name(cepCell* cell, cepDT* name)     {
     assert(cell && cep_dt_is_valid(name));
+    if (cep_cell_is_immutable(cell))
+        return;
     cell->metacell.domain = name->domain;
     CEP_ID_SET(cell->metacell.tag, name->tag);
 }
@@ -1323,6 +1347,7 @@ bool cep_cell_traverse_past (cepCell* cell, cepOpCount timestamp, cepTraverse fu
 bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 bool cep_cell_deep_traverse (cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 bool cep_cell_deep_traverse_internal(cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
+bool cep_cell_deep_traverse_all(cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 
 
 // Removing cells
@@ -1332,8 +1357,24 @@ bool cep_cell_child_take_hard(cepCell* cell, cepCell* target);
 bool cep_cell_child_pop_hard(cepCell* cell, cepCell* target);
 void cep_cell_remove_hard(cepCell* cell, cepCell* target);
 
+typedef struct {
+    bool recursive;
+} cepSealOptions;
+
+bool cep_cell_set_immutable(cepCell* cell);
+bool cep_branch_seal_immutable(cepCell* root, cepSealOptions opt);
+
+typedef enum {
+    CEP_DIGEST_SHA256 = 1,
+} cepDigestAlgo;
+
+bool cep_cell_digest(const cepCell* immutable_root, cepDigestAlgo algo, uint8_t out[32]);
+
 static inline void cep_cell_delete_data(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->data)
+        return;
+
+    if (cep_cell_is_immutable(cell))
         return;
 
     if (cep_cell_data_locked_hierarchy(cell))
@@ -1351,6 +1392,9 @@ static inline void cep_cell_delete_data_hard(cepCell* cell) {
     if (!cep_cell_has_data(cell))
         return;
 
+    if (cep_cell_is_immutable(cell))
+        return;
+
     if (cep_cell_data_locked_hierarchy(cell))
         return;
 
@@ -1363,6 +1407,9 @@ static inline void cep_cell_delete_data_hard(cepCell* cell) {
 
 static inline void cep_cell_delete_store(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->store)
+        return;
+
+    if (cep_cell_is_immutable(cell))
         return;
 
     if (cep_cell_store_locked_hierarchy(cell))
@@ -1378,6 +1425,9 @@ static inline void cep_cell_delete_store(cepCell* cell) {
 
 static inline void cep_cell_delete_store_hard(cepCell* cell) {
     if (!cep_cell_has_store(cell))
+        return;
+
+    if (cep_cell_is_immutable(cell))
         return;
 
     if (cep_cell_store_locked_hierarchy(cell))
@@ -1416,6 +1466,9 @@ static inline void cep_cell_delete(cepCell* cell) {
         return;
 
     if (!cep_cell_is_normal(cell))
+        return;
+
+    if (cep_cell_is_immutable(cell))
         return;
 
     if (cep_cell_data_locked_hierarchy(cell) || cep_cell_store_locked_hierarchy(cell))
