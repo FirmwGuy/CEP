@@ -86,6 +86,14 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/ops",
+        test_ops,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
         "/heartbeat",
         test_heartbeat,
         NULL,

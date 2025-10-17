@@ -8,6 +8,7 @@
 #include "cep_heartbeat_internal.h"
 #include "cep_namepool.h"
 #include "../enzymes/cep_cell_operations.h"
+#include "cep_ops.h"
 #include "stream/cep_stream_internal.h"
 
 #include <string.h>
@@ -49,6 +50,7 @@ CEP_DEFINE_STATIC_DT(dt_ready_beat_field, CEP_ACRO("CEP"), CEP_WORD("ready_beat"
 CEP_DEFINE_STATIC_DT(dt_td_beat_field,  CEP_ACRO("CEP"), CEP_WORD("td_beat"));
 CEP_DEFINE_STATIC_DT(dt_sys_root_name,  CEP_ACRO("CEP"), CEP_WORD("sys"));
 CEP_DEFINE_STATIC_DT(dt_rt_root_name,   CEP_ACRO("CEP"), CEP_WORD("rt"));
+CEP_DEFINE_STATIC_DT(dt_ops_rt_name,   CEP_ACRO("CEP"), CEP_WORD("ops"));
 CEP_DEFINE_STATIC_DT(dt_journal_root_name, CEP_ACRO("CEP"), CEP_WORD("journal"));
 CEP_DEFINE_STATIC_DT(dt_env_root_name,  CEP_ACRO("CEP"), CEP_WORD("env"));
 CEP_DEFINE_STATIC_DT(dt_cas_root_name,  CEP_ACRO("CEP"), CEP_WORD("cas"));
@@ -1372,6 +1374,10 @@ bool cep_heartbeat_bootstrap(void) {
         CEP_RUNTIME.topology.rt = rt;
     }
 
+    if (rt) {
+        (void)cep_cell_ensure_dictionary_child(rt, dt_ops_rt_name(), CEP_STORAGE_RED_BLACK_T);
+    }
+
     const cepDT* journal_name = dt_journal_root_name();
     cepCell* journal = ensure_root_dictionary(root, journal_name);
     CEP_DEFAULT_TOPOLOGY.journal = journal;
@@ -1617,6 +1623,10 @@ bool cep_heartbeat_stage_commit(void) {
         if (!recorded) {
             return false;
         }
+    }
+
+    if (!cep_ops_stage_commit()) {
+        return false;
     }
 
     cep_heartbeat_impulse_queue_swap(&CEP_RUNTIME.inbox_current, &CEP_RUNTIME.inbox_next);

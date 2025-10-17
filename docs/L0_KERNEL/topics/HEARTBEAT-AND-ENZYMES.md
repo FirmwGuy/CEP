@@ -122,6 +122,25 @@ During setup, register descriptors first and then call `cep_cell_bind_enzyme` on
 - Simulate multiple beats to confirm N→N+1 visibility and idempotency.
 - Verify that reordering registrations or inbox entries changes outcomes only as defined by the deterministic rules.
 
+## OPS/STATES Operations
+
+### Introduction
+OPS/STATES gives every long-running operation a tidy logbook under `/rt/ops/<oid>`. A start helper seals the envelope (verb, target, mode, optional payload), subsequent state helpers append history entries, awaiters register continuations, and close seals the dossier. Instead of orchestrating these cells by hand, callers drive the lifecycle with a few purpose-built APIs while the heartbeat guarantees the same deterministic beat-to-beat cadence.
+
+### Technical Details
+- **Layout.** `cep_op_start()` fabricates a floating branch, seals `envelope/`, stamps `state=ist:run`, seeds an append-only `history/` list, and ensures a mutable `watchers/` dictionary is ready. Children are auto-named (`OPS/*` for ops, `OPH/*` for history, `OPW/*` for watchers) so lookups stay cheap.
+- **State transitions.** `cep_op_state_set(oid, ist:*, code, note)` updates the live `state`, records the beat in `history/`, and fires watchers that asked for that state. Repeating the same state within the same beat is treated as idempotent (history is unchanged, but `code/note` can refresh).
+- **Awaiters.** `cep_op_await(oid, want, ttl, cont, payload, len)` resolves immediately if `want` already matches the current state or the terminal status; otherwise it writes a watcher entry with `want`, `deadline` (current beat + ttl), `cont`, optional `payload_id`, and provenance info. On the beat where `deadline <= current`, `cep_ops_stage_commit()` enqueues an `op/tmo` impulse for N+1 and removes the watcher so timeouts stay deterministic.
+- **Closure.** `cep_op_close(oid, sts, summary, len)` produces an immutable `close/` branch (`status`, `closed_beat`, optional `summary_id`), maps the status to `ist:ok|fail|cnl`, appends the last history entry, and blocks further mutations. A repeat close with the same status is a no-op; mismatched statuses are rejected.
+- **Heartbeat integration.** The heartbeat calls `cep_ops_stage_commit()` during commit so awaiter continuations and timeouts ride the same promotion path as other impulses. Tests advance beats with `cep_heartbeat_step()` and drain the agenda with `cep_heartbeat_resolve_agenda()` to assert single-fire behaviour.
+- **Inspection.** `cep_op_get(oid, buf, cap)` emits a compact textual summary (OID, state, status, watcher count) for tooling. For deeper audits, traverse `/rt/ops/<oid>` directly: envelope and close are immutable, while history and watchers remain append-only/mutable as expected.
+
+### Q&A
+- *When should I prefer `opm:direct` vs. `opm:states`?* Pick `opm:direct` for two-pulse work (start → close). Choose `opm:states` when intermediate checkpoints (`ist:skel`, `ist:unveil`, ...) need to be observable or awaitable.
+- *How do I unit-test awaiters?* Register a test enzyme on `op/cont` (or `op/tmo`), call `cep_op_await()`, advance with `cep_heartbeat_step()`, then call `cep_heartbeat_resolve_agenda()`. The enzyme should run exactly once—if it triggers immediately, the state was already satisfied; if it never fires, the watcher was misconfigured.
+- *What happens if I call `cep_op_state_set()` after `cep_op_close()`?* The helper returns `false`. Closing seals the managed branch, so subsequent writes must go through a new operation if additional work is needed.
+- *Can I stash large artefacts alongside the close summary?* Yes. Store a CAS handle or library reference in the `summary` payload; the close branch keeps it immutable while leaving the heavy bytes in the content store.
+
 ## Q&A
 
 - Why call functions “enzymes” and messages “signals/impulses”? 
