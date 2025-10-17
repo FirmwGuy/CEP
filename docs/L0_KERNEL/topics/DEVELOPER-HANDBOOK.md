@@ -121,7 +121,7 @@ Short nicknames stay on the label; long nicknames get filed once and every cell 
   - First/last/prev/next: `cep_cell_first|last|prev|next`
   - By name/key/position/path: `cep_cell_find_by_*`
   - Traverse shallow/deep: `cep_cell_traverse`, `cep_cell_deep_traverse`
-    - Need veiled/deleted nodes too? Use `cep_cell_deep_traverse_all` (logical order, no visibility filter). Handy for sealing/digests; avoid in user-facing code so visibility rules stay consistent.
+    - Kernel-only raw variants: `_first_all`, `_next_all`, `_last_all`, `_prev_all`, and `cep_cell_deep_traverse_all` bypass visibility filters for sealing/digests. Avoid them in product code so veils and tombstones remain respected.
 - Removal
   - Remove/pull from parent store: soft delete via `cep_cell_child_take|pop` (marks child deleted and returns a link), hard removal via `cep_cell_child_take_hard|pop_hard` (reorganizes siblings), `cep_cell_remove`
 - Data access/update

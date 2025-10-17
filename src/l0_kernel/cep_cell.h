@@ -1320,6 +1320,9 @@ cepCell* cep_cell_first_past(const cepCell* cell, cepOpCount snapshot);
 cepCell* cep_cell_last_past (const cepCell* cell, cepOpCount snapshot);
 #define  cep_cell_last(cell)            cep_cell_last_past((cell), 0)
 
+/* Internal L0-only raw traversal helpers. These bypass visibility/immutability
+   guards so kernel maintenance code can inspect veiled or deleted nodes; keep
+   user-facing code on the snapshot-respecting APIs above. */
 cepCell* cep_cell_first_all(const cepCell* cell);
 cepCell* cep_cell_next_all(const cepCell* cell, cepCell* child);
 cepCell* cep_cell_last_all(const cepCell* cell);
@@ -1352,6 +1355,8 @@ bool cep_cell_traverse_past (cepCell* cell, cepOpCount timestamp, cepTraverse fu
 bool cep_cell_deep_traverse_past(cepCell* cell, cepOpCount timestamp, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 bool cep_cell_deep_traverse (cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 bool cep_cell_deep_traverse_internal(cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
+/* Internal L0-only deep traversal: exposes veiled/deleted nodes for sealing,
+   digests, and similar kernel chores. */
 bool cep_cell_deep_traverse_all(cepCell* cell, cepTraverse func, cepTraverse listEnd, void* context, cepEntry* entry);
 
 

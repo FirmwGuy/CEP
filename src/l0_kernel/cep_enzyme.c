@@ -8,6 +8,8 @@
 
 #include "cep_heartbeat.h"
 
+#include <stdio.h>
+
 
 
 
@@ -70,7 +72,9 @@ static bool cep_enzyme_match_prefer(const cepEnzymeMatch* lhs, const cepEnzymeMa
 static const cepEnzymeIndexBucket* cep_enzyme_find_bucket(const cepEnzymeIndexBucket* buckets, size_t bucket_count, const cepDT* key);
 static bool cep_enzyme_binding_name_equals(const cepDT* a, const cepDT* b);
 static bool cep_enzyme_binding_contains(const cepEffectiveBinding* list, size_t count, const cepDT* name, size_t* index_out);
-static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target, size_t* out_count);
+static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target,
+                                                        size_t* out_count,
+                                                        bool* out_masked);
 static bool cep_enzyme_matches_signal(const cepEnzymeEntry* entry, const cepPath* signal, size_t* specificity_out);
 static void cep_enzyme_match_merge(cepEnzymeMatch* matches, size_t* match_count, const cepEnzymeMatch* candidate);
 static size_t cep_enzyme_path_specificity(const cepPath* pattern);
@@ -323,9 +327,14 @@ static bool cep_enzyme_registry_rebuild_indexes(cepEnzymeRegistry* registry) {
     return true;
 }
 
-static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target, size_t* out_count) {
+static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target,
+                                                        size_t* out_count,
+                                                        bool* out_masked) {
     if (out_count) {
         *out_count = 0u;
+    }
+    if (out_masked) {
+        *out_masked = false;
     }
     if (!target) {
         return NULL;
@@ -342,6 +351,8 @@ static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target, s
     cepEffectiveBinding* masked = NULL;
     size_t masked_count = 0u;
     size_t masked_capacity = 0u;
+
+    bool had_masked = false;
 
     for (const cepCell* cell = target; cell; cell = cep_cell_parent(cell)) {
         if (!cep_cell_is_normal(cell)) {
@@ -388,6 +399,7 @@ static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target, s
                 local_seen[local_count++].name = node->name;
 
                 if (node->flags & CEP_ENZYME_BIND_TOMBSTONE) {
+                    had_masked = true;
                     size_t idx;
                     if (cep_enzyme_binding_contains(active, active_count, &node->name, &idx)) {
                         if (idx + 1u < active_count) {
@@ -452,6 +464,9 @@ static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target, s
 
     if (out_count) {
         *out_count = active_count;
+    }
+    if (out_masked) {
+        *out_masked = had_masked;
     }
     return active;
 }
@@ -1244,6 +1259,7 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
 
     cepEffectiveBinding* bindings = NULL;
     size_t binding_count = 0u;
+    bool bindings_masked = false;
 
     /* TODO: expose alternate dispatch policies (OR, TARGET_ONLY, SIGNAL_ONLY,
        STRICT_BOTH) so callers can select how signal/target matches combine. */
@@ -1253,7 +1269,7 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
         const cepCell* root = topology ? topology->root : NULL;
         cepCell* target_cell = root ? cep_cell_find_by_path(root, target_path) : NULL;
         if (target_cell) {
-            bindings = cep_enzyme_collect_bindings(target_cell, &binding_count);
+            bindings = cep_enzyme_collect_bindings(target_cell, &binding_count, &bindings_masked);
             if (binding_count == SIZE_MAX) {
                 CEP_FREE(matches);
                 return 0u;
@@ -1317,7 +1333,7 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
         }
     }
 
-    if (!target_path && signal) {
+    if ((target_path == NULL || (binding_count == 0u && !bindings_masked)) && signal) {
         cepDT head = cep_enzyme_query_head(signal);
         size_t begin = 0u;
         size_t end = registry_count;

@@ -1908,6 +1908,11 @@ bool cep_heartbeat_process_impulses(void) {
                 size_t before_signals = CEP_RUNTIME.inbox_next.count;
                 int rc = descriptor->callback(impulse.signal_path, impulse.target_path);
                 CEP_RUNTIME.current_descriptor = NULL;
+                fprintf(stderr, "DEBUG heartbeat: descriptor %llu:%llu callback=%p rc=%d\n",
+                        (unsigned long long)descriptor->name.domain,
+                        (unsigned long long)descriptor->name.tag,
+                        (void*)descriptor->callback,
+                        rc);
                 size_t after_signals = CEP_RUNTIME.inbox_next.count;
                 bool emitted = after_signals > before_signals;
 

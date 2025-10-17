@@ -31,6 +31,7 @@ CEP_DEFINE_STATIC_DT(dt_cont_field,         CEP_ACRO("CEP"), CEP_WORD("cont"));
 CEP_DEFINE_STATIC_DT(dt_payload_watcher,    CEP_ACRO("CEP"), CEP_WORD("payload_id"));
 CEP_DEFINE_STATIC_DT(dt_origin_field,       CEP_ACRO("CEP"), CEP_WORD("origin"));
 CEP_DEFINE_STATIC_DT(dt_origin_enzyme,      CEP_ACRO("CEP"), CEP_WORD("enzyme"));
+CEP_DEFINE_STATIC_DT(dt_ready_field,        CEP_ACRO("CEP"), CEP_WORD("armed"));
 
 static int cep_ops_debug_last_error_code = 0;
 
@@ -125,6 +126,10 @@ static bool cep_ops_write_value(cepCell* parent,
     return cep_dict_add_value(parent, &name_copy, &type_copy, (void*)data, size, size) != NULL;
 }
 
+static bool cep_ops_write_bool(cepCell* parent, const cepDT* field, bool value) {
+    return cep_ops_write_value(parent, field, "val/bool", &value, sizeof value);
+}
+
 static bool cep_ops_write_u64(cepCell* parent, const cepDT* field, uint64_t value) {
     return cep_ops_write_value(parent, field, "val/u64", &value, sizeof value);
 }
@@ -171,6 +176,10 @@ static bool cep_ops_read_value(const cepCell* parent, const cepDT* field, void* 
 }
 
 static bool cep_ops_read_u64(const cepCell* parent, const cepDT* field, uint64_t* out) {
+    return out && cep_ops_read_value(parent, field, out, sizeof *out);
+}
+
+static bool cep_ops_read_bool(const cepCell* parent, const cepDT* field, bool* out) {
     return out && cep_ops_read_value(parent, field, out, sizeof *out);
 }
 
@@ -367,7 +376,8 @@ static bool cep_ops_fire_watcher_entry(cepCell* entry, cepOID oid, bool timeout)
         return cep_ops_enqueue_signal(oid, &signal);
     }
 
-    signal = cep_ops_clean_dt(CEP_DTAW("CEP", "op/tmo"));
+    cepDT timeout_dt = cep_ops_make_dt("op/tmo");
+    signal = cep_ops_clean_dt(&timeout_dt);
     return cep_ops_enqueue_signal(oid, &signal);
 }
 
@@ -375,6 +385,7 @@ static bool cep_ops_notify_watchers(cepCell* op,
                                     cepOID oid,
                                     const cepDT* event_dt,
                                     bool for_status) {
+    (void)oid;
     cepCell* watchers = cep_ops_watchers_root(op);
     if (!watchers) {
         return true;
@@ -401,6 +412,34 @@ static bool cep_ops_notify_watchers(cepCell* op,
             continue;
         }
 
+        bool armed = false;
+        (void)cep_ops_read_bool(entry, dt_ready_field(), &armed);
+        if (!armed && !cep_ops_write_bool(entry, dt_ready_field(), true)) {
+            ok = false;
+        }
+        entry = next;
+    }
+
+    return ok;
+}
+
+static bool cep_ops_fire_ready_watchers(cepCell* op, cepOID oid) {
+    cepCell* watchers = cep_ops_watchers_root(op);
+    if (!watchers) {
+        return true;
+    }
+
+    bool ok = true;
+
+    for (cepCell* entry = cep_cell_first_all(watchers); entry; ) {
+        cepCell* next = cep_cell_next_all(watchers, entry);
+
+        bool armed = false;
+        if (!cep_ops_read_bool(entry, dt_ready_field(), &armed) || !armed) {
+            entry = next;
+            continue;
+        }
+
         if (!cep_ops_fire_watcher_entry(entry, oid, false)) {
             ok = false;
         }
@@ -421,6 +460,12 @@ static bool cep_ops_expire_watchers(cepCell* op, cepOID oid, uint64_t beat) {
 
     for (cepCell* entry = cep_cell_first_all(watchers); entry; ) {
         cepCell* next = cep_cell_next_all(watchers, entry);
+
+        bool armed = false;
+        if (cep_ops_read_bool(entry, dt_ready_field(), &armed) && armed) {
+            entry = next;
+            continue;
+        }
 
         uint64_t deadline = 0u;
         if (!cep_ops_read_u64(entry, dt_deadline_field(), &deadline) || !deadline) {
@@ -448,13 +493,16 @@ static bool cep_ops_install_watcher(cepCell* op,
                                     uint32_t ttl_beats,
                                     const cepDT* continuation,
                                     const void* payload,
-                                    size_t payload_len) {
+                                    size_t payload_len,
+                                    bool armed_initial) {
     if (!op || !want || !continuation) {
+        cep_ops_debug_last_error_code = 52;
         return false;
     }
 
     cepCell* watchers = cep_ops_watchers_root(op);
     if (!watchers) {
+        cep_ops_debug_last_error_code = 53;
         return false;
     }
 
@@ -466,16 +514,24 @@ static bool cep_ops_install_watcher(cepCell* op,
                                              &dict_type,
                                              CEP_STORAGE_RED_BLACK_T);
     if (!entry) {
+        cep_ops_debug_last_error_code = 54;
         return false;
     }
 
     if (!cep_ops_write_dt(entry, dt_want_field(), want)) {
+        cep_ops_debug_last_error_code = 55;
         goto fail;
     }
     if (!cep_ops_write_dt(entry, dt_cont_field(), continuation)) {
+        cep_ops_debug_last_error_code = 56;
+        goto fail;
+    }
+    if (!cep_ops_write_bool(entry, dt_ready_field(), armed_initial)) {
+        cep_ops_debug_last_error_code = 57;
         goto fail;
     }
     if (!cep_ops_write_bytes(entry, dt_payload_watcher(), payload, payload_len)) {
+        cep_ops_debug_last_error_code = 58;
         goto fail;
     }
 
@@ -484,6 +540,7 @@ static bool cep_ops_install_watcher(cepCell* op,
         deadline = (uint64_t)cep_beat_index() + ttl_beats;
     }
     if (!cep_ops_write_u64(entry, dt_deadline_field(), deadline)) {
+        cep_ops_debug_last_error_code = 59;
         goto fail;
     }
 
@@ -504,113 +561,108 @@ static bool cep_ops_install_watcher(cepCell* op,
 
 fail:
     cep_cell_delete_hard(entry);
+    if (!cep_ops_debug_last_error_code) {
+        cep_ops_debug_last_error_code = 60;
+    }
+    fprintf(stderr, "install watcher fail code=%d\n", cep_ops_debug_last_error_code);
     return false;
 }
 
-typedef struct {
-    cepCell  op_cell;
-    cepCell* envelope;
-    cepCell* history;
-    cepCell* watchers;
-} cepOpsBranch;
-
-static bool cep_ops_prepare_branch(const cepDT* verb,
-                                   const char* target,
-                                   const cepDT* mode,
-                                   const void* payload,
-                                   size_t payload_len,
-                                   uint32_t ttl_beats,
-                                   cepOpsBranch* out_branch) {
-    if (!verb || !mode || !out_branch || !target) {
+static bool cep_ops_populate_branch(cepCell* op_root,
+                                    const cepDT* verb,
+                                    const char* target,
+                                    const cepDT* mode,
+                                    const void* payload,
+                                    size_t payload_len,
+                                    uint32_t ttl_beats) {
+    if (!op_root || !verb || !mode || !target) {
         return false;
     }
 
-    cepDT op_name = cep_ops_auto_name(CEP_ACRO("OPS"));
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
-    cep_cell_initialize_dictionary(&out_branch->op_cell, &op_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
-    out_branch->op_cell.metacell.veiled = 1u;
 
     cepDT envelope_name = cep_ops_clean_dt(dt_envelope_name());
-    out_branch->envelope = cep_cell_add_dictionary(&out_branch->op_cell,
-                                                   &envelope_name,
-                                                   0,
-                                                   &dict_type,
-                                                   CEP_STORAGE_RED_BLACK_T);
-    if (!out_branch->envelope) {
+    cepCell* envelope = cep_cell_add_dictionary(op_root,
+                                                &envelope_name,
+                                                0,
+                                                &dict_type,
+                                                CEP_STORAGE_RED_BLACK_T);
+    if (!envelope) {
         cep_ops_debug_last_error_code = 10;
         return false;
     }
 
-    if (!cep_ops_write_dt(out_branch->envelope, dt_verb_field(), verb)) {
+    if (!cep_ops_write_dt(envelope, dt_verb_field(), verb)) {
         cep_ops_debug_last_error_code = 11;
         return false;
     }
-    if (!cep_ops_write_string(out_branch->envelope, dt_target_field(), target)) {
+    if (!cep_ops_write_string(envelope, dt_target_field(), target)) {
         cep_ops_debug_last_error_code = 12;
         return false;
     }
-    if (!cep_ops_write_dt(out_branch->envelope, dt_mode_field(), mode)) {
+    if (!cep_ops_write_dt(envelope, dt_mode_field(), mode)) {
         cep_ops_debug_last_error_code = 13;
         return false;
     }
-    if (!cep_ops_write_u64(out_branch->envelope, dt_ttl_field(), ttl_beats)) {
+    if (!cep_ops_write_u64(envelope, dt_ttl_field(), ttl_beats)) {
         cep_ops_debug_last_error_code = 14;
         return false;
     }
     uint64_t issued = (uint64_t)cep_beat_index();
-    if (!cep_ops_write_u64(out_branch->envelope, dt_issued_field(), issued)) {
+    if (!cep_ops_write_u64(envelope, dt_issued_field(), issued)) {
         cep_ops_debug_last_error_code = 15;
         return false;
     }
-    if (!cep_ops_write_bytes(out_branch->envelope, dt_payload_field(), payload, payload_len)) {
+    if (!cep_ops_write_bytes(envelope, dt_payload_field(), payload, payload_len)) {
         cep_ops_debug_last_error_code = 16;
         return false;
     }
 
     cepSealOptions seal_opt = {.recursive = true};
-    if (!cep_branch_seal_immutable(out_branch->envelope, seal_opt)) {
+    if (!cep_branch_seal_immutable(envelope, seal_opt)) {
         cep_ops_debug_last_error_code = 17;
         return false;
     }
 
     cepDT state_name = cep_ops_clean_dt(dt_state_field());
     cepDT state_val = cep_ops_clean_dt(CEP_DTAW("CEP", "ist:run"));
-    if (!cep_ops_write_dt(&out_branch->op_cell, &state_name, &state_val)) {
+    if (!cep_ops_write_dt(op_root, &state_name, &state_val)) {
         cep_ops_debug_last_error_code = 18;
         return false;
     }
 
     cepDT code_name = cep_ops_clean_dt(dt_code_field());
-    if (!cep_ops_write_i64(&out_branch->op_cell, &code_name, 0)) {
+    if (!cep_ops_write_i64(op_root, &code_name, 0)) {
         cep_ops_debug_last_error_code = 19;
         return false;
     }
 
     cepDT history_name = cep_ops_clean_dt(dt_history_name());
     cepDT list_type = *CEP_DTAW("CEP", "list");
-    out_branch->history = cep_cell_add_list(&out_branch->op_cell,
-                                            &history_name,
-                                            0,
-                                            &list_type,
-                                            CEP_STORAGE_LINKED_LIST);
-    if (!out_branch->history) {
+    cepCell* history = cep_cell_add_list(op_root,
+                                         &history_name,
+                                         0,
+                                         &list_type,
+                                         CEP_STORAGE_LINKED_LIST);
+    if (!history) {
         cep_ops_debug_last_error_code = 20;
         return false;
     }
 
     cepDT watchers_name = cep_ops_clean_dt(dt_watchers_name());
-    out_branch->watchers = cep_cell_add_dictionary(&out_branch->op_cell,
-                                                   &watchers_name,
-                                                   0,
-                                                   &dict_type,
-                                                   CEP_STORAGE_RED_BLACK_T);
-    if (!out_branch->watchers) {
+    cepCell* watchers = cep_cell_add_dictionary(op_root,
+                                                &watchers_name,
+                                                0,
+                                                &dict_type,
+                                                CEP_STORAGE_RED_BLACK_T);
+    if (!watchers) {
         cep_ops_debug_last_error_code = 21;
         return false;
     }
+    (void)watchers;
 
-    if (!cep_ops_append_history(&out_branch->op_cell,
-                                out_branch->history,
+    if (!cep_ops_append_history(op_root,
+                                history,
                                 &state_val,
                                 0,
                                 NULL)) {
@@ -627,8 +679,8 @@ cepOID cep_op_start(cepDT verb,
                     const void* payload,
                     size_t payload_len,
                     uint32_t ttl_beats) {
-    cepOID oid = cep_oid_invalid();
     cep_ops_debug_last_error_code = 0;
+    cepOID oid = cep_oid_invalid();
 
     if (!cep_dt_is_valid(&verb) || !target || !cep_dt_is_valid(&mode)) {
         cep_ops_debug_last_error_code = 1;
@@ -643,33 +695,45 @@ cepOID cep_op_start(cepDT verb,
         return oid;
     }
 
-    cepOpsBranch branch = {0};
-    if (!cep_ops_prepare_branch(&verb, target, &mode, payload, payload_len, ttl_beats, &branch)) {
+    cepTxn txn = {0};
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepDT op_name = cep_ops_auto_name(CEP_ACRO("OPS"));
+    if (!cep_txn_begin(ops_root, &op_name, &dict_type, &txn)) {
+        cep_ops_debug_last_error_code = 5;
+        return oid;
+    }
+
+    if (!cep_ops_populate_branch(txn.root,
+                                 &verb,
+                                 target,
+                                 &mode,
+                                 payload,
+                                 payload_len,
+                                 ttl_beats)) {
         if (!cep_ops_debug_last_error_code) {
             cep_ops_debug_last_error_code = 3;
         }
-        fprintf(stderr, "cep_op_start: prepare_branch failed\n");
+        fprintf(stderr, "cep_op_start: populate_branch failed\n");
         fflush(stderr);
+        cep_txn_abort(&txn);
         return oid;
     }
 
-    cepCell* inserted = cep_cell_add(ops_root, 0, &branch.op_cell);
-    if (!inserted) {
-        cep_ops_debug_last_error_code = 4;
-        fprintf(stderr, "cep_op_start: cep_cell_add returned NULL\n");
-        fflush(stderr);
+    if (!cep_txn_mark_ready(&txn)) {
+        cep_ops_debug_last_error_code = 23;
+        cep_txn_abort(&txn);
         return oid;
     }
 
-    cepDT inserted_dt = cep_dt_clean(&inserted->metacell.dt);
-    fprintf(stderr, "cep_op_start: inserted domain=%llu tag=%llu\n",
-            (unsigned long long)inserted_dt.domain,
-            (unsigned long long)inserted_dt.tag);
-    fflush(stderr);
+    cepOID committed_oid = cep_ops_oid_from_cell(txn.root);
 
-    oid = cep_ops_oid_from_cell(inserted);
-    // TODO: append initial history entry.
-    (void)ttl_beats;
+    if (!cep_txn_commit(&txn)) {
+        cep_ops_debug_last_error_code = 24;
+        cep_txn_abort(&txn);
+        return oid;
+    }
+
+    oid = committed_oid;
     return oid;
 }
 
@@ -732,6 +796,7 @@ bool cep_op_await(cepOID oid,
                   cepDT continuation_signal,
                   const void* payload,
                   size_t payload_len) {
+    cep_ops_debug_last_error_code = 0;
     if (!cep_oid_is_valid(oid) ||
         !cep_dt_is_valid(&want) ||
         !cep_dt_is_valid(&continuation_signal)) {
@@ -740,6 +805,7 @@ bool cep_op_await(cepOID oid,
 
     cepCell* op = cep_ops_find(oid);
     if (!op) {
+        cep_ops_debug_last_error_code = 51;
         return false;
     }
 
@@ -766,11 +832,11 @@ bool cep_op_await(cepOID oid,
 
     if (satisfied) {
         cepDT cont = cep_ops_clean_dt(&continuation_signal);
-        return cep_ops_enqueue_signal(oid, &cont);
+        return cep_ops_install_watcher(op, &clean_want, 0u, &cont, payload, payload_len, true);
     }
 
     cepDT cont = cep_ops_clean_dt(&continuation_signal);
-    return cep_ops_install_watcher(op, &clean_want, ttl_beats, &cont, payload, payload_len);
+    return cep_ops_install_watcher(op, &clean_want, ttl_beats, &cont, payload, payload_len, false);
 }
 
 bool cep_op_close(cepOID oid,
@@ -785,6 +851,7 @@ bool cep_op_close(cepOID oid,
 
     cepCell* op = cep_ops_find(oid);
     if (!op) {
+        cep_ops_debug_last_error_code = 43;
         return false;
     }
 
@@ -803,37 +870,47 @@ bool cep_op_close(cepOID oid,
             cep_dt_compare(&stored_status, &cleaned_status) == 0) {
             return true;
         }
+        cep_ops_debug_last_error_code = 44;
         return false;
     }
 
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
-    cepCell close_branch = {0};
-    cep_cell_initialize_dictionary(&close_branch, &close_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
-    close_branch.metacell.veiled = 1u;
-
-    if (!cep_ops_write_dt(&close_branch, dt_status_field_ops(), &cleaned_status)) {
-        cep_ops_debug_last_error_code = 32;
+    cepTxn close_txn = {0};
+    if (!cep_txn_begin(op, &close_name, &dict_type, &close_txn)) {
+        cep_ops_debug_last_error_code = 45;
         return false;
+    }
+
+    cepCell* close_root = close_txn.root;
+
+    if (!cep_ops_write_dt(close_root, dt_status_field_ops(), &cleaned_status)) {
+        cep_ops_debug_last_error_code = 32;
+        goto abort_close;
     }
     uint64_t beat = (uint64_t)cep_beat_index();
-    if (!cep_ops_write_u64(&close_branch, dt_closed_field(), beat)) {
+    if (!cep_ops_write_u64(close_root, dt_closed_field(), beat)) {
         cep_ops_debug_last_error_code = 33;
-        return false;
+        goto abort_close;
     }
-    if (!cep_ops_write_bytes(&close_branch, dt_summary_field(), summary, summary_len)) {
+    if (!cep_ops_write_bytes(close_root, dt_summary_field(), summary, summary_len)) {
         cep_ops_debug_last_error_code = 34;
-        return false;
+        goto abort_close;
+    }
+
+    if (!cep_txn_mark_ready(&close_txn)) {
+        cep_ops_debug_last_error_code = 46;
+        goto abort_close;
     }
 
     cepSealOptions seal_opt = {.recursive = true};
-    if (!cep_branch_seal_immutable(&close_branch, seal_opt)) {
+    if (!cep_branch_seal_immutable(close_root, seal_opt)) {
         cep_ops_debug_last_error_code = 35;
-        return false;
+        goto abort_close;
     }
 
-    if (!cep_cell_add(op, 0, &close_branch)) {
-        cep_ops_debug_last_error_code = 36;
-        return false;
+    if (!cep_txn_commit(&close_txn)) {
+        cep_ops_debug_last_error_code = 47;
+        goto abort_close;
     }
 
     if (!cep_ops_write_dt(op, dt_state_field(), &final_state)) {
@@ -860,15 +937,21 @@ bool cep_op_close(cepOID oid,
     }
 
     return true;
+
+abort_close:
+    cep_txn_abort(&close_txn);
+    return false;
 }
 
 bool cep_op_get(cepOID oid, char* buffer, size_t capacity) {
+    cep_ops_debug_last_error_code = 0;
     if (!buffer || capacity == 0u || !cep_oid_is_valid(oid)) {
         return false;
     }
 
     cepCell* op = cep_ops_find(oid);
     if (!op) {
+        cep_ops_debug_last_error_code = 61;
         return false;
     }
 
@@ -915,6 +998,9 @@ bool cep_ops_stage_commit(void) {
     bool ok = true;
     for (cepCell* op = cep_cell_first_all(ops_root); op; op = cep_cell_next_all(ops_root, op)) {
         cepOID oid = cep_ops_oid_from_cell(op);
+        if (!cep_ops_fire_ready_watchers(op, oid)) {
+            ok = false;
+        }
         if (!cep_ops_expire_watchers(op, oid, beat)) {
             ok = false;
         }

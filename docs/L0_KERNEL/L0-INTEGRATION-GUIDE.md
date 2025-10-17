@@ -158,17 +158,17 @@ The heartbeat keeps a lot of book-keeping behind the curtain. These accessors ex
 **Q&A**
 - *Is `cep_heartbeat_enqueue_impulse()` different from `cep_heartbeat_enqueue_signal()`?* Yes—`enqueue_signal` clones the paths for you from raw `cepPath` pointers, while `enqueue_impulse` lets you hand over a pre-built `cepImpulse` when you already manage its lifetime.
 
-### 1.8.1 Raw traversal helpers
+### 1.8.1 Raw traversal helpers *(kernel only)*
 
-**In plain words.** Use the `_all` traversal helpers when you need to see every stored child—including veiled, deleted, or staging-only nodes—without lifting their veils in the visible view.
+**In plain words.** These helpers are for the kernel’s own housekeeping (sealing, digests, debug). They walk veiled or deleted children intentionally, so keep user-facing code on the regular, visibility-respecting APIs.
 
 **Technical details**
-- `cep_cell_first_all` / `cep_cell_next_all` / `cep_cell_last_all` / `cep_cell_prev_all` mirror the regular sibling iterators but walk the store’s physical ordering, so recursive sealers and diagnostics can enumerate hidden entries safely.
+- `cep_cell_first_all` / `cep_cell_next_all` / `cep_cell_last_all` / `cep_cell_prev_all` mirror the regular sibling iterators but walk the store’s physical ordering, exposing veiled/deleted nodes for internal maintenance. Leave product code on the standard helpers.
 - The helpers resolve the parent link once, then return the stored `cepCell*` pointer exactly as it lives in the backing store; links remain untouched unless you resolve them explicitly.
-- `cep_cell_deep_traverse_all` now delegates to the same raw helpers, guaranteeing that depth-first walks cover every descendant before sealing or hashing a branch.
+- `cep_cell_deep_traverse_all` shares the same “internal use only” contract; it recurses through hidden descendants so bootstrap and sealing routines can finish their work without violating transactional visibility.
 
 **Q&A**
-- *Does raw iteration change snapshot behaviour for callers?* No. The helpers simply expose what is already stored. Regular `_past` and latest helpers keep filtering by visibility unless you opt into the `_all` variants.
+- *Can regular embeddings rely on `_all` variants?* No—stick to the standard helpers so your code respects veils and tombstones. `_all` is strictly for L0 internals.
 - *Do I need extra locks first?* Follow the same locking discipline you would for visible traversals. The `_all` family never acquires additional locks on your behalf.
 
 ### 1.9 Building cell trees safely (floating → graft)
@@ -209,11 +209,11 @@ cep_cell_finalize(&branch);
 OPS/STATES records each long-running task under `/rt/ops/<oid>` so callers can watch progress without hand-rolling cell mutations. Starting an operation freezes its envelope, state transitions append to a history list, awaiters register continuations, and a close helper seals the outcome. The heartbeat keeps beat-by-beat determinism, so work queued for N never leaks into the current cycle.
 
 #### Technical Details
-- `cep_op_start(verb, target, mode, payload, len, ttl)` builds the branch off-tree, seals `envelope/`, initialises `state=ist:run`, provisions `history/` (list) and `watchers/` (dictionary), and returns a `cepOID`. TTL beats (0 = none) set watcher deadlines—they do not auto-close the op.
+- `cep_op_start(verb, target, mode, payload, len, ttl)` stages a transaction beneath `/rt/ops`, populates the branch while veiled, seals `envelope/`, initialises `state=ist:run`, provisions `history/` (list) and `watchers/` (dictionary), and returns a `cepOID`. TTL beats (0 = none) set watcher deadlines—they do not auto-close the op.
 - `cep_op_state_set(oid, ist:*, code, note)` updates the live `state`, persists optional `code/note`, appends a history entry stamped with the current beat, and triggers watchers that asked for that state. Repeating the same state in the same beat is treated as idempotent (history is unchanged, but metadata refreshes).
-- `cep_op_await(oid, want, ttl, cont, payload, len)` resolves immediately when `want` already matches the current state or terminal status; otherwise it stores a watcher entry with `want`, `deadline` (= current beat + ttl), `cont`, optional `payload_id`, and provenance (descriptor label when run inside an enzyme). On the beat where `deadline <= current`, `cep_ops_stage_commit()` enqueues `op/tmo` for N+1 and deletes the watcher so timeouts happen exactly once.
+- `cep_op_await(oid, want, ttl, cont, payload, len)` resolves immediately when `want` already matches the current state or terminal status; otherwise it stores a watcher entry with `want`, `deadline` (= current beat + ttl), `cont`, optional `payload_id`, provenance (descriptor label when run inside an enzyme), and an `armed` flag. Immediate matches write the entry with `armed=true` so the heartbeat still promotes the continuation exactly once; pending awaiters keep `armed=false` until the requested state or status arrives.
 - `cep_op_close(oid, sts:*, summary, len)` creates an immutable `close/` branch (`status`, `closed_beat`, optional `summary_id`), maps the status to the terminal `ist:*`, appends the final history entry, and blocks further mutations. Duplicate closes with the same status are harmless; mismatched statuses return `false`.
-- `cep_ops_stage_commit()` runs at the end of every heartbeat commit so continuations and TTL expiries share the same promotion path as other impulses. Tests typically call `cep_heartbeat_step()` followed by `cep_heartbeat_resolve_agenda()` to assert single-fire behaviour.
+- `cep_ops_stage_commit()` runs at the end of every heartbeat commit so continuations and TTL expiries share the same promotion path as other impulses. Entries flagged `armed=true` fire their continuation; entries whose `deadline <= current` emit `op/tmo`. Tests typically call `cep_heartbeat_step()` followed by `cep_heartbeat_resolve_agenda()` to assert single-fire behaviour.
 - `cep_op_get(oid, buf, cap)` generates a quick textual summary (OID components, state, status, watcher count). For deeper inspection, walk the dossier directly—`envelope/` and `close/` are sealed, `history/` is append-only, and `watchers/` stays mutable.
 
 #### Q&A

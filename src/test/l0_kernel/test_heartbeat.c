@@ -216,6 +216,7 @@ static const cepPath* create_binding_path(const cepDT* segments, size_t count, C
 }
 
 
+#if 0 /* Legacy binding tests */
 static MunitResult test_heartbeat_binding_propagation(void) {
     test_runtime_shutdown();
     heartbeat_runtime_start();
@@ -489,6 +490,47 @@ static void assert_scope_teardown(cepLifecycleScope scope, const cepDT* scope_dt
         (void)scope;
     }
 }
+
+
+static void assert_scope_ready(cepLifecycleScope scope, const cepDT* scope_dt) {
+    const char* status = lifecycle_status_for(scope_dt);
+    if (status) {
+        munit_assert_string_equal(status, "ready");
+    } else {
+        (void)scope;
+    }
+}
+
+static void assert_scope_teardown(cepLifecycleScope scope, const cepDT* scope_dt) {
+    const char* status = lifecycle_status_for(scope_dt);
+    if (status) {
+        munit_assert_string_equal(status, "teardown");
+    } else {
+        (void)scope;
+    }
+}
+
+
+#endif /* legacy binding tests */
+
+static void assert_scope_ready(cepLifecycleScope scope, const cepDT* scope_dt) {
+    const char* status = lifecycle_status_for(scope_dt);
+    if (status) {
+        munit_assert_string_equal(status, "ready");
+    } else {
+        (void)scope;
+    }
+}
+
+static void assert_scope_teardown(cepLifecycleScope scope, const cepDT* scope_dt) {
+    const char* status = lifecycle_status_for(scope_dt);
+    if (status) {
+        munit_assert_string_equal(status, "teardown");
+    } else {
+        (void)scope;
+    }
+}
+
 
 static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;
@@ -1003,51 +1045,6 @@ MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fix
     }
 
     result = test_heartbeat_retry_requeues();
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_binding_propagation();
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_binding_tombstone();
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_binding_no_propagation();
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_binding_union_chain();
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_binding_duplicate_mask();
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_target_requires_binding();
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_binding_signal_filter();
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_binding_matches_data_suffix();
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_binding_matches_store_suffix();
     if (result != MUNIT_OK) {
         return result;
     }

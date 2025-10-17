@@ -4833,26 +4833,26 @@ cepCell* cep_cell_find_by_key(const cepCell* cell, cepCell* key, cepCompare comp
 }
 
 
-/** Return the first stored child without visibility filters so sealing and
-    digesting helpers can walk veiled or deleted entries before they become
-    visible. The helper resolves the parent link and delegates to the raw store
-    iteration so callers stay decoupled from backend-specific details. */
+/** Internal L0-only traversal helper: returns the first stored child without
+    applying visibility filters so kernel routines (sealing, digests, debug)
+    can inspect veiled or deleted entries before they are unveiled. External
+    code must stick to the public visibility-respecting helpers. */
 cepCell* cep_cell_first_all(const cepCell* cell) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
     return store_first_child_internal(store);
 }
 
-/** Return the last stored child using the raw traversal order, exposing the
-    storage layout instead of the snapshot view. Useful when callers need to
-    inspect the physical tail of a branch regardless of veil state. */
+/** Internal L0-only traversal helper: returns the last stored child using the
+    raw order so kernel maintenance code can inspect the structure regardless
+    of veil state. */
 cepCell* cep_cell_last_all(const cepCell* cell) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
     return store_last_child_internal(store);
 }
 
-/** Advance to the next stored child without applying snapshot visibility so
-    recursive sealing can reach every veiled bucket. Mirrors the visible helper
-    by tolerating a NULL parent and falling back to the child’s store link. */
+/** Internal L0-only traversal helper: advances to the next stored child without
+    visibility checks, letting kernel code reach veiled branches while mirroring
+    the signature of the public iterator. */
 cepCell* cep_cell_next_all(const cepCell* cell, cepCell* child) {
     if (!child)
         return NULL;
@@ -4862,8 +4862,9 @@ cepCell* cep_cell_next_all(const cepCell* cell, cepCell* child) {
     return store_next_child_internal(store, child);
 }
 
-/** Step backwards through the raw sibling list to cover hidden entries while
-    keeping the calling convention aligned with `cep_cell_prev`. */
+/** Internal L0-only traversal helper: steps backwards through the raw sibling
+    list so kernel callers can examine veiled/deleted entries in reverse order
+    without relaxing the public visibility contracts. */
 cepCell* cep_cell_prev_all(const cepCell* cell, cepCell* child) {
     if (!child)
         return NULL;

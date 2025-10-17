@@ -74,6 +74,7 @@ when a new behavior needs a fresh word before it lands in code.
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |
 | `arg_deep` / `arg_pos` / `arg_prepend` | ops | parameters accepted by cell-operation enzymes. |
+| `armed` | ops | watcher flag indicating the continuation is queued for promotion at the next beat. |
 | `enz_add` / `enz_cln` / `enz_del` / `enz_mov` / `enz_upd` | ops | canonical enzyme descriptors registered at bootstrap. |
 | `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | ops | operation identifiers emitted by `sig_cell` payloads. |
 | `role_parnt` / `role_source` / `role_subj` / `role_templ` | ops | role vocabulary consumed by mutation enzymes. |

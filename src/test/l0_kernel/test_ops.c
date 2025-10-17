@@ -8,6 +8,7 @@
 #include "cep_enzyme.h"
 
 #include <string.h>
+#include <stdio.h>
 
 typedef struct {
     unsigned    length;
@@ -38,8 +39,7 @@ static void ops_runtime_start(bool ensure_dirs) {
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_heartbeat_startup());
 
-    cepCell* rt_root = cep_heartbeat_rt_root();
-    munit_logf(MUNIT_LOG_INFO, "ops_runtime_start: rt_root=%p", (void*)rt_root);
+    (void)cep_heartbeat_rt_root();
 }
 
 static cepCell* ops_lookup_cell(cepOID oid) {
@@ -57,6 +57,24 @@ static cepCell* ops_lookup_cell(cepOID oid) {
     return cep_cell_find_by_name(ops_root, &lookup);
 }
 
+static bool ops_child_bool(cepCell* parent, const char* field) {
+    cepDT name = cep_ops_make_dt(field);
+    cepCell* leaf = cep_cell_find_by_name(parent, &name);
+    munit_assert_not_null(leaf);
+    const bool* payload = cep_cell_data(leaf);
+    munit_assert_not_null(payload);
+    return *payload;
+}
+
+static uint64_t ops_child_u64(cepCell* parent, const char* field) {
+    cepDT name = cep_ops_make_dt(field);
+    cepCell* leaf = cep_cell_find_by_name(parent, &name);
+    munit_assert_not_null(leaf);
+    const uint64_t* payload = cep_cell_data(leaf);
+    munit_assert_not_null(payload);
+    return *payload;
+}
+
 static void test_ops_direct_close_case(void) {
     ops_runtime_start(false);
 
@@ -67,48 +85,26 @@ static void test_ops_direct_close_case(void) {
 
     cepDT verb = cep_ops_make_dt("op/ct");
     cepDT mode = cep_ops_make_dt("opm:direct");
-    munit_logf(MUNIT_LOG_INFO,
-               "verb domain=%llu tag=%llu mode domain=%llu tag=%llu",
-               (unsigned long long)verb.domain,
-               (unsigned long long)verb.tag,
-               (unsigned long long)mode.domain,
-               (unsigned long long)mode.tag);
     cepOID oid = cep_op_start(verb, "/tmp/direct", mode, NULL, 0u, 0u);
-    if (!cep_oid_is_valid(oid)) {
-        cepCell* rt_root = cep_heartbeat_rt_root();
-        cepDT ops_lookup = cep_ops_make_dt("ops");
-        cepCell* ops_root = rt_root ? cep_cell_find_by_name(rt_root, &ops_lookup) : NULL;
-        bool ops_root_immutable = ops_root ? cep_cell_is_immutable(ops_root) : false;
-        cepCell* first = ops_root ? cep_cell_first_all(ops_root) : NULL;
-        cepDT first_dt = {0};
-        if (first) {
-            first_dt = cep_dt_clean(&first->metacell.dt);
-        }
-        munit_logf(MUNIT_LOG_INFO, "ops_root=%p", (void*)ops_root);
-        munit_logf(MUNIT_LOG_INFO, "ops_root immutable=%d", ops_root_immutable ? 1 : 0);
-        munit_logf(MUNIT_LOG_INFO, "ops debug err=%d", cep_ops_debug_last_error());
-        if (rt_root) {
-            size_t idx = 0u;
-            for (cepCell* child = cep_cell_first_all(rt_root); child; child = cep_cell_next_all(rt_root, child)) {
-                cepDT dt = cep_dt_clean(&child->metacell.dt);
-                int cmp = cep_dt_compare(&dt, &ops_lookup);
-                munit_logf(MUNIT_LOG_INFO,
-                           "rt child[%zu] domain=%llu tag=%llu cmp=%d",
-                           idx++,
-                           (unsigned long long)dt.domain,
-                           (unsigned long long)dt.tag,
-                           cmp);
-            }
-        }
-        munit_logf(MUNIT_LOG_ERROR,
-                   "invalid oid domain=%llu tag=%llu first=%p first_domain=%llu first_tag=%llu",
-                   (unsigned long long)oid.domain,
-                   (unsigned long long)oid.tag,
-                   (void*)first,
-                   (unsigned long long)first_dt.domain,
-                   (unsigned long long)first_dt.tag);
-    }
     munit_assert_true(cep_oid_is_valid(oid));
+
+    cepCell* op_cell = ops_lookup_cell(oid);
+    munit_assert_not_null(op_cell);
+
+    cepDT envelope_name = cep_ops_make_dt("envelope");
+    cepCell* envelope = cep_cell_find_by_name(op_cell, &envelope_name);
+    munit_assert_not_null(envelope);
+    munit_assert_true(cep_cell_is_immutable(envelope));
+
+    cepDT history_name = cep_ops_make_dt("history");
+    cepCell* history = cep_cell_find_by_name(op_cell, &history_name);
+    munit_assert_not_null(history);
+
+    cepDT watchers_name = cep_ops_make_dt("watchers");
+    cepCell* watchers = cep_cell_find_by_name(op_cell, &watchers_name);
+    munit_assert_not_null(watchers);
+    size_t watcher_count = (watchers->store) ? watchers->store->chdCount : 0u;
+    munit_assert_size(watcher_count, ==, 0u);
 
     cepDT sts_ok = cep_ops_make_dt("sts:ok");
     bool closed = cep_op_close(oid, sts_ok, NULL, 0u);
@@ -117,9 +113,6 @@ static void test_ops_direct_close_case(void) {
     }
     munit_assert_true(closed);
 
-    cepCell* op_cell = ops_lookup_cell(oid);
-    munit_assert_not_null(op_cell);
-
     cepDT state_name = cep_ops_make_dt("state");
     cepCell* state_cell = cep_cell_find_by_name(op_cell, &state_name);
     munit_assert_not_null(state_cell);
@@ -127,6 +120,11 @@ static void test_ops_direct_close_case(void) {
     munit_assert_not_null(state_value);
     cepDT ist_ok = cep_ops_make_dt("ist:ok");
     munit_assert_int(cep_dt_compare(state_value, &ist_ok), ==, 0);
+
+    cepDT close_name = cep_ops_make_dt("close");
+    cepCell* close_branch = cep_cell_find_by_name(op_cell, &close_name);
+    munit_assert_not_null(close_branch);
+    munit_assert_true(cep_cell_is_immutable(close_branch));
 
     test_runtime_shutdown();
 }
@@ -221,6 +219,29 @@ static void register_enzyme(const cepDT* signal_dt, cepEnzyme callback) {
     cep_enzyme_registry_activate_pending(registry);
 }
 
+static void unregister_enzyme(const cepDT* signal_dt, cepEnzyme callback) {
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    OpsPathBuf buf = {0};
+    const cepPath* query = ops_make_path(&buf, signal_dt, 1u);
+
+    cepEnzymeDescriptor descriptor = {
+        .name   = *signal_dt,
+        .label  = "ops-enzyme",
+        .before = NULL,
+        .before_count = 0u,
+        .after  = NULL,
+        .after_count  = 0u,
+        .callback = callback,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    munit_assert_int(cep_enzyme_unregister(registry, query, &descriptor), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+}
+
 static void test_ops_await_continuation_case(void) {
     ops_runtime_start(false);
     cepDT cont_signal = cep_ops_make_dt("op/cont");
@@ -243,12 +264,28 @@ static void test_ops_await_continuation_case(void) {
                                    cep_ops_make_dt("op/cont"),
                                    NULL,
                                    0u));
+
+    cepCell* op_cell = ops_lookup_cell(oid);
+    munit_assert_not_null(op_cell);
+    cepDT watchers_name = cep_ops_make_dt("watchers");
+    cepCell* watchers = cep_cell_find_by_name(op_cell, &watchers_name);
+    munit_assert_not_null(watchers);
+    cepCell* watcher_entry = cep_cell_first_all(watchers);
+    munit_assert_not_null(watcher_entry);
+    munit_assert_false(ops_child_bool(watcher_entry, "armed"));
+
     munit_assert_true(cep_op_state_set(oid, cep_ops_make_dt("ist:unveil"), 0, NULL));
+    watcher_entry = cep_cell_first_all(watchers);
+    munit_assert_not_null(watcher_entry);
+    munit_assert_true(ops_child_bool(watcher_entry, "armed"));
     munit_assert_int(ops_continuation_calls, ==, 0);
 
     munit_assert_true(cep_heartbeat_step());
     munit_assert_true(cep_heartbeat_resolve_agenda());
     munit_assert_int(ops_continuation_calls, ==, 1);
+    munit_assert_null(cep_cell_first_all(watchers));
+
+    unregister_enzyme(&cont_signal, ops_cont_enzyme);
 
     test_runtime_shutdown();
 }
@@ -276,10 +313,24 @@ static void test_ops_ttl_timeout_case(void) {
                                    NULL,
                                    0u));
 
+    cepCell* op_cell = ops_lookup_cell(oid);
+    munit_assert_not_null(op_cell);
+    cepDT watchers_name = cep_ops_make_dt("watchers");
+    cepCell* watchers = cep_cell_find_by_name(op_cell, &watchers_name);
+    munit_assert_not_null(watchers);
+    cepCell* watcher_entry = cep_cell_first_all(watchers);
+    munit_assert_not_null(watcher_entry);
+    munit_assert_false(ops_child_bool(watcher_entry, "armed"));
+    uint64_t deadline = ops_child_u64(watcher_entry, "deadline");
+    munit_assert_uint(deadline, ==, 1u);
+
     munit_assert_true(cep_heartbeat_step());
     munit_assert_true(cep_heartbeat_step());
     munit_assert_true(cep_heartbeat_resolve_agenda());
     munit_assert_int(ops_timeout_calls, ==, 1);
+    munit_assert_null(cep_cell_first_all(watchers));
+
+    unregister_enzyme(&tmo_signal, ops_timeout_enzyme);
 
     test_runtime_shutdown();
 }
