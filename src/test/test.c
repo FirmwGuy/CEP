@@ -94,12 +94,20 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
-        "/heartbeat",
-        test_heartbeat,
+        "/heartbeat/single",
+        test_heartbeat_single,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_timeout_params
+    },
+    {
+        "/heartbeat/bootstrap",
+        test_heartbeat_bootstrap,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
     },
     {
         "/serialization/cell",

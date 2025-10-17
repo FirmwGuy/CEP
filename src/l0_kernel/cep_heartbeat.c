@@ -1002,6 +1002,7 @@ static void cep_runtime_reset_state(bool destroy_registry) {
     CEP_RUNTIME.deferred_activations = 0u;
    CEP_RUNTIME.sys_init_emitted = false;
    CEP_RUNTIME.sys_shutdown_emitted = false;
+    CEP_RUNTIME.bootstrapping = false;
 
     cep_lifecycle_reset_state();
 }
@@ -1113,7 +1114,7 @@ static bool cep_boot_ops_publish_oid(const cepDT* field_name, cepOID oid) {
     }
 
     cepDT name_copy = lookup;
-    cepDT type = *CEP_DTAW("CEP", "val/bytes");
+    cepDT type = cep_ops_make_dt("val/bytes");
     cepCell* node = cep_dict_add_value(state_root,
                                        &name_copy,
                                        &type,
@@ -1360,9 +1361,20 @@ static void cep_heartbeat_reset_runtime_cells(void) {
     beats can rely on the topology without performing lazy checks. The routine
     is idempotent and safe to call before tests exercise the runtime. */
 bool cep_heartbeat_bootstrap(void) {
+    if (CEP_RUNTIME.bootstrapping) {
+        return true;
+    }
+
+    bool success = false;
+    CEP_RUNTIME.bootstrapping = true;
+
     cep_cell_system_ensure();
 
     cepCell* root = cep_root();
+    if (!root) {
+        goto fail;
+    }
+
     CEP_DEFAULT_TOPOLOGY.root = root;
     if (!CEP_RUNTIME.topology.root) {
         CEP_RUNTIME.topology.root = root;
@@ -1370,6 +1382,9 @@ bool cep_heartbeat_bootstrap(void) {
 
     const cepDT* sys_name = dt_sys_root_name();
     cepCell* sys = ensure_root_dictionary(root, sys_name);
+    if (!sys) {
+        goto fail;
+    }
     CEP_DEFAULT_TOPOLOGY.sys = sys;
     if (!CEP_RUNTIME.topology.sys) {
         CEP_RUNTIME.topology.sys = sys;
@@ -1377,17 +1392,21 @@ bool cep_heartbeat_bootstrap(void) {
 
     const cepDT* rt_name = dt_rt_root_name();
     cepCell* rt = ensure_root_dictionary(root, rt_name);
+    if (!rt) {
+        goto fail;
+    }
     CEP_DEFAULT_TOPOLOGY.rt = rt;
     if (!CEP_RUNTIME.topology.rt) {
         CEP_RUNTIME.topology.rt = rt;
     }
 
-    if (rt) {
-        (void)cep_cell_ensure_dictionary_child(rt, dt_ops_rt_name(), CEP_STORAGE_RED_BLACK_T);
-    }
+    (void)cep_cell_ensure_dictionary_child(rt, dt_ops_rt_name(), CEP_STORAGE_RED_BLACK_T);
 
     const cepDT* journal_name = dt_journal_root_name();
     cepCell* journal = ensure_root_dictionary(root, journal_name);
+    if (!journal) {
+        goto fail;
+    }
     CEP_DEFAULT_TOPOLOGY.journal = journal;
     if (!CEP_RUNTIME.topology.journal) {
         CEP_RUNTIME.topology.journal = journal;
@@ -1395,6 +1414,9 @@ bool cep_heartbeat_bootstrap(void) {
 
     const cepDT* env_name = dt_env_root_name();
     cepCell* env = ensure_root_dictionary(root, env_name);
+    if (!env) {
+        goto fail;
+    }
     CEP_DEFAULT_TOPOLOGY.env = env;
     if (!CEP_RUNTIME.topology.env) {
         CEP_RUNTIME.topology.env = env;
@@ -1402,6 +1424,9 @@ bool cep_heartbeat_bootstrap(void) {
 
     const cepDT* cas_name = dt_cas_root_name();
     cepCell* cas = ensure_root_dictionary(root, cas_name);
+    if (!cas) {
+        goto fail;
+    }
     CEP_DEFAULT_TOPOLOGY.cas = cas;
     if (!CEP_RUNTIME.topology.cas) {
         CEP_RUNTIME.topology.cas = cas;
@@ -1409,6 +1434,9 @@ bool cep_heartbeat_bootstrap(void) {
 
     const cepDT* lib_name = dt_lib_root_name();
     cepCell* lib = ensure_root_dictionary(root, lib_name);
+    if (!lib) {
+        goto fail;
+    }
     CEP_DEFAULT_TOPOLOGY.lib = lib;
     if (!CEP_RUNTIME.topology.lib) {
         CEP_RUNTIME.topology.lib = lib;
@@ -1416,6 +1444,9 @@ bool cep_heartbeat_bootstrap(void) {
 
     const cepDT* data_name = dt_data_root_name();
     cepCell* data = ensure_root_dictionary(root, data_name);
+    if (!data) {
+        goto fail;
+    }
     CEP_DEFAULT_TOPOLOGY.data = data;
     if (!CEP_RUNTIME.topology.data) {
         CEP_RUNTIME.topology.data = data;
@@ -1423,6 +1454,9 @@ bool cep_heartbeat_bootstrap(void) {
 
     const cepDT* tmp_name = dt_tmp_root_name();
     cepCell* tmp = ensure_root_list(root, tmp_name);
+    if (!tmp) {
+        goto fail;
+    }
     CEP_DEFAULT_TOPOLOGY.tmp = tmp;
     if (!CEP_RUNTIME.topology.tmp) {
         CEP_RUNTIME.topology.tmp = tmp;
@@ -1430,6 +1464,9 @@ bool cep_heartbeat_bootstrap(void) {
 
     const cepDT* enzymes_name = dt_enzymes_root_name();
     cepCell* enzymes = ensure_root_dictionary(root, enzymes_name);
+    if (!enzymes) {
+        goto fail;
+    }
     CEP_DEFAULT_TOPOLOGY.enzymes = enzymes;
     if (!CEP_RUNTIME.topology.enzymes) {
         CEP_RUNTIME.topology.enzymes = enzymes;
@@ -1440,16 +1477,20 @@ bool cep_heartbeat_bootstrap(void) {
     if (!cep_runtime_has_registry()) {
         CEP_RUNTIME.registry = cep_enzyme_registry_create();
         if (!CEP_RUNTIME.registry) {
-            return false;
+            goto fail;
         }
     }
 
     if (!cep_cell_operations_register(CEP_RUNTIME.registry)) {
-        return false;
+        goto fail;
     }
 
     (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
-    return true;
+    success = true;
+
+fail:
+    CEP_RUNTIME.bootstrapping = false;
+    return success;
 }
 
 
