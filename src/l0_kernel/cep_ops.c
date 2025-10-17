@@ -85,12 +85,7 @@ static cepCell* cep_ops_root(bool create) {
     }
     cepDT name = cep_ops_clean_dt(dt_ops_root_name());
     if (create) {
-        cepCell* ops = cep_cell_ensure_dictionary_child(rt, &name, CEP_STORAGE_RED_BLACK_T);
-        if (!ops) {
-            fprintf(stderr, "cep_ops_root: ensure_dictionary_child failed\n");
-            fflush(stderr);
-        }
-        return ops;
+        return cep_cell_ensure_dictionary_child(rt, &name, CEP_STORAGE_RED_BLACK_T);
     }
     return cep_cell_find_by_name(rt, &name);
 }
@@ -535,10 +530,7 @@ static bool cep_ops_install_watcher(cepCell* op,
         goto fail;
     }
 
-    uint64_t deadline = 0u;
-    if (ttl_beats) {
-        deadline = (uint64_t)cep_beat_index() + ttl_beats;
-    }
+    uint64_t deadline = ttl_beats ? (uint64_t)cep_beat_index() + ttl_beats : 0u;
     if (!cep_ops_write_u64(entry, dt_deadline_field(), deadline)) {
         cep_ops_debug_last_error_code = 59;
         goto fail;
@@ -564,7 +556,6 @@ fail:
     if (!cep_ops_debug_last_error_code) {
         cep_ops_debug_last_error_code = 60;
     }
-    fprintf(stderr, "install watcher fail code=%d\n", cep_ops_debug_last_error_code);
     return false;
 }
 
@@ -690,8 +681,6 @@ cepOID cep_op_start(cepDT verb,
     cepCell* ops_root = cep_ops_root(true);
     if (!ops_root) {
         cep_ops_debug_last_error_code = 2;
-        fprintf(stderr, "cep_op_start: ops_root unavailable\n");
-        fflush(stderr);
         return oid;
     }
 
@@ -713,8 +702,6 @@ cepOID cep_op_start(cepDT verb,
         if (!cep_ops_debug_last_error_code) {
             cep_ops_debug_last_error_code = 3;
         }
-        fprintf(stderr, "cep_op_start: populate_branch failed\n");
-        fflush(stderr);
         cep_txn_abort(&txn);
         return oid;
     }

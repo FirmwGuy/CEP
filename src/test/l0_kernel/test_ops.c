@@ -34,6 +34,7 @@ static void ops_runtime_start(bool ensure_dirs) {
         .start_at = 0u,
         .ensure_directories = ensure_dirs,
         .enforce_visibility = false,
+        .boot_ops = true,
     };
 
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));

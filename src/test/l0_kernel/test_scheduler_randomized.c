@@ -201,6 +201,7 @@ static void exercise_heartbeat_sequence(SchedulerFixture* fix) {
         .start_at = 0u,
         .ensure_directories = false,
         .enforce_visibility = false,
+        .boot_ops = true,
     };
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_heartbeat_startup());
@@ -291,4 +292,3 @@ MunitResult test_scheduler_randomized(const MunitParameter params[], void* fixtu
     exercise_heartbeat_sequence(fix);
     return MUNIT_OK;
 }
-

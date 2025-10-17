@@ -66,6 +66,7 @@ typedef struct {
     cepBeatNumber       start_at;
     bool                ensure_directories;
     bool                enforce_visibility;
+    bool                boot_ops;
 } cepHeartbeatPolicy;
 
 /**

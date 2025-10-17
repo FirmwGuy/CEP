@@ -43,9 +43,6 @@ when a new behavior needs a fresh word before it lands in code.
 | `env` | core | runtime environment subtree for external handles. |
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `inbox` | core | captured impulses queued for the current beat. |
-| `sig_sys` | core | System-level signal namespace emitted during lifecycle hooks. |
-| `init` | core | System init signal tag that bootstraps higher layers. |
-| `shutdown` | core | System shutdown signal tag emitted before teardown. |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |
 | `lib` | core | library snapshot directory for proxied streams. |
@@ -53,6 +50,8 @@ when a new behavior needs a fresh word before it lands in code.
 | `log` | core | log entry tag attached to beat records. |
 | `meta` | core | metadata dictionary attached to runtime cells. |
 | `txn` | core | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
+| `boot_oid` | core | `val/bytes` cell under `/sys/state` publishing the boot operation OID. |
+| `shdn_oid` | core | `val/bytes` cell under `/sys/state` publishing the shutdown operation OID. |
 | `namepool` | core | identifier intern table. |
 | `outcome` | core | execution result record written after enzymes run. |
 | `target` | core | canonical link entry used by helper-built facet dictionaries. |
@@ -61,12 +60,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `rt` | core | runtime staging root holding beat journals. |
 | `stage` | core | per-beat stage log recording committed mutations. |
 | `stream-log` | core | runtime log for stream adapters. |
-| `sys_log` | core | journal list recording system init/shutdown signal emissions. |
 | `sys` | core | system namespace with counters and configuration. |
-| `ready` | core | lifecycle readiness marker recorded under `/sys/state/<scope>`. |
-| `teardown` | core | lifecycle teardown marker recorded under `/sys/state/<scope>`. |
-| `ready_beat` | core | beat index captured when a scope emitted its ready signal. |
-| `td_beat` | core | beat index captured when a scope entered teardown. |
 | `text` | core | namepool payload store for textual data. |
 | `tmp` | core | scratch list reserved for tooling. |
 
@@ -75,10 +69,41 @@ when a new behavior needs a fresh word before it lands in code.
 | --- | --- | --- |
 | `arg_deep` / `arg_pos` / `arg_prepend` | ops | parameters accepted by cell-operation enzymes. |
 | `armed` | ops | watcher flag indicating the continuation is queued for promotion at the next beat. |
+| `close` | ops | sealed dictionary containing terminal status metadata for an operation. |
+| `code` | ops | optional numeric code attached to a history entry or current state. |
+| `cont` | ops | watcher continuation signal stored under `/watchers/<id>/cont`. |
+| `deadline` | ops | watcher timeout beat stored under `/watchers/<id>/deadline`. |
+| `envelope` | ops | immutable dictionary describing an operation's verb, target, mode, and issued beat. |
 | `enz_add` / `enz_cln` / `enz_del` / `enz_mov` / `enz_upd` | ops | canonical enzyme descriptors registered at bootstrap. |
+| `history` | ops | dictionary logging state transitions (`0001/`, `0002/`, …). |
+| `issued_beat` | ops | beat index recorded in an operation envelope. |
+| `ist:flush` | ops | shutdown operation state indicating buffered work is being flushed. |
+| `ist:halt` | ops | shutdown operation state indicating the runtime is halting. |
+| `ist:kernel` | ops | boot operation state marking kernel scaffolding completion. |
+| `ist:ok` | ops | terminal state recorded after `cep_op_close()` maps the final status. |
+| `ist:packs` | ops | boot operation state marking pack readiness. |
+| `ist:stop` | ops | shutdown operation state marking teardown start. |
+| `ist:store` | ops | boot operation state marking persistent stores ready. |
+| `note` | ops | optional textual note attached to a history entry. |
+| `op/boot` | ops | bootstrapping operation verb emitted at startup. |
+| `op/cont` | ops | continuation signal emitted when an awaiter fires. |
+| `op/shdn` | ops | shutdown operation verb emitted during teardown. |
+| `op/tmo` | ops | timeout signal emitted when an awaiter expires. |
 | `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | ops | operation identifiers emitted by `sig_cell` payloads. |
+| `opm:states` | ops | operation mode indicating state-tracking semantics. |
+| `payload_id` | ops | optional `val/bytes` payload stored in envelopes and watcher entries. |
 | `role_parnt` / `role_source` / `role_subj` / `role_templ` | ops | role vocabulary consumed by mutation enzymes. |
 | `sig_cell` | ops | signal namespace for kernel cell operations. |
+| `state` | ops | current logical state (`ist:*`) stored on an operation root. |
+| `status` | ops | terminal status (`sts:*`) recorded under `/close/status`. |
+| `sts:cnl` | ops | cancellation status recorded when an operation is aborted. |
+| `sts:fail` | ops | failure status recorded when an operation terminates unsuccessfully. |
+| `sts:ok` | ops | success status recorded when an operation completes normally. |
+| `summary_id` | ops | optional summary payload identifier stored under `/close/summary_id`. |
+| `ttl` | ops | watcher expiry interval in beats. |
+| `watchers` | ops | dictionary tracking pending awaiters. |
+| `want` | ops | requested state or status captured for a watcher. |
+| `closed_beat` | ops | beat index recorded when the `/close/` branch was sealed. |
 
 #### I/O Tags
 | Tag / Pattern | Status | Purpose |

@@ -1,61 +1,75 @@
 # L0 Topic: Startup and Shutdown Sequence
 
 ## Introduction
-Think of CEP's runtime like a stage crew preparing and striking a show. Before the lights go up, the crew lays out the scenery (cell system) and checks power and comms (heartbeat and namepool) so downstream packs step onto a stable stage. When the curtain falls they reverse the choreography so the next performance can start from a clean slate without loose props or missed cues.
-
-> **Developer reminder:** Every new Layer‑0 facility should participate in this impulse choreography. When in doubt, bind your bootstrap to the existing `CEP:sig_sys/ready/*` and `CEP:sig_sys/init` pulses instead of open-coding bespoke startup checks—future you (or the next teammate) will thank you.
+Think of CEP's runtime as a pair of operations that bookend every session. `op/boot` raises the curtain with a deterministic checklist, `op/shdn` lowers it, and the kernel records each phase so tooling can observe progress without chasing ad‑hoc impulses. This chapter explains how those operations are created, which states they traverse, and where to look when you need to coordinate packs or await readiness. One-beat enzymes are still supported exactly as before—fire-and-forget callbacks run through the regular heartbeat resolver without interacting with OPS/STATES. The OPS/STATES machinery is reserved for multi-stage or stateful work that spans beats.
 
 ## Technical Details
-### Phase 0 - Bootstrapping prerequisites
-- `cep_l0_bootstrap()` is the public convenience entry point. It calls `cep_cell_system_ensure()`, `cep_heartbeat_bootstrap()`, and `cep_namepool_bootstrap()` in order, marking each lifecycle scope ready as it succeeds (`CEP_LIFECYCLE_SCOPE_KERNEL`, `NAMEPOOL`).
-- `cep_cell_system_ensure()` initialises the root cell if it has not been created yet, resetting timestamps so subsequent stores start at beat zero. On shutdown `cep_cell_system_shutdown()` reverses that work, and `cep_namepool_reset()` prepares the namepool for the next boot.
-- `cep_heartbeat_bootstrap()` provisions the always-on directories under `/sys`, `/rt`, `/journal`, `/env`, `/cas`, `/lib`, `/data`, `/tmp`, and `/enzymes`, creates the default enzyme registry when needed, registers the built-in cell operation enzymes, reloads lifecycle state from `/sys/state/*`, and marks the kernel scope ready.
-- `cep_namepool_bootstrap()` depends on the kernel scope being ready. It makes sure `/sys/namepool` exists and registers the scope as ready so callers can safely intern identifiers during later boot stages.
+### Phase 0 — Bootstrap prerequisites
+- `cep_l0_bootstrap()` remains the public entry point. It calls `cep_cell_system_ensure()`, `cep_heartbeat_bootstrap()`, and `cep_namepool_bootstrap()` in order. Each helper marks its lifecycle scope ready, which now drives the `op/boot` timeline.
+- `cep_cell_system_ensure()` initialises the root cell if needed. On shutdown `cep_cell_system_shutdown()` reverses the work so the next bootstrap starts cleanly.
+- `cep_heartbeat_bootstrap()` creates the always-on directories (`/sys`, `/rt`, `/journal`, `/env`, `/cas`, `/lib`, `/data`, `/tmp`, `/enzymes`), ensures the enzyme registry exists, registers built-in cell operation enzymes, and starts the boot operation if the policy flag `boot_ops` is enabled (it is required for new builds). The helper refreshes lifecycle bookkeeping and leaves the kernel scope marked ready.
+- `cep_namepool_bootstrap()` depends on the kernel scope. Once it succeeds, the boot operation records the final startup phase and closes with `sts:ok`.
 
-### Phase 1 - Starting the heartbeat loop
-- After configuration (optional `cep_heartbeat_configure()`), call `cep_heartbeat_startup()` to reset the beat counter, clear dispatch queues, and open the capture phase. This does not advance time yet; it only primes the runtime.
-- `cep_heartbeat_begin(start_beat)` (or the convenience `cep_heartbeat_step()` loop) starts real execution. During the first begin call the runtime emits `CEP:sig_sys/init`, logs it under `/journal/sys_log`, and executes any init enzymes that were staged ahead of time.
-- Every lifecycle scope marked ready before `cep_heartbeat_begin()` queues a deferred `CEP:sig_sys/ready/<scope>` impulse. `cep_lifecycle_flush_pending_signals()` sends them once the runtime is running so downstream enzymes can rely on deterministic readiness signals.
-- Impulses emitted inside bootstrap and ready helpers temporarily disable the directory creation flag so system signals remain lightweight even before `/rt/beat/<n>` folders exist.
+### Phase 1 — Starting the heartbeat loop
+- `cep_heartbeat_configure()` copies caller overrides and validates that `boot_ops` is true. Disabling the flag is no longer supported; the routine returns `false` rather than falling back to legacy signals.
+- `cep_heartbeat_startup()` resets beat counters, clears the dispatch queues, opens the capture phase, and guarantees that the boot operation has been created (envelope sealed, history seeded).
+- `cep_heartbeat_begin(start)` starts real execution. It does **not** emit `CEP:sig_sys/*` impulses anymore; instead it ensures the boot operation is live so observers can await states or statuses.
 
-#### Impulse sequencing during bring-up
-1. `cep_l0_bootstrap()` marks the scopes ready, but the runtime is not running yet, so no impulses fire.
-2. `cep_heartbeat_startup()` sets `CEP_RUNTIME.running = true` and immediately emits the *ready* impulses in enum order:  
-   `/CEP:sig_sys/CEP:ready/CEP:kernel`, `/CEP:sig_sys/CEP:ready/CEP:namepool`, and any additional scopes that earlier packs have already bootstrapped. These are immediate signals with a `NULL` target path and are handled entirely inside Layer 0.
-3. `cep_heartbeat_begin()` enqueues `/CEP:sig_sys/CEP:init` for the next beat. That deferred signal is the only startup impulse user code or higher layers commonly bind to, and packs can register their own descriptors on the same path if they need to extend the init choreography.
-4. When an upper-layer pack bootstraps after the heartbeat is live, its call to `cep_lifecycle_scope_mark_ready()` emits a deferred `/CEP:sig_sys/CEP:ready/CEP:<scope>` impulse. User code can hook those signals to observe when a pack becomes usable. User code can hook those signals to observe when a layer becomes usable.
+#### Boot operation timeline (`/rt/ops/<boot_oid>`)
+1. **Envelope creation.** `cep_boot_ops_start_boot()` (called from bootstrap/startup paths) creates `/rt/ops/<boot_oid>/envelope/` with the verb (`op/boot`), target (`/sys/state`), mode (`opm:states`), issued beat, and optional payload. The branch is sealed immutable inside the veiled transaction.
+2. **`ist:kernel`.** Immediately after creation the operation records `ist:kernel` and appends the first history entry.
+3. **`ist:store`.** When the kernel scope is flagged ready (`cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_KERNEL)`), the operation transitions to `ist:store` and appends the second history entry.
+4. **`ist:packs` → close.** When the namepool scope becomes ready, the operation records `ist:packs`, closes with `sts:ok`, seals the `/close/` branch, and updates the final state to `ist:ok`.
+5. **Publishing the OID.** The helper stores `boot_oid` as a `val/bytes` payload under `/sys/state/boot_oid`. Tools and packs resolve the boot snapshot by reading that cell.
 
-At this stage only Layer 0 consumes the *ready* pulses; effective work (intent routing, ingest, user enzymes) starts after the deferred `/CEP:sig_sys/CEP:init` has executed.
+Watchers can attach to any of these states (or `sts:ok`) via `cep_op_await()`. Ready watchers fire during `cep_heartbeat_stage_commit()` and enqueue follow-up impulses with whatever continuation signal you choose (`op/cont` by convention).
 
-### Phase 2 - Pack-owned ingest hooks
-- With the mailroom retired, packs that still rely on lobby-style routing must register their own enzymes. Leave a `TODO` near any placeholder no-op so future work can supply the replacement dispatcher.
+### Phase 2 — Coordinating packs and awaiters
+- Awaiters call `cep_op_await(boot_oid, CEP_DTA("CEP","ist:packs"), ttl, CEP_DTA("CEP","op/cont"), payload, size)` to resume work once startup reaches a specific state. Watchers that are satisfied immediately are armed and will fire during the next stage commit.
+- If you need a textual digest, call `cep_op_get(boot_oid, buffer, cap)`; it reports the current state, closed status, and watcher count.
 
-### Phase 3 - Shutdown cascade
-- `cep_heartbeat_emit_shutdown()` is the orderly teardown path. It iterates through the teardown order (pack scopes, then `NAMEPOOL`, `KERNEL`), marking each scope as `teardown`, emitting `CEP:sig_sys/teardown/<scope>` immediately, and finally emitting `CEP:sig_sys/shutdown` for the runtime itself. All impulses are processed synchronously so downstream enzymes observe teardown in dependency order.
-- `cep_heartbeat_shutdown()` wraps `cep_heartbeat_emit_shutdown()`, resets runtime scratch buffers, clears topology overrides, and calls `cep_cell_system_shutdown()` so the next bootstrap starts from a clean root.
-- The journal (`/journal/sys_log`) records every lifecycle signal with the beat where it fired and whether it was immediate or deferred, providing an audit trail for both startup and shutdown transitions.
+### Phase 3 — Shutdown cascade
+- `cep_heartbeat_emit_shutdown()` is the orderly teardown path. It ensures `op/shdn` exists, walks lifecycle scopes in teardown order, records the shutdown states, and closes the operation. No legacy `CEP:sig_sys` pulses are emitted.
+- `cep_heartbeat_shutdown()` wraps the orderly teardown, resets runtime scratch buffers, clears topology overrides, and calls `cep_cell_system_shutdown()` so the next bootstrap starts from a clean root.
 
-#### Impulse sequencing during teardown
-1. `cep_heartbeat_emit_shutdown()` walks the teardown list `<pack scopes> → NAMEPOOL → KERNEL`, emitting `/CEP:sig_sys/CEP:teardown/CEP:<scope>` immediately for each scope. These pulses carry no target path; user enzymes can observe them by registering on the relevant signal if they need to mirror teardown work.
-2. Once all scopes have emitted teardown, the runtime sends `/CEP:sig_sys/CEP:shutdown` (immediate) and processes the batch in the same beat, ensuring log ordering and deterministic cleanup.
+#### Shutdown operation timeline (`/rt/ops/<shdn_oid>`)
+1. **Envelope creation.** `cep_boot_ops_start_shutdown()` creates `/rt/ops/<shdn_oid>/envelope/` with verb `op/shdn`, target `/sys/state`, and mode `opm:states`, then records `ist:stop`. The OID is published at `/sys/state/shdn_oid`.
+2. **`ist:flush`.** The first scope that enters teardown advances the operation to `ist:flush`.
+3. **`ist:halt` → close.** When the teardown list completes, the operation records `ist:halt`, closes with `sts:ok`, seals `/close/`, and updates the terminal state to `ist:ok`.
+4. **Awaiters and expiries.** Watchers targeting either states or statuses fire during stage commit. TTLs are counted in beats and expire via `cep_ops_expire_watchers()` if the awaited transition never surfaces.
+
+### Observability quick reference
+- `/sys/state/boot_oid` / `/sys/state/shdn_oid` – `val/bytes` payload storing the active OIDs.
+- `/rt/ops/<oid>/state` – `val/dt` recording the current `ist:*`.
+- `/rt/ops/<oid>/history/` – dictionary entries (`0001`, `0002`, …) each containing `state`, `beat`, optional `code`, optional `note`.
+- `/rt/ops/<oid>/close/` – sealed dictionary with `status` (`sts:*`), `closed_beat`, and optional `summary_id`.
+- `/rt/ops/<oid>/watchers/` – dictionary of live watcher entries. The branch is empty after watchers fire or expire.
 
 ## Q&A
-**Q: What order should I call when bringing CEP online?**  
-Call `cep_l0_bootstrap()` first, register any optional packs that depend on the heartbeat, then invoke `cep_heartbeat_startup()` followed by `cep_heartbeat_begin()` (or drive the beats manually with `cep_heartbeat_step()`).
+**Q: What order should I follow when bringing CEP online?**  
+Call `cep_l0_bootstrap()` first, then run any optional pack bootstrap that depends on the heartbeat, then invoke `cep_heartbeat_startup()` followed by `cep_heartbeat_begin()` (or drive beats manually with `cep_heartbeat_step()`). The boot operation appears during bootstrap; by the time you call `cep_heartbeat_begin()` the history should already contain `ist:kernel` and `ist:store`.
 
-**Q: What replaced the mailroom's unified inbox?**  
-The kernel no longer mirrors `/data/inbox`; packs that ingest external work should register their own routing enzymes or append directly to their datasets. Leave a `TODO` beside any temporary no-op stubs so downstream refactors can wire the new ingress path.
+**Q: How do I wait until the system is usable?**  
+Read `/sys/state/boot_oid`, then await the desired state:  
+`cep_op_await(boot_oid, CEP_DTA("CEP","ist:packs"), ttl, CEP_DTA("CEP","op/cont"), NULL, 0);`  
+During the next stage commit the watcher queues your continuation signal for beat N+1.
+
+**Q: What replaced the old `CEP:sig_sys/ready/*` and `CEP:sig_sys/shutdown` impulses?**  
+They were removed entirely. Use the boot and shutdown operations (states, history, close status, or `cep_op_get`) to observe lifecycle progress. Packs that previously listened for the legacy signals should migrate to `cep_op_await`.
 
 **Q: How do I perform a soft restart without losing topology?**  
-Use `cep_heartbeat_restart()`. It clears runtime caches, reuses the configured topology, and re-emits readiness signals without touching `/data`. For a hard reset call `cep_heartbeat_shutdown()` followed by a fresh bootstrap.
+Call `cep_heartbeat_restart()`. It clears runtime caches, reuses the configured topology, restarts the boot operation when needed, and leaves `/rt/ops/<boot_oid>` intact so diagnostics can inspect the prior run.
 
-**Q: Where can I confirm lifecycle transitions?**  
-Check `/sys/state/<scope>` for the recorded `status`, `ready_beat`, and `td_beat` fields, and `/journal/sys_log` for the textual impulses (`CEP:sig_sys/ready/<scope>`, `CEP:sig_sys/teardown/<scope>`, `CEP:sig_sys/shutdown`) emitted during startup and shutdown.
+**Q: Where do I confirm lifecycle transitions at runtime?**  
+Resolve the published OIDs and inspect the corresponding operation branches. History entries are append-only, `envelope/` and `close/` are sealed, and watchers disappear once fired—ideal for auditors and tooling dashboards.
+
+**Q: What happens if the shutdown encounter fails?**  
+`cep_boot_ops_close_shutdown()` closes the operation with `sts:fail` (and final `ist:fail`) if any state transition or watcher notification fails. Awaiters waiting on `sts:ok` will instead receive the failure status on the next beat.
 
 ## Layer-0 Operating Principles
-- **Append-only cells.** Stage replacements off-tree and graft them in one shot. Direct in-place edits of `/data` break replay guarantees.
-- **Phase discipline.** Capture, compute, commit is the only legal mutation flow. Let the phase helpers (`cep_beat_begin_*`, capture/commit enzymes, etc.) drive writes.
-- **Impulse bootstrap.** New services hook into the existing `CEP:sig_sys/ready/*` and `CEP:sig_sys/init` signals. Avoid bespoke readiness checks that bypass the heartbeat.
-- **Link-safe helpers.** Always use `cep_cell_require_dictionary_store`, `cep_cell_clear_children`, `cep_cell_copy_children`, and related APIs so link promotion and store upgrades stay consistent.
-- **Path-based lookups.** Treat `cepCell*` pointers as ephemeral; re-resolve by path whenever you cross a phase boundary so store promotion or replay cannot strand stale handles.
-- **Public-surface tests.** Layer-0 test suites step the heartbeat and call exported APIs. Reaching around the surface hides lifecycle regressions that impulses would have exposed.
+- **Operation-first lifecycle.** Treat `op/boot` and `op/shdn` as the canonical lifecycle record. Align new packs or services with those operations instead of adding bespoke state trackers.
+- **Append-only cells.** Stage replacements off-tree and graft them atomically. Direct edits of `/data` or `/rt/ops` break replay guarantees.
+- **Phase discipline.** Capture → compute → commit is the only legal mutation flow. Use the `cep_beat_begin_*` helpers and keep shutdown transitions within the same rules.
+- **Watcher hygiene.** Prefer `cep_op_await` over polling. Remember that watchers fire during stage commit and enqueue continuations for the next beat.
+- **Path-based lookups.** Treat cached `cepCell*` pointers as ephemeral. Resolve by path across phase boundaries so store promotion or restart cannot strand stale handles.
+- **Public-surface tests.** Layer‑0 suites step the heartbeat and call exported APIs. Avoid reaching around the public surface; that bypasses the very operations that keep lifecycle deterministic.

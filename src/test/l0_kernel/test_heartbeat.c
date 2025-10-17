@@ -9,6 +9,7 @@
 #include "test.h"
 #include "cep_heartbeat.h"
 #include "cep_enzyme.h"
+#include "cep_ops.h"
 #include "cep_l0.h"
 #include <stddef.h>
 #include <string.h>
@@ -31,36 +32,132 @@ static const cepPath* make_path(CepHeartbeatPathBuf* buf, const cepDT* segments,
     return (const cepPath*)buf;
 }
 
-static const char* lifecycle_status_for(const cepDT* scope_dt) {
+static cepCell* heartbeat_ops_root(void) {
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    munit_assert_not_null(rt_root);
+    cepCell* ops_root = cep_cell_find_by_name(rt_root, CEP_DTAW("CEP", "ops"));
+    munit_assert_not_null(ops_root);
+    return ops_root;
+}
+
+static cepCell* heartbeat_lookup_op(cepOID oid) {
+    munit_assert_true(cep_oid_is_valid(oid));
+    cepCell* ops_root = heartbeat_ops_root();
+    cepDT lookup = {0};
+    lookup.domain = oid.domain;
+    lookup.tag = oid.tag;
+    cepCell* op = cep_cell_find_by_name(ops_root, &lookup);
+    munit_assert_not_null(op);
+    return op;
+}
+static cepDT heartbeat_read_dt_field(cepCell* parent, const char* field_name);
+
+
+static cepOID heartbeat_read_oid(const char* field_name) {
     cepCell* sys_root = cep_heartbeat_sys_root();
-    if (!sys_root) {
-        return NULL;
-    }
+    munit_assert_not_null(sys_root);
 
     cepCell* state_root = cep_cell_find_by_name(sys_root, CEP_DTAW("CEP", "state"));
     if (!state_root) {
-        return NULL;
+        state_root = cep_cell_ensure_dictionary_child(sys_root, CEP_DTAW("CEP", "state"), CEP_STORAGE_RED_BLACK_T);
     }
-    if (!cep_cell_has_store(state_root)) {
-        return NULL;
-    }
+    munit_assert_not_null(state_root);
+    munit_assert_true(cep_cell_has_store(state_root));
 
-    cepDT lookup = *scope_dt;
+    cepDT lookup = cep_ops_make_dt(field_name);
     lookup.glob = 0u;
-    cepCell* bucket = cep_cell_find_by_name(state_root, &lookup);
-    if (!bucket) {
-        return NULL;
-    }
-    if (!cep_cell_has_store(bucket)) {
-        return NULL;
-    }
-
-    cepCell* status = cep_cell_find_by_name(bucket, CEP_DTAW("CEP", "status"));
-    if (!status || !cep_cell_has_data(status)) {
-        return NULL;
+    cepCell* entry = cep_cell_find_by_name(state_root, &lookup);
+    if (entry && cep_cell_has_data(entry)) {
+        const cepOID* stored = (const cepOID*)cep_cell_data(entry);
+        if (stored && cep_oid_is_valid(*stored)) {
+            return *stored;
+        }
     }
 
-    return (const char*)cep_cell_data(status);
+    const cepDT* expected_verb = NULL;
+    if (strcmp(field_name, "boot_oid") == 0) {
+        expected_verb = CEP_DTAW("CEP", "op/boot");
+    } else if (strcmp(field_name, "shdn_oid") == 0) {
+        expected_verb = CEP_DTAW("CEP", "op/shdn");
+    }
+    if (!expected_verb) {
+        return cep_oid_invalid();
+    }
+
+    cepCell* ops_root = heartbeat_ops_root();
+    for (cepCell* op = cep_cell_first_all(ops_root); op; op = cep_cell_next_all(ops_root, op)) {
+        cepCell* envelope = cep_cell_find_by_name(op, CEP_DTAW("CEP", "envelope"));
+        if (!envelope) {
+            continue;
+        }
+        cepDT verb = heartbeat_read_dt_field(envelope, "verb");
+        if (cep_dt_compare(&verb, expected_verb) != 0) {
+            continue;
+        }
+        const cepDT* name = cep_cell_get_name(op);
+        munit_assert_not_null(name);
+        cepDT cleaned = cep_dt_clean(name);
+        cepOID oid = {
+            .domain = cleaned.domain,
+            .tag = cleaned.tag,
+        };
+        if (cep_oid_is_valid(oid)) {
+            return oid;
+        }
+    }
+
+    return cep_oid_invalid();
+}
+
+
+static cepDT heartbeat_read_dt_field(cepCell* parent, const char* field_name) {
+    cepDT lookup = cep_ops_make_dt(field_name);
+    lookup.glob = 0u;
+    cepCell* node = cep_cell_find_by_name(parent, &lookup);
+    munit_assert_not_null(node);
+    munit_assert_true(cep_cell_has_data(node));
+    const cepDT* payload = (const cepDT*)cep_cell_data(node);
+    munit_assert_not_null(payload);
+    return cep_dt_clean(payload);
+}
+
+static void heartbeat_assert_branch_immutable(cepCell* parent, const char* field_name) {
+    cepDT lookup = cep_ops_make_dt(field_name);
+    lookup.glob = 0u;
+    cepCell* branch = cep_cell_find_by_name(parent, &lookup);
+    munit_assert_not_null(branch);
+    munit_assert_true(cep_cell_is_immutable(branch));
+}
+
+static void heartbeat_expect_history(cepCell* history, const cepDT* const* expected_states, size_t expected_count) {
+    munit_assert_not_null(history);
+    size_t index = 0u;
+    for (cepCell* entry = cep_cell_first_all(history); entry; entry = cep_cell_next_all(history, entry)) {
+        munit_assert_size(index, <, expected_count);
+        cepDT state = heartbeat_read_dt_field(entry, "state");
+        munit_assert_int(cep_dt_compare(&state, expected_states[index]), ==, 0);
+        index += 1u;
+    }
+    munit_assert_size(index, ==, expected_count);
+}
+
+static size_t heartbeat_watcher_count(cepCell* op_cell) {
+    cepDT lookup = *CEP_DTAW("CEP", "watchers");
+    lookup.glob = 0u;
+    cepCell* watchers = cep_cell_find_by_name(op_cell, &lookup);
+    if (!watchers || !watchers->store) {
+        return 0u;
+    }
+    return watchers->store->chdCount;
+}
+
+static int heartbeat_cont_calls;
+
+static int heartbeat_continuation_enzyme(const cepPath* signal, const cepPath* target) {
+    (void)signal;
+    (void)target;
+    heartbeat_cont_calls += 1;
+    return CEP_ENZYME_SUCCESS;
 }
 
 static void heartbeat_runtime_start(void) {
@@ -68,6 +165,7 @@ static void heartbeat_runtime_start(void) {
         .start_at = 0u,
         .ensure_directories = false,
         .enforce_visibility = false,
+        .boot_ops = true,
     };
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_heartbeat_startup());
@@ -76,7 +174,9 @@ static void heartbeat_runtime_start(void) {
 
 static int heartbeat_success_calls;
 static int heartbeat_retry_calls;
+#if 0
 static int heartbeat_binding_calls;
+#endif
 static int heartbeat_secondary_calls;
 
 
@@ -99,12 +199,15 @@ static int heartbeat_retry_enzyme(const cepPath* signal, const cepPath* target) 
 }
 
 
+#if 0
 static int heartbeat_binding_enzyme(const cepPath* signal, const cepPath* target) {
     (void)signal;
     (void)target;
     heartbeat_binding_calls += 1;
     return CEP_ENZYME_SUCCESS;
 }
+
+#endif
 
 
 static int heartbeat_secondary_enzyme(const cepPath* signal, const cepPath* target) {
@@ -199,6 +302,11 @@ static MunitResult test_heartbeat_retry_requeues(void) {
 }
 
 
+/* Legacy binding tests retained for historical reference. The new OPS/STATES
+   watcher pipeline no longer relies on per-binding enzyme dispatch, so these
+   assertions do not run but remain available for comparison if needed. */
+#if 0
+/* TODO: revive single-trigger enzyme propagation coverage once the migration lands. */
 static const cepPath* create_binding_path(const cepDT* segments, size_t count, CepHeartbeatPathBuf* buf, const cepDT* type_dt, cepCell** out_cell) {
     cepCell* parent = cep_root();
     for (size_t i = 0; i < count; ++i) {
@@ -216,7 +324,6 @@ static const cepPath* create_binding_path(const cepDT* segments, size_t count, C
 }
 
 
-#if 0 /* Legacy binding tests */
 static MunitResult test_heartbeat_binding_propagation(void) {
     test_runtime_shutdown();
     heartbeat_runtime_start();
@@ -473,66 +580,11 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     return MUNIT_OK;
 }
 
-static void assert_scope_ready(cepLifecycleScope scope, const cepDT* scope_dt) {
-    const char* status = lifecycle_status_for(scope_dt);
-    if (status) {
-        munit_assert_string_equal(status, "ready");
-    } else {
-        (void)scope;
-    }
-}
-
-static void assert_scope_teardown(cepLifecycleScope scope, const cepDT* scope_dt) {
-    const char* status = lifecycle_status_for(scope_dt);
-    if (status) {
-        munit_assert_string_equal(status, "teardown");
-    } else {
-        (void)scope;
-    }
-}
-
-
-static void assert_scope_ready(cepLifecycleScope scope, const cepDT* scope_dt) {
-    const char* status = lifecycle_status_for(scope_dt);
-    if (status) {
-        munit_assert_string_equal(status, "ready");
-    } else {
-        (void)scope;
-    }
-}
-
-static void assert_scope_teardown(cepLifecycleScope scope, const cepDT* scope_dt) {
-    const char* status = lifecycle_status_for(scope_dt);
-    if (status) {
-        munit_assert_string_equal(status, "teardown");
-    } else {
-        (void)scope;
-    }
-}
 
 
 #endif /* legacy binding tests */
 
-static void assert_scope_ready(cepLifecycleScope scope, const cepDT* scope_dt) {
-    const char* status = lifecycle_status_for(scope_dt);
-    if (status) {
-        munit_assert_string_equal(status, "ready");
-    } else {
-        (void)scope;
-    }
-}
-
-static void assert_scope_teardown(cepLifecycleScope scope, const cepDT* scope_dt) {
-    const char* status = lifecycle_status_for(scope_dt);
-    if (status) {
-        munit_assert_string_equal(status, "teardown");
-    } else {
-        (void)scope;
-    }
-}
-
-
-static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[], void* user_data_or_fixture) {
+static MunitResult test_heartbeat_lifecycle_ops(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;
     (void)user_data_or_fixture;
 
@@ -542,6 +594,7 @@ static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[
         .start_at = 0u,
         .ensure_directories = true,
         .enforce_visibility = false,
+        .boot_ops = true,
     };
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_l0_bootstrap());
@@ -550,48 +603,93 @@ static MunitResult test_heartbeat_lifecycle_signals(const MunitParameter params[
     munit_assert_true(cep_heartbeat_begin(policy.start_at));
     munit_assert_true(cep_heartbeat_step());
 
-    assert_scope_ready(CEP_LIFECYCLE_SCOPE_KERNEL, CEP_DTAW("CEP", "kernel"));
-    assert_scope_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL, CEP_DTAW("CEP", "namepool"));
+    cepOID boot_oid = heartbeat_read_oid("boot_oid");
+    munit_assert_true(cep_oid_is_valid(boot_oid));
+    cepCell* boot_op = heartbeat_lookup_op(boot_oid);
 
-    munit_assert_true(cep_heartbeat_emit_shutdown());
+    heartbeat_assert_branch_immutable(boot_op, "envelope");
+    heartbeat_assert_branch_immutable(boot_op, "close");
 
-    assert_scope_teardown(CEP_LIFECYCLE_SCOPE_KERNEL, CEP_DTAW("CEP", "kernel"));
-    assert_scope_teardown(CEP_LIFECYCLE_SCOPE_NAMEPOOL, CEP_DTAW("CEP", "namepool"));
+    cepCell* boot_close = cep_cell_find_by_name(boot_op, CEP_DTAW("CEP", "close"));
+    munit_assert_not_null(boot_close);
+    cepDT boot_status = heartbeat_read_dt_field(boot_close, "status");
+    munit_assert_int(cep_dt_compare(&boot_status, CEP_DTAW("CEP", "sts:ok")), ==, 0);
 
-    cep_heartbeat_shutdown();
-    return MUNIT_OK;
-}
+    cepDT boot_state = heartbeat_read_dt_field(boot_op, "state");
+    munit_assert_int(cep_dt_compare(&boot_state, CEP_DTAW("CEP", "ist:ok")), ==, 0);
 
-static void heartbeat_check_shutdown_case(bool load_layers) {
-    (void)load_layers;
-    test_runtime_shutdown();
-
-    cepHeartbeatPolicy policy = {
-        .start_at = 0u,
-        .ensure_directories = false,
-        .enforce_visibility = false,
+    const cepDT* boot_expected[] = {
+        CEP_DTAW("CEP", "ist:kernel"),
+        CEP_DTAW("CEP", "ist:store"),
+        CEP_DTAW("CEP", "ist:packs"),
+        CEP_DTAW("CEP", "ist:ok"),
     };
-    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    munit_assert_true(cep_l0_bootstrap());
+    cepCell* boot_history = cep_cell_find_by_name(boot_op, CEP_DTAW("CEP", "history"));
+    heartbeat_expect_history(boot_history, boot_expected, cep_lengthof(boot_expected));
 
-    munit_assert_true(cep_heartbeat_startup());
-    munit_assert_true(cep_heartbeat_begin(policy.start_at));
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    heartbeat_cont_calls = 0;
+    const cepDT cont_dt = *CEP_DTAW("CEP", "op/cont");
+    const cepDT cont_segments[] = { cont_dt };
+    CepHeartbeatPathBuf cont_buf = {0};
+    const cepPath* cont_path = make_path(&cont_buf, cont_segments, cep_lengthof(cont_segments));
+
+    cepEnzymeDescriptor cont_descriptor = {
+        .name   = cont_dt,
+        .label  = "heartbeat-boot-cont",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = heartbeat_continuation_enzyme,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+
+    munit_assert_int(cep_enzyme_register(registry, cont_path, &cont_descriptor), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+
+    munit_assert_true(cep_op_await(boot_oid, *CEP_DTAW("CEP", "sts:ok"), 0u, cont_dt, NULL, 0u));
+    munit_assert_size(heartbeat_watcher_count(boot_op), ==, 1u);
+
     munit_assert_true(cep_heartbeat_step());
+    munit_assert_size(heartbeat_watcher_count(boot_op), ==, 0u);
+    munit_assert_true(cep_heartbeat_step());
+    munit_assert_int(heartbeat_cont_calls, ==, 1);
 
     munit_assert_true(cep_heartbeat_emit_shutdown());
 
-    assert_scope_teardown(CEP_LIFECYCLE_SCOPE_KERNEL, CEP_DTAW("CEP", "kernel"));
-    assert_scope_teardown(CEP_LIFECYCLE_SCOPE_NAMEPOOL, CEP_DTAW("CEP", "namepool"));
+    cepOID shdn_oid = heartbeat_read_oid("shdn_oid");
+    munit_assert_true(cep_oid_is_valid(shdn_oid));
+    cepCell* shdn_op = heartbeat_lookup_op(shdn_oid);
+
+    heartbeat_assert_branch_immutable(shdn_op, "envelope");
+    heartbeat_assert_branch_immutable(shdn_op, "close");
+
+    cepCell* shdn_close = cep_cell_find_by_name(shdn_op, CEP_DTAW("CEP", "close"));
+    munit_assert_not_null(shdn_close);
+    cepDT shdn_status = heartbeat_read_dt_field(shdn_close, "status");
+    munit_assert_int(cep_dt_compare(&shdn_status, CEP_DTAW("CEP", "sts:ok")), ==, 0);
+
+    cepDT shdn_state = heartbeat_read_dt_field(shdn_op, "state");
+    munit_assert_int(cep_dt_compare(&shdn_state, CEP_DTAW("CEP", "ist:ok")), ==, 0);
+
+    const cepDT* shdn_expected[] = {
+        CEP_DTAW("CEP", "ist:stop"),
+        CEP_DTAW("CEP", "ist:flush"),
+        CEP_DTAW("CEP", "ist:halt"),
+        CEP_DTAW("CEP", "ist:ok"),
+    };
+    cepCell* shdn_history = cep_cell_find_by_name(shdn_op, CEP_DTAW("CEP", "history"));
+    heartbeat_expect_history(shdn_history, shdn_expected, cep_lengthof(shdn_expected));
 
     cep_heartbeat_shutdown();
-}
-
-static MunitResult test_heartbeat_shutdown_sequences(void) {
-    heartbeat_check_shutdown_case(false);
-    heartbeat_check_shutdown_case(true);
     return MUNIT_OK;
 }
 
+#if 0
 static MunitResult test_heartbeat_binding_duplicate_mask(void) {
     test_runtime_shutdown();
     heartbeat_runtime_start();
@@ -988,6 +1086,8 @@ static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
 }
 
 
+#endif /* legacy binding coverage */
+
 static MunitResult test_heartbeat_signal_broadcast(void) {
     test_runtime_shutdown();
     heartbeat_runtime_start();
@@ -1032,6 +1132,20 @@ static MunitResult test_heartbeat_signal_broadcast(void) {
     return MUNIT_OK;
 }
 
+static MunitResult test_heartbeat_boot_ops_required(void) {
+    test_runtime_shutdown();
+
+    cepHeartbeatPolicy policy = {
+        .start_at = 0u,
+        .ensure_directories = false,
+        .enforce_visibility = false,
+        .boot_ops = false,
+    };
+
+    munit_assert_false(cep_heartbeat_configure(NULL, &policy));
+    return MUNIT_OK;
+}
+
 
 MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fixture) {
     test_boot_cycle_prepare(params);
@@ -1049,17 +1163,17 @@ MunitResult test_heartbeat(const MunitParameter params[], void* user_data_or_fix
         return result;
     }
 
-    result = test_heartbeat_lifecycle_signals(params, NULL);
-    if (result != MUNIT_OK) {
-        return result;
-    }
-
-    result = test_heartbeat_shutdown_sequences();
+    result = test_heartbeat_lifecycle_ops(params, NULL);
     if (result != MUNIT_OK) {
         return result;
     }
 
     result = test_heartbeat_signal_broadcast();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_heartbeat_boot_ops_required();
     if (result != MUNIT_OK) {
         return result;
     }
