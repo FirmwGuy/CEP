@@ -53,7 +53,6 @@ when a new behavior needs a fresh word before it lands in code.
 | `log` | core | log entry tag attached to beat records. |
 | `meta` | core | metadata dictionary attached to runtime cells. |
 | `txn` | core | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
-| `original` | core | dictionary storing pre-canonical text submitted alongside helper-built intents. |
 | `namepool` | core | identifier intern table. |
 | `outcome` | core | execution result record written after enzymes run. |
 | `target` | core | canonical link entry used by helper-built facet dictionaries. |
@@ -70,8 +69,6 @@ when a new behavior needs a fresh word before it lands in code.
 | `td_beat` | core | beat index captured when a scope entered teardown. |
 | `text` | core | namepool payload store for textual data. |
 | `tmp` | core | scratch list reserved for tooling. |
-| `emit_kind` | core | CEI payload field identifying the emitter category. |
-| `emit_label` | core | CEI payload field mirroring the descriptor label. |
 
 #### Operational Tags
 | Tag / Pattern | Status | Purpose |
@@ -116,7 +113,6 @@ when a new behavior needs a fresh word before it lands in code.
 #### Reserved Upper-Layer Tags
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |
-| `flow` | core | Reserved `/data/flow` root for future upper-layer packs that orchestrate long-running flows. The kernel keeps the tag so external tooling can prepare namespaces in advance. |
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor
   declarations. Emitting them outside the heartbeat dispatcher is undefined.

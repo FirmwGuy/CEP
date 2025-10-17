@@ -34,8 +34,6 @@ static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
 
 CEP_DEFINE_STATIC_DT(dt_scope_kernel,   CEP_ACRO("CEP"), CEP_WORD("kernel"));
 CEP_DEFINE_STATIC_DT(dt_scope_namepool, CEP_ACRO("CEP"), CEP_WORD("namepool"));
-CEP_DEFINE_STATIC_DT(dt_scope_l1,       CEP_ACRO("CEP"), CEP_WORD("l1"));
-CEP_DEFINE_STATIC_DT(dt_scope_l2,       CEP_ACRO("CEP"), CEP_WORD("l2"));
 CEP_DEFINE_STATIC_DT(dt_signal_sys,     CEP_ACRO("CEP"), CEP_WORD("sig_sys"));
 CEP_DEFINE_STATIC_DT(dt_signal_init,    CEP_ACRO("CEP"), CEP_WORD("init"));
 CEP_DEFINE_STATIC_DT(dt_signal_shutdown, CEP_ACRO("CEP"), CEP_WORD("shutdown"));
@@ -82,15 +80,6 @@ typedef struct {
 static const cepLifecycleScope CEP_SCOPE_DEPS_NAMEPOOL[] = {
     CEP_LIFECYCLE_SCOPE_KERNEL,
 };
-static const cepLifecycleScope CEP_SCOPE_DEPS_L1[] = {
-    CEP_LIFECYCLE_SCOPE_KERNEL,
-    CEP_LIFECYCLE_SCOPE_NAMEPOOL,
-};
-static const cepLifecycleScope CEP_SCOPE_DEPS_L2[] = {
-    CEP_LIFECYCLE_SCOPE_KERNEL,
-    CEP_LIFECYCLE_SCOPE_NAMEPOOL,
-    CEP_LIFECYCLE_SCOPE_L1,
-};
 
 static const cepLifecycleScopeInfo CEP_LIFECYCLE_SCOPE_INFO[CEP_LIFECYCLE_SCOPE_COUNT] = {
     [CEP_LIFECYCLE_SCOPE_KERNEL] = {
@@ -105,24 +94,10 @@ static const cepLifecycleScopeInfo CEP_LIFECYCLE_SCOPE_INFO[CEP_LIFECYCLE_SCOPE_
         .dependencies = CEP_SCOPE_DEPS_NAMEPOOL,
         .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_NAMEPOOL),
     },
-    [CEP_LIFECYCLE_SCOPE_L1] = {
-        .label = "l1",
-        .scope_dt = dt_scope_l1,
-        .dependencies = CEP_SCOPE_DEPS_L1,
-        .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_L1),
-    },
-    [CEP_LIFECYCLE_SCOPE_L2] = {
-        .label = "l2",
-        .scope_dt = dt_scope_l2,
-        .dependencies = CEP_SCOPE_DEPS_L2,
-        .dependency_count = cep_lengthof(CEP_SCOPE_DEPS_L2),
-    },
 };
 
 static cepLifecycleScopeState CEP_LIFECYCLE_STATE[CEP_LIFECYCLE_SCOPE_COUNT];
 static const cepLifecycleScope CEP_LIFECYCLE_TEARDOWN_ORDER[] = {
-    CEP_LIFECYCLE_SCOPE_L2,
-    CEP_LIFECYCLE_SCOPE_L1,
     CEP_LIFECYCLE_SCOPE_NAMEPOOL,
     CEP_LIFECYCLE_SCOPE_KERNEL,
 };

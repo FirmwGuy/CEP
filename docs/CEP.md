@@ -158,7 +158,7 @@ Will variants explode?
 - Clamp budgets and time; guardians enforce invariants; weak variants get pruned. Niches route contexts to the right tactic.
 
 Do I need all layers on day one?
-- No. Start with Kernel + Heartbeat; add L1 coherence; then flows with Decision Cells. Add awareness, governance, and culture as needs grow.
+- No. Start with Kernel + Heartbeat; bring in higher-layer packs (coherence, flows, governance) as they mature and you need them.
 
 Why stories and myths in a system design?
 - Shared narratives are how people remember and align. CEP links stories back to evidence so meaning never drifts from truth.

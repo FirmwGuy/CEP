@@ -541,11 +541,6 @@ static void heartbeat_check_shutdown_case(bool load_layers) {
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_KERNEL, CEP_DTAW("CEP", "kernel"));
     assert_scope_teardown(CEP_LIFECYCLE_SCOPE_NAMEPOOL, CEP_DTAW("CEP", "namepool"));
 
-    const char* l1_status = lifecycle_status_for(CEP_DTAW("CEP", "l1"));
-    const char* l2_status = lifecycle_status_for(CEP_DTAW("CEP", "l2"));
-    munit_assert_true(l1_status == NULL);
-    munit_assert_true(l2_status == NULL);
-
     cep_heartbeat_shutdown();
 }
 
