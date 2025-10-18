@@ -12,6 +12,7 @@ CEP’s kernel (Layer 0) must start, run, and shut down without assuming any h
   - Treat the pack as a plugin that calls into public L0 APIs. Its bootstrap should probe for prerequisites (for example, heartbeat readiness) and bail out cleanly if unavailable.  
   - Registration should be idempotent. Repeated calls must verify existing descriptors or state rather than mutating blindly.  
   - Readiness signals belong to the pack itself (e.g., `/CEP:sig_sys/ready/CEP:coherence`). Emit them only after the pack has prepared its storage and registered enzymes.
+  - Startup and shutdown operations progress one beat at a time; keep stepping the heartbeat until the expected `ist:*` or `sts:*` state is visible before assuming the kernel is ready.
 
 - **Testing packs**  
   - Provide explicit helpers (e.g., `bool mypack_bootstrap(void)`) so tests can opt-in.  

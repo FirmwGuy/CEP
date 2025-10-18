@@ -18,8 +18,8 @@ Think of CEP's runtime as a pair of operations that bookend every session. `op/b
 #### Boot operation timeline (`/rt/ops/<boot_oid>`)
 1. **Envelope creation.** `cep_boot_ops_start_boot()` (called from bootstrap/startup paths) creates `/rt/ops/<boot_oid>/envelope/` with the verb (`op/boot`), target (`/sys/state`), mode (`opm:states`), issued beat, and optional payload. The branch is sealed immutable inside the veiled transaction.
 2. **`ist:kernel`.** Immediately after creation the operation records `ist:kernel` and appends the first history entry.
-3. **`ist:store`.** When the kernel scope is flagged ready (`cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_KERNEL)`), the operation transitions to `ist:store` and appends the second history entry.
-4. **`ist:packs` → close.** When the namepool scope becomes ready, the operation records `ist:packs`, closes with `sts:ok`, seals the `/close/` branch, and updates the final state to `ist:ok`.
+3. **`ist:store`.** When the kernel scope is flagged ready (`cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_KERNEL)`), the scheduler records `ist:store` on the next beat and appends the second history entry.
+4. **`ist:packs` → close.** Once the namepool scope becomes ready, the following beat records `ist:packs`. The beat after that closes with `sts:ok`, seals the `/close/` branch, and updates the final state to `ist:ok`.
 5. **Publishing the OID.** The helper stores `boot_oid` as a `val/bytes` payload under `/sys/state/boot_oid`. Tools and packs resolve the boot snapshot by reading that cell.
 
 Watchers can attach to any of these states (or `sts:ok`) via `cep_op_await()`. Ready watchers fire during `cep_heartbeat_stage_commit()` and enqueue follow-up impulses with whatever continuation signal you choose (`op/cont` by convention).
@@ -29,13 +29,13 @@ Watchers can attach to any of these states (or `sts:ok`) via `cep_op_await()`. R
 - If you need a textual digest, call `cep_op_get(boot_oid, buffer, cap)`; it reports the current state, closed status, and watcher count.
 
 ### Phase 3 — Shutdown cascade
-- `cep_heartbeat_emit_shutdown()` is the orderly teardown path. It ensures `op/shdn` exists, walks lifecycle scopes in teardown order, records the shutdown states, and closes the operation. No legacy `CEP:sig_sys` pulses are emitted.
+- `cep_heartbeat_emit_shutdown()` is the orderly teardown path. It ensures `op/shdn` exists, walks lifecycle scopes in teardown order, and lets the heartbeat advance the remaining states on subsequent beats. No legacy `CEP:sig_sys` pulses are emitted.
 - `cep_heartbeat_shutdown()` wraps the orderly teardown, resets runtime scratch buffers, clears topology overrides, and calls `cep_cell_system_shutdown()` so the next bootstrap starts from a clean root.
 
 #### Shutdown operation timeline (`/rt/ops/<shdn_oid>`)
 1. **Envelope creation.** `cep_boot_ops_start_shutdown()` creates `/rt/ops/<shdn_oid>/envelope/` with verb `op/shdn`, target `/sys/state`, and mode `opm:states`, then records `ist:stop`. The OID is published at `/sys/state/shdn_oid`.
-2. **`ist:flush`.** The first scope that enters teardown advances the operation to `ist:flush`.
-3. **`ist:halt` → close.** When the teardown list completes, the operation records `ist:halt`, closes with `sts:ok`, seals `/close/`, and updates the terminal state to `ist:ok`.
+2. **`ist:flush`.** The first scope that enters teardown advances the operation to `ist:flush` on the next beat.
+3. **`ist:halt` → close.** When the teardown list completes, the operation records `ist:halt` on the following beat and closes with `sts:ok` one beat later. The `/close/` branch is sealed and the terminal state becomes `ist:ok`.
 4. **Awaiters and expiries.** Watchers targeting either states or statuses fire during stage commit. TTLs are counted in beats and expire via `cep_ops_expire_watchers()` if the awaited transition never surfaces.
 
 ### Observability quick reference
@@ -47,7 +47,10 @@ Watchers can attach to any of these states (or `sts:ok`) via `cep_op_await()`. R
 
 ## Q&A
 **Q: What order should I follow when bringing CEP online?**  
-Call `cep_l0_bootstrap()` first, then run any optional pack bootstrap that depends on the heartbeat, then invoke `cep_heartbeat_startup()` followed by `cep_heartbeat_begin()` (or drive beats manually with `cep_heartbeat_step()`). The boot operation appears during bootstrap; by the time you call `cep_heartbeat_begin()` the history should already contain `ist:kernel` and `ist:store`.
+Call `cep_l0_bootstrap()` first, then run any optional pack bootstrap that depends on the heartbeat, then invoke `cep_heartbeat_startup()` followed by `cep_heartbeat_begin()` (or drive beats manually with `cep_heartbeat_step()`). The boot operation appears during bootstrap; `ist:kernel` records immediately and the remaining milestones (`ist:store`, `ist:packs`, `ist:ok`) land on successive beats as you continue stepping.
+
+**Q: How many beats does startup and shutdown consume?**  
+With `start_at = 0`, expect the boot timeline at beats 0 (`ist:kernel`), 1 (`ist:store`), 2 (`ist:packs`), and 3 (`ist:ok`). Shutdown mirrors that cadence: triggering teardown records `ist:stop` on the current beat, `ist:flush` on the next, `ist:halt` one beat later, and the close (`ist:ok`/`sts:ok`) on the fourth beat.
 
 **Q: How do I wait until the system is usable?**  
 Read `/sys/state/boot_oid`, then await the desired state:  

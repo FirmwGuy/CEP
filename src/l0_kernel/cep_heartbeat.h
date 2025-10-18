@@ -148,7 +148,6 @@ typedef struct {
     cepHeartbeatScratch       scratch;
     bool                      running;
     size_t                    deferred_activations;
-    bool                      sys_init_emitted;
     bool                      sys_shutdown_emitted;
     bool                      bootstrapping;
     const cepEnzymeDescriptor* current_descriptor;

@@ -60,6 +60,7 @@ Bringing stream helpers into the enzyme catalogue would let impulse-driven workf
   - 📎 Link archiving metadata remains planned so historic trees stay replayable.
 - **Milestone 2 - Structural resilience**: 📎 Planned — deliver traversal depth management, shadow cleanup, packed queue recycling, and re-sort helpers for RB-tree/octree back-ends to keep large collections stable.
 - **Milestone 3 - Runtime baseline**: ⚙️ Partial — heartbeat bootstrap/start/step/shutdown loops now run with memoised agenda resolution and deterministic enzyme ordering; still pending are agency executors, channel wiring, and runtime telemetry.
+  - ✅ Multi-beat `op/boot`/`op/shdn` timelines publish `ist:*` milestones across successive beats and honour awaiters without the legacy signal shim.
 - **Milestone 4 - Extended feature set**: 📎 Planned — add HANDLE/STREAM lifetimes, proxy lifecycle polish, deep cloning, persistence hooks, and expanded tests once the core runtime is proven.
 
 ## Q&A

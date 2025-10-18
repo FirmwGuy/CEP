@@ -12,6 +12,8 @@
 #include "cep_ops.h"
 #include "cep_l0.h"
 #include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct {
@@ -41,6 +43,135 @@ static cepCell* heartbeat_ops_root(void) {
 }
 
 static cepDT heartbeat_read_dt_field(cepCell* parent, const char* field_name);
+
+static cepCell* heartbeat_find_op_cell(cepOID oid) {
+    cepCell* ops_root = heartbeat_ops_root();
+    munit_assert_not_null(ops_root);
+
+    cepDT lookup = {
+        .domain = oid.domain,
+        .tag = oid.tag,
+        .glob = 0u,
+    };
+
+    cepCell* op = cep_cell_find_by_name(ops_root, &lookup);
+    munit_assert_not_null(op);
+    return op;
+}
+
+static uint64_t heartbeat_read_u64_field(cepCell* parent, const char* field_name) {
+    cepDT lookup = cep_ops_make_dt(field_name);
+    lookup.glob = 0u;
+    cepCell* node = cep_cell_find_by_name(parent, &lookup);
+    munit_assert_not_null(node);
+    munit_assert_true(cep_cell_has_data(node));
+    const uint64_t* value = (const uint64_t*)cep_cell_data(node);
+    munit_assert_not_null(value);
+    return *value;
+}
+
+static size_t heartbeat_watchers_count(cepCell* op) {
+    cepCell* watchers = cep_cell_find_by_name(op, CEP_DTAW("CEP", "watchers"));
+    if (!watchers || !watchers->store) {
+        return 0u;
+    }
+    return watchers->store->chdCount;
+}
+
+static cepDT heartbeat_expected_dt(const char* tag) {
+    if (strcmp(tag, "ist:kernel") == 0) {
+        return cep_dt_clean(CEP_DTAW("CEP", "ist:kernel"));
+    }
+    if (strcmp(tag, "ist:run") == 0) {
+        return cep_dt_clean(CEP_DTAW("CEP", "ist:run"));
+    }
+    if (strcmp(tag, "ist:store") == 0) {
+        return cep_dt_clean(CEP_DTAW("CEP", "ist:store"));
+    }
+    if (strcmp(tag, "ist:packs") == 0) {
+        return cep_dt_clean(CEP_DTAW("CEP", "ist:packs"));
+    }
+    if (strcmp(tag, "ist:ok") == 0) {
+        return cep_dt_clean(CEP_DTAW("CEP", "ist:ok"));
+    }
+    if (strcmp(tag, "ist:stop") == 0) {
+        return cep_dt_clean(CEP_DTAW("CEP", "ist:stop"));
+    }
+    if (strcmp(tag, "ist:flush") == 0) {
+        return cep_dt_clean(CEP_DTAW("CEP", "ist:flush"));
+    }
+    if (strcmp(tag, "ist:halt") == 0) {
+        return cep_dt_clean(CEP_DTAW("CEP", "ist:halt"));
+    }
+    munit_error("unexpected state tag");
+    return (cepDT){0};
+}
+
+static void heartbeat_assert_history_timeline(cepOID oid,
+                                              const char* const* expected_states,
+                                              size_t count) {
+    cepCell* op = heartbeat_find_op_cell(oid);
+    cepCell* history = cep_cell_find_by_name(op, CEP_DTAW("CEP", "history"));
+    munit_assert_not_null(history);
+
+    size_t index = 0u;
+    uint64_t previous_beat = 0;
+    bool have_previous = false;
+
+    for (cepCell* entry = cep_cell_first_all(history);
+         entry && index < count;
+         entry = cep_cell_next_all(history, entry)) {
+        cepDT state = heartbeat_read_dt_field(entry, "state");
+        cepDT expected = heartbeat_expected_dt(expected_states[index]);
+        if (cep_dt_compare(&state, &expected) != 0) {
+            continue;
+        }
+
+        uint64_t beat = heartbeat_read_u64_field(entry, "beat");
+        if (have_previous) {
+            munit_assert_uint64(beat, >=, previous_beat);
+        }
+        previous_beat = beat;
+        have_previous = true;
+        index += 1u;
+    }
+
+    munit_assert_size(index, ==, count);
+}
+
+static void heartbeat_assert_state(cepOID oid, const char* expected_tag) {
+    cepDT expected = heartbeat_expected_dt(expected_tag);
+    cepCell* op = heartbeat_find_op_cell(oid);
+    cepDT state = heartbeat_read_dt_field(op, "state");
+    int cmp = cep_dt_compare(&state, &expected);
+    if (cmp != 0) {
+        const char* actual = "?";
+        if (cep_dt_compare(&state, CEP_DTAW("CEP", "ist:kernel")) == 0) {
+            actual = "ist:kernel";
+        } else if (cep_dt_compare(&state, CEP_DTAW("CEP", "ist:store")) == 0) {
+            actual = "ist:store";
+        } else if (cep_dt_compare(&state, CEP_DTAW("CEP", "ist:packs")) == 0) {
+            actual = "ist:packs";
+        } else if (cep_dt_compare(&state, CEP_DTAW("CEP", "ist:ok")) == 0) {
+            actual = "ist:ok";
+        } else if (cep_dt_compare(&state, CEP_DTAW("CEP", "ist:stop")) == 0) {
+            actual = "ist:stop";
+        } else if (cep_dt_compare(&state, CEP_DTAW("CEP", "ist:flush")) == 0) {
+            actual = "ist:flush";
+        } else if (cep_dt_compare(&state, CEP_DTAW("CEP", "ist:halt")) == 0) {
+            actual = "ist:halt";
+        }
+        munit_logf(MUNIT_LOG_ERROR,
+                   "state mismatch actual=%s expected=%s (domain=0x%llx tag=0x%llx) expected_domain=0x%llx expected_tag=0x%llx",
+                   actual,
+                   expected_tag,
+                   (unsigned long long)state.domain,
+                   (unsigned long long)state.tag,
+                   (unsigned long long)expected.domain,
+                   (unsigned long long)expected.tag);
+    }
+    munit_assert_int(cmp, ==, 0);
+}
 
 
 static cepOID heartbeat_read_oid(const char* field_name) {
@@ -127,6 +258,7 @@ static int heartbeat_success_calls;
 static int heartbeat_retry_calls;
 static int heartbeat_binding_calls;
 static int heartbeat_secondary_calls;
+static int heartbeat_cont_calls;
 
 
 static int heartbeat_success_enzyme(const cepPath* signal, const cepPath* target) {
@@ -159,6 +291,13 @@ static int heartbeat_secondary_enzyme(const cepPath* signal, const cepPath* targ
     (void)signal;
     (void)target;
     heartbeat_secondary_calls += 1;
+    return CEP_ENZYME_SUCCESS;
+}
+
+static int heartbeat_cont_enzyme(const cepPath* signal, const cepPath* target) {
+    (void)signal;
+    (void)target;
+    heartbeat_cont_calls += 1;
     return CEP_ENZYME_SUCCESS;
 }
 
@@ -538,7 +677,14 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     test_runtime_shutdown();
     return MUNIT_OK;
 }
-static MunitResult test_heartbeat_lifecycle_ops(const MunitParameter params[], void* user_data_or_fixture) {
+static void heartbeat_drive_boot_completion(cepOID boot_oid) {
+    (void)boot_oid;
+    for (int i = 0; i < 6; ++i) {
+        munit_assert_true(cep_heartbeat_step());
+    }
+}
+
+static MunitResult test_heartbeat_boot_timeline(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;
     (void)user_data_or_fixture;
 
@@ -550,16 +696,156 @@ static MunitResult test_heartbeat_lifecycle_ops(const MunitParameter params[], v
         .enforce_visibility = false,
         .boot_ops = true,
     };
+
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_l0_bootstrap());
-
     munit_assert_true(cep_heartbeat_startup());
-    munit_assert_true(cep_heartbeat_begin(policy.start_at));
-    munit_assert_true(cep_heartbeat_step());
-    (void)heartbeat_read_oid("boot_oid");
+
+    cepOID boot_oid = heartbeat_read_oid("boot_oid");
+    munit_assert_true(cep_oid_is_valid(boot_oid));
+    heartbeat_drive_boot_completion(boot_oid);
+
+    const char* expected_states[] = {
+        "ist:run",
+        "ist:kernel",
+        "ist:store",
+        "ist:packs",
+        "ist:ok",
+    };
+    heartbeat_assert_history_timeline(boot_oid,
+                                      expected_states,
+                                      sizeof(expected_states) / sizeof(expected_states[0]));
+
+    cepCell* boot_op = heartbeat_find_op_cell(boot_oid);
+    cepCell* close_branch = cep_cell_find_by_name(boot_op, CEP_DTAW("CEP", "close"));
+    munit_assert_not_null(close_branch);
+    cepDT status = heartbeat_read_dt_field(close_branch, "status");
+    munit_assert_int(cep_dt_compare(&status, CEP_DTAW("CEP", "sts:ok")), ==, 0);
+
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+static MunitResult test_heartbeat_shutdown_timeline(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+    (void)user_data_or_fixture;
+
+    test_runtime_shutdown();
+
+    cepHeartbeatPolicy policy = {
+        .start_at = 0u,
+        .ensure_directories = true,
+        .enforce_visibility = false,
+        .boot_ops = true,
+    };
+
+    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
+    munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_heartbeat_startup());
+
+    cepOID boot_oid = heartbeat_read_oid("boot_oid");
+    munit_assert_true(cep_oid_is_valid(boot_oid));
+    heartbeat_drive_boot_completion(boot_oid);
 
     munit_assert_true(cep_heartbeat_emit_shutdown());
-    cep_heartbeat_shutdown();
+
+    cepOID shdn_oid = heartbeat_read_oid("shdn_oid");
+    munit_assert_true(cep_oid_is_valid(shdn_oid));
+
+    for (int i = 0; i < 6; ++i) {
+        munit_assert_true(cep_heartbeat_step());
+    }
+
+    const char* expected_states[] = {
+        "ist:run",
+        "ist:stop",
+        "ist:flush",
+        "ist:halt",
+        "ist:ok",
+    };
+    heartbeat_assert_history_timeline(shdn_oid,
+                                      expected_states,
+                                      sizeof(expected_states) / sizeof(expected_states[0]));
+
+    cepCell* shdn_op = heartbeat_find_op_cell(shdn_oid);
+    cepCell* close_branch = cep_cell_find_by_name(shdn_op, CEP_DTAW("CEP", "close"));
+    munit_assert_not_null(close_branch);
+    cepDT status = heartbeat_read_dt_field(close_branch, "status");
+    munit_assert_int(cep_dt_compare(&status, CEP_DTAW("CEP", "sts:ok")), ==, 0);
+
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+static MunitResult test_heartbeat_boot_awaiters(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+    (void)user_data_or_fixture;
+
+    test_runtime_shutdown();
+
+    cepHeartbeatPolicy policy = {
+        .start_at = 0u,
+        .ensure_directories = false,
+        .enforce_visibility = false,
+        .boot_ops = true,
+    };
+
+    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
+    munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_heartbeat_startup());
+
+    cepOID boot_oid = heartbeat_read_oid("boot_oid");
+    munit_assert_true(cep_oid_is_valid(boot_oid));
+    cepCell* boot_op = heartbeat_find_op_cell(boot_oid);
+
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    heartbeat_cont_calls = 0;
+    const cepDT seg_cont = cep_ops_make_dt("op/cont");
+    CepHeartbeatPathBuf cont_path_buf = {0};
+    const cepPath* cont_path = make_path(&cont_path_buf, &seg_cont, 1u);
+    cepEnzymeDescriptor cont_desc = {
+        .name   = *CEP_DTAW("CEP", "boot_cont"),
+        .label  = "boot-await-cont",
+        .before = NULL,
+        .before_count = 0,
+        .after = NULL,
+        .after_count = 0,
+        .callback = heartbeat_cont_enzyme,
+        .flags = CEP_ENZYME_FLAG_NONE,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+    munit_assert_int(cep_enzyme_register(registry, cont_path, &cont_desc), ==, CEP_ENZYME_SUCCESS);
+    cep_enzyme_registry_activate_pending(registry);
+
+    cepDT want_dt = cep_ops_make_dt("ist:packs");
+
+    cepDT cont_dt = cep_ops_make_dt("op/cont");
+
+    bool await_ok = cep_op_await(boot_oid,
+                                 want_dt,
+                                 10u,
+                                 cont_dt,
+                                 NULL,
+                                  0);
+    munit_assert_true(await_ok);
+    munit_assert_size(heartbeat_watchers_count(boot_op), ==, 1u);
+
+    munit_assert_true(cep_heartbeat_step());
+    boot_op = heartbeat_find_op_cell(boot_oid);
+    munit_assert_true(cep_heartbeat_step());
+    boot_op = heartbeat_find_op_cell(boot_oid);
+
+    munit_assert_true(cep_heartbeat_step());
+    boot_op = heartbeat_find_op_cell(boot_oid);
+    munit_assert_size(heartbeat_watchers_count(boot_op), ==, 0u);
+
+    munit_assert_true(cep_heartbeat_step());
+    munit_assert_int(heartbeat_cont_calls, ==, 1);
+    heartbeat_assert_state(boot_oid, "ist:ok");
+
+    test_runtime_shutdown();
     return MUNIT_OK;
 }
 
@@ -1068,6 +1354,15 @@ MunitResult test_heartbeat_single(const MunitParameter params[], void* user_data
 MunitResult test_heartbeat_bootstrap(const MunitParameter params[], void* user_data_or_fixture) {
     test_boot_cycle_prepare(params);
     (void)user_data_or_fixture;
+    MunitResult result = test_heartbeat_boot_timeline(params, NULL);
+    if (result != MUNIT_OK) {
+        return result;
+    }
 
-    return test_heartbeat_lifecycle_ops(params, NULL);
+    result = test_heartbeat_shutdown_timeline(params, NULL);
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    return test_heartbeat_boot_awaiters(params, NULL);
 }

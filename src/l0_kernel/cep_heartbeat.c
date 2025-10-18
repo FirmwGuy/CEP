@@ -25,7 +25,6 @@ static cepHeartbeatRuntime CEP_RUNTIME = {
     .current = CEP_BEAT_INVALID,
     .phase   = CEP_BEAT_CAPTURE,
     .deferred_activations = 0u,
-    .sys_init_emitted = false,
     .sys_shutdown_emitted = false,
     .current_descriptor = NULL,
 };
@@ -34,14 +33,9 @@ static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
 
 CEP_DEFINE_STATIC_DT(dt_scope_kernel,   CEP_ACRO("CEP"), CEP_WORD("kernel"));
 CEP_DEFINE_STATIC_DT(dt_scope_namepool, CEP_ACRO("CEP"), CEP_WORD("namepool"));
-CEP_DEFINE_STATIC_DT(dt_signal_sys,     CEP_ACRO("CEP"), CEP_WORD("sig_sys"));
-CEP_DEFINE_STATIC_DT(dt_signal_init,    CEP_ACRO("CEP"), CEP_WORD("init"));
-CEP_DEFINE_STATIC_DT(dt_signal_ready,   CEP_ACRO("CEP"), CEP_WORD("ready"));
-CEP_DEFINE_STATIC_DT(dt_signal_teardown, CEP_ACRO("CEP"), CEP_WORD("teardown"));
-CEP_DEFINE_STATIC_DT(dt_sys_log_name,   CEP_ACRO("CEP"), CEP_WORD("sys_log"));
-CEP_DEFINE_STATIC_DT(dt_log_payload,    CEP_ACRO("CEP"), CEP_WORD("log"));
 CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
 CEP_DEFINE_STATIC_DT(dt_list_type,      CEP_ACRO("CEP"), CEP_WORD("list"));
+CEP_DEFINE_STATIC_DT(dt_log_payload,    CEP_ACRO("CEP"), CEP_WORD("log"));
 CEP_DEFINE_STATIC_DT(dt_state_root,     CEP_ACRO("CEP"), CEP_WORD("state"));
 CEP_DEFINE_STATIC_DT(dt_sys_root_name,  CEP_ACRO("CEP"), CEP_WORD("sys"));
 CEP_DEFINE_STATIC_DT(dt_rt_root_name,   CEP_ACRO("CEP"), CEP_WORD("rt"));
@@ -78,23 +72,42 @@ typedef struct {
 typedef struct {
     bool            ready;
     bool            teardown;
-    bool            ready_signal_emitted;
-    bool            teardown_signal_emitted;
     cepBeatNumber   ready_beat;
     cepBeatNumber   td_beat;
 } cepLifecycleScopeState;
 
+typedef enum {
+    CEP_BOOT_PHASE_NONE = 0,
+    CEP_BOOT_PHASE_KERNEL,
+    CEP_BOOT_PHASE_STORE,
+    CEP_BOOT_PHASE_PACKS,
+    CEP_BOOT_PHASE_CLOSED,
+} cepBootPhase;
+
+typedef enum {
+    CEP_SHDN_PHASE_NONE = 0,
+    CEP_SHDN_PHASE_STOP,
+    CEP_SHDN_PHASE_FLUSH,
+    CEP_SHDN_PHASE_HALT,
+    CEP_SHDN_PHASE_CLOSED,
+} cepShutdownPhase;
+
 typedef struct {
-    cepOID  boot_oid;
-    cepOID  shdn_oid;
-    bool    boot_started;
-    bool    boot_closed;
-    bool    shdn_started;
-    bool    shdn_closed;
-    bool    boot_failed;
-    bool    shdn_failed;
-    size_t  boot_progress;
-    size_t  shdn_progress;
+    cepOID          boot_oid;
+    cepOID          shdn_oid;
+    bool            boot_started;
+    bool            boot_closed;
+    bool            shdn_started;
+    bool            shdn_closed;
+    bool            boot_failed;
+    bool            shdn_failed;
+    cepBootPhase    boot_phase;
+    cepShutdownPhase shdn_phase;
+    cepBeatNumber   boot_last_beat;
+    cepBeatNumber   shdn_last_beat;
+    bool            boot_kernel_ready;
+    bool            boot_namepool_ready;
+    size_t          shdn_scopes_marked;
 } cepLifecycleOpsState;
 
 static const cepLifecycleScope CEP_SCOPE_DEPS_NAMEPOOL[] = {
@@ -127,116 +140,17 @@ static void cep_lifecycle_reset_state(void);
 static bool cep_lifecycle_scope_dependencies_ready(cepLifecycleScope scope);
 static cepCell* cep_lifecycle_get_dictionary(cepCell* parent, const cepDT* name, bool create);
 static void cep_lifecycle_reload_state(void);
-static bool cep_lifecycle_emit_signal(const cepDT* event_dt, const cepDT* scope_dt, bool immediate);
-static void cep_lifecycle_flush_pending_signals(void);
 static void cep_boot_ops_reset(void);
-
-static const cepPath* cep_heartbeat_sys_init_path(void) {
-    typedef struct {
-        unsigned length;
-        unsigned capacity;
-        cepPast  past[2];
-    } cepStaticPath2;
-
-    static cepStaticPath2 path;
-    static bool initialised = false;
-    if (!initialised) {
-        path.length = 2u;
-        path.capacity = 2u;
-        path.past[0].dt = *dt_signal_sys();
-        path.past[0].timestamp = 0u;
-        path.past[1].dt = *dt_signal_init();
-        path.past[1].timestamp = 0u;
-        initialised = true;
-    }
-    return (const cepPath*)&path;
-}
+static cepBeatNumber cep_boot_ops_effective_beat(void);
+static bool cep_boot_ops_ready_for_next(cepBeatNumber last);
+static bool cep_boot_ops_progress(void);
+static bool cep_boot_ops_record_state(cepOID oid, const cepDT* state_dt, bool* failure_flag);
+static bool cep_boot_ops_close_boot(bool success);
+static bool cep_boot_ops_close_shutdown(bool success);
 
 static cepCell* cep_heartbeat_ensure_list_child(cepCell* parent, const cepDT* name);
 static bool cep_heartbeat_append_list_message(cepCell* list, const char* message);
 static char* cep_heartbeat_path_to_string(const cepPath* path);
-
-static void cep_heartbeat_log_sys_signal(const cepPath* signal_path, bool immediate) {
-    cepCell* journal = cep_heartbeat_journal_root();
-    if (!journal) {
-        return;
-    }
-
-    cepCell* log_root = cep_heartbeat_ensure_list_child(journal, dt_sys_log_name());
-    if (!log_root) {
-        return;
-    }
-
-    char* signal_text = cep_heartbeat_path_to_string(signal_path);
-    if (!signal_text) {
-        return;
-    }
-
-    cepBeatNumber beat = immediate ? CEP_RUNTIME.current : cep_heartbeat_next();
-    if (beat == CEP_BEAT_INVALID) {
-        beat = 0u;
-    }
-
-    const char* mode = immediate ? "immediate" : "deferred";
-    int written = snprintf(NULL, 0, "%s beat=%" PRIu64 " %s", signal_text, (unsigned long long)beat, mode);
-    if (written < 0) {
-        cep_free(signal_text);
-        return;
-    }
-
-    size_t size = (size_t)written + 1u;
-    char* message = cep_malloc(size);
-    if (!message) {
-        cep_free(signal_text);
-        return;
-    }
-
-    snprintf(message, size, "%s beat=%" PRIu64 " %s", signal_text, (unsigned long long)beat, mode);
-    (void)cep_heartbeat_append_list_message(log_root, message);
-
-    cep_free(message);
-    cep_free(signal_text);
-}
-
-static bool cep_heartbeat_emit_sys_signal(const cepPath* signal_path) {
-    if (!CEP_RUNTIME.topology.root) {
-        return false;
-    }
-
-    bool ensure_dirs = CEP_RUNTIME.policy.ensure_directories;
-    CEP_RUNTIME.policy.ensure_directories = false;
-    int rc = cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, signal_path, NULL);
-    CEP_RUNTIME.policy.ensure_directories = ensure_dirs;
-
-    if (rc == CEP_ENZYME_SUCCESS) {
-        cep_heartbeat_log_sys_signal(signal_path, false);
-        return true;
-    }
-
-    return false;
-}
-
-static bool cep_heartbeat_emit_sys_signal_now(const cepPath* signal_path) {
-    if (!CEP_RUNTIME.topology.root) {
-        return false;
-    }
-
-    bool ensure_dirs = CEP_RUNTIME.policy.ensure_directories;
-    CEP_RUNTIME.policy.ensure_directories = false;
-
-    cepImpulse impulse = {
-        .signal_path = signal_path,
-        .target_path = NULL,
-    };
-
-    bool ok = cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.inbox_current, &impulse);
-
-    CEP_RUNTIME.policy.ensure_directories = ensure_dirs;
-    if (ok) {
-        cep_heartbeat_log_sys_signal(signal_path, true);
-    }
-    return ok;
-}
 
 
 static int cep_heartbeat_path_compare(const cepPath* lhs, const cepPath* rhs) {
@@ -1000,8 +914,7 @@ static void cep_runtime_reset_state(bool destroy_registry) {
     CEP_RUNTIME.policy.ensure_directories = true;
     CEP_RUNTIME.policy.boot_ops = true;
     CEP_RUNTIME.deferred_activations = 0u;
-   CEP_RUNTIME.sys_init_emitted = false;
-   CEP_RUNTIME.sys_shutdown_emitted = false;
+    CEP_RUNTIME.sys_shutdown_emitted = false;
     CEP_RUNTIME.bootstrapping = false;
 
     cep_lifecycle_reset_state();
@@ -1039,8 +952,6 @@ static void cep_lifecycle_reset_state(void) {
     for (size_t i = 0; i < CEP_LIFECYCLE_SCOPE_COUNT; ++i) {
         CEP_LIFECYCLE_STATE[i].ready = false;
         CEP_LIFECYCLE_STATE[i].teardown = false;
-        CEP_LIFECYCLE_STATE[i].ready_signal_emitted = false;
-        CEP_LIFECYCLE_STATE[i].teardown_signal_emitted = false;
         CEP_LIFECYCLE_STATE[i].ready_beat = 0u;
         CEP_LIFECYCLE_STATE[i].td_beat = 0u;
     }
@@ -1091,8 +1002,164 @@ static void cep_boot_ops_reset(void) {
     CEP_LIFECYCLE_OPS_STATE.shdn_closed = false;
     CEP_LIFECYCLE_OPS_STATE.boot_failed = false;
     CEP_LIFECYCLE_OPS_STATE.shdn_failed = false;
-    CEP_LIFECYCLE_OPS_STATE.boot_progress = 0u;
-    CEP_LIFECYCLE_OPS_STATE.shdn_progress = 0u;
+    CEP_LIFECYCLE_OPS_STATE.boot_phase = CEP_BOOT_PHASE_NONE;
+    CEP_LIFECYCLE_OPS_STATE.shdn_phase = CEP_SHDN_PHASE_NONE;
+    CEP_LIFECYCLE_OPS_STATE.boot_last_beat = CEP_BEAT_INVALID;
+    CEP_LIFECYCLE_OPS_STATE.shdn_last_beat = CEP_BEAT_INVALID;
+    CEP_LIFECYCLE_OPS_STATE.boot_kernel_ready = false;
+    CEP_LIFECYCLE_OPS_STATE.boot_namepool_ready = false;
+    CEP_LIFECYCLE_OPS_STATE.shdn_scopes_marked = 0u;
+}
+
+static cepBeatNumber cep_boot_ops_effective_beat(void) {
+    cepBeatNumber beat = cep_beat_index();
+    return (beat == CEP_BEAT_INVALID) ? 0u : beat;
+}
+
+static bool cep_boot_ops_ready_for_next(cepBeatNumber last) {
+    if (last == CEP_BEAT_INVALID) {
+        return true;
+    }
+    return cep_boot_ops_effective_beat() > last;
+}
+
+static bool cep_boot_ops_progress_boot(void) {
+    if (!cep_boot_ops_enabled()) {
+        return true;
+    }
+    if (!CEP_LIFECYCLE_OPS_STATE.boot_started) {
+        return true;
+    }
+
+    if (CEP_LIFECYCLE_OPS_STATE.boot_failed &&
+        !CEP_LIFECYCLE_OPS_STATE.boot_closed &&
+        cep_boot_ops_ready_for_next(CEP_LIFECYCLE_OPS_STATE.boot_last_beat)) {
+        if (!cep_boot_ops_close_boot(false)) {
+            return false;
+        }
+        CEP_LIFECYCLE_OPS_STATE.boot_closed = true;
+        CEP_LIFECYCLE_OPS_STATE.boot_phase = CEP_BOOT_PHASE_CLOSED;
+        CEP_LIFECYCLE_OPS_STATE.boot_last_beat = cep_boot_ops_effective_beat();
+        return true;
+    }
+
+    if (CEP_LIFECYCLE_OPS_STATE.boot_closed) {
+        return true;
+    }
+
+    if (CEP_LIFECYCLE_OPS_STATE.boot_phase == CEP_BOOT_PHASE_KERNEL &&
+        CEP_LIFECYCLE_OPS_STATE.boot_kernel_ready &&
+        cep_boot_ops_ready_for_next(CEP_LIFECYCLE_OPS_STATE.boot_last_beat)) {
+        if (!cep_boot_ops_record_state(CEP_LIFECYCLE_OPS_STATE.boot_oid,
+                                       dt_ist_store(),
+                                       &CEP_LIFECYCLE_OPS_STATE.boot_failed)) {
+            return false;
+        }
+        CEP_LIFECYCLE_OPS_STATE.boot_phase = CEP_BOOT_PHASE_STORE;
+        CEP_LIFECYCLE_OPS_STATE.boot_last_beat = cep_boot_ops_effective_beat();
+        return true;
+    }
+
+    if (CEP_LIFECYCLE_OPS_STATE.boot_phase == CEP_BOOT_PHASE_STORE &&
+        CEP_LIFECYCLE_OPS_STATE.boot_namepool_ready &&
+        cep_boot_ops_ready_for_next(CEP_LIFECYCLE_OPS_STATE.boot_last_beat)) {
+        if (!cep_boot_ops_record_state(CEP_LIFECYCLE_OPS_STATE.boot_oid,
+                                       dt_ist_packs(),
+                                       &CEP_LIFECYCLE_OPS_STATE.boot_failed)) {
+            return false;
+        }
+        CEP_LIFECYCLE_OPS_STATE.boot_phase = CEP_BOOT_PHASE_PACKS;
+        CEP_LIFECYCLE_OPS_STATE.boot_last_beat = cep_boot_ops_effective_beat();
+        return true;
+    }
+
+    if (CEP_LIFECYCLE_OPS_STATE.boot_phase == CEP_BOOT_PHASE_PACKS &&
+        cep_boot_ops_ready_for_next(CEP_LIFECYCLE_OPS_STATE.boot_last_beat)) {
+        bool success = !CEP_LIFECYCLE_OPS_STATE.boot_failed;
+        if (!cep_boot_ops_close_boot(success)) {
+            CEP_LIFECYCLE_OPS_STATE.boot_failed = true;
+            return false;
+        }
+        CEP_LIFECYCLE_OPS_STATE.boot_closed = true;
+        CEP_LIFECYCLE_OPS_STATE.boot_phase = CEP_BOOT_PHASE_CLOSED;
+        CEP_LIFECYCLE_OPS_STATE.boot_last_beat = cep_boot_ops_effective_beat();
+        return true;
+    }
+
+    return true;
+}
+
+static bool cep_boot_ops_progress_shutdown(void) {
+    if (!cep_boot_ops_enabled()) {
+        return true;
+    }
+    if (!CEP_LIFECYCLE_OPS_STATE.shdn_started) {
+        return true;
+    }
+
+    if (CEP_LIFECYCLE_OPS_STATE.shdn_failed &&
+        !CEP_LIFECYCLE_OPS_STATE.shdn_closed &&
+        cep_boot_ops_ready_for_next(CEP_LIFECYCLE_OPS_STATE.shdn_last_beat)) {
+        if (!cep_boot_ops_close_shutdown(false)) {
+            return false;
+        }
+        CEP_LIFECYCLE_OPS_STATE.shdn_closed = true;
+        CEP_LIFECYCLE_OPS_STATE.shdn_phase = CEP_SHDN_PHASE_CLOSED;
+        CEP_LIFECYCLE_OPS_STATE.shdn_last_beat = cep_boot_ops_effective_beat();
+        return true;
+    }
+
+    if (CEP_LIFECYCLE_OPS_STATE.shdn_closed) {
+        return true;
+    }
+
+    if (CEP_LIFECYCLE_OPS_STATE.shdn_phase == CEP_SHDN_PHASE_STOP &&
+        CEP_LIFECYCLE_OPS_STATE.shdn_scopes_marked > 0u &&
+        cep_boot_ops_ready_for_next(CEP_LIFECYCLE_OPS_STATE.shdn_last_beat)) {
+        if (!cep_boot_ops_record_state(CEP_LIFECYCLE_OPS_STATE.shdn_oid,
+                                       dt_ist_flush(),
+                                       &CEP_LIFECYCLE_OPS_STATE.shdn_failed)) {
+            return false;
+        }
+        CEP_LIFECYCLE_OPS_STATE.shdn_phase = CEP_SHDN_PHASE_FLUSH;
+        CEP_LIFECYCLE_OPS_STATE.shdn_last_beat = cep_boot_ops_effective_beat();
+        return true;
+    }
+
+    size_t expected = cep_lengthof(CEP_LIFECYCLE_TEARDOWN_ORDER);
+    if (CEP_LIFECYCLE_OPS_STATE.shdn_phase == CEP_SHDN_PHASE_FLUSH &&
+        CEP_LIFECYCLE_OPS_STATE.shdn_scopes_marked >= expected &&
+        cep_boot_ops_ready_for_next(CEP_LIFECYCLE_OPS_STATE.shdn_last_beat)) {
+        if (!cep_boot_ops_record_state(CEP_LIFECYCLE_OPS_STATE.shdn_oid,
+                                       dt_ist_halt(),
+                                       &CEP_LIFECYCLE_OPS_STATE.shdn_failed)) {
+            return false;
+        }
+        CEP_LIFECYCLE_OPS_STATE.shdn_phase = CEP_SHDN_PHASE_HALT;
+        CEP_LIFECYCLE_OPS_STATE.shdn_last_beat = cep_boot_ops_effective_beat();
+        return true;
+    }
+
+    if (CEP_LIFECYCLE_OPS_STATE.shdn_phase == CEP_SHDN_PHASE_HALT &&
+        cep_boot_ops_ready_for_next(CEP_LIFECYCLE_OPS_STATE.shdn_last_beat)) {
+        bool success = !CEP_LIFECYCLE_OPS_STATE.shdn_failed;
+        if (!cep_boot_ops_close_shutdown(success)) {
+            CEP_LIFECYCLE_OPS_STATE.shdn_failed = true;
+            return false;
+        }
+        CEP_LIFECYCLE_OPS_STATE.shdn_closed = true;
+        CEP_LIFECYCLE_OPS_STATE.shdn_phase = CEP_SHDN_PHASE_CLOSED;
+        CEP_LIFECYCLE_OPS_STATE.shdn_last_beat = cep_boot_ops_effective_beat();
+        return true;
+    }
+
+    return true;
+}
+
+static bool cep_boot_ops_progress(void) {
+    bool ok = cep_boot_ops_progress_boot();
+    ok = cep_boot_ops_progress_shutdown() && ok;
+    return ok;
 }
 
 static bool cep_boot_ops_publish_oid(const cepDT* field_name, cepOID oid) {
@@ -1174,7 +1241,8 @@ static bool cep_boot_ops_start_boot(void) {
 
     CEP_LIFECYCLE_OPS_STATE.boot_oid = oid;
     CEP_LIFECYCLE_OPS_STATE.boot_started = true;
-    CEP_LIFECYCLE_OPS_STATE.boot_progress = 0u;
+    CEP_LIFECYCLE_OPS_STATE.boot_phase = CEP_BOOT_PHASE_KERNEL;
+    CEP_LIFECYCLE_OPS_STATE.boot_last_beat = cep_boot_ops_effective_beat();
     return true;
 }
 
@@ -1206,7 +1274,8 @@ static bool cep_boot_ops_start_shutdown(void) {
 
     CEP_LIFECYCLE_OPS_STATE.shdn_oid = oid;
     CEP_LIFECYCLE_OPS_STATE.shdn_started = true;
-    CEP_LIFECYCLE_OPS_STATE.shdn_progress = 0u;
+    CEP_LIFECYCLE_OPS_STATE.shdn_phase = CEP_SHDN_PHASE_STOP;
+    CEP_LIFECYCLE_OPS_STATE.shdn_last_beat = cep_boot_ops_effective_beat();
     return true;
 }
 
@@ -1230,6 +1299,8 @@ static bool cep_boot_ops_close_boot(bool success) {
         return false;
     }
     CEP_LIFECYCLE_OPS_STATE.boot_closed = true;
+    CEP_LIFECYCLE_OPS_STATE.boot_phase = CEP_BOOT_PHASE_CLOSED;
+    CEP_LIFECYCLE_OPS_STATE.boot_last_beat = cep_boot_ops_effective_beat();
     if (!success) {
         CEP_LIFECYCLE_OPS_STATE.boot_failed = true;
     }
@@ -1256,6 +1327,8 @@ static bool cep_boot_ops_close_shutdown(bool success) {
         return false;
     }
     CEP_LIFECYCLE_OPS_STATE.shdn_closed = true;
+    CEP_LIFECYCLE_OPS_STATE.shdn_phase = CEP_SHDN_PHASE_CLOSED;
+    CEP_LIFECYCLE_OPS_STATE.shdn_last_beat = cep_boot_ops_effective_beat();
     if (!success) {
         CEP_LIFECYCLE_OPS_STATE.shdn_failed = true;
     }
@@ -1265,67 +1338,6 @@ static bool cep_boot_ops_close_shutdown(bool success) {
 
 static void cep_lifecycle_reload_state(void) {
     cep_lifecycle_reset_state();
-}
-
-static bool cep_lifecycle_emit_signal(const cepDT* event_dt, const cepDT* scope_dt, bool immediate) {
-    if (!event_dt || !scope_dt) {
-        return false;
-    }
-
-    if (!cep_dt_is_valid(event_dt) || !cep_dt_is_valid(scope_dt)) {
-        return false;
-    }
-
-    typedef struct {
-        unsigned length;
-        unsigned capacity;
-        cepPast  past[3];
-    } cepStaticPath3;
-
-    cepStaticPath3 path = {
-        .length = 3u,
-        .capacity = 3u,
-        .past = {
-            { .dt = *dt_signal_sys(), .timestamp = 0u },
-            { .dt = *event_dt, .timestamp = 0u },
-            { .dt = *scope_dt, .timestamp = 0u },
-        },
-    };
-
-    const cepPath* signal_path = (const cepPath*)&path;
-    if (immediate) {
-        return cep_heartbeat_emit_sys_signal_now(signal_path);
-    }
-    return cep_heartbeat_emit_sys_signal(signal_path);
-}
-
-static void cep_lifecycle_flush_pending_signals(void) {
-    if (!CEP_RUNTIME.running) {
-        return;
-    }
-
-    if (cep_boot_ops_enabled()) {
-        return;
-    }
-
-    for (size_t i = 0; i < CEP_LIFECYCLE_SCOPE_COUNT; ++i) {
-        cepLifecycleScopeState* state = &CEP_LIFECYCLE_STATE[i];
-        const cepLifecycleScopeInfo* info = &CEP_LIFECYCLE_SCOPE_INFO[i];
-        const cepDT* scope_dt = info->scope_dt ? info->scope_dt() : NULL;
-        if (!scope_dt) {
-            continue;
-        }
-        if (state->ready && !state->ready_signal_emitted) {
-            if (cep_lifecycle_emit_signal(dt_signal_ready(), scope_dt, true)) {
-                state->ready_signal_emitted = true;
-            }
-        }
-        if (state->teardown && !state->teardown_signal_emitted) {
-            if (cep_lifecycle_emit_signal(dt_signal_teardown(), scope_dt, true)) {
-                state->teardown_signal_emitted = true;
-            }
-        }
-    }
 }
 
 
@@ -1367,6 +1379,8 @@ bool cep_heartbeat_bootstrap(void) {
 
     bool success = false;
     CEP_RUNTIME.bootstrapping = true;
+
+    bool first_bootstrap = (CEP_RUNTIME.topology.root == NULL);
 
     cep_cell_system_ensure();
 
@@ -1472,7 +1486,9 @@ bool cep_heartbeat_bootstrap(void) {
         CEP_RUNTIME.topology.enzymes = enzymes;
     }
 
-    cep_lifecycle_reload_state();
+    if (first_bootstrap) {
+        cep_lifecycle_reload_state();
+    }
 
     if (!cep_runtime_has_registry()) {
         CEP_RUNTIME.registry = cep_enzyme_registry_create();
@@ -1554,7 +1570,9 @@ bool cep_heartbeat_startup(void) {
         (void)cep_boot_ops_start_boot();
     }
     cep_beat_begin_capture();
-    cep_lifecycle_flush_pending_signals();
+    if (!cep_boot_ops_progress()) {
+        return false;
+    }
     return true;
 }
 
@@ -1579,7 +1597,9 @@ bool cep_heartbeat_restart(void) {
         (void)cep_boot_ops_start_boot();
     }
     cep_beat_begin_capture();
-    cep_lifecycle_flush_pending_signals();
+    if (!cep_boot_ops_progress()) {
+        return false;
+    }
     return true;
 }
 
@@ -1600,13 +1620,11 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
     if (cep_boot_ops_enabled()) {
         (void)cep_boot_ops_start_boot();
-    } else if (!CEP_RUNTIME.sys_init_emitted) {
-        if (cep_heartbeat_emit_sys_signal(cep_heartbeat_sys_init_path())) {
-            CEP_RUNTIME.sys_init_emitted = true;
-        }
     }
     cep_beat_begin_capture();
-    cep_lifecycle_flush_pending_signals();
+    if (!cep_boot_ops_progress()) {
+        return false;
+    }
     return true;
 }
 
@@ -1621,13 +1639,15 @@ bool cep_heartbeat_resolve_agenda(void) {
         return false;
     }
 
+    if (!cep_boot_ops_progress()) {
+        return false;
+    }
+
     cep_beat_begin_compute();
 
     if (CEP_RUNTIME.registry) {
         cep_enzyme_registry_activate_pending(CEP_RUNTIME.registry);
     }
-
-    cep_lifecycle_flush_pending_signals();
 
     return cep_heartbeat_process_impulses();
 }
@@ -1802,12 +1822,8 @@ bool cep_heartbeat_emit_shutdown(void) {
     for (size_t i = 0; i < cep_lengthof(CEP_LIFECYCLE_TEARDOWN_ORDER); ++i) {
         ok = cep_lifecycle_scope_mark_teardown(CEP_LIFECYCLE_TEARDOWN_ORDER[i]) && ok;
     }
-    cep_lifecycle_flush_pending_signals();
 
-    if (!CEP_LIFECYCLE_OPS_STATE.shdn_closed) {
-        ok = cep_boot_ops_close_shutdown(!CEP_LIFECYCLE_OPS_STATE.shdn_failed) && ok;
-    }
-
+    ok = cep_boot_ops_progress() && ok;
     ok = ok && !CEP_LIFECYCLE_OPS_STATE.shdn_failed;
 
     if (ok) {
@@ -2228,43 +2244,10 @@ bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope) {
     state->ready = true;
     state->ready_beat = beat;
     state->teardown = false;
-    state->teardown_signal_emitted = false;
-    state->ready_signal_emitted = true;
-
     if (scope == CEP_LIFECYCLE_SCOPE_KERNEL) {
-        CEP_LIFECYCLE_OPS_STATE.boot_progress = 1u;
-        return true;
-    }
-
-    if (scope == CEP_LIFECYCLE_SCOPE_NAMEPOOL) {
-        if (!CEP_LIFECYCLE_OPS_STATE.boot_started) {
-            if (!cep_boot_ops_start_boot()) {
-                return false;
-            }
-        }
-
-        if (cep_oid_is_valid(CEP_LIFECYCLE_OPS_STATE.boot_oid)) {
-            if (CEP_LIFECYCLE_OPS_STATE.boot_progress <= 1u) {
-                if (!cep_boot_ops_record_state(CEP_LIFECYCLE_OPS_STATE.boot_oid,
-                                               dt_ist_store(),
-                                               &CEP_LIFECYCLE_OPS_STATE.boot_failed)) {
-                    return false;
-                }
-                CEP_LIFECYCLE_OPS_STATE.boot_progress = 2u;
-            }
-
-            if (!cep_boot_ops_record_state(CEP_LIFECYCLE_OPS_STATE.boot_oid,
-                                           dt_ist_packs(),
-                                           &CEP_LIFECYCLE_OPS_STATE.boot_failed)) {
-                return false;
-            }
-            CEP_LIFECYCLE_OPS_STATE.boot_progress = 3u;
-
-            if (!cep_boot_ops_close_boot(!CEP_LIFECYCLE_OPS_STATE.boot_failed)) {
-                return false;
-            }
-        }
-        return true;
+        CEP_LIFECYCLE_OPS_STATE.boot_kernel_ready = true;
+    } else if (scope == CEP_LIFECYCLE_SCOPE_NAMEPOOL) {
+        CEP_LIFECYCLE_OPS_STATE.boot_namepool_ready = true;
     }
 
     return true;
@@ -2293,33 +2276,11 @@ bool cep_lifecycle_scope_mark_teardown(cepLifecycleScope scope) {
     state->ready = false;
     state->teardown = true;
     state->td_beat = beat;
-    state->teardown_signal_emitted = true;
 
-    if (cep_oid_is_valid(CEP_LIFECYCLE_OPS_STATE.shdn_oid)) {
-        size_t progress = CEP_LIFECYCLE_OPS_STATE.shdn_progress;
-        const cepDT* next_state = NULL;
-        if (progress == 0u) {
-            next_state = dt_ist_flush();
-        } else if (progress == 1u) {
-            next_state = dt_ist_halt();
-        }
-
-        if (next_state) {
-            if (!cep_boot_ops_record_state(CEP_LIFECYCLE_OPS_STATE.shdn_oid,
-                                           next_state,
-                                           &CEP_LIFECYCLE_OPS_STATE.shdn_failed)) {
-                return false;
-            }
-        }
-
-        CEP_LIFECYCLE_OPS_STATE.shdn_progress = progress + 1u;
-
-        size_t expected = cep_lengthof(CEP_LIFECYCLE_TEARDOWN_ORDER);
-        if (CEP_LIFECYCLE_OPS_STATE.shdn_progress >= expected) {
-            if (!cep_boot_ops_close_shutdown(!CEP_LIFECYCLE_OPS_STATE.shdn_failed)) {
-                return false;
-            }
-        }
+    CEP_LIFECYCLE_OPS_STATE.shdn_scopes_marked += 1u;
+    size_t expected = cep_lengthof(CEP_LIFECYCLE_TEARDOWN_ORDER);
+    if (CEP_LIFECYCLE_OPS_STATE.shdn_scopes_marked > expected) {
+        CEP_LIFECYCLE_OPS_STATE.shdn_scopes_marked = expected;
     }
 
     return true;
