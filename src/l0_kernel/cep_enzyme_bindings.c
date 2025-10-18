@@ -8,6 +8,25 @@
 
 #include "cep_cell.h"
 #include "cep_enzyme.h"
+#include "cep_organ.h"
+
+static bool cep_cell_binding_has_active(const cepEnzymeBinding* head, const cepDT* name) {
+    if (!head || !name || !cep_dt_is_valid(name)) {
+        return false;
+    }
+
+    cepDT lookup = cep_dt_clean(name);
+    for (const cepEnzymeBinding* node = head; node; node = node->next) {
+        if (node->flags & CEP_ENZYME_BIND_TOMBSTONE) {
+            continue;
+        }
+        if (cep_dt_compare(&node->name, &lookup) == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 static cepEnzymeBinding** cep_cell_binding_slot(cepCell* cell, cepOpCount** modified_out) {
     if (modified_out) {
@@ -70,14 +89,57 @@ static int cep_cell_append_binding(cepCell* cell, const cepDT* name, uint32_t fl
     enzyme directly from the tree. The helper records the heartbeat in the
     binding and optionally marks it for propagation down the subtree. */
 int cep_cell_bind_enzyme(cepCell* cell, const cepDT* name, bool propagate) {
+    cepDT binding_name = cep_dt_clean(name);
+
+    const cepOrganDescriptor* descriptor = NULL;
+    if (cell && cep_cell_is_normal(cell) && cell->store) {
+        descriptor = cep_organ_descriptor(&cell->store->dt);
+    }
+
+    if (descriptor) {
+        if (!propagate) {
+            return CEP_ENZYME_FATAL;
+        }
+
+        bool is_validator = cep_dt_compare(&binding_name, &descriptor->validator) == 0;
+        bool is_constructor = cep_dt_is_valid(&descriptor->constructor) &&
+                              cep_dt_compare(&binding_name, &descriptor->constructor) == 0;
+        bool is_destructor = cep_dt_is_valid(&descriptor->destructor) &&
+                             cep_dt_compare(&binding_name, &descriptor->destructor) == 0;
+
+        if (!is_validator && !is_constructor && !is_destructor) {
+            return CEP_ENZYME_FATAL;
+        }
+
+        if (!is_validator) {
+            const cepEnzymeBinding* existing = cep_cell_enzyme_bindings(cell);
+            if (!cep_cell_binding_has_active(existing, &descriptor->validator)) {
+                return CEP_ENZYME_FATAL;
+            }
+        }
+    }
+
     uint32_t flags = propagate ? CEP_ENZYME_BIND_PROPAGATE : 0u;
-    return cep_cell_append_binding(cell, name, flags);
+    return cep_cell_append_binding(cell, &binding_name, flags);
 }
 
 /** Append a tombstone for @p name, hiding the enzyme from subsequent resolves
     without destroying historical bindings. */
 int cep_cell_unbind_enzyme(cepCell* cell, const cepDT* name) {
-    return cep_cell_append_binding(cell, name, CEP_ENZYME_BIND_TOMBSTONE);
+    cepDT binding_name = cep_dt_clean(name);
+
+    const cepOrganDescriptor* descriptor = NULL;
+    if (cell && cep_cell_is_normal(cell) && cell->store) {
+        descriptor = cep_organ_descriptor(&cell->store->dt);
+    }
+
+    if (descriptor) {
+        if (cep_dt_compare(&binding_name, &descriptor->validator) == 0) {
+            return CEP_ENZYME_FATAL;
+        }
+    }
+
+    return cep_cell_append_binding(cell, &binding_name, CEP_ENZYME_BIND_TOMBSTONE);
 }
 
 /** Surface the binding list associated with @p cell so diagnostics and tooling

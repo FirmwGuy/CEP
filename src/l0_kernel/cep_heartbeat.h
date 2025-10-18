@@ -55,6 +55,7 @@ typedef struct {
     cepCell* data;
     cepCell* tmp;
     cepCell* enzymes;
+    cepCell* organs;
 } cepHeartbeatTopology;
 
 

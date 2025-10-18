@@ -40,15 +40,21 @@ when a new behavior needs a fresh word before it lands in code.
 | `cas` | core | content-addressable storage subtree. |
 | `data` | core | durable dataset root promoted at the end of a beat. |
 | `dictionary` | core | canonical store tag for dictionary nodes. |
+| `dtor` | core | spec field storing the optional organ destructor enzyme name. |
+| `ctor` | core | spec field storing the optional organ constructor enzyme name. |
 | `env` | core | runtime environment subtree for external handles. |
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `inbox` | core | captured impulses queued for the current beat. |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |
+| `kind` | core | short organ slug persisted under `/sys/organs/<k>/spec/kind`. |
 | `lib` | core | library snapshot directory for proxied streams. |
 | `list` | core | store tag for linked-list containers. |
 | `log` | core | log entry tag attached to beat records. |
+| `label` | core | optional human-readable organ description stored in the spec branch. |
 | `meta` | core | metadata dictionary attached to runtime cells. |
+| `organ/<k>` | core | store tag pattern identifying typed organ root dictionaries. |
+| `organs` | core | system dictionary publishing immutable organ descriptors. |
 | `txn` | core | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
 | `boot_oid` | core | `val/bytes` cell under `/sys/state` publishing the boot operation OID. |
 | `shdn_oid` | core | `val/bytes` cell under `/sys/state` publishing the shutdown operation OID. |
@@ -59,10 +65,13 @@ when a new behavior needs a fresh word before it lands in code.
 | `parents` | core | provenance list capturing the source lineage. |
 | `rt` | core | runtime staging root holding beat journals. |
 | `stage` | core | per-beat stage log recording committed mutations. |
+| `spec` | core | immutable organ descriptor snapshot stored under `/sys/organs/<k>/spec`. |
+| `store` | core | spec field recording the organ root store DT. |
 | `stream-log` | core | runtime log for stream adapters. |
 | `sys` | core | system namespace with counters and configuration. |
 | `text` | core | namepool payload store for textual data. |
 | `tmp` | core | scratch list reserved for tooling. |
+| `validator` | core | spec field storing the required organ validator enzyme name. |
 
 #### Operational Tags
 | Tag / Pattern | Status | Purpose |
@@ -87,10 +96,14 @@ when a new behavior needs a fresh word before it lands in code.
 | `note` | ops | optional textual note attached to a history entry. |
 | `op/boot` | ops | bootstrapping operation verb emitted at startup. |
 | `op/cont` | ops | continuation signal emitted when an awaiter fires. |
+| `op/ct` | ops | constructor operation verb routed to organ roots. |
+| `op/dt` | ops | destructor operation verb routed to organ roots. |
 | `op/shdn` | ops | shutdown operation verb emitted during teardown. |
 | `op/tmo` | ops | timeout signal emitted when an awaiter expires. |
+| `op/vl` | ops | validator operation verb that runs organ integrity checks. |
 | `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | ops | operation identifiers emitted by `sig_cell` payloads. |
 | `opm:states` | ops | operation mode indicating state-tracking semantics. |
+| `org:<k>:*` | ops | organ enzyme names (`org:<k>:vl`, `org:<k>:ct`, `org:<k>:dt`) bound at organ roots. |
 | `payload_id` | ops | optional `val/bytes` payload stored in envelopes and watcher entries. |
 | `role_parnt` / `role_source` / `role_subj` / `role_templ` | ops | role vocabulary consumed by mutation enzymes. |
 | `sig_cell` | ops | signal namespace for kernel cell operations. |

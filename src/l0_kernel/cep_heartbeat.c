@@ -9,6 +9,7 @@
 #include "cep_namepool.h"
 #include "../enzymes/cep_cell_operations.h"
 #include "cep_ops.h"
+#include "cep_organ.h"
 #include "stream/cep_stream_internal.h"
 
 #include <string.h>
@@ -47,6 +48,7 @@ CEP_DEFINE_STATIC_DT(dt_lib_root_name,  CEP_ACRO("CEP"), CEP_WORD("lib"));
 CEP_DEFINE_STATIC_DT(dt_data_root_name, CEP_ACRO("CEP"), CEP_WORD("data"));
 CEP_DEFINE_STATIC_DT(dt_tmp_root_name,  CEP_ACRO("CEP"), CEP_WORD("tmp"));
 CEP_DEFINE_STATIC_DT(dt_enzymes_root_name, CEP_ACRO("CEP"), CEP_WORD("enzymes"));
+CEP_DEFINE_STATIC_DT(dt_organs_root_name,  CEP_ACRO("CEP"), CEP_WORD("organs"));
 CEP_DEFINE_STATIC_DT(dt_beat_root_name, CEP_ACRO("CEP"), CEP_WORD("beat"));
 CEP_DEFINE_STATIC_DT(dt_inbox_name,     CEP_ACRO("CEP"), CEP_WORD("inbox"));
 CEP_DEFINE_STATIC_DT(dt_agenda_name,    CEP_ACRO("CEP"), CEP_WORD("agenda"));
@@ -1404,6 +1406,16 @@ bool cep_heartbeat_bootstrap(void) {
         CEP_RUNTIME.topology.sys = sys;
     }
 
+    const cepDT* organs_name = dt_organs_root_name();
+    cepCell* organs = ensure_root_dictionary(sys, organs_name);
+    if (!organs) {
+        goto fail;
+    }
+    CEP_DEFAULT_TOPOLOGY.organs = organs;
+    if (!CEP_RUNTIME.topology.organs) {
+        CEP_RUNTIME.topology.organs = organs;
+    }
+
     const cepDT* rt_name = dt_rt_root_name();
     cepCell* rt = ensure_root_dictionary(root, rt_name);
     if (!rt) {
@@ -1501,6 +1513,10 @@ bool cep_heartbeat_bootstrap(void) {
         goto fail;
     }
 
+    if (!cep_organ_runtime_bootstrap()) {
+        goto fail;
+    }
+
     (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
     success = true;
 
@@ -1543,6 +1559,7 @@ bool cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHear
         if (topology->data)     merged.data     = topology->data;
         if (topology->tmp)      merged.tmp      = topology->tmp;
         if (topology->enzymes)  merged.enzymes  = topology->enzymes;
+        if (topology->organs)   merged.organs   = topology->organs;
     }
 
     CEP_RUNTIME.topology = merged;

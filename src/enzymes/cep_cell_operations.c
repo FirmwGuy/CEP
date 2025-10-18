@@ -7,6 +7,7 @@
 
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_heartbeat.h"
+#include "../l0_kernel/cep_organ.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -286,6 +287,9 @@ static int cep_cell_enzyme_add(const cepPath* signal, const cepPath* target) {
     }
 
     cep_cell_enzyme_free_clone(clone);
+    if (!cep_organ_request_constructor(inserted)) {
+        return CEP_ENZYME_FATAL;
+    }
     return CEP_ENZYME_SUCCESS;
 }
 
@@ -371,6 +375,14 @@ static int cep_cell_enzyme_delete(const cepPath* signal, const cepPath* target) 
     cell = cep_cell_enzyme_resolve_link(cell);
     if (!cell || cep_cell_is_root(cell)) {
         return CEP_ENZYME_FATAL;
+    }
+
+    const cepOrganDescriptor* descriptor = (cell->store) ? cep_organ_descriptor(&cell->store->dt) : NULL;
+    if (descriptor && cep_dt_is_valid(&descriptor->destructor)) {
+        if (!cep_organ_request_destructor(cell)) {
+            return CEP_ENZYME_FATAL;
+        }
+        return CEP_ENZYME_SUCCESS;
     }
 
     cep_cell_delete(cell);

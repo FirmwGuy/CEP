@@ -24,6 +24,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` — Beat phases, agenda ordering, and signal staging contracts.
   - `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md` — Binding inheritance, wildcard routing, and tombstones.
   - `docs/L0_KERNEL/topics/CELL-OPERATIONS-ENZYMES.md` — Reference semantics for the standard `sig_cell/op_*` helpers.
+  - `docs/L0_KERNEL/topics/ORGANS-AUTHORING.md` — Register organ descriptors, enforce validator bindings, and coordinate ctor/dtor/validation ops.
 
 - **External Integrations**
   - `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md` — Chunk framing, manifest rules, and replay expectations.
