@@ -527,30 +527,38 @@ struct _cepEnzymeBinding {
 };
 
 typedef struct _cepDataNode  cepDataNode;
-struct _cepDataNode {
-    cepOpCount          modified;       /**< CEP heartbeat in which data was modified (including creation/deletion). */
-    cepDataNode*        past;           /**< Pointer to past data content history. */
-    
-    cepEnzymeBinding*   bindings;       /**< List of enzyme bindings. */
-    
-    size_t              size;           /**< Data size in bytes. */
-    size_t              capacity;       /**< Buffer capacity in bytes. */
-    uint64_t            hash;           /**< Hash value of content. */
 
-    union {
-        struct {
-            void*       data;           /**< Points to container of data value. */
-            cepDel      destructor;     /**< Data container destruction function. */
-        };
-        struct {
-          union {
-            cepCell*    handle;         /**< Resource cell id (used with external libraries). */
-            cepCell*    stream;         /**< Data window to streamed content. */
-          };
-          cepCell*      library;        /**< Library where the resource is located. */
-        };
-        uint8_t         value[2 * sizeof(void*)];  /**< Data value may start from here. */
-    };
+#define CEP_DATA_NODE_MEMBERS                                                    \
+    cepOpCount          modified;       /**< CEP heartbeat in which data was     \
+                                         *  modified (including creation/        \
+                                         *  deletion). */                        \
+    cepDataNode*        past;           /**< Pointer to past data content        \
+                                         *  history. */                          \
+    cepEnzymeBinding*   bindings;       /**< List of enzyme bindings. */         \
+    size_t              size;           /**< Data size in bytes. */              \
+    size_t              capacity;       /**< Buffer capacity in bytes. */        \
+    uint64_t            hash;           /**< Hash value of content. */           \
+    union {                                                                     \
+        struct {                                                                \
+            void*       data;           /**< Points to container of data value. */\
+            cepDel      destructor;     /**< Data container destruction          \
+                                         *  function. */                         \
+        };                                                                      \
+        struct {                                                                \
+            union {                                                             \
+                cepCell*    handle;     /**< Resource cell id (used with         \
+                                         *  external libraries). */             \
+                cepCell*    stream;     /**< Data window to streamed content. */ \
+            };                                                                  \
+            cepCell*      library;      /**< Library where the resource is       \
+                                         *  located. */                          \
+        };                                                                      \
+        uint8_t         value[2 * sizeof(void*)];  /**< Data value may start     \
+                                                   *  from here. */              \
+    }
+
+struct _cepDataNode {
+    CEP_DATA_NODE_MEMBERS;
 };
 
 struct _cepData {
@@ -578,9 +586,16 @@ struct _cepData {
     cepOpCount          created;        /**< Data content creation time. */
     cepOpCount          deleted;        /**< Data content deletion time (if any). */
 
-    cepDataNode;
+    union {
+        cepDataNode     node;
+        struct {
+            CEP_DATA_NODE_MEMBERS;
+        };
+    };
     cepCell*            lockOwner;      /**< Cell that currently holds the payload lock (if any). */
 };
+
+#undef CEP_DATA_NODE_MEMBERS
 
 enum _cepDataType {
     CEP_DATATYPE_VALUE,         /**< Data starts at "value" field of cepData. */
@@ -827,24 +842,32 @@ void cep_txn_abort(cepTxn* txn);
 
 typedef struct _cepStoreNode  cepStoreNode;
 
+#define CEP_STORE_NODE_MEMBERS                                                   \
+    union {                                                                     \
+        cepCell*        linked;     /**< A linked shadow cell (when children,   \
+                                      *  see in cepCell otherwise). */          \
+        cepShadow*      shadow;     /**< Shadow structure (if cell has          \
+                                      *  children). */                          \
+    };                                                                          \
+    cepOpCount          modified;   /**< CEP heartbeat in which store was       \
+                                      *  modified (including creation/          \
+                                      *  deletion). */                          \
+    cepStoreNode*       past;       /**< Points to the previous store index in  \
+                                      *  history (only used if catalog is       \
+                                      *  re-sorted/indexed with different       \
+                                      *  sorting function). */                  \
+    cepEnzymeBinding*   bindings;   /**< List of enzyme bindings. */            \
+    size_t              chdCount;   /**< Number of child cells. */             \
+    size_t              totCount;   /**< Number of all cells included dead      \
+                                      *  ones. */                               \
+    cepCompare          compare;    /**< Compare function for indexing          \
+                                      *  children. */                           \
+    cepCell*            lockOwner;  /**< Cell that currently holds the          \
+                                      *  structural lock (if any). */           \
+    /* The specific storage structure will follow after this... */
+
 struct _cepStoreNode {
-    union {
-        cepCell*        linked;     /**< A linked shadow cell (when children, see in cepCell otherwise). */
-        cepShadow*      shadow;     /**< Shadow structure (if cell has children). */
-    };
-
-    cepOpCount          modified;   /**< CEP heartbeat in which store was modified (including creation/deletion). */
-    
-    cepStoreNode*       past;       /**< Points to the previous store index in history (only used if catalog is re-sorted/indexed with different sorting function). */
-
-    cepEnzymeBinding*   bindings; /**< List of enzyme bindings. */
-
-    size_t              chdCount;   /**< Number of child cells. */
-    size_t              totCount;   /**< Number of all cells included dead ones. */
-    cepCompare          compare;    /**< Compare function for indexing children. */
-    cepCell*            lockOwner;  /**< Cell that currently holds the structural lock (if any). */
-
-    // The specific storage structure will follow after this...
+    CEP_STORE_NODE_MEMBERS;
 };
 
 struct _cepStore {
@@ -877,8 +900,15 @@ struct _cepStore {
 
     cepID           autoid;     /**< Auto-increment ID for inserting new child cells. */
 
-    cepStoreNode;
+    union {
+        cepStoreNode     node;
+        struct {
+            CEP_STORE_NODE_MEMBERS;
+        };
+    };
 };
+
+#undef CEP_STORE_NODE_MEMBERS
 
 enum _cepCellStorage {
     CEP_STORAGE_LINKED_LIST,    /**< Children stored in a doubly linked list. */

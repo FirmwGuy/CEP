@@ -494,6 +494,22 @@ CEP_DEFINE_STATIC_DT(dt_list_type,       CEP_ACRO("CEP"), CEP_WORD("list"));
 CEP_DEFINE_STATIC_DT(dt_txn_name,        CEP_ACRO("CEP"), CEP_WORD("txn"));
 CEP_DEFINE_STATIC_DT(dt_txn_state_name,  CEP_ACRO("CEP"), CEP_WORD("state"));
 
+static void cep_txn_clear_metadata(cepCell* root) {
+    if (!root)
+        return;
+
+    cepCell* meta = cep_cell_find_by_name(root, dt_meta_name());
+    if (!meta)
+        return;
+
+    cepCell* bucket = cep_cell_find_by_name(meta, dt_txn_name());
+    if (bucket)
+        cep_cell_remove_hard(bucket, NULL);
+
+    if (!cep_cell_children(meta))
+        cep_cell_remove_hard(meta, NULL);
+}
+
 
 
 /***********************************************
@@ -3432,7 +3448,6 @@ static bool cep_txn_update_state(cepCell* root, const char* state) {
 
     return inserted != NULL;
 }
-
 static const cepCell* cep_cell_top_veiled_ancestor(const cepCell* cell) {
     const cepCell* top = NULL;
     for (const cepCell* current = cell; current; current = cep_cell_parent(current)) {
@@ -5076,6 +5091,7 @@ bool cep_txn_commit(cepTxn* txn) {
         cep_store_unlock(root, &lock);
 
     cep_txn_update_state(root, "committed");
+    cep_txn_clear_metadata(root);
 
     char note[128];
     snprintf(note, sizeof note, "txn commit: root=%p beat=%" PRIu64, (void*)root, (unsigned long long)txn->begin_beat);

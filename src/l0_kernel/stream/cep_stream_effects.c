@@ -11,7 +11,6 @@
 CEP_DEFINE_STATIC_DT(dt_intent_name,   CEP_ACRO("CEP"), CEP_WORD("intent"));
 CEP_DEFINE_STATIC_DT(dt_outcome_name,  CEP_ACRO("CEP"), CEP_WORD("outcome"));
 CEP_DEFINE_STATIC_DT(dt_entry_name,    CEP_ACRO("CEP"), CEP_WORD("entry"));
-CEP_DEFINE_STATIC_DT(dt_list_type,     CEP_ACRO("CEP"), CEP_WORD("list"));
 
 typedef struct cepStreamWriteIntent {
     cepCell*   stream;
@@ -32,23 +31,11 @@ static size_t                g_stream_intent_count;
 static size_t                g_stream_intent_capacity;
 
 static cepCell* cep_stream_get_intent_list(cepCell* owner) {
-    cepCell* list = cep_cell_find_by_name(owner, dt_intent_name());
-    if (!list) {
-        cepDT name_copy = *dt_intent_name();
-        cepDT list_type = *dt_list_type();
-        list = cep_cell_add_list(owner, &name_copy, 0, &list_type, CEP_STORAGE_LINKED_LIST);
-    }
-    return list;
+    return cep_cell_ensure_list_child(owner, dt_intent_name(), CEP_STORAGE_LINKED_LIST);
 }
 
 static cepCell* cep_stream_get_outcome_list(cepCell* owner) {
-    cepCell* list = cep_cell_find_by_name(owner, dt_outcome_name());
-    if (!list) {
-        cepDT name_copy = *dt_outcome_name();
-        cepDT list_type = *dt_list_type();
-        list = cep_cell_add_list(owner, &name_copy, 0, &list_type, CEP_STORAGE_LINKED_LIST);
-    }
-    return list;
+    return cep_cell_ensure_list_child(owner, dt_outcome_name(), CEP_STORAGE_LINKED_LIST);
 }
 
 static cepCell* cep_stream_append_intent(cepCell* owner, cepStreamIntentEntry* entry) {

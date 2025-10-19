@@ -91,7 +91,7 @@ static bool print_values(cepEntry* entry, void* unused) {
     (void)unused;
 
     assert_not_null(entry->cell);
-    char this[16], prev[16], next[16];
+    char this[32], prev[32], next[32];
     test_cell_print(entry->cell, this);
     test_cell_print(entry->prev, prev);
     test_cell_print(entry->next, next);

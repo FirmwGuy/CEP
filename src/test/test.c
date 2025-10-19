@@ -158,5 +158,7 @@ const MunitSuite testSuite = {
 
 
 int main(int argC, char* argV[MUNIT_ARRAY_PARAM(argC + 1)]) {
-    return munit_suite_main(&testSuite, NULL, argC, argV);
+    int result = munit_suite_main(&testSuite, NULL, argC, argV);
+    test_runtime_shutdown();
+    return result;
 }
