@@ -11,6 +11,7 @@
 CEP_DEFINE_STATIC_DT(dt_intent_name,   CEP_ACRO("CEP"), CEP_WORD("intent"));
 CEP_DEFINE_STATIC_DT(dt_outcome_name,  CEP_ACRO("CEP"), CEP_WORD("outcome"));
 CEP_DEFINE_STATIC_DT(dt_entry_name,    CEP_ACRO("CEP"), CEP_WORD("entry"));
+CEP_DEFINE_STATIC_DT(dt_list_type,     CEP_ACRO("CEP"), CEP_WORD("list"));
 
 typedef struct cepStreamWriteIntent {
     cepCell*   stream;
@@ -31,11 +32,23 @@ static size_t                g_stream_intent_count;
 static size_t                g_stream_intent_capacity;
 
 static cepCell* cep_stream_get_intent_list(cepCell* owner) {
-    return cep_cell_ensure_list_child(owner, dt_intent_name(), CEP_STORAGE_LINKED_LIST);
+    cepCell* list = cep_cell_find_by_name(owner, dt_intent_name());
+    if (!list) {
+        cepDT name_copy = *dt_intent_name();
+        cepDT list_type = *dt_list_type();
+        list = cep_cell_add_list(owner, &name_copy, 0, &list_type, CEP_STORAGE_LINKED_LIST);
+    }
+    return list;
 }
 
 static cepCell* cep_stream_get_outcome_list(cepCell* owner) {
-    return cep_cell_ensure_list_child(owner, dt_outcome_name(), CEP_STORAGE_LINKED_LIST);
+    cepCell* list = cep_cell_find_by_name(owner, dt_outcome_name());
+    if (!list) {
+        cepDT name_copy = *dt_outcome_name();
+        cepDT list_type = *dt_list_type();
+        list = cep_cell_add_list(owner, &name_copy, 0, &list_type, CEP_STORAGE_LINKED_LIST);
+    }
+    return list;
 }
 
 static cepCell* cep_stream_append_intent(cepCell* owner, cepStreamIntentEntry* entry) {
@@ -64,6 +77,30 @@ static void cep_stream_append_outcome(cepCell* owner, const cepStreamOutcomeEntr
                           (void*)entry,
                           sizeof *entry,
                           sizeof *entry);
+}
+
+static void cep_stream_remove_intent_list_if_empty(cepCell* owner) {
+    if (!owner)
+        return;
+    cepCell* list = cep_cell_find_by_name(owner, dt_intent_name());
+    if (list && !cep_cell_children(list)) {
+        cep_cell_finalize_hard(list);
+        cep_cell_remove_hard(list, NULL);
+    }
+}
+
+static void cep_stream_dispose_intent_entry(cepCell* entry) {
+    if (!entry)
+        return;
+
+    cepCell* list = cep_cell_parent(entry);
+    cep_cell_finalize_hard(entry);
+    cep_cell_remove_hard(entry, NULL);
+
+    if (list && !cep_cell_children(list)) {
+        cep_cell_finalize_hard(list);
+        cep_cell_remove_hard(list, NULL);
+    }
 }
 
 static bool cep_stream_intent_reserve(size_t additional) {
@@ -159,8 +196,10 @@ static void cep_stream_record_outcome(cepStreamWriteIntent* intent, bool committ
 
     cep_stream_append_outcome(intent->stream, &outcome);
 
-    if (intent->intent_cell)
-        cep_cell_delete_hard(intent->intent_cell);
+    if (intent->intent_cell) {
+        cep_stream_dispose_intent_entry(intent->intent_cell);
+        intent->intent_cell = NULL;
+    }
 }
 
 bool cep_stream_commit_pending(void) {
@@ -198,17 +237,16 @@ bool cep_stream_commit_pending(void) {
         }
 
         cep_stream_journal(intent->stream,
-                           ok ? (CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_COMMIT)
-                              : (CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_ERROR),
-                           intent->offset,
-                           intent->size,
-                           ok ? written : 0,
-                           ok ? intent->payload_hash : 0);
+                          ok ? (CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_COMMIT)
+                             : (CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_ERROR),
+                          intent->offset,
+                          intent->size,
+                          ok ? written : 0,
+                          ok ? intent->payload_hash : 0);
 
         cep_stream_record_outcome(intent, ok && written == intent->size, written, resulting_hash);
         cep_free(intent->payload);
         intent->payload = NULL;
-        intent->intent_cell = NULL;
     }
 
     g_stream_intent_count = 0;
@@ -220,8 +258,11 @@ void cep_stream_clear_pending(void) {
         cepStreamWriteIntent* intent = &g_stream_intents[i];
         if (intent->payload)
             cep_free(intent->payload);
-        if (intent->intent_cell)
-            cep_cell_delete_hard(intent->intent_cell);
+        if (intent->intent_cell) {
+            cep_stream_dispose_intent_entry(intent->intent_cell);
+            intent->intent_cell = NULL;
+        }
+        cep_stream_remove_intent_list_if_empty(intent->stream);
     }
     g_stream_intent_count = 0;
 }

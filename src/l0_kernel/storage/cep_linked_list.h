@@ -20,6 +20,9 @@ typedef struct {
     cepListNode*  tail;         /**< Tail of the doubly linked list for quick append */
 } cepList;
 
+_Static_assert(sizeof(cepList) >= sizeof(cepStore) + sizeof(void*) * 2, "cepList missing head/tail storage");
+_Static_assert(sizeof(cepList) == sizeof(cepStore) + sizeof(void*) * 2, "cepList unexpected padding");
+_Static_assert(offsetof(cepList, head) >= sizeof(cepStore) && offsetof(cepList, tail) + sizeof(cepListNode*) <= sizeof(cepList), "cepList layout invalid");
 
 
 
@@ -44,10 +47,31 @@ static inline cepListNode* list_node_from_cell(const cepCell* cell) {
     return cep_ptr_dif(cell, offsetof(cepListNode, cell));
 }
 
+static inline bool list_validate(const cepList* list) {
+    const cepListNode* prev = NULL;
+    const cepListNode* node = list ? list->head : NULL;
+    size_t count = 0;
+    const cepListNode* tail = NULL;
+    while (node) {
+        if (node->prev != prev) {
+            return false;
+        }
+        tail = node;
+        prev = node;
+        node = node->next;
+        count++;
+    }
+    if ((tail != list->tail) && (list->tail || tail)) {
+        return false;
+    }
+    return count == list->store.chdCount;
+}
+
 
 
 
 static inline void list_prepend_node(cepList* list, cepListNode* node) {
+    node->prev = NULL;
     node->next = list->head;
     if (list->head)
         list->head->prev = node;
@@ -57,11 +81,22 @@ static inline void list_prepend_node(cepList* list, cepListNode* node) {
 }
 
 static inline void list_append_node(cepList* list, cepListNode* node) {
-    node->prev = list->tail;
-    if (list->tail)
-        list->tail->next = node;
-    else
+    if (!list->store.chdCount || !list->head) {
+        node->prev = NULL;
+        node->next = NULL;
         list->head = node;
+        list->tail = node;
+        return;
+    }
+
+    cepListNode* tail = list->tail ? list->tail : list->head;
+    while (tail->next) {
+        tail = tail->next;
+    }
+
+    tail->next = node;
+    node->prev = tail;
+    node->next = NULL;
     list->tail = node;
 }
 
@@ -71,6 +106,7 @@ static inline void list_insert_node_before_next(cepList* list, cepListNode* node
         node->prev = next->prev;
     } else {
         list->head = node;
+        node->prev = NULL;
     }
     next->prev = node;
     node->next = next;
@@ -83,14 +119,26 @@ static inline cepCell* list_insert(cepList* list, cepCell* cell, size_t position
     cepListNode* node = list_node_new(cell);
     size_t n = 0;
     cepListNode* next;
-    for (next = list->head;  next;  next = next->next, n++) {
+    cepListNode* prev = NULL;
+    for (next = list->head;  next;  prev = next, next = next->next, n++) {
         if (n == position) {
             list_insert_node_before_next(list, node, next);
             break;
         }
     }
-    if (!next)
-        list_append_node(list, node);
+    if (!next) {
+        if (prev) {
+            prev->next = node;
+            node->prev = prev;
+            node->next = NULL;
+            list->tail = node;
+        } else {
+            node->prev = NULL;
+            list->head = node;
+            list->tail = node;
+            node->next = NULL;
+        }
+    }
 
     return &node->cell;
 }
@@ -268,6 +316,13 @@ static inline void list_sort(cepList* list, cepCompare compare, void* context) {
             node = node->next;
         }
     }
+
+    /* Sorting shuffles nodes without touching the cached tail pointer; refresh it
+       now so later append operations and integrity checks see the real end node. */
+    cepListNode* tail = list->head;
+    while (tail && tail->next)
+        tail = tail->next;
+    list->tail = tail;
 }
 
 

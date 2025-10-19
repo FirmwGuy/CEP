@@ -189,7 +189,7 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 ## 12) Anti‑Patterns to Avoid
 
 * **Reindexing in a tight loop** (calling `cep_cell_to_dictionary`/`cep_cell_sort` frequently) — creates store history snapshots and reorders siblings; batch or design for the final indexing upfront .
-* **Using packed queue with sorted expectations** — certain sorted ops are intentionally unsupported and assert out; keep it insertion‑only .
+* **Using packed queue with sorted expectations** — the queue is a head/tail buffer only. Use append/prepend APIs and pop/take helpers; positional inserts or mid-list replacements will assert because `cep_store_add_child` does not route packed queues through a random-access path. Switch to an array if you need indexable inserts.
 * **Deep trees with default stack** — DFS grows beyond the 16‑frame cache by allocating additional frames on demand; no manual knob is required for deep hierarchies.
 * **Over‑linking hot targets** — thousands of backlinks amplify detach/retarget costs; use intermediate grouping or shared library resources instead of CEP links where feasible .
 * **Recording history when not needed** — `cep_cell_update` creates a snapshot each write; prefer `_hard` variant when you can safely drop history for performance .

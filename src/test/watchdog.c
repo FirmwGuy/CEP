@@ -30,6 +30,11 @@
 #   include <unistd.h>
 #endif
 
+enum {
+    WATCHDOG_MAX_TIMEOUT_SECONDS = 30u,
+    WATCHDOG_MIN_TIMEOUT_SECONDS = 1u,
+};
+
 struct TestWatchdog {
     atomic_bool done;
     unsigned    timeoutSeconds;
@@ -68,9 +73,19 @@ static void* watchdog_thread(void* param) {
 }
 #endif
 
+static unsigned watchdog_clamp_timeout(unsigned seconds) {
+    if (seconds < WATCHDOG_MIN_TIMEOUT_SECONDS) {
+        return WATCHDOG_MIN_TIMEOUT_SECONDS;
+    }
+    if (seconds > WATCHDOG_MAX_TIMEOUT_SECONDS) {
+        return WATCHDOG_MAX_TIMEOUT_SECONDS;
+    }
+    return seconds;
+}
+
 static void watchdog_start(TestWatchdog* wd, unsigned seconds) {
     atomic_init(&wd->done, false);
-    wd->timeoutSeconds = seconds;
+    wd->timeoutSeconds = watchdog_clamp_timeout(seconds);
 #if defined(_WIN32)
     uintptr_t handle = _beginthreadex(NULL, 0, watchdog_thread, wd, 0, NULL);
     munit_assert(handle != 0);
@@ -118,15 +133,15 @@ void test_watchdog_destroy(TestWatchdog* wd) {
 /* test_watchdog_resolve_timeout extracts and validates the timeout parameter so suites can honor overrides without crashing. */
 unsigned test_watchdog_resolve_timeout(const MunitParameter params[], unsigned fallback) {
     if (!params)
-        return fallback;
+        return watchdog_clamp_timeout(fallback);
     const char* value = munit_parameters_get(params, "timeout");
     if (!value || !value[0])
-        return fallback;
+        return watchdog_clamp_timeout(fallback);
     char* endptr = NULL;
     unsigned long parsed = strtoul(value, &endptr, 10);
     if (endptr == value || (endptr && *endptr))
-        return fallback;
+        return watchdog_clamp_timeout(fallback);
     if (parsed == 0 || parsed > UINT_MAX)
-        return fallback;
-    return (unsigned)parsed;
+        return watchdog_clamp_timeout(fallback);
+    return watchdog_clamp_timeout((unsigned)parsed);
 }

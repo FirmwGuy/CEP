@@ -82,38 +82,53 @@ static inline void rb_tree_rotate_right(cepRbTree* tree, cepRbTreeNode* x) {
 }
 
 static inline void rb_tree_fix_insert(cepRbTree* tree, cepRbTreeNode* z) {
-    while (z != tree->root && z->tParent->isRed) {
-        if (z->tParent == z->tParent->tParent->left) {
-            cepRbTreeNode* y = z->tParent->tParent->right;
+    while (z && z != tree->root && z->tParent && z->tParent->isRed) {
+        cepRbTreeNode* parent = z->tParent;
+        cepRbTreeNode* grand = parent->tParent;
+        if (!grand) {
+            parent->isRed = false;
+            break;
+        }
+
+        if (parent == grand->left) {
+            cepRbTreeNode* y = grand->right;
             if (y && y->isRed) {
-                z->tParent->isRed = false;
+                parent->isRed = false;
                 y->isRed = false;
-                z->tParent->tParent->isRed = true;
-                z = z->tParent->tParent;
+                grand->isRed = true;
+                z = grand;
             } else {
-                if (z == z->tParent->right) {
-                    z = z->tParent;
+                if (z == parent->right) {
+                    z = parent;
                     rb_tree_rotate_left(tree, z);
+                    parent = z->tParent;
+                    grand = parent ? parent->tParent : NULL;
+                    if (!grand)
+                        break;
                 }
-                z->tParent->isRed = false;
-                z->tParent->tParent->isRed = true;
-                rb_tree_rotate_right(tree, z->tParent->tParent);
+                parent->isRed = false;
+                grand->isRed = true;
+                rb_tree_rotate_right(tree, grand);
             }
         } else {
-            cepRbTreeNode* y = z->tParent->tParent->left;
+            cepRbTreeNode* y = grand->left;
             if (y && y->isRed) {
-                z->tParent->isRed = false;
+                parent->isRed = false;
                 y->isRed = false;
-                z->tParent->tParent->isRed = true;
-                z = z->tParent->tParent;
+                grand->isRed = true;
+                z = grand;
             } else {
-                if (z == z->tParent->left) {
-                    z = z->tParent;
+                if (z == parent->left) {
+                    z = parent;
                     rb_tree_rotate_right(tree, z);
+                    parent = z->tParent;
+                    grand = parent ? parent->tParent : NULL;
+                    if (!grand)
+                        break;
                 }
-                z->tParent->isRed = false;
-                z->tParent->tParent->isRed = true;
-                rb_tree_rotate_left(tree, z->tParent->tParent);
+                parent->isRed = false;
+                grand->isRed = true;
+                rb_tree_rotate_left(tree, grand);
             }
         }
     }
@@ -213,6 +228,12 @@ static inline bool rb_tree_traverse(cepRbTree* tree, unsigned maxDepth, cepTrave
     if (maxDepth > RB_TREE_MIN_DEPTH)
         cep_free(stack);
 
+    if (!tnodePrev) {
+        entry->next = NULL;
+        entry->cell = NULL;
+        return true;
+    }
+
     entry->next   = NULL;
     entry->cell = &tnodePrev->cell;
     return func(entry, context);
@@ -306,11 +327,6 @@ static inline bool rb_tree_traverse_internal(cepRbTree* tree, cepTraverse func, 
 }
 
 
-static inline int rb_traverse_func_break_at_name(cepEntry* entry, uintptr_t name) {
-    return !cep_cell_name_is(entry->cell, name);
-}
-
-
 static inline cepCell* rb_tree_find_by_dt(cepRbTree* tree, const cepDT* dt) {
     cepCell key = {.metacell.domain = dt->domain, .metacell.tag = dt->tag};
     for (cepRbTreeNode* tnode = tree->root; tnode; ) {
@@ -328,15 +344,37 @@ static inline cepCell* rb_tree_find_by_dt(cepRbTree* tree, const cepDT* dt) {
 
 
 static inline cepCell* rb_tree_find_by_name(cepRbTree* tree, const cepDT* name) {
-    if (cep_store_is_dictionary(&tree->store)) {
+    if (cep_store_is_dictionary(&tree->store))
         return rb_tree_find_by_dt(tree, name);
-    } else {
-        cepEntry entry = {0};
-        if (!rb_tree_traverse(tree, cep_bitson(tree->store.chdCount) + 2, (cepFunc) rb_traverse_func_break_at_name, cep_v2p(name), &entry))
-            return entry.cell;
+
+    if (!tree || !tree->root)
+        return NULL;
+
+    unsigned maxDepth = cep_bitson(tree->store.chdCount) + 2u;
+    bool useHeap = (maxDepth > RB_TREE_MIN_DEPTH);
+    cepRbTreeNode** stack = useHeap ? cep_malloc(maxDepth * sizeof *stack) : cep_alloca(maxDepth * sizeof *stack);
+    int top = -1;
+    cepRbTreeNode* node = tree->root;
+
+    while (node || top != -1) {
+        while (node) {
+            stack[++top] = node;
+            node = node->left;
+        }
+        node = stack[top--];
+        if (cep_cell_name_is(&node->cell, name)) {
+            if (useHeap)
+                cep_free(stack);
+            return &node->cell;
+        }
+        node = node->right;
     }
+
+    if (useHeap)
+        cep_free(stack);
     return NULL;
 }
+
 
 
 static inline cepCell* rb_tree_find_by_key(cepRbTree* tree, cepCell* key, cepCompare compare, void* context) {
@@ -353,19 +391,37 @@ static inline cepCell* rb_tree_find_by_key(cepRbTree* tree, cepCell* key, cepCom
     } while (tnode);
     return NULL;
 }
-
-
-static inline int rb_traverse_func_break_at_position(cepEntry* entry, uintptr_t position) {
-    return (entry->position != position);
-}
-
 static inline cepCell* rb_tree_find_by_position(cepRbTree* tree, size_t position) {
-    cepEntry entry = {0};
-    if (!rb_tree_traverse(tree, cep_bitson(tree->store.chdCount) + 2, (void*) rb_traverse_func_break_at_position, cep_v2p(position), &entry))
-        return entry.cell;
+    if (!tree || !tree->root || position >= tree->store.chdCount)
+        return NULL;
+
+    unsigned maxDepth = cep_bitson(tree->store.chdCount) + 2u;
+    bool useHeap = (maxDepth > RB_TREE_MIN_DEPTH);
+    cepRbTreeNode** stack = useHeap ? cep_malloc(maxDepth * sizeof *stack) : cep_alloca(maxDepth * sizeof *stack);
+    int top = -1;
+    cepRbTreeNode* node = tree->root;
+    size_t index = 0u;
+
+    while (node || top != -1) {
+        while (node) {
+            stack[++top] = node;
+            node = node->left;
+        }
+        node = stack[top--];
+        if (index == position) {
+            cepCell* result = &node->cell;
+            if (useHeap)
+                cep_free(stack);
+            return result;
+        }
+        index++;
+        node = node->right;
+    }
+
+    if (useHeap)
+        cep_free(stack);
     return NULL;
 }
-
 
 static inline cepCell* rb_tree_prev(cepCell* cell) {
     cepRbTreeNode* tnode = rb_tree_node_from_cell(cell);

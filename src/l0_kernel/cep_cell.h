@@ -528,33 +528,26 @@ struct _cepEnzymeBinding {
 
 typedef struct _cepDataNode  cepDataNode;
 
-#define CEP_DATA_NODE_MEMBERS                                                    \
-    cepOpCount          modified;       /**< CEP heartbeat in which data was     \
-                                         *  modified (including creation/        \
-                                         *  deletion). */                        \
-    cepDataNode*        past;           /**< Pointer to past data content        \
-                                         *  history. */                          \
-    cepEnzymeBinding*   bindings;       /**< List of enzyme bindings. */         \
-    size_t              size;           /**< Data size in bytes. */              \
-    size_t              capacity;       /**< Buffer capacity in bytes. */        \
-    uint64_t            hash;           /**< Hash value of content. */           \
-    union {                                                                     \
-        struct {                                                                \
-            void*       data;           /**< Points to container of data value. */\
-            cepDel      destructor;     /**< Data container destruction          \
-                                         *  function. */                         \
-        };                                                                      \
-        struct {                                                                \
-            union {                                                             \
-                cepCell*    handle;     /**< Resource cell id (used with         \
-                                         *  external libraries). */             \
-                cepCell*    stream;     /**< Data window to streamed content. */ \
-            };                                                                  \
-            cepCell*      library;      /**< Library where the resource is       \
-                                         *  located. */                          \
-        };                                                                      \
-        uint8_t         value[2 * sizeof(void*)];  /**< Data value may start     \
-                                                   *  from here. */              \
+#define CEP_DATA_NODE_MEMBERS                                              \
+    cepOpCount          modified;   /**< Beat when payload changed. */     \
+    cepDataNode*        past;       /**< Prior revision in history. */     \
+    cepEnzymeBinding*   bindings;   /**< Data-scoped enzyme bindings. */   \
+    size_t              size;       /**< Payload size in bytes. */         \
+    size_t              capacity;   /**< Allocated payload capacity. */    \
+    uint64_t            hash;       /**< Cached payload hash. */           \
+    union {                                                               \
+        struct {                                                          \
+            void*       data;       /**< Heap buffer backing DATA type. */ \
+            cepDel      destructor; /**< Buffer destructor (optional). */  \
+        };                                                                 \
+        struct {                                                          \
+            union {                                                       \
+                cepCell*    handle; /**< HANDLE payload target cell. */   \
+                cepCell*    stream; /**< STREAM payload target cell. */   \
+            };                                                            \
+            cepCell*      library;  /**< Owning library binding. */       \
+        };                                                                \
+        uint8_t         value[2 * sizeof(void*)]; /**< Inline VALUE bytes. */ \
     }
 
 struct _cepDataNode {
@@ -586,11 +579,8 @@ struct _cepData {
     cepOpCount          created;        /**< Data content creation time. */
     cepOpCount          deleted;        /**< Data content deletion time (if any). */
 
-    union {
-        cepDataNode     node;
-        struct {
-            CEP_DATA_NODE_MEMBERS;
-        };
+    struct {
+        CEP_DATA_NODE_MEMBERS;
     };
     cepCell*            lockOwner;      /**< Cell that currently holds the payload lock (if any). */
 };
@@ -842,29 +832,18 @@ void cep_txn_abort(cepTxn* txn);
 
 typedef struct _cepStoreNode  cepStoreNode;
 
-#define CEP_STORE_NODE_MEMBERS                                                   \
-    union {                                                                     \
-        cepCell*        linked;     /**< A linked shadow cell (when children,   \
-                                      *  see in cepCell otherwise). */          \
-        cepShadow*      shadow;     /**< Shadow structure (if cell has          \
-                                      *  children). */                          \
-    };                                                                          \
-    cepOpCount          modified;   /**< CEP heartbeat in which store was       \
-                                      *  modified (including creation/          \
-                                      *  deletion). */                          \
-    cepStoreNode*       past;       /**< Points to the previous store index in  \
-                                      *  history (only used if catalog is       \
-                                      *  re-sorted/indexed with different       \
-                                      *  sorting function). */                  \
-    cepEnzymeBinding*   bindings;   /**< List of enzyme bindings. */            \
-    size_t              chdCount;   /**< Number of child cells. */             \
-    size_t              totCount;   /**< Number of all cells included dead      \
-                                      *  ones. */                               \
-    cepCompare          compare;    /**< Compare function for indexing          \
-                                      *  children. */                           \
-    cepCell*            lockOwner;  /**< Cell that currently holds the          \
-                                      *  structural lock (if any). */           \
-    /* The specific storage structure will follow after this... */
+#define CEP_STORE_NODE_MEMBERS                                               \
+    union {                                                                 \
+        cepCell*        linked;     /**< Linked shadow cell. */             \
+        cepShadow*      shadow;     /**< Shadow bookkeeping (if any). */    \
+    };                                                                      \
+    cepOpCount          modified;   /**< Beat when store mutated. */        \
+    cepStoreNode*       past;       /**< Previous indexing history node. */ \
+    cepEnzymeBinding*   bindings;   /**< Store-scoped enzyme bindings. */   \
+    size_t              chdCount;   /**< Live child count. */               \
+    size_t              totCount;   /**< Total children including tombs. */ \
+    cepCompare          compare;    /**< Custom comparator (if used). */    \
+    cepCell*            lockOwner;  /**< Current structural lock owner. */
 
 struct _cepStoreNode {
     CEP_STORE_NODE_MEMBERS;
@@ -900,11 +879,8 @@ struct _cepStore {
 
     cepID           autoid;     /**< Auto-increment ID for inserting new child cells. */
 
-    union {
-        cepStoreNode     node;
-        struct {
-            CEP_STORE_NODE_MEMBERS;
-        };
+    struct {
+        CEP_STORE_NODE_MEMBERS;
     };
 };
 
@@ -941,6 +917,15 @@ static inline bool cep_store_is_dictionary(cepStore* store)   {assert(cep_store_
 static inline bool cep_store_is_f_sorted(cepStore* store)     {assert(cep_store_valid(store));  return (store->indexing == CEP_INDEX_BY_FUNCTION  ||  store->indexing == CEP_INDEX_BY_HASH);}
 static inline bool cep_store_is_sorted(cepStore* store)       {assert(cep_store_valid(store));  return (store->indexing != CEP_INDEX_BY_INSERTION);}
 static inline bool cep_store_is_empty(cepStore* store)        {assert(cep_store_valid(store));  return !store->chdCount;}
+
+static inline void cep_store_set_dt(cepStore* store, const cepDT* dt) {
+    if (!store || !dt)
+        return;
+    cepDT clean = cep_dt_clean(dt);
+    store->domain = clean.domain;
+    store->tag = clean.tag;
+    store->glob = clean.glob;
+}
 
 cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child);
 cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child);

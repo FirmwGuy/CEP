@@ -26,6 +26,10 @@ void cep_cell_timestamp_reset(void) {
 cepCell CEP_ROOT;   // The root cell.
 
 void cep_cell_system_initiate(void) {
+    if (cep_cell_system_initialized()) {
+        cep_cell_system_shutdown();
+    }
+
     cep_cell_timestamp_reset();
 
     cepDT dictionary_type = *dt_dictionary_type();

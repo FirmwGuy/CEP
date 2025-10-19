@@ -53,6 +53,8 @@ MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_
 #ifdef CEP_HAS_LIBZIP
 MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fixture);
 #endif
+MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
 

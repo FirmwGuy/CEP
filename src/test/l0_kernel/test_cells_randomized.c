@@ -19,9 +19,19 @@
 #include "cep_cell.h"
 #include "cep_namepool.h"
 
+#include <inttypes.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
+
+static void assert_child_attached(const cepCell* parent, const cepCell* child) {
+    munit_assert_not_null(parent);
+    munit_assert_not_null(child);
+    munit_assert_not_null(parent->store);
+    munit_assert_true(cep_cell_child_belongs_to(parent, child));
+    munit_assert_ptr_equal(child->parent, parent->store);
+}
 
 
 #define TEST_TIMEOUT_SECONDS        60u
@@ -91,6 +101,7 @@ static cepCell* add_random_value(CellRandomFixture* fix, cepCell* parent) {
     if (!inserted)
         return NULL;
 
+    assert_child_attached(parent, inserted);
     void* stored = cep_cell_data(inserted);
     munit_assert_not_null(stored);
     munit_assert_memory_equal(size, payload, stored);
@@ -133,6 +144,9 @@ static cepCell* add_random_container(CellRandomFixture* fix, cepCell* parent, un
                                             CEP_STORAGE_LINKED_LIST);
         break;
     }
+
+    if (container)
+        assert_child_attached(parent, container);
 
     if (container && (munit_rand_uint32() & 1u))
         (void)add_random_value(fix, container);
@@ -232,9 +246,13 @@ static void mutate_random_value(CellRandomFixture* fix) {
         index = count - 1u;
     cepCell* node = nodes[index];
 
+    cepCell* parent = cep_cell_parent(node);
+    munit_assert_not_null(parent);
+    assert_child_attached(parent, node);
+
     size_t size = (size_t)munit_rand_int_range(1, 16);
-    uint8_t payload[32];
-    munit_rand_memory(size, payload);
+   uint8_t payload[32];
+   munit_rand_memory(size, payload);
 
     void* stored = cep_cell_update(node, size, sizeof payload, payload, false);
     munit_assert_not_null(stored);
@@ -255,6 +273,7 @@ static void drop_random_child(CellRandomFixture* fix) {
     if (!child)
         return;
 
+    assert_child_attached(parent, child);
     cepDT name_copy = *cep_cell_get_name(child);
     cep_cell_delete_hard(child);
     munit_assert_null(cep_cell_find_by_name(parent, &name_copy));
@@ -285,10 +304,10 @@ static void verify_store_consistency(cepCell* parent) {
 }
 
 /*
- *  Packed queue coverage inserts, updates, and deletes cells at arbitrary
- *  positions while mirroring the expected ordering in a shadow array so the
- *  test can prove that packed queues keep positional lookups and name
- *  searches consistent across node splits and recycling.
+ *  Packed queue coverage now sticks to head/tail operations. We append or
+ *  prepend random values, pop from either side, and mirror the contents in a
+ *  shadow deque so we can assert ordering and payload integrity after every
+ *  mutation.
  */
 static void exercise_packed_queue_random(CellRandomFixture* fix) {
     cepCell list;
@@ -303,68 +322,85 @@ static void exercise_packed_queue_random(CellRandomFixture* fix) {
     size_t count = 0;
 
     for (unsigned iter = 0; iter < PACKED_QUEUE_ITERATIONS; ++iter) {
-        bool can_insert = count < MAX_PACKED_QUEUE_CHILDREN;
-        bool do_insert = (count == 0) || (can_insert && (munit_rand_uint32() & 1u));
+        const bool can_insert = count < MAX_PACKED_QUEUE_CHILDREN;
+        const bool should_insert = (count == 0) || (can_insert && (munit_rand_uint32() & 1u));
 
-        if (do_insert) {
-            size_t position = count ? (size_t)munit_rand_int_range(0, (int)(count + 1)) : 0u;
-            if (position > count)
-                position = count;
-
+        if (should_insert) {
+            const bool prepend = count && (munit_rand_uint32() & 1u);
             cepDT child_name = make_random_child_name(fix);
             uint32_t payload = munit_rand_uint32();
 
-            cepCell* inserted = cep_cell_add_value(&list,
-                                                   &child_name,
-                                                   position,
-                                                   CEP_DTS(CEP_ACRO("VAL"), CEP_ACRO("PKQ")),
-                                                   &payload,
-                                                   sizeof payload,
-                                                   sizeof payload);
+            cepCell scratch;
+            CEP_0(&scratch);
+            cep_cell_initialize_value(&scratch,
+                                      &child_name,
+                                      CEP_DTS(CEP_ACRO("VAL"), CEP_ACRO("PKQ")),
+                                      &payload,
+                                      sizeof payload,
+                                      sizeof payload);
+
+            cepCell* inserted = cep_cell_append(&list, prepend, &scratch);
             munit_assert_not_null(inserted);
+            assert_child_attached(&list, inserted);
 
-            for (size_t idx = count; idx > position; --idx) {
-                names[idx] = names[idx - 1u];
-                values[idx] = values[idx - 1u];
+            if (prepend && count) {
+                memmove(&names[1], &names[0], count * sizeof names[0]);
+                memmove(&values[1], &values[0], count * sizeof values[0]);
+                names[0] = child_name;
+                values[0] = payload;
+            } else {
+                names[count] = child_name;
+                values[count] = payload;
             }
-            names[position] = child_name;
-            values[position] = payload;
-            ++count;
-        } else {
-            size_t position = (size_t)munit_rand_int_range(0, (int)(count - 1));
-            cepCell* victim = cep_cell_find_by_position(&list, position);
-            munit_assert_not_null(victim);
 
-            cepCell* by_name = cep_cell_find_by_name(&list, &names[position]);
-            munit_assert_ptr_equal(by_name, victim);
+            ++count;
+            printf("[dataset:queue] op=%s value=%" PRIu32 " count=%zu\n",
+                   prepend ? "prepend" : "append",
+                   payload,
+                   count);
+            fflush(stdout);
+        } else {
+            const bool pop_front = (munit_rand_uint32() & 1u);
+            cepCell* victim = pop_front ? cep_cell_first(&list) : cep_cell_last(&list);
+            munit_assert_not_null(victim);
+            assert_child_attached(&list, victim);
+
+            printf("[dataset:queue] op=pop_%s count=%zu\n", pop_front ? "front" : "back", count);
+            fflush(stdout);
 
             cep_cell_delete_hard(victim);
 
-            for (size_t idx = position; idx + 1u < count; ++idx) {
-                names[idx] = names[idx + 1u];
-                values[idx] = values[idx + 1u];
+            if (count) {
+                if (pop_front) {
+                    memmove(&names[0], &names[1], (count - 1u) * sizeof names[0]);
+                    memmove(&values[0], &values[1], (count - 1u) * sizeof values[0]);
+                } else {
+                    names[count - 1u] = (cepDT){0};
+                    values[count - 1u] = 0u;
+                }
+                --count;
             }
-            --count;
         }
 
         munit_assert_size(count, ==, cep_cell_children(&list));
 
-        for (size_t idx = 0; idx < count; ++idx) {
-            cepCell* by_position = cep_cell_find_by_position(&list, idx);
-            munit_assert_not_null(by_position);
-
-            cepCell* by_name = cep_cell_find_by_name(&list, &names[idx]);
-            munit_assert_ptr_equal(by_name, by_position);
-
-            uint32_t stored = *(uint32_t*)cep_cell_data(by_position);
-            munit_assert_uint32(stored, ==, values[idx]);
+        size_t idx = 0;
+        for (cepCell* child = cep_cell_first(&list); child; child = cep_cell_next(&list, child)) {
+            munit_assert_size(idx, <, count);
+            munit_assert_true(cep_cell_name_is(child, &names[idx]));
+            const uint32_t* stored = cep_cell_data(child);
+            munit_assert_not_null(stored);
+            munit_assert_uint(*stored, ==, values[idx]);
+            ++idx;
         }
+        munit_assert_size(idx, ==, count);
 
         test_watchdog_signal(fix->watchdog);
     }
 
     while (cep_cell_children(&list)) {
         cepCell* child = cep_cell_first(&list);
+        assert_child_attached(&list, child);
         cep_cell_delete_hard(child);
     }
     cep_cell_finalize_hard(&list);
@@ -420,12 +456,14 @@ static void exercise_octree_random(CellRandomFixture* fix) {
                                                    sizeof entry.point,
                                                    sizeof entry.point);
             munit_assert_not_null(inserted);
+            assert_child_attached(&spatial, inserted);
 
             entries[count++] = entry;
         } else {
             size_t index = (size_t)munit_rand_int_range(0, (int)(count - 1));
             cepCell* victim = cep_cell_find_by_name(&spatial, &entries[index].name);
             munit_assert_not_null(victim);
+            assert_child_attached(&spatial, victim);
 
             cep_cell_delete_hard(victim);
 
@@ -439,6 +477,7 @@ static void exercise_octree_random(CellRandomFixture* fix) {
         for (size_t idx = 0; idx < count; ++idx) {
             cepCell* child = cep_cell_find_by_name(&spatial, &entries[idx].name);
             munit_assert_not_null(child);
+            assert_child_attached(&spatial, child);
             munit_assert_memory_equal(sizeof entries[idx].point,
                                       &entries[idx].point,
                                       cep_cell_data(child));
@@ -449,6 +488,7 @@ static void exercise_octree_random(CellRandomFixture* fix) {
 
     while (cep_cell_children(&spatial)) {
         cepCell* child = cep_cell_first(&spatial);
+        assert_child_attached(&spatial, child);
         cep_cell_delete_hard(child);
     }
     cep_cell_finalize_hard(&spatial);
@@ -488,6 +528,7 @@ static void dismantle_tree(cepCell* node) {
 
     while (cep_cell_children(node)) {
         cepCell* child = cep_cell_first(node);
+        assert_child_attached(node, child);
         dismantle_tree(child);
         cep_cell_delete_hard(child);
     }
@@ -560,6 +601,9 @@ MunitResult test_cells_randomized(const MunitParameter params[], void* fixture) 
     exercise_packed_queue_random(fix);
     exercise_octree_random(fix);
     verify_inline_naming();
+    verify_store_consistency(&fix->root);
+    printf("[random:cells] final children=%zu\n", cep_cell_children(&fix->root));
+    fflush(stdout);
     return MUNIT_OK;
 }
 

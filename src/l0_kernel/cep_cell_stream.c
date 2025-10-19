@@ -17,6 +17,8 @@ CEP_DEFINE_STATIC_DT(dt_journal_name, CEP_ACRO("CEP"), CEP_WORD("journal"));
 CEP_DEFINE_STATIC_DT(dt_journal_entry_name, CEP_ACRO("CEP"), CEP_WORD("entry"));
 CEP_DEFINE_STATIC_DT(dt_stream_log_type, CEP_ACRO("CEP"), CEP_WORD("stream-log"));
 CEP_DEFINE_STATIC_DT(dt_library_type, CEP_ACRO("CEP"), CEP_WORD("library"));
+CEP_DEFINE_STATIC_DT(dt_list_type,    CEP_ACRO("CEP"), CEP_WORD("list"));
+CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
 
 typedef struct {
     const cepLibraryBinding* library;
@@ -45,7 +47,30 @@ static inline bool cep_stream_binding_ready(const cepStreamBinding* binding) {
 }
 
 static cepCell* cep_stream_journal_node(cepCell* owner) {
-    return cep_cell_ensure_list_child(owner, dt_journal_name(), CEP_STORAGE_LINKED_LIST);
+    owner = cep_link_pull(owner);
+    if (!owner || !cep_cell_is_normal(owner))
+        return NULL;
+
+    if (!owner->store) {
+        cepDT dict_type = *dt_dictionary_type();
+        cepStore* store = cep_store_new(&dict_type, CEP_STORAGE_RED_BLACK_T, CEP_INDEX_BY_NAME);
+        if (!store)
+            return NULL;
+        store->owner = owner;
+        owner->store = store;
+    }
+
+    cepCell* journal = cep_cell_find_by_name(owner, dt_journal_name());
+    if (!journal) {
+        cepDT name_copy = *dt_journal_name();
+        cepDT list_type = *dt_list_type();
+        journal = cep_cell_add_list(owner,
+                                    &name_copy,
+                                    0,
+                                    &list_type,
+                                    CEP_STORAGE_LINKED_LIST);
+    }
+    return journal;
 }
 
 

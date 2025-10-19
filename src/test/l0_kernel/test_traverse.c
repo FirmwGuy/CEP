@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 
 
@@ -658,6 +659,9 @@ static void random_list_dataset_init(RandomListDataset* dataset, unsigned storag
 
         cepID tag = (cepID)(CEP_NAME_TEMP + 1000 + (cepID)step);
         uint32_t value = (uint32_t)munit_rand_uint32();
+        cepStore* store_before = dataset->container->store;
+        size_t chd_before = store_before ? store_before->chdCount : 0;
+
         cepCell* cell = cep_cell_add_value(dataset->container,
                                            CEP_DTS(CEP_ACRO("CEP"), tag),
                                            position,
@@ -666,6 +670,19 @@ static void random_list_dataset_init(RandomListDataset* dataset, unsigned storag
                                            sizeof value,
                                            sizeof value);
         assert_not_null(cell);
+
+        cepStore* store_after = dataset->container->store;
+        size_t chd_after = store_after ? store_after->chdCount : 0;
+
+        printf("[dataset:list] step=%zu used=%zu position=%zu chdBefore=%zu chdAfter=%zu store=%p cell=%p\n",
+               step,
+               used,
+               position,
+               chd_before,
+               chd_after,
+               (void*)store_after,
+               (void*)cell);
+        fflush(stdout);
 
         if (used > position) {
             memmove(&order[position + 1], &order[position], (used - position) * sizeof order[0]);

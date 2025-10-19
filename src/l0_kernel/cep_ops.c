@@ -6,6 +6,7 @@
 
 #include "cep_enzyme.h"
 #include "cep_namepool.h"
+#include "cep_organ.h"
 
 CEP_DEFINE_STATIC_DT(dt_ops_root_name,      CEP_ACRO("CEP"), CEP_WORD("ops"));
 CEP_DEFINE_STATIC_DT(dt_envelope_name,      CEP_ACRO("CEP"), CEP_WORD("envelope"));
@@ -32,6 +33,8 @@ CEP_DEFINE_STATIC_DT(dt_payload_watcher,    CEP_ACRO("CEP"), CEP_WORD("payload_i
 CEP_DEFINE_STATIC_DT(dt_origin_field,       CEP_ACRO("CEP"), CEP_WORD("origin"));
 CEP_DEFINE_STATIC_DT(dt_origin_enzyme,      CEP_ACRO("CEP"), CEP_WORD("enzyme"));
 CEP_DEFINE_STATIC_DT(dt_ready_field,        CEP_ACRO("CEP"), CEP_WORD("armed"));
+
+cepStore* cep_ops_debug_history_store = NULL;
 
 static int cep_ops_debug_last_error_code = 0;
 
@@ -85,7 +88,23 @@ static cepCell* cep_ops_root(bool create) {
     }
     cepDT name = cep_ops_clean_dt(dt_ops_root_name());
     if (create) {
-        return cep_cell_ensure_dictionary_child(rt, &name, CEP_STORAGE_RED_BLACK_T);
+        cepCell* existing = cep_cell_find_by_name(rt, &name);
+        cepDT organ_dt = cep_organ_store_dt("rt_ops");
+        if (!existing) {
+            cepDT name_copy = name;
+            return cep_cell_add_dictionary(rt, &name_copy, 0, &organ_dt, CEP_STORAGE_RED_BLACK_T);
+        }
+        cepCell* resolved = cep_cell_resolve(existing);
+        if (!resolved) {
+            return NULL;
+        }
+        if (!cep_cell_require_dictionary_store(&resolved)) {
+            return NULL;
+        }
+        if (resolved->store) {
+            cep_store_set_dt(resolved->store, &organ_dt);
+        }
+        return resolved;
     }
     return cep_cell_find_by_name(rt, &name);
 }
@@ -639,7 +658,6 @@ static bool cep_ops_populate_branch(cepCell* op_root,
         cep_ops_debug_last_error_code = 20;
         return false;
     }
-
     cepDT watchers_name = cep_ops_clean_dt(dt_watchers_name());
     cepCell* watchers = cep_cell_add_dictionary(op_root,
                                                 &watchers_name,
@@ -659,6 +677,12 @@ static bool cep_ops_populate_branch(cepCell* op_root,
                                 NULL)) {
         cep_ops_debug_last_error_code = 22;
         return false;
+    }
+
+    cep_ops_debug_history_store = history ? history->store : NULL;
+    if (history && history->store) {
+        printf("[history] populated store=%p\n", (void*)history->store);
+        fflush(stdout);
     }
 
     return true;

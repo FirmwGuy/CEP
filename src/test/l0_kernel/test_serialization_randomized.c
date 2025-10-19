@@ -19,9 +19,19 @@
 #include "cep_cell.h"
 
 #include <string.h>
+#include <inttypes.h>
+#include <stdio.h>
 
 #define TEST_TIMEOUT_SECONDS 60u
 #define MAX_CAPTURE_CHUNKS   128u
+
+static void assert_child_attached(const cepCell* parent, const cepCell* child) {
+    munit_assert_not_null(parent);
+    munit_assert_not_null(child);
+    munit_assert_not_null(parent->store);
+    munit_assert_true(cep_cell_child_belongs_to(parent, child));
+    munit_assert_ptr_equal(child->parent, parent->store);
+}
 
 typedef struct {
     TestWatchdog* watchdog;
@@ -243,6 +253,7 @@ static cepCell* add_random_value_cell(SerializationFixture* fix, cepCell* parent
                                         size,
                                         sizeof payload);
     munit_assert_not_null(value);
+    assert_child_attached(parent, value);
     munit_assert_not_null(cep_cell_data(value));
     munit_assert_memory_equal(size, payload, cep_cell_data(value));
     return value;
@@ -283,6 +294,7 @@ static cepCell* add_random_container(SerializationFixture* fix, cepCell* parent,
     }
 
     munit_assert_not_null(container);
+    assert_child_attached(parent, container);
 
     unsigned branches = (unsigned)munit_rand_int_range(1, depth + 1u);
     for (unsigned i = 0; i < branches; ++i) {
@@ -300,6 +312,7 @@ static void destroy_tree(cepCell* node) {
 
     while (cep_cell_children(node)) {
         cepCell* child = cep_cell_first(node);
+        assert_child_attached(node, child);
         destroy_tree(child);
         cep_cell_delete_hard(child);
     }
@@ -330,6 +343,8 @@ static void assert_cells_equal(const cepCell* expected, const cepCell* actual) {
     cepCell* expected_child = cep_cell_first((cepCell*)expected);
     cepCell* actual_child = cep_cell_first((cepCell*)actual);
     while (expected_child && actual_child) {
+        assert_child_attached(cep_cell_parent(expected_child), expected_child);
+        assert_child_attached(cep_cell_parent(actual_child), actual_child);
         assert_cells_equal(expected_child, actual_child);
         expected_child = cep_cell_next((cepCell*)expected, expected_child);
         actual_child = cep_cell_next((cepCell*)actual, actual_child);
@@ -680,6 +695,9 @@ MunitResult test_serialization_roundtrip(const MunitParameter params[], void* fi
         run_roundtrip_once(fix);
     }
     cep_cell_system_shutdown();
+    printf("[random:serialization] roundtrip batches=6 nextTag=%" PRIu64 "\n",
+           (uint64_t)fix->next_tag);
+    fflush(stdout);
     return MUNIT_OK;
 }
 

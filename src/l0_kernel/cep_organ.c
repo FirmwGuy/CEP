@@ -41,6 +41,57 @@ CEP_DEFINE_STATIC_DT(dt_dtor_field,       CEP_ACRO("CEP"), CEP_WORD("dtor"));
 CEP_DEFINE_STATIC_DT(dt_kind_field,       CEP_ACRO("CEP"), CEP_WORD("kind"));
 CEP_DEFINE_STATIC_DT(dt_label_field,      CEP_ACRO("CEP"), CEP_WORD("label"));
 
+void cep_organ_runtime_reset(void) {
+    for (size_t i = 0; i < CEP_ORGAN_REGISTRY.count; ++i) {
+        cepOrganEntry* entry = &CEP_ORGAN_REGISTRY.entries[i];
+        if (entry->kind_storage) {
+            cep_free(entry->kind_storage);
+            entry->kind_storage = NULL;
+        }
+        if (entry->label_storage) {
+            cep_free(entry->label_storage);
+            entry->label_storage = NULL;
+        }
+        memset(&entry->desc, 0, sizeof(entry->desc));
+    }
+    CEP_ORGAN_REGISTRY.count = 0;
+    CEP_ORGAN_REGISTRY.root = NULL;
+    CEP_ORGAN_REGISTRY.bootstrapped = false;
+}
+
+static void cep_organ_report_issue(const char* stage, const char* detail) {
+    char note[160];
+    if (!stage) {
+        stage = "organ";
+    }
+    if (!detail) {
+        detail = "";
+    }
+    int written = snprintf(note, sizeof note, "organ:%s detail=%s", stage, detail);
+    if (written <= 0) {
+        snprintf(note, sizeof note, "organ:%s", stage);
+    }
+    (void)cep_heartbeat_stage_note(note);
+    printf("[organ] %s\n", note);
+    fflush(stdout);
+}
+
+static void cep_organ_mark_subtree_veiled(cepCell* cell) {
+    if (!cell) {
+        return;
+    }
+
+    cell->metacell.veiled = 1u;
+    if (cep_cell_is_normal(cell)) {
+        cell->created = 0;
+        for (cepCell* child = cep_cell_first_all(cell);
+             child;
+             child = cep_cell_next_all(cell, child)) {
+            cep_organ_mark_subtree_veiled(child);
+        }
+    }
+}
+
 static char* cep_organ_strdup(const char* text) {
     if (!text || !*text) {
         return NULL;
@@ -177,7 +228,26 @@ static bool cep_organ_spec_matches_string(const cepCell* spec, const cepDT* fiel
         return false;
     }
 
-    return strlen(stored) + 1u == data->size && strcmp(stored, expected) == 0;
+    bool match = strlen(stored) + 1u == data->size && strcmp(stored, expected) == 0;
+    if (!match) {
+        char detail[128];
+        size_t field_tag_len = 0u;
+        const char* field_tag = (field && cep_dt_is_valid(field))
+                              ? cep_namepool_lookup(field->tag, &field_tag_len)
+                              : NULL;
+        if (!field_tag) {
+            field_tag = "<unknown>";
+            field_tag_len = strlen(field_tag);
+        }
+        snprintf(detail,
+                 sizeof detail,
+                 "field=%.*s stored=\"%s\"",
+                 (int)field_tag_len,
+                 field_tag,
+                 stored ? stored : "<null>");
+        cep_organ_report_issue("publish:spec-string", detail);
+    }
+    return match;
 }
 
 static bool cep_organ_spec_matches_entry(const cepOrganEntry* entry, cepCell* spec) {
@@ -186,21 +256,27 @@ static bool cep_organ_spec_matches_entry(const cepOrganEntry* entry, cepCell* sp
     }
 
     if (!cep_organ_spec_matches_dt(spec, dt_store_field(), &entry->desc.store)) {
+        cep_organ_report_issue("publish:spec-store", entry->desc.kind);
         return false;
     }
     if (!cep_organ_spec_matches_dt(spec, dt_validator_field(), &entry->desc.validator)) {
+        cep_organ_report_issue("publish:spec-validator", entry->desc.kind);
         return false;
     }
     if (!cep_organ_spec_matches_dt(spec, dt_ctor_field(), &entry->desc.constructor)) {
+        cep_organ_report_issue("publish:spec-ctor", entry->desc.kind);
         return false;
     }
     if (!cep_organ_spec_matches_dt(spec, dt_dtor_field(), &entry->desc.destructor)) {
+        cep_organ_report_issue("publish:spec-dtor", entry->desc.kind);
         return false;
     }
     if (!cep_organ_spec_matches_string(spec, dt_kind_field(), entry->desc.kind)) {
+        cep_organ_report_issue("publish:spec-kind", entry->desc.kind);
         return false;
     }
     if (!cep_organ_spec_matches_string(spec, dt_label_field(), entry->desc.label)) {
+        cep_organ_report_issue("publish:spec-label", entry->desc.kind);
         return false;
     }
 
@@ -209,15 +285,18 @@ static bool cep_organ_spec_matches_entry(const cepOrganEntry* entry, cepCell* sp
 
 static bool cep_organ_publish_entry(const cepOrganEntry* entry) {
     if (!entry) {
+        cep_organ_report_issue("publish:entry", "null");
         return false;
     }
 
     if (!cep_organ_runtime_bootstrap()) {
+        cep_organ_report_issue("publish:bootstrap", entry->desc.kind);
         return false;
     }
 
     cepCell* organs_root = CEP_ORGAN_REGISTRY.root;
     if (!organs_root) {
+        cep_organ_report_issue("publish:root", entry->desc.kind);
         return false;
     }
 
@@ -225,8 +304,28 @@ static bool cep_organ_publish_entry(const cepOrganEntry* entry) {
     kind_name.domain = cep_namepool_intern_cstr("CEP");
     kind_name.tag = cep_namepool_intern_cstr(entry->desc.kind ? entry->desc.kind : "");
 
-    cepCell* kind_root = cep_cell_ensure_dictionary_child(organs_root, &kind_name, CEP_STORAGE_RED_BLACK_T);
+    cepCell* writable_root = organs_root;
+    cepStore* root_store = NULL;
+    if (!cep_cell_require_store(&writable_root, &root_store)) {
+        cep_organ_report_issue("publish:store", entry->desc.kind);
+        return false;
+    }
+
+    unsigned root_writable_before = root_store->writable;
+    if (!root_store->writable) {
+        root_store->writable = 1u;
+    }
+
+    cepCell* kind_root = cep_cell_ensure_dictionary_child(writable_root, &kind_name, CEP_STORAGE_RED_BLACK_T);
+
+    if (!root_writable_before) {
+        root_store->writable = root_writable_before;
+    }
+
+    CEP_ORGAN_REGISTRY.root = writable_root;
+
     if (!kind_root) {
+        cep_organ_report_issue("publish:kind-root", entry->desc.kind);
         return false;
     }
 
@@ -234,43 +333,80 @@ static bool cep_organ_publish_entry(const cepOrganEntry* entry) {
     cepCell* existing = cep_cell_find_by_name(kind_root, &spec_name);
     if (existing) {
         existing = cep_cell_resolve(existing);
-        return cep_organ_spec_matches_entry(entry, existing);
+        if (existing && cep_organ_spec_matches_entry(entry, existing)) {
+            return true;
+        }
+        if (existing) {
+            cep_cell_remove_hard(existing, NULL);
+        }
     }
 
-    cepTxn txn;
-    if (!cep_txn_begin(kind_root, &spec_name, CEP_DTAW("CEP", "dictionary"), &txn)) {
+    if (cep_cell_is_immutable(kind_root)) {
+        cep_organ_report_issue("publish:kind-immutable", entry->desc.kind);
         return false;
     }
 
-    bool ok = true;
+    writable_root = kind_root;
+    root_store = NULL;
+    if (!cep_cell_require_store(&writable_root, &root_store) || !root_store) {
+        cep_organ_report_issue("publish:kind-store", entry->desc.kind);
+        return false;
+    }
 
-    ok = ok && cep_organ_spec_write_dt(txn.root, dt_store_field(), &entry->desc.store);
-    ok = ok && cep_organ_spec_write_dt(txn.root, dt_validator_field(), &entry->desc.validator);
+    unsigned writable_before = root_store->writable;
+    if (!root_store->writable) {
+        root_store->writable = 1u;
+    }
+
+    cepCell* spec = cep_cell_add_dictionary(writable_root,
+                                            &spec_name,
+                                            0,
+                                            CEP_DTAW("CEP", "dictionary"),
+                                            CEP_STORAGE_RED_BLACK_T);
+
+    if (!writable_before) {
+        root_store->writable = writable_before;
+    }
+
+    if (!spec) {
+        cep_organ_report_issue("publish:spec-create", entry->desc.kind);
+        return false;
+    }
+
+    if (!cep_cell_require_dictionary_store(&spec)) {
+        cep_organ_report_issue("publish:spec-store", entry->desc.kind);
+        cep_cell_remove_hard(spec, NULL);
+        return false;
+    }
+
+    cep_organ_mark_subtree_veiled(spec);
+
+    bool ok = true;
+    ok = ok && cep_organ_spec_write_dt(spec, dt_store_field(), &entry->desc.store);
+    ok = ok && cep_organ_spec_write_dt(spec, dt_validator_field(), &entry->desc.validator);
     if (cep_dt_is_valid(&entry->desc.constructor)) {
-        ok = ok && cep_organ_spec_write_dt(txn.root, dt_ctor_field(), &entry->desc.constructor);
+        ok = ok && cep_organ_spec_write_dt(spec, dt_ctor_field(), &entry->desc.constructor);
     }
     if (cep_dt_is_valid(&entry->desc.destructor)) {
-        ok = ok && cep_organ_spec_write_dt(txn.root, dt_dtor_field(), &entry->desc.destructor);
+        ok = ok && cep_organ_spec_write_dt(spec, dt_dtor_field(), &entry->desc.destructor);
     }
-    ok = ok && cep_organ_spec_write_string(txn.root, dt_kind_field(), entry->desc.kind);
-    ok = ok && cep_organ_spec_write_string(txn.root, dt_label_field(), entry->desc.label);
-
-    if (ok) {
-        cepSealOptions seal = { .recursive = true };
-        ok = cep_branch_seal_immutable(txn.root, seal);
-    }
-    if (ok) {
-        ok = cep_txn_mark_ready(&txn);
-    }
-    if (ok) {
-        ok = cep_txn_commit(&txn);
-    }
+    ok = ok && cep_organ_spec_write_string(spec, dt_kind_field(), entry->desc.kind);
+    ok = ok && cep_organ_spec_write_string(spec, dt_label_field(), entry->desc.label);
 
     if (!ok) {
-        cep_txn_abort(&txn);
+        cep_organ_report_issue("publish:spec-write", entry->desc.kind);
+        cep_cell_remove_hard(spec, NULL);
+        return false;
     }
 
-    return ok;
+    cepSealOptions seal = { .recursive = true };
+    if (!cep_branch_seal_immutable(spec, seal)) {
+        cep_organ_report_issue("publish:seal", entry->desc.kind);
+        cep_cell_remove_hard(spec, NULL);
+        return false;
+    }
+
+    return true;
 }
 
 static bool cep_organ_validate_store_matches_kind(const cepDT* store, const char* kind) {
@@ -393,7 +529,14 @@ static bool cep_organ_enqueue_signal(const cepDT* signal_dt, const cepCell* root
  * initialised. */
 bool cep_organ_runtime_bootstrap(void) {
     if (CEP_ORGAN_REGISTRY.bootstrapped && CEP_ORGAN_REGISTRY.root) {
-        return true;
+        cepCell* resolved = cep_cell_resolve(CEP_ORGAN_REGISTRY.root);
+        if (resolved && cep_cell_is_normal(resolved) && resolved->store) {
+            CEP_ORGAN_REGISTRY.root = resolved;
+            return true;
+        }
+
+        CEP_ORGAN_REGISTRY.root = NULL;
+        CEP_ORGAN_REGISTRY.bootstrapped = false;
     }
 
     if (!cep_heartbeat_bootstrap()) {
@@ -411,10 +554,25 @@ bool cep_organ_runtime_bootstrap(void) {
         if (!sys_root) {
             return false;
         }
-        organs_root = cep_cell_ensure_dictionary_child(sys_root, dt_organs_root_name(), CEP_STORAGE_RED_BLACK_T);
+        cepDT organ_dt = cep_organ_store_dt("sys_organs");
+        cepDT name_copy = *dt_organs_root_name();
+        organs_root = cep_cell_add_dictionary(sys_root, &name_copy, 0, &organ_dt, CEP_STORAGE_RED_BLACK_T);
         if (!organs_root) {
             return false;
         }
+    } else {
+        cepCell* resolved = cep_cell_resolve(organs_root);
+        if (!resolved) {
+            return false;
+        }
+        if (!cep_cell_require_dictionary_store(&resolved)) {
+            return false;
+        }
+        if (resolved->store) {
+            cepDT organ_dt = cep_organ_store_dt("sys_organs");
+            cep_store_set_dt(resolved->store, &organ_dt);
+        }
+        organs_root = resolved;
     }
 
     CEP_ORGAN_REGISTRY.root = organs_root;
@@ -427,40 +585,49 @@ bool cep_organ_runtime_bootstrap(void) {
  * false when validation fails or publication cannot complete. */
 bool cep_organ_register(const cepOrganDescriptor* descriptor) {
     if (!descriptor || !descriptor->kind || !*descriptor->kind) {
+        cep_organ_report_issue("register:descriptor", "missing-kind");
         return false;
     }
 
     if (!cep_dt_is_valid(&descriptor->store) || !cep_dt_is_valid(&descriptor->validator)) {
+        cep_organ_report_issue("register:descriptor", "invalid-dt");
         return false;
     }
 
     if (!cep_organ_runtime_bootstrap()) {
+        cep_organ_report_issue("register:bootstrap", descriptor->kind);
         return false;
     }
 
     if (!cep_organ_validate_store_matches_kind(&descriptor->store, descriptor->kind)) {
+        cep_organ_report_issue("register:store-mismatch", descriptor->kind);
         return false;
     }
 
     cepOrganEntry* existing = cep_organ_registry_find_by_store(&descriptor->store);
     if (existing) {
         if (cep_dt_compare(&existing->desc.validator, &descriptor->validator) != 0) {
+            cep_organ_report_issue("register:validator-mismatch", descriptor->kind);
             return false;
         }
         if (cep_dt_compare(&existing->desc.constructor, &descriptor->constructor) != 0) {
+            cep_organ_report_issue("register:ctor-mismatch", descriptor->kind);
             return false;
         }
         if (cep_dt_compare(&existing->desc.destructor, &descriptor->destructor) != 0) {
+            cep_organ_report_issue("register:dtor-mismatch", descriptor->kind);
             return false;
         }
         if ((existing->desc.label && descriptor->label && strcmp(existing->desc.label, descriptor->label) == 0) ||
             (!existing->desc.label && (!descriptor->label || !*descriptor->label))) {
             return true;
         }
+        cep_organ_report_issue("register:label-mismatch", descriptor->kind);
         return false;
     }
 
     if (!cep_organ_registry_ensure_capacity()) {
+        cep_organ_report_issue("register:capacity", descriptor->kind);
         return false;
     }
 
@@ -478,6 +645,7 @@ bool cep_organ_register(const cepOrganDescriptor* descriptor) {
     if (!cep_organ_publish_entry(&entry)) {
         cep_free(entry.kind_storage);
         cep_free(entry.label_storage);
+        cep_organ_report_issue("register:publish", descriptor->kind);
         return false;
     }
 

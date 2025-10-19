@@ -355,83 +355,80 @@ static inline cepCell* octree_last(cepOctree* octree) {
 }
 
 
+static inline cepCell* octree_next(cepCell* cell);
+
 static inline bool octree_traverse(cepOctree* octree, cepTraverse func, void* context, cepEntry* entry) {
     assert(octree && func);
 
-    cepOctreeNode* onode = &octree->root;
+    if (!octree->store.chdCount)
+        return true;
+
+    cepEntry localEntry;
+    if (!entry) {
+        CEP_0(&localEntry);
+        entry = &localEntry;
+    } else {
+        CEP_0(entry);
+    }
 
     entry->parent = octree->store.owner;
-    entry->depth  = 0;
-    do {
-        // Process all cells in the current node
-        for (cepOctreeList* list = onode->list;  list;  list = list->next) {
-            if (entry->next) {
-                entry->prev   = entry->cell;
-                entry->cell = entry->next;
-                entry->next   = &list->cell;
-                if (!func(entry, context))
-                    return true;
-            } else {
-                entry->next = &list->cell;
-            }
-            entry->position++;
-        }
+    entry->depth = 0;
+    entry->position = 0;
+    entry->prev = NULL;
 
-        // Move to the first child node if available
-        bool hasChild = false;
-        for (unsigned n = 0;  n < 8;  n++) {
-            if (onode->children[n]) {
-                onode = onode->children[n];
-                hasChild = true;
-                break;
-            }
-        }
-        if (!hasChild) {
-            // Backtrack to the next sibling or parent
-            while (onode && onode->parent) {
-                unsigned n = onode->index + 1;
-                while (n < 8  &&  !onode->parent->children[n]) {
-                    n++;
-                }
-                if (n < 8) {
-                    onode = onode->parent->children[n];
-                    break;
-                }
+    cepCell* cell = octree_first(octree);
+    cepCell* next = cell ? octree_next(cell) : NULL;
 
-                onode = onode->parent;
-            }
-        }
-    } while (onode);
+    while (cell) {
+        entry->cell = cell;
+        entry->next = next;
+        if (!func(entry, context))
+            return false;
+        entry->prev = cell;
+        entry->position++;
 
-    entry->prev   = entry->cell;
-    entry->cell = entry->next;
-    entry->next   = NULL;
-    return func(entry, context);
+        cell = next;
+        next = cell ? octree_next(cell) : NULL;
+    }
+
+    return true;
 }
 
 
 static inline cepCell* octree_find_by_name(cepOctree* octree, const cepDT* name) {
-    cepEntry entry = {0};
-    if (!octree_traverse(octree, (cepFunc) rb_traverse_func_break_at_name, cep_v2p(name), &entry))
-        return entry.cell;
+    assert(octree && name);
+
+    for (cepCell* cell = octree_first(octree); cell; cell = octree_next(cell)) {
+        if (cep_cell_name_is(cell, name))
+            return cell;
+    }
     return NULL;
 }
 
 
 static inline cepCell* octree_find_by_key(cepOctree* octree, cepCell* key, cepCompare compare, void* context) {
-    (void)context;
+    assert(octree && key && compare);
 
-    cepEntry entry = {0};
-    if (!octree_traverse(octree, (cepFunc) compare, key, &entry))
-        return entry.cell;
+    for (cepCell* cell = octree_first(octree); cell; cell = octree_next(cell)) {
+        if (compare(key, cell, context) == 0)
+            return cell;
+    }
     return NULL;
 }
 
 
 static inline cepCell* octree_find_by_position(cepOctree* octree, size_t position) {
-    cepEntry entry = {0};
-    if (!octree_traverse(octree, (void*) rb_traverse_func_break_at_position, cep_v2p(position), &entry))
-        return entry.cell;
+    assert(octree);
+
+    if (position >= octree->store.chdCount)
+        return NULL;
+
+    size_t index = 0;
+    for (cepCell* cell = octree_first(octree); cell; cell = octree_next(cell)) {
+        if (index == position)
+            return cell;
+        index++;
+    }
     return NULL;
 }
 

@@ -63,6 +63,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_identifier.c',
   'src/l0_kernel/cep_ops.c',
   'src/l0_kernel/cep_organ.c',
+  'src/enzymes/cep_l0_organs.c',
   'src/enzymes/cep_cell_operations.c',
   'src/l0_kernel/stream/cep_stream_stdio.c',
   'src/l0_kernel/stream/cep_stream_effects.c',
@@ -126,6 +127,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_cells_randomized.c',
     'src/test/l0_kernel/test_locking_randomized.c',
     'src/test/l0_kernel/test_scheduler_randomized.c',
+    'src/test/l0_kernel/test_organ_validators.c',
     'src/test/l0_kernel/test_serialization_randomized.c',
     'src/test/l0_kernel/test_streams_randomized.c',
     )

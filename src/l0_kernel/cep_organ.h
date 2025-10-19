@@ -28,6 +28,7 @@ typedef struct {
 } cepOrganRoot;
 
 bool    cep_organ_runtime_bootstrap(void);
+void    cep_organ_runtime_reset(void);
 bool    cep_organ_register(const cepOrganDescriptor* descriptor);
 const cepOrganDescriptor* cep_organ_descriptor(const cepDT* store_kind);
 bool    cep_organ_root_for_cell(const cepCell* cell, cepOrganRoot* out);

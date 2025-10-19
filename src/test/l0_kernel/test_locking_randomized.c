@@ -16,9 +16,18 @@
 #include "watchdog.h"
 
 #include "cep_cell.h"
+#include <stdio.h>
 
 #define TEST_TIMEOUT_SECONDS 60u
 #define LOCK_ITERATIONS      64u
+
+static void assert_child_attached(const cepCell* parent, const cepCell* child) {
+    munit_assert_not_null(parent);
+    munit_assert_not_null(child);
+    munit_assert_not_null(parent->store);
+    munit_assert_true(cep_cell_child_belongs_to(parent, child));
+    munit_assert_ptr_equal(child->parent, parent->store);
+}
 
 typedef struct {
     TestWatchdog* watchdog;
@@ -48,6 +57,7 @@ static cepCell* ensure_child(LockingFixture* fix) {
                                             sizeof seed,
                                             sizeof seed);
         munit_assert_not_null(added);
+        assert_child_attached(&fix->parent, added);
     }
 
     size_t count = cep_cell_children(&fix->parent);
@@ -56,6 +66,7 @@ static cepCell* ensure_child(LockingFixture* fix) {
         index = count - 1u;
     cepCell* child = cep_cell_find_by_position(&fix->parent, index);
     munit_assert_not_null(child);
+    assert_child_attached(&fix->parent, child);
     return child;
 }
 
@@ -78,6 +89,7 @@ static void exercise_store_lock_sequence(LockingFixture* fix) {
 
     if (before) {
         cepCell* victim = cep_cell_first(&fix->parent);
+        assert_child_attached(&fix->parent, victim);
         cepDT victim_name = *cep_cell_get_name(victim);
         cep_cell_delete_hard(victim);
         munit_assert_not_null(cep_cell_find_by_name(&fix->parent, &victim_name));
@@ -93,6 +105,7 @@ static void exercise_store_lock_sequence(LockingFixture* fix) {
                                   sizeof payload,
                                   sizeof payload);
     munit_assert_not_null(inserted);
+    assert_child_attached(&fix->parent, inserted);
     munit_assert_size(cep_cell_children(&fix->parent), ==, before + 1u);
 
     cep_cell_delete_hard(inserted);
@@ -101,6 +114,7 @@ static void exercise_store_lock_sequence(LockingFixture* fix) {
 
 static void exercise_data_lock_sequence(LockingFixture* fix) {
     cepCell* child = ensure_child(fix);
+    assert_child_attached(&fix->parent, child);
 
     cepLockToken token;
     munit_assert_true(cep_data_lock(child, &token));
@@ -137,8 +151,10 @@ static void random_unlock_cleanup(LockingFixture* fix) {
         index = count - 1u;
 
     cepCell* child = cep_cell_find_by_position(&fix->parent, index);
-    if (child)
+    if (child) {
+        assert_child_attached(&fix->parent, child);
         cep_cell_delete_hard(child);
+    }
 }
 
 void* test_locking_randomized_setup(const MunitParameter params[], void* user_data) {
@@ -168,6 +184,7 @@ void test_locking_randomized_tear_down(void* fixture) {
 
     while (cep_cell_children(&fix->parent)) {
         cepCell* child = cep_cell_first(&fix->parent);
+        assert_child_attached(&fix->parent, child);
         cep_cell_delete_hard(child);
     }
 
@@ -193,5 +210,15 @@ MunitResult test_locking_randomized(const MunitParameter params[], void* fixture
         test_watchdog_signal(fix->watchdog);
     }
 
+    size_t count = 0u;
+    for (cepCell* child = cep_cell_first(&fix->parent);
+         child;
+         child = cep_cell_next(&fix->parent, child)) {
+        assert_child_attached(&fix->parent, child);
+        ++count;
+    }
+    munit_assert_size(count, ==, cep_cell_children(&fix->parent));
+    printf("[random:locking] final children=%zu\n", count);
+    fflush(stdout);
     return MUNIT_OK;
 }
