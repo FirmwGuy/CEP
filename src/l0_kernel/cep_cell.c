@@ -2930,8 +2930,11 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
     }
 
     if (existing) {
-        if (cep_cell_structural_equal(existing, child))
+        if (cep_cell_structural_equal(existing, child)) {
+            cep_cell_finalize_hard(child);
+            CEP_0(child);
             return existing;
+        }
         if (store->indexing != CEP_INDEX_BY_INSERTION)
             return cep_store_replace_child(store, existing, child);
         existing = NULL;
@@ -3092,8 +3095,11 @@ cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
 
     if (store->indexing == CEP_INDEX_BY_INSERTION && store->chdCount) {
         cepCell* existing = prepend? store_first_child(store): store_last_child(store);
-        if (existing && cep_cell_structural_equal(existing, child))
+        if (existing && cep_cell_structural_equal(existing, child)) {
+            cep_cell_finalize_hard(child);
+            CEP_0(child);
             return existing;
+        }
     }
 
     cepCell* cell;
@@ -3716,7 +3722,10 @@ static bool cep_txn_update_state(cepCell* root, const char* state) {
     bool restore_bucket_writable = false;
     unsigned bucket_writable_before = 0u;
 
-    if (cep_cell_require_store(&writable_bucket, &bucket_store) && bucket_store && !bucket_store->writable) {
+    if (!cep_cell_require_store(&writable_bucket, &bucket_store) || !bucket_store)
+        return false;
+
+    if (!bucket_store->writable) {
         bucket_writable_before = bucket_store->writable;
         bucket_store->writable = 1u;
         restore_bucket_writable = true;
@@ -3725,38 +3734,68 @@ static bool cep_txn_update_state(cepCell* root, const char* state) {
     unsigned bucket_immutable_before = writable_bucket->metacell.immutable;
     writable_bucket->metacell.immutable = 0u;
 
+    size_t len = strlen(state) + 1u;
+
     cepCell* existing = cep_cell_find_by_name(writable_bucket, &state_field);
     if (existing) {
-        cep_cell_remove_hard(existing, NULL);
+        existing = cep_link_pull(existing);
+        if (existing && existing->data) {
+            const cepData* data = existing->data;
+            const void* payload = cep_data_payload(data);
+            if (payload && data->size == len && memcmp(payload, state, len) == 0) {
+                writable_bucket->metacell.immutable = bucket_immutable_before;
+                if (restore_bucket_writable && bucket_store) {
+                    bucket_store->writable = bucket_writable_before;
+                }
+                return true;
+            }
+        }
     }
 
-    cepCell* inserted = NULL;
-    size_t len = strlen(state) + 1u;
+    cepCell temp = {0};
+    bool initialized = false;
+
     if (len <= sizeof(((cepData*)0)->value)) {
-        inserted = cep_dict_add_value(writable_bucket, &state_field, &payload_type, (void*)state, len, len);
+        cep_cell_initialize_value(&temp, &state_field, &payload_type, (void*)state, len, len);
+        initialized = true;
     } else {
         char* copy = cep_malloc(len);
-        if (!copy) {
-            if (restore_bucket_writable && bucket_store) {
-                bucket_store->writable = bucket_writable_before;
-            }
-            writable_bucket->metacell.immutable = bucket_immutable_before;
-            return false;
-        }
+        if (!copy)
+            goto restore_fail;
         memcpy(copy, state, len);
-        inserted = cep_dict_add_data(writable_bucket, &state_field, &payload_type, copy, len, len, cep_free);
-        if (!inserted) {
-            cep_free(copy);
-        }
+        cep_cell_initialize_data(&temp, &state_field, &payload_type, copy, len, len, cep_free);
+        initialized = true;
     }
+
+    temp.metacell.immutable = 0u;
+
+    cepCell* inserted = NULL;
+    if (existing && bucket_store) {
+        inserted = cep_store_replace_child(bucket_store, existing, &temp);
+    } else {
+        inserted = cep_cell_add(writable_bucket, 0, &temp);
+    }
+
+    if (!inserted) {
+        if (initialized)
+            cep_cell_finalize_hard(&temp);
+        goto restore_fail;
+    }
+
+    inserted->metacell.immutable = 0u;
+    if (inserted->data)
+        inserted->data->writable = 1u;
 
     writable_bucket->metacell.immutable = bucket_immutable_before;
-
-    if (restore_bucket_writable && bucket_store) {
+    if (restore_bucket_writable && bucket_store)
         bucket_store->writable = bucket_writable_before;
-    }
+    return true;
 
-    return inserted != NULL;
+restore_fail:
+    writable_bucket->metacell.immutable = bucket_immutable_before;
+    if (restore_bucket_writable && bucket_store)
+        bucket_store->writable = bucket_writable_before;
+    return false;
 }
 
 static const cepCell* cep_cell_top_veiled_ancestor(const cepCell* cell) {

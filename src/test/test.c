@@ -85,7 +85,6 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
-#if 0  /* Temporarily disabled while OPS timeout is investigated */
     {
         "/ops",
         test_ops,
@@ -94,7 +93,6 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
-#endif
     {
         "/heartbeat/single",
         test_heartbeat_single,
