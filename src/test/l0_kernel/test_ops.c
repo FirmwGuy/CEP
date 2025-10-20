@@ -218,6 +218,8 @@ static void register_enzyme(const cepDT* signal_dt, cepEnzyme callback) {
 
     munit_assert_int(cep_enzyme_register(registry, query, &descriptor), ==, CEP_ENZYME_SUCCESS);
     cep_enzyme_registry_activate_pending(registry);
+    munit_assert_size(cep_enzyme_registry_size(registry), >=, 1u);
+
 }
 
 static void unregister_enzyme(const cepDT* signal_dt, cepEnzyme callback) {
@@ -268,6 +270,7 @@ static void test_ops_await_continuation_case(void) {
 
     cepCell* op_cell = ops_lookup_cell(oid);
     munit_assert_not_null(op_cell);
+    munit_assert_int(cep_cell_bind_enzyme(op_cell, &cont_signal, false), ==, CEP_ENZYME_SUCCESS);
     cepDT watchers_name = cep_ops_make_dt("watchers");
     cepCell* watchers = cep_cell_find_by_name(op_cell, &watchers_name);
     munit_assert_not_null(watchers);
@@ -286,6 +289,7 @@ static void test_ops_await_continuation_case(void) {
     munit_assert_int(ops_continuation_calls, ==, 1);
     munit_assert_null(cep_cell_first_all(watchers));
 
+    munit_assert_int(cep_cell_unbind_enzyme(op_cell, &cont_signal), ==, CEP_ENZYME_SUCCESS);
     unregister_enzyme(&cont_signal, ops_cont_enzyme);
 
     test_runtime_shutdown();
@@ -319,6 +323,7 @@ static void test_ops_ttl_timeout_case(void) {
     cepDT watchers_name = cep_ops_make_dt("watchers");
     cepCell* watchers = cep_cell_find_by_name(op_cell, &watchers_name);
     munit_assert_not_null(watchers);
+    munit_assert_int(cep_cell_bind_enzyme(op_cell, &tmo_signal, false), ==, CEP_ENZYME_SUCCESS);
     cepCell* watcher_entry = cep_cell_first_all(watchers);
     munit_assert_not_null(watcher_entry);
     munit_assert_false(ops_child_bool(watcher_entry, "armed"));
@@ -331,6 +336,7 @@ static void test_ops_ttl_timeout_case(void) {
     munit_assert_int(ops_timeout_calls, ==, 1);
     munit_assert_null(cep_cell_first_all(watchers));
 
+    munit_assert_int(cep_cell_unbind_enzyme(op_cell, &tmo_signal), ==, CEP_ENZYME_SUCCESS);
     unregister_enzyme(&tmo_signal, ops_timeout_enzyme);
 
     test_runtime_shutdown();

@@ -8,8 +8,6 @@
 
 #include "cep_heartbeat.h"
 
-#include <stdio.h>
-
 
 
 
