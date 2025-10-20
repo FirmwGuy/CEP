@@ -463,7 +463,7 @@ static cepPath* cep_organ_make_target_path(const cepCell* cell) {
     }
 
     unsigned depth = 0u;
-    for (const cepCell* current = cell; current; current = cep_cell_parent(current)) {
+    for (const cepCell* current = cell; current && cep_cell_parent(current); current = cep_cell_parent(current)) {
         ++depth;
     }
     if (depth == 0u) {
@@ -726,7 +726,11 @@ bool cep_organ_request_validation(const cepCell* cell) {
         return false;
     }
 
-    cepDT signal = cep_ops_make_dt("op/vl");
+    if (!cep_dt_is_valid(&info.descriptor->validator)) {
+        return false;
+    }
+
+    cepDT signal = cep_dt_clean(&info.descriptor->validator);
     return cep_organ_enqueue_signal(&signal, info.root);
 }
 

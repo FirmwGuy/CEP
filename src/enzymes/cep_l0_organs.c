@@ -918,14 +918,6 @@ bool cep_l0_organs_register(cepEnzymeRegistry* registry) {
 
     cep_l0_organs_initialise();
 
-    cepPathConst1 query = {
-        .length = 1u,
-        .capacity = 1u,
-        .past = {
-            { .dt = cep_ops_make_dt("op/vl"), .timestamp = 0u },
-        },
-    };
-
     for (size_t i = 0; i < CEP_L0_ORGAN_COUNT; ++i) {
         cepL0OrganDefinition* def = &CEP_L0_ORGAN_DEFS[i];
         if (!def->validator_ready) {
@@ -934,6 +926,14 @@ bool cep_l0_organs_register(cepEnzymeRegistry* registry) {
             def->validator_name = cep_ops_make_dt(buffer);
             def->validator_ready = true;
         }
+
+        cepPathConst1 query = {
+            .length = 1u,
+            .capacity = 1u,
+            .past = {
+                { .dt = def->validator_name, .timestamp = 0u },
+            },
+        };
 
         cepEnzymeDescriptor descriptor = {
             .name    = def->validator_name,
