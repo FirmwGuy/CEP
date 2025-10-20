@@ -101,7 +101,7 @@ static void organ_assert_latest_success(const char* expected_target) {
 
 MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;
-    (void)user_data_or_fixture;
+    TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
 
     organ_prepare_runtime();
 
@@ -116,16 +116,17 @@ MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* 
     organ_process_beat();
 
     size_t after_count = cep_cell_children(ops_root);
-    munit_assert_size(after_count, ==, before_count + 1u);
+   munit_assert_size(after_count, ==, before_count + 1u);
 
     organ_assert_latest_success("/sys/state");
+    test_watchdog_signal(watchdog);
     test_runtime_shutdown();
     return MUNIT_OK;
 }
 
 MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;
-    (void)user_data_or_fixture;
+    TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
 
     organ_prepare_runtime();
 
@@ -142,6 +143,7 @@ MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* use
     munit_assert_size(after_count, ==, before_count + 1u);
 
     organ_assert_latest_success("/rt/ops");
+    test_watchdog_signal(watchdog);
     test_runtime_shutdown();
     return MUNIT_OK;
 }

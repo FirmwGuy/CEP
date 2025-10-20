@@ -16,6 +16,22 @@
 #include <stdio.h>
 #include <string.h>
 
+#define STAGEE_WATCHDOG_DEFAULT_SECONDS 240u
+
+/* Stage E suites arm a watchdog so hang regressions end quickly; this setup resolves
+   the requested timeout (allowing per-test overrides) and returns the armed fixture. */
+void* test_stagee_watchdog_setup(const MunitParameter params[], void* user_data) {
+    (void)user_data;
+    unsigned seconds = test_watchdog_resolve_timeout(params, STAGEE_WATCHDOG_DEFAULT_SECONDS);
+    return test_watchdog_create(seconds);
+}
+
+/* Stage E watchdog tear-down stops the background watchdog thread to avoid leaking
+   workers between suites once the test has either completed or timed out. */
+void test_stagee_watchdog_tear_down(void* fixture) {
+    test_watchdog_destroy((TestWatchdog*)fixture);
+}
+
 typedef struct {
     unsigned    length;
     unsigned    capacity;
@@ -1353,16 +1369,20 @@ MunitResult test_heartbeat_single(const MunitParameter params[], void* user_data
 
 MunitResult test_heartbeat_bootstrap(const MunitParameter params[], void* user_data_or_fixture) {
     test_boot_cycle_prepare(params);
-    (void)user_data_or_fixture;
+    TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
     MunitResult result = test_heartbeat_boot_timeline(params, NULL);
     if (result != MUNIT_OK) {
+        test_watchdog_signal(watchdog);
         return result;
     }
 
     result = test_heartbeat_shutdown_timeline(params, NULL);
     if (result != MUNIT_OK) {
+        test_watchdog_signal(watchdog);
         return result;
     }
 
-    return test_heartbeat_boot_awaiters(params, NULL);
+    result = test_heartbeat_boot_awaiters(params, NULL);
+    test_watchdog_signal(watchdog);
+    return result;
 }

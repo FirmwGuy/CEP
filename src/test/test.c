@@ -104,24 +104,24 @@ MunitTest tests[] = {
     {
         "/heartbeat/bootstrap",
         test_heartbeat_bootstrap,
-        NULL,
-        NULL,
+        test_stagee_watchdog_setup,
+        test_stagee_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
     {
         "/organ/sys_state",
         test_organ_sys_state_validator,
-        NULL,
-        NULL,
+        test_stagee_watchdog_setup,
+        test_stagee_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
     {
         "/organ/rt_ops",
         test_organ_rt_ops_validator,
-        NULL,
-        NULL,
+        test_stagee_watchdog_setup,
+        test_stagee_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },

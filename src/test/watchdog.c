@@ -20,30 +20,53 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <limits.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #   include <windows.h>
 #   include <process.h>
 #else
 #   include <pthread.h>
-#   include <time.h>
 #   include <unistd.h>
 #endif
 
 enum {
-    WATCHDOG_MAX_TIMEOUT_SECONDS = 30u,
+    WATCHDOG_MAX_TIMEOUT_SECONDS = 300u,
     WATCHDOG_MIN_TIMEOUT_SECONDS = 1u,
 };
 
 struct TestWatchdog {
     atomic_bool done;
     unsigned    timeoutSeconds;
+    bool        trace;
+    time_t      armedAt;
 #if defined(_WIN32)
     HANDLE      thread;
 #else
     pthread_t   thread;
 #endif
 };
+
+static bool watchdog_should_trace(void) {
+    const char* value = getenv("TEST_WATCHDOG_TRACE");
+    return value && value[0] && value[0] != '0';
+}
+
+static void watchdog_trace(const TestWatchdog* wd, const char* event) {
+    if (!wd || !wd->trace)
+        return;
+    time_t now = time(NULL);
+    unsigned elapsed = 0u;
+    if (now != (time_t)-1 && wd->armedAt != (time_t)-1 && now >= wd->armedAt) {
+        elapsed = (unsigned) difftime(now, wd->armedAt);
+    }
+    fprintf(stderr,
+            "[watchdog] %s elapsed=%us timeout=%us\n",
+            event,
+            elapsed,
+            wd->timeoutSeconds);
+    fflush(stderr);
+}
 
 #if defined(_WIN32)
 static unsigned __stdcall watchdog_thread(void* param) {
@@ -53,6 +76,7 @@ static unsigned __stdcall watchdog_thread(void* param) {
         if (atomic_load_explicit(&wd->done, memory_order_acquire))
             return 0;
     }
+    watchdog_trace(wd, "expired");
     fputs("test timed out after watchdog limit\n", stderr);
     fflush(stderr);
     _Exit(EXIT_FAILURE);
@@ -66,6 +90,7 @@ static void* watchdog_thread(void* param) {
         if (atomic_load_explicit(&wd->done, memory_order_acquire))
             return NULL;
     }
+    watchdog_trace(wd, "expired");
     fputs("test timed out after watchdog limit\n", stderr);
     fflush(stderr);
     _Exit(EXIT_FAILURE);
@@ -86,6 +111,9 @@ static unsigned watchdog_clamp_timeout(unsigned seconds) {
 static void watchdog_start(TestWatchdog* wd, unsigned seconds) {
     atomic_init(&wd->done, false);
     wd->timeoutSeconds = watchdog_clamp_timeout(seconds);
+    wd->armedAt = time(NULL);
+    wd->trace = watchdog_should_trace();
+    watchdog_trace(wd, "armed");
 #if defined(_WIN32)
     uintptr_t handle = _beginthreadex(NULL, 0, watchdog_thread, wd, 0, NULL);
     munit_assert(handle != 0);
@@ -108,6 +136,7 @@ void test_watchdog_signal(TestWatchdog* wd) {
     if (!wd)
         return;
     atomic_store_explicit(&wd->done, true, memory_order_release);
+    watchdog_trace(wd, "cleared");
 }
 
 static void watchdog_stop(TestWatchdog* wd) {
