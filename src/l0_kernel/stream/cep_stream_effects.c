@@ -32,6 +32,11 @@ static size_t                g_stream_intent_count;
 static size_t                g_stream_intent_capacity;
 
 static cepCell* cep_stream_get_intent_list(cepCell* owner) {
+    if (!owner)
+        return NULL;
+    if (!cep_cell_require_dictionary_store(&owner))
+        return NULL;
+
     cepCell* list = cep_cell_find_by_name(owner, dt_intent_name());
     if (!list) {
         cepDT name_copy = *dt_intent_name();
@@ -42,6 +47,11 @@ static cepCell* cep_stream_get_intent_list(cepCell* owner) {
 }
 
 static cepCell* cep_stream_get_outcome_list(cepCell* owner) {
+    if (!owner)
+        return NULL;
+    if (!cep_cell_require_dictionary_store(&owner))
+        return NULL;
+
     cepCell* list = cep_cell_find_by_name(owner, dt_outcome_name());
     if (!list) {
         cepDT name_copy = *dt_outcome_name();
@@ -247,6 +257,10 @@ bool cep_stream_commit_pending(void) {
         cep_stream_record_outcome(intent, ok && written == intent->size, written, resulting_hash);
         cep_free(intent->payload);
         intent->payload = NULL;
+        cep_stream_remove_intent_list_if_empty(intent->stream);
+        intent->stream = NULL;
+        intent->library = NULL;
+        intent->resource = NULL;
     }
 
     g_stream_intent_count = 0;
@@ -263,6 +277,13 @@ void cep_stream_clear_pending(void) {
             intent->intent_cell = NULL;
         }
         cep_stream_remove_intent_list_if_empty(intent->stream);
+        intent->stream = NULL;
+        intent->library = NULL;
+        intent->resource = NULL;
+        intent->payload_hash = 0;
+        intent->expected_hash = 0;
+        intent->idempotency_key = 0;
+        intent->staged_at = 0;
     }
     g_stream_intent_count = 0;
 }
