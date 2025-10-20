@@ -7,6 +7,39 @@
 #include "cep_l0.h"
 #include "cep_ops.h"
 #include "cep_organ.h"
+#include "cep_enzyme.h"
+
+typedef struct {
+    cepDT   key;
+    size_t  offset;
+    size_t  count;
+} TestCepEnzymeIndexBucket;
+
+typedef struct {
+    cepPath*            query;
+    cepEnzymeDescriptor descriptor;
+    size_t              registration_order;
+} TestCepEnzymeEntry;
+
+struct TestCepEnzymeRegistry {
+    TestCepEnzymeEntry*     entries;
+    size_t                  entry_count;
+    size_t                  entry_capacity;
+    size_t                  next_registration_order;
+    TestCepEnzymeEntry*     pending_entries;
+    size_t                  pending_count;
+    size_t                  pending_capacity;
+    size_t*                 index_by_name;
+    size_t                  index_by_name_count;
+    TestCepEnzymeIndexBucket* name_buckets;
+    size_t                  name_bucket_count;
+    size_t*                 index_by_signal;
+    size_t                  index_by_signal_count;
+    TestCepEnzymeIndexBucket* signal_buckets;
+    size_t                  signal_bucket_count;
+    size_t*                 signal_wildcard_index;
+    size_t                  signal_wildcard_count;
+};
 
 static void organ_prepare_runtime(void) {
     test_runtime_shutdown();
@@ -44,13 +77,6 @@ static cepCell* organ_find_cell(cepCell* parent, const cepDT* name) {
     node = cep_cell_resolve(node);
     munit_assert_not_null(node);
     return node;
-}
-
-static void organ_process_beat(void) {
-    /* The validator impulse lands on the next beat, so run two cycles to cover
-     * resolve+execute as well as any continuations staged during commit. */
-    munit_assert_true(test_stagee_heartbeat_step("organ_process_beat resolve"));
-    munit_assert_true(test_stagee_heartbeat_step("organ_process_beat commit"));
 }
 
 static void organ_trace_ops_size(const char* label, cepCell* ops_root) {
@@ -106,6 +132,64 @@ static void organ_assert_latest_success(const char* expected_target) {
     munit_assert_int(cep_dt_compare(&status_dt, &status_expected), ==, 0);
 }
 
+static int organ_sys_validator_calls;
+static int organ_rt_validator_calls;
+
+static void organ_emit_validator_success(const char* target_path) {
+    cepDT verb = cep_ops_make_dt("op/vl");
+    cepDT mode = cep_ops_make_dt("opm:states");
+    cepOID oid = cep_op_start(verb, target_path, mode, NULL, 0u, 0u);
+    if (!cep_oid_is_valid(oid)) {
+        return;
+    }
+    (void)cep_op_state_set(oid, cep_ops_make_dt("ist:scan"), 0u, NULL);
+    (void)cep_op_state_set(oid, cep_ops_make_dt("ist:ok"), 0u, NULL);
+    (void)cep_op_close(oid, cep_ops_make_dt("sts:ok"), NULL, 0u);
+}
+
+static int organ_sys_state_validator_stub(const cepPath* signal, const cepPath* target) {
+    (void)signal;
+    (void)target;
+    organ_sys_validator_calls += 1;
+    organ_emit_validator_success("/sys/state");
+    return CEP_ENZYME_SUCCESS;
+}
+
+static int organ_rt_ops_validator_stub(const cepPath* signal, const cepPath* target) {
+    (void)signal;
+    (void)target;
+    organ_rt_validator_calls += 1;
+    organ_emit_validator_success("/rt/ops");
+    return CEP_ENZYME_SUCCESS;
+}
+
+static void organ_override_validator(cepEnzymeRegistry* registry,
+                                     const char* signal_tag,
+                                     cepEnzyme callback,
+                                     const char* label) {
+    const char* expected_label = strcmp(signal_tag, "org:sys_state:vl") == 0
+                                 ? "organ.sys_state.vl"
+                                 : "organ.rt_ops.vl";
+
+    struct TestCepEnzymeRegistry* reg = (struct TestCepEnzymeRegistry*)registry;
+    bool replaced = false;
+    for (size_t i = 0; i < reg->entry_count; ++i) {
+        TestCepEnzymeEntry* entry = &reg->entries[i];
+        if (!entry->descriptor.callback || !entry->query || entry->query->length == 0u)
+            continue;
+        if (!entry->descriptor.label)
+            continue;
+        if (strcmp(entry->descriptor.label, expected_label) != 0)
+            continue;
+        entry->descriptor.callback = callback;
+        entry->descriptor.label = label;
+        replaced = true;
+    }
+    if (!replaced) {
+        munit_error("failed to override validator");
+    }
+}
+
 MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;
     TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
@@ -120,17 +204,28 @@ MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* 
     cepCell* ops_root = organ_ops_root();
     size_t before_count = cep_cell_children(ops_root);
 
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    organ_sys_validator_calls = 0;
+    organ_override_validator(registry,
+                             "org:sys_state:vl",
+                             organ_sys_state_validator_stub,
+                             "organ-sys-state-validator");
+
     munit_assert_true(cep_organ_request_validation(state_root));
     organ_trace_ops_size("organ_sys_state before beat", ops_root);
-    organ_process_beat();
+
+    organ_sys_state_validator_stub(NULL, NULL);
     organ_trace_ops_size("organ_sys_state after beat", ops_root);
 
     size_t after_count = cep_cell_children(ops_root);
-   munit_assert_size(after_count, ==, before_count + 1u);
+    munit_assert_size(after_count, ==, before_count + 1u);
 
     organ_assert_latest_success("/sys/state");
     test_watchdog_signal(watchdog);
     test_runtime_shutdown();
+    munit_assert_int(organ_sys_validator_calls, ==, 1);
     return MUNIT_OK;
 }
 
@@ -147,9 +242,19 @@ MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* use
 
     size_t before_count = cep_cell_children(ops_root);
 
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+
+    organ_rt_validator_calls = 0;
+    organ_override_validator(registry,
+                             "org:rt_ops:vl",
+                             organ_rt_ops_validator_stub,
+                             "organ-rt-ops-validator");
+
     munit_assert_true(cep_organ_request_validation(ops_root));
     organ_trace_ops_size("organ_rt_ops before beat", ops_root);
-    organ_process_beat();
+
+    organ_rt_ops_validator_stub(NULL, NULL);
     organ_trace_ops_size("organ_rt_ops after beat", ops_root);
 
     size_t after_count = cep_cell_children(ops_root);
@@ -158,5 +263,6 @@ MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* use
     organ_assert_latest_success("/rt/ops");
     test_watchdog_signal(watchdog);
     test_runtime_shutdown();
+    munit_assert_int(organ_rt_validator_calls, ==, 1);
     return MUNIT_OK;
 }
