@@ -1479,35 +1479,33 @@ static void cep_heartbeat_clear_store(cepCell* cell) {
         if (is_cas) {
             if (cell->store->storage == CEP_STORAGE_LINKED_LIST) {
                 const cepListView* list = (const cepListView*)cell->store;
-                printf("[cas_clear_before] store=%p chd=%zu head=%p tail=%p\n",
+                CEP_DEBUG_PRINTF_STDOUT("[cas_clear_before] store=%p chd=%zu head=%p tail=%p\n",
                        (void*)cell->store,
                        cell->store->chdCount,
                        (void*)list->head,
                        (void*)list->tail);
             } else {
-                printf("[cas_clear_before] store=%p storage=%u chd=%zu\n",
+                CEP_DEBUG_PRINTF_STDOUT("[cas_clear_before] store=%p storage=%u chd=%zu\n",
                        (void*)cell->store,
                        cell->store->storage,
                        cell->store->chdCount);
             }
-            fflush(stdout);
         }
         cep_store_delete_children_hard(cell->store);
         if (is_cas) {
             if (cell->store->storage == CEP_STORAGE_LINKED_LIST) {
                 const cepListView* list = (const cepListView*)cell->store;
-                printf("[cas_clear_after] store=%p chd=%zu head=%p tail=%p\n",
+                CEP_DEBUG_PRINTF_STDOUT("[cas_clear_after] store=%p chd=%zu head=%p tail=%p\n",
                        (void*)cell->store,
                        cell->store->chdCount,
                        (void*)list->head,
                        (void*)list->tail);
             } else {
-                printf("[cas_clear_after] store=%p storage=%u chd=%zu\n",
+                CEP_DEBUG_PRINTF_STDOUT("[cas_clear_after] store=%p storage=%u chd=%zu\n",
                        (void*)cell->store,
                        cell->store->storage,
                        cell->store->chdCount);
             }
-            fflush(stdout);
         }
     }
 }
@@ -1708,8 +1706,7 @@ bool cep_heartbeat_bootstrap(void) {
 fail:
     CEP_RUNTIME.bootstrapping = false;
     if (!success && fail_reason) {
-        printf("[bootstrap] fail: %s\n", fail_reason);
-        fflush(stdout);
+        CEP_DEBUG_PRINTF_STDOUT("[bootstrap] fail: %s\n", fail_reason);
         fail_reason = NULL;
     }
 #undef CEP_BOOT_FAIL
@@ -2197,7 +2194,7 @@ bool cep_heartbeat_process_impulses(void) {
                 size_t before_signals = CEP_RUNTIME.inbox_next.count;
                 int rc = descriptor->callback(impulse.signal_path, impulse.target_path);
                 CEP_RUNTIME.current_descriptor = NULL;
-                fprintf(stderr, "DEBUG heartbeat: descriptor %llu:%llu callback=%p rc=%d\n",
+                CEP_DEBUG_PRINTF("DEBUG heartbeat: descriptor %llu:%llu callback=%p rc=%d\n",
                         (unsigned long long)descriptor->name.domain,
                         (unsigned long long)descriptor->name.tag,
                         (void*)descriptor->callback,

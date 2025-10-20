@@ -105,6 +105,7 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
     - Pass parameters: `./build/cep_tests.exe --param boot_cycle after_reboot /CEP/heartbeat`
     - Fail fast / show stderr: `./build/cep_tests.exe --fatal-failures --show-stderr`
     - Set a deterministic seed: `./build/cep_tests.exe --seed 0x1234abcd`
+    - Debug/instrument on Linux: `./build/cep_tests --no-fork` keeps execution in a single process so your debugger or probes do not lose track when munit would otherwise fork.
 
 ## Build Variants and Options
 
@@ -136,3 +137,7 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
   - Notes: This fallback compiles the core library sources into the test executable.
 ## Notes
 - Optional sanitizers: `meson setup build -Dasan=true` (best with Clang on MSYS2 UCRT64).
+
+## Debug Instrumentation
+
+- Wrap any ad-hoc diagnostics in the `CEP_DEBUG_*` macros (see `src/l0_kernel/cep_molecule.h`) so debug prints build only when `CEP_ENABLE_DEBUG` is defined.

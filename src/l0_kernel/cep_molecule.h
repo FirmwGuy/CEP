@@ -163,6 +163,25 @@ typedef void (*cepDel)(void*);
 #define   CEP_NOT_ASSERT(exp)   (!CEP_ASSERT(exp))
 
 
+/* Debug prints compile out unless CEP_ENABLE_DEBUG is defined. */
+#ifdef CEP_ENABLE_DEBUG
+  #include <stdio.h>
+  #define CEP_DEBUG_PRINTF_STREAM(stream, ...)                                    \
+      do { fprintf((stream), __VA_ARGS__); fflush(stream); } while (0)
+  #define CEP_DEBUG_PRINTF(...)                                                   \
+      CEP_DEBUG_PRINTF_STREAM(stderr, __VA_ARGS__)
+  #define CEP_DEBUG_PRINTF_STDOUT(...)                                            \
+      CEP_DEBUG_PRINTF_STREAM(stdout, __VA_ARGS__)
+  #define CEP_DEBUG_PRINTF_IF(cond, ...)                                          \
+      do { if (cond) CEP_DEBUG_PRINTF(__VA_ARGS__); } while (0)
+#else
+  #define CEP_DEBUG_PRINTF_STREAM(stream, ...)    do { (void)(stream); } while (0)
+  #define CEP_DEBUG_PRINTF(...)                   do { (void)0; } while (0)
+  #define CEP_DEBUG_PRINTF_STDOUT(...)            do { (void)0; } while (0)
+  #define CEP_DEBUG_PRINTF_IF(cond, ...)          do { (void)(cond); } while (0)
+#endif
+
+
 #ifdef __cplusplus
 }
 #endif

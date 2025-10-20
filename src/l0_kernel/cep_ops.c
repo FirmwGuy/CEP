@@ -681,8 +681,7 @@ static bool cep_ops_populate_branch(cepCell* op_root,
 
     cep_ops_debug_history_store = history ? history->store : NULL;
     if (history && history->store) {
-        printf("[history] populated store=%p\n", (void*)history->store);
-        fflush(stdout);
+        CEP_DEBUG_PRINTF_STDOUT("[history] populated store=%p\n", (void*)history->store);
     }
 
     return true;

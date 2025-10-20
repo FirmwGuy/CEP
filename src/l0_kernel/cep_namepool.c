@@ -647,7 +647,7 @@ bool cep_namepool_reference_is_glob(cepID id) {
 /** Reset cached namepool metadata so a fresh bootstrap can rebuild dictionaries
     after the cell system shuts down. */
 void cep_namepool_reset(void) {
-    printf("[namepool:reset] root=%p pages=%p pageCount=%zu bucketTable=%p bucketCap=%zu bucketCount=%zu threshold=%zu\n",
+    CEP_DEBUG_PRINTF_STDOUT("[namepool:reset] root=%p pages=%p pageCount=%zu bucketTable=%p bucketCap=%zu bucketCount=%zu threshold=%zu\n",
            (void*)namepool_root,
            (void*)name_pages,
            name_page_count,
@@ -655,13 +655,10 @@ void cep_namepool_reset(void) {
            name_bucket_cap,
            name_bucket_count,
            name_bucket_threshold);
-    fflush(stdout);
-
     if (name_pages) {
         for (size_t i = 0; i < name_page_count; ++i) {
             if (name_pages[i]) {
-                printf("[namepool:page_free] index=%zu page=%p\n", i, (void*)name_pages[i]);
-                fflush(stdout);
+                CEP_DEBUG_PRINTF_STDOUT("[namepool:page_free] index=%zu page=%p\n", i, (void*)name_pages[i]);
                 cep_free(name_pages[i]);
                 name_pages[i] = NULL;
             }
@@ -673,11 +670,10 @@ void cep_namepool_reset(void) {
     name_page_cap = 0u;
 
     if (name_buckets) {
-        printf("[namepool:buckets_free] table=%p cap=%zu count=%zu\n",
+        CEP_DEBUG_PRINTF_STDOUT("[namepool:buckets_free] table=%p cap=%zu count=%zu\n",
                (void*)name_buckets,
                name_bucket_cap,
                name_bucket_count);
-        fflush(stdout);
         cep_free(name_buckets);
     }
     name_buckets = NULL;
@@ -687,9 +683,8 @@ void cep_namepool_reset(void) {
 
     namepool_root = NULL;
 
-    printf("[namepool:reset_done] root=%p pages=%p bucketTable=%p\n",
+    CEP_DEBUG_PRINTF_STDOUT("[namepool:reset_done] root=%p pages=%p bucketTable=%p\n",
            (void*)namepool_root,
            (void*)name_pages,
            (void*)name_buckets);
-    fflush(stdout);
 }

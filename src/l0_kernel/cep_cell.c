@@ -1258,30 +1258,28 @@ static void cep_store_history_clear(cepStore* store)
         return;
 
     if (store->past) {
-        printf("[history:clear] store=%p past=%p storage=%u chd=%zu\n",
+        CEP_DEBUG_PRINTF_STDOUT("[history:clear] store=%p past=%p storage=%u chd=%zu\n",
                (void*)store,
                (void*)store->past,
                (unsigned)store->storage,
                store->chdCount);
-        fflush(stdout);
     }
 
     size_t cleared = 0u;
     for (cepStoreNode* node = store->past; node; ) {
         cepStoreHistory* history = cep_store_history_from_node(node);
         if (history) {
-            printf("[history:frame] store=%p history=%p entries=%zu nodePast=%p\n",
+            CEP_DEBUG_PRINTF_STDOUT("[history:frame] store=%p history=%p entries=%zu nodePast=%p\n",
                    (void*)store,
                    (void*)history,
                    history->entryCount,
                    (void*)history->node.past);
-            fflush(stdout);
             for (size_t index = 0; index < history->entryCount; ++index) {
                 const cepStoreHistoryEntry* entry = &history->entries[index];
                 char dom_buf[64];
                 char tag_buf[64];
                 const cepDT* name = &entry->name;
-                printf("[history:entry] store=%p history=%p index=%zu cell=%p alive=%d name=%s:%s past=%p\n",
+                CEP_DEBUG_PRINTF_STDOUT("[history:entry] store=%p history=%p index=%zu cell=%p alive=%d name=%s:%s past=%p\n",
                        (void*)store,
                        (void*)history,
                        index,
@@ -1290,7 +1288,6 @@ static void cep_store_history_clear(cepStore* store)
                        cep_debug_id_desc(name->domain, dom_buf, sizeof dom_buf),
                        cep_debug_id_desc(name->tag, tag_buf, sizeof tag_buf),
                        (void*)entry->past);
-                fflush(stdout);
             }
         }
         node = node->past;
@@ -1299,8 +1296,7 @@ static void cep_store_history_clear(cepStore* store)
     }
 
     if (cleared) {
-        printf("[history:clear] store=%p cleared=%zu\n", (void*)store, cleared);
-        fflush(stdout);
+        CEP_DEBUG_PRINTF_STDOUT("[history:clear] store=%p cleared=%zu\n", (void*)store, cleared);
     }
 
     store->past = NULL;
@@ -2312,12 +2308,12 @@ static bool cep_cell_digest_compute_ex(const cepCell* cell, bool skip_name, uint
 static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell, bool skip_name) {
     cepCell* resolved = cep_cell_resolve((cepCell*)cell);
     if (!resolved || !cep_cell_is_normal(resolved)) {
-        fprintf(stderr, "digest_walk: resolve/normal failed\n");
+        CEP_DEBUG_PRINTF("digest_walk: resolve/normal failed\n");
         return false;
     }
 
     if (!cep_cell_is_immutable(resolved)) {
-        fprintf(stderr, "digest_walk: node not immutable\n");
+        CEP_DEBUG_PRINTF("digest_walk: node not immutable\n");
         return false;
     }
 
@@ -2419,13 +2415,13 @@ static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell, bool sk
              child = cep_cell_next_all(resolved, child)) {
             cepCell* resolved_child = cep_cell_resolve(child);
             if (!resolved_child || !cep_cell_is_normal(resolved_child)) {
-                fprintf(stderr, "digest_walk: child resolve failed\n");
+                CEP_DEBUG_PRINTF("digest_walk: child resolve failed\n");
                 cep_free(entries);
                 return false;
             }
 
             if (!cep_cell_is_immutable(resolved_child)) {
-                fprintf(stderr, "digest_walk: child not immutable\n");
+                CEP_DEBUG_PRINTF("digest_walk: child not immutable\n");
                 cep_free(entries);
                 return false;
             }
@@ -2437,7 +2433,7 @@ static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell, bool sk
         }
 
         if (index != child_count) {
-            fprintf(stderr, "digest_walk: child count mismatch %zu/%zu\n", index, child_count);
+            CEP_DEBUG_PRINTF("digest_walk: child count mismatch %zu/%zu\n", index, child_count);
             cep_free(entries);
             return false;
         }
@@ -2459,7 +2455,7 @@ static bool cep_cell_digest_walk(cepSha256Ctx* ctx, const cepCell* cell, bool sk
 
             uint8_t child_hash[32];
             if (!cep_cell_digest_compute_ex(entries[i].cell, false, child_hash)) {
-                fprintf(stderr, "digest_walk: child digest failure\n");
+                CEP_DEBUG_PRINTF("digest_walk: child digest failure\n");
                 cep_free(entries);
                 return false;
             }
@@ -2670,7 +2666,7 @@ void cep_store_del(cepStore* store) {
         char owner_tag_buf[64];
         const cepCell* owner_cell = (const cepCell*)store->owner;
         const cepDT* owner_name = owner_cell ? cep_cell_get_name(owner_cell) : NULL;
-        printf("[store_del] store=%p storage=%u indexing=%u owner=%p owner_dt=%s:%s valid=%d chd=%zu head=%p tail=%p\n",
+        CEP_DEBUG_PRINTF_STDOUT("[store_del] store=%p storage=%u indexing=%u owner=%p owner_dt=%s:%s valid=%d chd=%zu head=%p tail=%p\n",
                (void*)store,
                store->storage,
                store->indexing,
@@ -2681,7 +2677,6 @@ void cep_store_del(cepStore* store) {
                store->chdCount,
                (void*)list->head,
                (void*)list->tail);
-        fflush(stdout);
     }
 
     switch (store->storage) {
@@ -2735,7 +2730,7 @@ void cep_store_delete_children_hard(cepStore* store) {
         char owner_dom_buf[64];
         char owner_tag_buf[64];
         cepList* list = (cepList*)store;
-        printf("[store_clear] store=%p owner=%p owner_dt=%s:%s chd=%zu head=%p tail=%p\n",
+        CEP_DEBUG_PRINTF_STDOUT("[store_clear] store=%p owner=%p owner_dt=%s:%s chd=%zu head=%p tail=%p\n",
                (void*)store,
                (void*)owner_cell,
                cep_debug_id_desc(owner_name ? owner_name->domain : 0, owner_dom_buf, sizeof owner_dom_buf),
@@ -2743,7 +2738,6 @@ void cep_store_delete_children_hard(cepStore* store) {
                store->chdCount,
                (void*)list->head,
                (void*)list->tail);
-        fflush(stdout);
     }
 
     if (!had_children || cep_store_hierarchy_locked(store->owner))
@@ -2753,12 +2747,11 @@ void cep_store_delete_children_hard(cepStore* store) {
       case CEP_STORAGE_LINKED_LIST: {
         list_del_all_children((cepList*) store);
         cepList* list = (cepList*)store;
-        printf("[store_clear_done] store=%p chd=%zu head=%p tail=%p\n",
+        CEP_DEBUG_PRINTF_STDOUT("[store_clear_done] store=%p chd=%zu head=%p tail=%p\n",
                (void*)store,
                store->chdCount,
                (void*)list->head,
                (void*)list->tail);
-        fflush(stdout);
         break;
       }
       case CEP_STORAGE_ARRAY: {
@@ -2861,7 +2854,7 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
     char owner_tag_buf[64];
     char child_dom_buf[64];
     char child_tag_buf[64];
-    printf("[add] store=%p storage=%u indexing=%u owner=%p owner_dt=%s:%s chd=%zu ctx=%zu child_dt=%s:%s\n",
+    CEP_DEBUG_PRINTF_STDOUT("[add] store=%p storage=%u indexing=%u owner=%p owner_dt=%s:%s chd=%zu ctx=%zu child_dt=%s:%s\n",
            (void*)store,
            store ? store->storage : 0u,
            store ? store->indexing : 0u,
@@ -2872,15 +2865,13 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
            (size_t)context,
            cep_debug_id_desc(child_domain, child_dom_buf, sizeof child_dom_buf),
            cep_debug_id_desc(child_tag, child_tag_buf, sizeof child_tag_buf));
-    fflush(stdout);
     if (!cep_store_valid(store) || cep_cell_is_void(child)) {
-        fprintf(stderr,
+        CEP_DEBUG_PRINTF(
             "DEBUG store_add_child invalid store=%p valid=%d child=%p child_type=%u\n",
             (void*)store,
             (int)cep_store_valid(store),
             (void*)child,
             child ? child->metacell.type : 0u);
-        fflush(stderr);
         assert(cep_store_valid(store) && !cep_cell_is_void(child));
     }
 
@@ -2893,7 +2884,7 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
         trace_history = true;
     }
     if (trace_history) {
-    printf("[history] add begin store=%p target=%p ctx=%zu chd=%zu owner_tag=%llu storage=%u indexing=%u\n",
+    CEP_DEBUG_PRINTF_STDOUT("[history] add begin store=%p target=%p ctx=%zu chd=%zu owner_tag=%llu storage=%u indexing=%u\n",
                 (void*)store,
                 (void*)cep_ops_debug_history_store,
                 (size_t)context,
@@ -2901,7 +2892,6 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
                 store->owner ? (unsigned long long)((cepCell*)store->owner)->metacell.dt.tag : 0ull,
                 store->storage,
                 store->indexing);
-        fflush(stdout);
         history_log_budget++;
     }
 #endif
@@ -2947,13 +2937,12 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
       {
         assert(store->chdCount >= (size_t)context);
         if (store->chdCount < (size_t)context) {
-            printf("[context] violation store=%p chd=%zu ctx=%zu storage=%u owner_tag=%llu\n",
+            CEP_DEBUG_PRINTF_STDOUT("[context] violation store=%p chd=%zu ctx=%zu storage=%u owner_tag=%llu\n",
                    (void*)store,
                    ((cepStoreNode*)store)->chdCount,
                    (size_t)context,
                    store->storage,
                    store->owner ? (unsigned long long)((cepCell*)store->owner)->metacell.dt.tag : 0ull);
-            fflush(stdout);
             return NULL;
         }
 
@@ -2973,12 +2962,11 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
             } else if (index == 0u) {
                 cell = cep_store_append_child(store, true, child);
             } else {
-                printf("[packedq] unsupported insert store=%p ctx=%zu chd=%zu owner=%p\n",
+                CEP_DEBUG_PRINTF_STDOUT("[packedq] unsupported insert store=%p ctx=%zu chd=%zu owner=%p\n",
                        (void*)store,
                        index,
                        store->chdCount,
                        (void*)store->owner);
-                fflush(stdout);
                 return NULL;
             }
             break;
@@ -3062,11 +3050,10 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 #ifndef NDEBUG
     static size_t history_after_budget = 0;
     if (cep_ops_debug_history_store == store && history_after_budget < 50) {
-        printf("[history] after store=%p chd=%zu owner_tag=%llu\n",
+        CEP_DEBUG_PRINTF_STDOUT("[history] after store=%p chd=%zu owner_tag=%llu\n",
                (void*)store,
                ((cepStoreNode*)store)->chdCount,
                store->owner ? (unsigned long long)((cepCell*)store->owner)->metacell.dt.tag : 0ull);
-        fflush(stdout);
         history_after_budget++;
     }
 #endif
@@ -4410,7 +4397,7 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
     char owner_tag_buf[64];
     char child_dom_buf[64];
     char child_tag_buf[64];
-    printf("[del] store=%p storage=%u indexing=%u owner=%p owner_dt=%s:%s chd=%zu child_dt=%s:%s\n",
+    CEP_DEBUG_PRINTF_STDOUT("[del] store=%p storage=%u indexing=%u owner=%p owner_dt=%s:%s chd=%zu child_dt=%s:%s\n",
            (void*)store,
            store ? store->storage : 0u,
            store ? store->indexing : 0u,
@@ -4420,8 +4407,6 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
            store->chdCount,
            cep_debug_id_desc(child_name ? child_name->domain : 0, child_dom_buf, sizeof child_dom_buf),
            cep_debug_id_desc(child_name ? child_name->tag : 0, child_tag_buf, sizeof child_tag_buf));
-    fflush(stdout);
-
     if (target)
         cep_cell_transfer(cell, target);  // Save cell.
     else
@@ -4525,7 +4510,7 @@ void cep_cell_transfer(cepCell* src, cepCell* dst)
         char src_tag_buf[64];
         char dst_dom_buf[64];
         char dst_tag_buf[64];
-        printf("[store_transfer] store=%p storage=%u indexing=%u from=%p dt=%s:%s to=%p dt=%s:%s chd=%zu\n",
+        CEP_DEBUG_PRINTF_STDOUT("[store_transfer] store=%p storage=%u indexing=%u from=%p dt=%s:%s to=%p dt=%s:%s chd=%zu\n",
                (void*)dst->store,
                dst->store->storage,
                dst->store->indexing,
@@ -4536,7 +4521,6 @@ void cep_cell_transfer(cepCell* src, cepCell* dst)
                cep_debug_id_desc(dst_name ? dst_name->domain : 0, dst_dom_buf, sizeof dst_dom_buf),
                cep_debug_id_desc(dst_name ? dst_name->tag : 0, dst_tag_buf, sizeof dst_tag_buf),
                dst->store->chdCount);
-        fflush(stdout);
         dst->store->owner = dst;
         if (dst->store->lockOwner == src)
             dst->store->lockOwner = dst;
@@ -4693,15 +4677,14 @@ void cep_cell_finalize_hard(cepCell* cell) {
 
 
 
-#define CELL_FOLLOW_LINK_TO_STORE(cell, store, ...)                            \
-    if (cep_cell_is_void(cell)) {                                              \
-        fprintf(stderr, "DEBUG cell_follow void parent=%p\n", (void*)(cell)); \
-        fflush(stderr);                                                       \
-    }                                                                         \
-    assert(!cep_cell_is_void(cell));                                           \
-    cell = cep_link_pull(CEP_P(cell));                                         \
-    cepStore* store = cell->store;                                             \
-    if (!store)                                                                \
+#define CELL_FOLLOW_LINK_TO_STORE(cell, store, ...)                             \
+    if (cep_cell_is_void(cell)) {                                               \
+        CEP_DEBUG_PRINTF("DEBUG cell_follow void parent=%p\n", (void*)(cell));  \
+    }                                                                           \
+    assert(!cep_cell_is_void(cell));                                            \
+    cell = cep_link_pull(CEP_P(cell));                                          \
+    cepStore* store = cell->store;                                              \
+    if (!store)                                                                 \
         return __VA_ARGS__
 
 

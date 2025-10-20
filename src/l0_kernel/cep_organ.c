@@ -72,8 +72,7 @@ static void cep_organ_report_issue(const char* stage, const char* detail) {
         snprintf(note, sizeof note, "organ:%s", stage);
     }
     (void)cep_heartbeat_stage_note(note);
-    printf("[organ] %s\n", note);
-    fflush(stdout);
+    CEP_DEBUG_PRINTF_STDOUT("[organ] %s\n", note);
 }
 
 static void cep_organ_mark_subtree_veiled(cepCell* cell) {

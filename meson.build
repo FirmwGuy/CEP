@@ -143,7 +143,10 @@ if get_option('tests').enabled()
     dependencies: test_dependencies,
     install: false,
   )
-  test('cep_unit_tests', exe)
+  test('cep_unit_tests', exe,
+    args: ['--no-fork', '--param', 'timeout', '120'],
+    timeout: 180,
+  )
 
 endif
 
