@@ -47,6 +47,9 @@ MunitResult test_enzyme_randomized(const MunitParameter params[], void* user_dat
 
 MunitResult test_heartbeat_single(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_heartbeat_bootstrap(const MunitParameter params[], void* user_data_or_fixture);
+bool        test_stagee_trace_enabled(void);
+void        test_stagee_tracef(const char* fmt, ...);
+bool        test_stagee_heartbeat_step(const char* label);
 void*       test_stagee_watchdog_setup(const MunitParameter params[], void* user_data);
 void        test_stagee_watchdog_tear_down(void* fixture);
 MunitResult test_serialization(const MunitParameter params[], void* user_data_or_fixture);

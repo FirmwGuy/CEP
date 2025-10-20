@@ -61,7 +61,7 @@ struct _cepEnzymeRegistry {
 
 
 
-static bool cep_enzyme_registry_ensure_capacity(cepEnzymeRegistry* registry);
+static bool cep_enzyme_registry_ensure_capacity(cepEnzymeRegistry* registry, size_t minimum_capacity);
 static bool cep_enzyme_registry_pending_ensure_capacity(cepEnzymeRegistry* registry);
 static int  cep_enzyme_registry_pending_add(cepEnzymeRegistry* registry, const cepPath* query, const cepEnzymeDescriptor* descriptor);
 static bool cep_enzyme_registry_rebuild_indexes(cepEnzymeRegistry* registry);
@@ -377,7 +377,12 @@ static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target,
             }
 
             for (; node; node = node->next) {
-                if (cep_enzyme_binding_contains(local_seen, local_count, &node->name, NULL)) {
+                cepDT binding_name = cep_dt_clean(&node->name);
+                if (!cep_dt_is_valid(&binding_name)) {
+                    continue;
+                }
+
+                if (cep_enzyme_binding_contains(local_seen, local_count, &binding_name, NULL)) {
                     continue;
                 }
 
@@ -396,18 +401,18 @@ static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target,
                     local_seen = resized;
                     local_capacity = new_capacity;
                 }
-                local_seen[local_count++].name = node->name;
+                local_seen[local_count++].name = binding_name;
 
                 if (node->flags & CEP_ENZYME_BIND_TOMBSTONE) {
                     had_masked = true;
                     size_t idx;
-                    if (cep_enzyme_binding_contains(active, active_count, &node->name, &idx)) {
+                    if (cep_enzyme_binding_contains(active, active_count, &binding_name, &idx)) {
                         if (idx + 1u < active_count) {
                             memmove(&active[idx], &active[idx + 1u], (active_count - (idx + 1u)) * sizeof(*active));
                         }
                         active_count--;
                     }
-                    if (!cep_enzyme_binding_contains(masked, masked_count, &node->name, NULL)) {
+                    if (!cep_enzyme_binding_contains(masked, masked_count, &binding_name, NULL)) {
                         if (masked_count == masked_capacity) {
                             size_t new_capacity = masked_capacity ? (masked_capacity << 1u) : 8u;
                             cepEffectiveBinding* resized = cep_realloc(masked, new_capacity * sizeof(*resized));
@@ -423,7 +428,7 @@ static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target,
                             masked = resized;
                             masked_capacity = new_capacity;
                         }
-                        masked[masked_count++].name = node->name;
+                        masked[masked_count++].name = binding_name;
                     }
                     continue;
                 }
@@ -432,11 +437,11 @@ static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target,
                     continue;
                 }
 
-                if (cep_enzyme_binding_contains(masked, masked_count, &node->name, NULL)) {
+                if (cep_enzyme_binding_contains(masked, masked_count, &binding_name, NULL)) {
                     continue;
                 }
 
-                if (!cep_enzyme_binding_contains(active, active_count, &node->name, NULL)) {
+                if (!cep_enzyme_binding_contains(active, active_count, &binding_name, NULL)) {
                     if (active_count == active_capacity) {
                         size_t new_capacity = active_capacity ? (active_capacity << 1u) : 8u;
                         cepEffectiveBinding* resized = cep_realloc(active, new_capacity * sizeof(*resized));
@@ -452,7 +457,7 @@ static cepEffectiveBinding* cep_enzyme_collect_bindings(const cepCell* target,
                         active = resized;
                         active_capacity = new_capacity;
                     }
-                    active[active_count++].name = node->name;
+                    active[active_count++].name = binding_name;
                 }
             }
         }
@@ -868,10 +873,8 @@ void cep_enzyme_registry_activate_pending(cepEnzymeRegistry* registry) {
     }
 
     size_t required = registry->entry_count + registry->pending_count;
-    while (registry->entry_capacity < required) {
-        if (!cep_enzyme_registry_ensure_capacity(registry)) {
-            return;
-        }
+    if (!cep_enzyme_registry_ensure_capacity(registry, required)) {
+        return;
     }
 
     size_t promoted = 0u;
@@ -897,23 +900,41 @@ void cep_enzyme_registry_activate_pending(cepEnzymeRegistry* registry) {
 }
 
 
-static bool cep_enzyme_registry_ensure_capacity(cepEnzymeRegistry* registry) {
-    if (registry->entry_count < registry->entry_capacity) {
+static bool cep_enzyme_registry_ensure_capacity(cepEnzymeRegistry* registry, size_t minimum_capacity) {
+    if (!registry) {
+        return false;
+    }
+
+    if (registry->entry_capacity >= minimum_capacity) {
         return true;
     }
 
-    size_t new_capacity = registry->entry_capacity ? (registry->entry_capacity * 2u) : cep_enzyme_registry_hint_capacity();
+    size_t new_capacity = registry->entry_capacity;
     if (!new_capacity) {
-        new_capacity = CEP_ENZYME_REGISTRY_DEFAULT_CAPACITY;
+        new_capacity = cep_enzyme_registry_hint_capacity();
+        if (!new_capacity) {
+            new_capacity = CEP_ENZYME_REGISTRY_DEFAULT_CAPACITY;
+        }
     }
-    cepEnzymeEntry* new_entries = cep_realloc(registry->entries, new_capacity * sizeof(*new_entries));
+
+    while (new_capacity < minimum_capacity) {
+        size_t next = new_capacity * 2u;
+        if (next <= new_capacity) {
+            new_capacity = minimum_capacity;
+            break;
+        }
+        new_capacity = next;
+    }
+
+    size_t previous_bytes = registry->entry_capacity * sizeof(*registry->entries);
+    size_t total_bytes    = new_capacity * sizeof(*registry->entries);
+
+    cepEnzymeEntry* new_entries = cep_realloc(registry->entries, total_bytes);
     if (!new_entries) {
         return false;
     }
 
     if (new_capacity > registry->entry_capacity) {
-        size_t previous_bytes = registry->entry_capacity * sizeof(*new_entries);
-        size_t total_bytes = new_capacity * sizeof(*new_entries);
         memset(((uint8_t*)new_entries) + previous_bytes, 0, total_bytes - previous_bytes);
     }
 
@@ -992,7 +1013,7 @@ int cep_enzyme_register(cepEnzymeRegistry* registry, const cepPath* query, const
         return cep_enzyme_registry_pending_add(registry, query, descriptor);
     }
 
-    if (!cep_enzyme_registry_ensure_capacity(registry)) {
+    if (!cep_enzyme_registry_ensure_capacity(registry, registry->entry_count + 1u)) {
         return CEP_ENZYME_FATAL;
     }
 

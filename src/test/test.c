@@ -10,6 +10,44 @@
 
 #include "test.h"
 
+#include <inttypes.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+static bool stagee_trace_initialized;
+static bool stagee_trace_enabled_flag;
+
+bool test_stagee_trace_enabled(void) {
+    if (!stagee_trace_initialized) {
+        const char* env = getenv("TEST_WATCHDOG_TRACE");
+        stagee_trace_enabled_flag = (env && env[0] && env[0] != '0');
+        stagee_trace_initialized = true;
+    }
+    return stagee_trace_enabled_flag;
+}
+
+void test_stagee_tracef(const char* fmt, ...) {
+    if (!test_stagee_trace_enabled())
+        return;
+    va_list args;
+    va_start(args, fmt);
+    fputs("[stagee] ", stderr);
+    vfprintf(stderr, fmt, args);
+    fputc('\n', stderr);
+    fflush(stderr);
+    va_end(args);
+}
+
+bool test_stagee_heartbeat_step(const char* label) {
+    cepBeatNumber before = cep_heartbeat_current();
+    test_stagee_tracef("%s before beat=%" PRIu64, label, (uint64_t)before);
+    bool ok = cep_heartbeat_step();
+    cepBeatNumber after = cep_heartbeat_current();
+    test_stagee_tracef("%s after beat=%" PRIu64 " ok=%d", label, (uint64_t)after, ok ? 1 : 0);
+    return ok;
+}
+
 
 
 static char* boot_cycle_values[] = {

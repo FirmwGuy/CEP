@@ -25,7 +25,8 @@ static void organ_prepare_runtime(void) {
     /* Advance a few beats so the boot dossier reaches ist:ok before we queue
      * organ validators. */
     for (int i = 0; i < 6; ++i) {
-        munit_assert_true(cep_heartbeat_step());
+        test_stagee_tracef("organ_prepare_runtime iteration=%d", i);
+        munit_assert_true(test_stagee_heartbeat_step("organ_prepare_runtime"));
     }
 }
 
@@ -48,8 +49,14 @@ static cepCell* organ_find_cell(cepCell* parent, const cepDT* name) {
 static void organ_process_beat(void) {
     /* The validator impulse lands on the next beat, so run two cycles to cover
      * resolve+execute as well as any continuations staged during commit. */
-    munit_assert_true(cep_heartbeat_step());
-    munit_assert_true(cep_heartbeat_step());
+    munit_assert_true(test_stagee_heartbeat_step("organ_process_beat resolve"));
+    munit_assert_true(test_stagee_heartbeat_step("organ_process_beat commit"));
+}
+
+static void organ_trace_ops_size(const char* label, cepCell* ops_root) {
+    if (!test_stagee_trace_enabled() || !ops_root)
+        return;
+    test_stagee_tracef("%s ops_children=%zu", label, cep_cell_children(ops_root));
 }
 
 static void organ_assert_latest_success(const char* expected_target) {
@@ -102,6 +109,7 @@ static void organ_assert_latest_success(const char* expected_target) {
 MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;
     TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
+    munit_assert_not_null(watchdog);
 
     organ_prepare_runtime();
 
@@ -113,7 +121,9 @@ MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* 
     size_t before_count = cep_cell_children(ops_root);
 
     munit_assert_true(cep_organ_request_validation(state_root));
+    organ_trace_ops_size("organ_sys_state before beat", ops_root);
     organ_process_beat();
+    organ_trace_ops_size("organ_sys_state after beat", ops_root);
 
     size_t after_count = cep_cell_children(ops_root);
    munit_assert_size(after_count, ==, before_count + 1u);
@@ -127,6 +137,7 @@ MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* 
 MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* user_data_or_fixture) {
     (void)params;
     TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
+    munit_assert_not_null(watchdog);
 
     organ_prepare_runtime();
 
@@ -137,7 +148,9 @@ MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* use
     size_t before_count = cep_cell_children(ops_root);
 
     munit_assert_true(cep_organ_request_validation(ops_root));
+    organ_trace_ops_size("organ_rt_ops before beat", ops_root);
     organ_process_beat();
+    organ_trace_ops_size("organ_rt_ops after beat", ops_root);
 
     size_t after_count = cep_cell_children(ops_root);
     munit_assert_size(after_count, ==, before_count + 1u);
