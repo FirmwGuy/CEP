@@ -125,8 +125,8 @@ Short nicknames stay on the label; long nicknames get filed once and every cell 
 - Removal
   - Remove/pull from parent store: soft delete via `cep_cell_child_take|pop` (marks child deleted and returns a link), hard removal via `cep_cell_child_take_hard|pop_hard` (reorganizes siblings), `cep_cell_remove`
 - Data access/update
-  - Read: `cep_cell_data(cell)`
-  - Update: `cep_cell_update(cell, size, capacity, value, swap)` (records a snapshot) or `cep_cell_update_hard(...)` for in-place overwrites
+  - Read: `cep_cell_data(cell)` for VALUE/DATA or `cep_cell_stream_read(cell, offset, dst, size, out_read)` for HANDLE/STREAM through library adapters
+  - Update: `cep_cell_update(cell, size, capacity, value, swap)` (records a snapshot) or `cep_cell_update_hard(...)` for in-place overwrites; HANDLE/STREAM writes use `cep_cell_stream_write` so effects are staged and journalled
   - Delete data/store: `cep_cell_delete_data|store|children`
   - Sort: `cep_cell_to_dictionary`, `cep_cell_sort(compare, ctx)`
 
@@ -178,13 +178,13 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
   - Nested structure tests for traversal correctness.
   - Sequencing tests: confirm storage equivalence across implementations.
 - Build incremental tests when adding features:
-  - Add for HANDLE/STREAM data paths when implemented.
-  - Add for HASH indexing when implemented.
+  - Cover HANDLE/STREAM stream helpers (`cep_cell_stream_read|write|map`) and verify staged commits via `cep_stream_commit_pending`.
+  - Keep hash indexing coverage current across linked list/array/tree and the hash-table backend.
   - Add range queries and path iteration robustness.
 
 ## Roadmap (Kernel-Focused)
 ### 1) Complete Data Backends
-   - Implement HANDLE/STREAM read/update semantics (currently TODO paths in `cep_cell.c`).
+   - Extend HANDLE/STREAM history snapshots and diagnostics; the read/write path now lives in `cep_cell_stream.c`.
    - Clarify resource lifecycle: reference counting or explicit unref on HANDLE/STREAM.
 ### 2) Shadowing and Links
    - Maintain reverse shadow lists in targets (`cepShadow`) when creating/removing links.
@@ -257,7 +257,7 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
   - A: Choose the right store. Profile later, but keep algorithmic complexity honest (avoid O(n^2) hot paths).
 
 ## Next Steps You Can Pick Up
-- Implement HANDLE/STREAM update/read paths in `cep_cell.c` and add tests.
+- Extend HANDLE/STREAM support with historical snapshots and error-channel integration so adapters surface deterministic diagnostics.
 - Add hash-based indexing across list/array/tree with a thin hash adapter.
 - Introduce range queries for dictionaries/catalogs (include tests mirroring by-name/by-key behavior).
 - Add regression tests that exercise the adaptive traversal stack at extreme depths and report the high-water metrics.

@@ -56,7 +56,7 @@ Layer 0 already defines `cepData` with four representations:
 - HANDLE: opaque reference to an external resource managed by a library cell.
 - STREAM: a byte window onto a larger external stream managed by a library cell; payloads are opaque bytes tagged by cepDT.
 
-Current code supports VALUE/DATA fully. HANDLE/STREAM are scaffolded and intentionally not exposed via `cep_cell_data()` yet (reads/updates are marked TODO). The design below completes HANDLE/STREAM without breaking determinism.
+Current code ships full VALUE/DATA support plus HANDLE/STREAM helpers. `cep_cell_data()` continues to expose buffers only for VALUE/DATA so callers cannot bypass adapters, while HANDLE/STREAM cells route through `cep_cell_stream_read|write|map` and stage effects via the journaling helpers below.
 
 ### Stream Abstraction
 
@@ -145,15 +145,15 @@ This section sketches how the above maps onto existing headers without binding t
 - Negative tests: precondition mismatch → divergence; short reads/writes recorded.
 - Replay modes: simulate without touching FS; re‑apply with preconditions enforced.
 
-## Migration Path (Current → Planned)
+## Implementation Snapshot
 
-1) Keep VALUE/DATA behavior unchanged; ensure `cep_cell_data()` and `cep_cell_update()` are strict for HANDLE/STREAM.
-2) Add stream helpers and minimal memory/file adapters.
-3) Add journaling children for read/write events and wire them to the helpers.
-4) Gate external effects on heartbeat commit and enforce preconditions.
-5) Add tests as documentation of semantics.
+- ✅ VALUE/DATA behaviour stays intact; HANDLE/STREAM cells continue to gate `cep_cell_data()` and instead flow through `cep_cell_stream_*`.
+- ✅ Stream helpers ship with stdio/ZIP adapters, staging intent/outcome children automatically and delegating to library vtables.
+- ✅ Heartbeat commit wiring applies staged writes via `cep_stream_commit_pending`, journal entries record requested/actual bytes with hashes, and read paths record the same provenance.
+- ✅ Tests cover the stdio/ZIP adapters plus randomized round-trips (`test_stream.c`, `test_stream_zip.c`, and `test_streams_randomized.c`).
+- 🟡 Remaining polish: surface historical snapshots for HANDLE/STREAM payloads and expand adapter diagnostics once the new error channel arrives.
 
-This approach preserves CEP’s determinism and replay guarantees, while making external I/O practical for both tiny and massive resources.
+This keeps deterministic replay intact while making external I/O practical for both tiny and massive resources.
 
 ## Q&A
 

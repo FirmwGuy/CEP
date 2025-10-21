@@ -22,6 +22,10 @@ Everyday analogy: a well-run kitchen line. Orders (cells) arrive, cooks (enzymes
 
 ## 2) Technical Details
 
+### 2.0 Current Implementation Scope
+
+Layer 0 (the kernel, heartbeat, and stream helpers) ships in this repository today. Higher layers—coherence packs, the flow VM, governance, and culture—remain design targets that will land as separate packs. The sections below call this out explicitly so you can distinguish live code from forward-looking architecture.
+
 ### 2.1 Core Rhythm: Heartbeats (Capture -> Compute -> Commit)
 
 CEP advances in beats. Each beat is a strict three-phase contract:
@@ -50,7 +54,7 @@ Contexts (N-ary) and Facets (closure)
 - Facets are the smaller truths implied by a Context. Layer 1 guarantees closure by materializing required Facets or recording a deterministic debt to finish them.
 - Adjacency mirrors are transient caches that speed neighborhood queries; the durable ledger under `/data/coh/*` remains authoritative.
 
-### 2.3 Flow Layer: A Small, Deterministic VM
+### 2.3 Flow Layer (Planned): A Small, Deterministic VM
 
 Flows compile to deterministic state machines with five constructs:
 - Guard - pure preconditions.
@@ -65,7 +69,7 @@ Variants, Niches, and Guardians
 - Explore via bandits or policies, but record every draw as a Decision Cell.
 - Enforce safety gates (Guardians) as schematized invariants; violations emit structured facts for explainability.
 
-### 2.4 Cognition: Awareness That Accumulates
+### 2.4 Cognition (Planned): Awareness That Accumulates
 
 - Perspectives - declarative, materialized views with incremental maintenance per beat.
 - Interpretations - computed tags/scores with provenance.
@@ -74,14 +78,14 @@ Variants, Niches, and Guardians
 
 All of the above live as derived Cells and indexes. Layer 1's closure and adjacency keep structure crisp and queries fast.
 
-### 2.5 Society: Governance as Code
+### 2.5 Society (Planned): Governance as Code
 
 - Laws - signed, versioned bundles (schemas, policies, organisms).
 - Reforms - reversible migrations with pre/post checks and compensations.
 - Councils - workflows to propose, review, enact, monitor, and rollback.
 - Provinces - namespaced sandboxes that scope deployments and experiments; cross-province relations require explicit "imported" facets.
 
-### 2.6 Culture: Evidence-Linked Narratives
+### 2.6 Culture (Planned): Evidence-Linked Narratives
 
 Stories, Legends, and Myths are typed artifacts that point back into the fact graph (Perspectives, Laws, Decisions). They turn tacit practice into shareable memory, without losing traceability.
 
@@ -93,7 +97,7 @@ Stories, Legends, and Myths are typed artifacts that point back into the fact gr
 
 The Kernel's proxies, links, and serialization provide the hooks; crypto lives above it.
 
-### 2.8 Scale and Federation
+### 2.8 Scale and Federation (Planned Extensions)
 
 Scale horizontally by partitions (shards) with local heartbeats. Exchange deltas via serialization; model cross-shard imports as Cells. Avoid global barriers; use occasional sync pulses to bring summaries into alignment when needed.
 
@@ -105,7 +109,7 @@ Scale horizontally by partitions (shards) with local heartbeats. Exchange deltas
 4) Layer 3 - Perspectives - a few materialized views for essential awareness.
 5) Layer 4 - Governance - basic Laws/Reforms/Councils for safe change.
 
-### 2.10 Worked Example: The Save Action
+### 2.10 Worked Example: The Save Action (Future Multi-Layer Stack)
 
 Event (beat 10, Capture)
 ```

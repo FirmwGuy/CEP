@@ -9,7 +9,7 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
 | --- | --- | --- | --- |
 | Bootstrap & identity | ✅ Done | `cep_cell_system_initiate` seeds the root dictionary; `cep_cell_initialize` stamps deterministic domains/tags | 📎 Document safe-name helpers before exposing identifiers to tooling |
 | Auto-ID & metadata hygiene | ⚙️ Partial | `cep_store_add_child` assigns auto IDs when tags are primed with `CEP_AUTOID` and flags state changes | ⚙️ Advance the cursor when callers preset IDs; strip system bits in accessors |
-| Data payload lifecycle | ⚙️ Partial | `cep_data_new`, `cep_cell_update`, and `cep_data_history_*` maintain VALUE/DATA payload history with hashes | ⚙️ Finish HANDLE/STREAM read, history, and destructor paths |
+| Data payload lifecycle | ⚙️ Partial | `cep_data_new`, `cep_cell_update`, and `cep_data_history_*` maintain VALUE/DATA payload history; `cep_cell_stream_*` covers HANDLE/STREAM reads, writes, and staged commits with journaling | ⚙️ Surface HANDLE/STREAM historical snapshots and adapter-side diagnostics |
 | Child store engines | ⚙️ Partial | Linked list, array, packed queue, RB-tree, and octree back-ends wired through `cep_store_new`; comparator/hash indexes now dedupe through `store_find_child_by_key` | ⚙️ Add shared hash lookups and re-sort helpers for large catalog back-ends |
 | Historical queries | ⚙️ Partial | `cep_cell_find_by_*_past`, `cep_cell_traverse_past`, and deep traversal replay timelines without mutating live data | ⚙️ Provide snapshot payloads for HANDLE/STREAM and surface depth telemetry for the adaptive traversal stack |
 | Link handling & shadowing | ⚙️ Partial | Link macros resolve references; soft take/pop expose archived children as links; link shadows now track `targetDead` status for tombstones | 📎 Finish shadow lifecycle hooks (refcounts/GC) and snapshot provenance |
@@ -28,7 +28,7 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
 ### Active Focus Areas
 - ⚙️ Tighten idempotency for comparator and hash-indexed stores so repeated inserts shortcut on structure checks.
 - ⚙️ Harden auto-ID handling and metadata masking before exposing external name APIs.
-- ⚙️ Deliver HANDLE/STREAM payload persistence, including destructors and snapshot visibility.
+- ⚙️ Finish HANDLE/STREAM historical visibility and error-channel integration now that read/write/journal helpers ship.
 - ⚙️ Capture high-water metrics for the adaptive traversal stack now that it grows automatically.
 
 ### Backlog Watchlist
@@ -44,7 +44,7 @@ Bringing stream helpers into the enzyme catalogue would let impulse-driven workf
 - Surface wrappers around `cep_stream_stdio_*` and `cep_stream_zip_*` so impulses can append, rotate, or close resources under heartbeat control.
 - Provide enzymes for checkpoint-friendly stream snapshots (flush, rewind, truncate) that honour existing locking semantics.
 - Mirror the cell operation structure: each wrapper advertises a deterministic label, relies on the same registry plumbing, and stays idempotent by default to avoid duplicate writes when impulses retry.
-- Stage the rollout in two phases—stdio first, then ZIP/foreign streams—to keep dependency footprints reviewable and to align with HANDLE/STREAM lifecycle work already in the roadmap.
+- Phase one (stdio) and phase two (ZIP) adapters already exist; extend coverage to foreign stream integrations while keeping dependency footprints reviewable.
 
 #### Q&A
 - **Why start with stream wrappers?** They are the most common side-effecting calls that still bypass the heartbeat; wrapping them aligns IO with the impulse dispatch contract.
@@ -64,7 +64,7 @@ Bringing stream helpers into the enzyme catalogue would let impulse-driven workf
 - **Milestone 4 - Extended feature set**: 📎 Planned — add HANDLE/STREAM lifetimes, proxy lifecycle polish, deep cloning, persistence hooks, and expanded tests once the core runtime is proven.
 
 ## Q&A
-- **Why does Milestone 1 stop at VALUE/DATA payloads?** Locking down history and idempotence proves the timeline model; HANDLE/STREAM work can land once the replay story is airtight.
+- **Why does Milestone 1 stop at VALUE/DATA payloads?** Milestone 1 locked down history and idempotence for VALUE/DATA; HANDLE/STREAM read/write landed afterward, with historical snapshots still tracking under later milestones.
 - **Do link shadows matter before the runtime ships?** Yes. Without cleanup the archive helpers leak state, so shadow hygiene is part of structural resilience.
 - **Can we expose child hashes before Milestone 2?** Only after comparator/hash dedupe is complete; otherwise repeated inserts risk drifting snapshots.
 - **What happens to proxy-backed cells?** They graduate in the extended feature milestone once historicity, traversal, and runtime loops are stable.

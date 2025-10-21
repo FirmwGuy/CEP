@@ -11,7 +11,7 @@
 
 * **Signals → Enzymes → Work**: register, bind, match, and order enzyme callbacks; how impulses get resolved and executed  .
 * **Serialization & Streams**: emit/ingest chunked cell streams; transactions; manifest & payload; proxy snapshots .
-* **Diagnostics**: the legacy CEI channel was retired; capture faults via bespoke enzymes (log to `/journal/sys_log`, raise TODO stubs) until the replacement diagnostics surface ships.
+* **Diagnostics**: the legacy CEI channel was retired; capture faults via bespoke enzymes (log to a pack-owned journal branch) and track any outstanding integration work in your roadmap until the replacement diagnostics surface ships.
 * **Proxies & Libraries**: represent external resources/streams inside cells  .
 * **Naming & Namepool**: compact Domain/Tag IDs, intern/lookup text names  .
 * **Locking, History & “soft” vs “hard”**: data/store locks, append‑only timelines, snapshot traversals  .
@@ -121,7 +121,7 @@ if (cep_beat_phase() == CEP_BEAT_COMPUTE) {
 
 **Technical details**
 - Register pack-specific routing enzymes ahead of ingest descriptors when you still need a lobby-style fan-out. Reuse the `cep_txn_*` helpers if you require veiled staging before grafting requests.
-- When you remove legacy mailroom calls, leave a `TODO` near any temporary no-op stub so downstream refactors can wire the new dispatcher explicitly.
+- When you remove legacy mailroom calls, document any temporary no-op stub in your pack backlog so downstream refactors can wire the new dispatcher explicitly.
 
 **Q&A**
 - *What replaced `cep_mailroom_stage_request()`?* Nothing in the kernel. Copy the staging pattern into your own pack (or wrap it as a helper) so the new ingress path remains explicit.
@@ -544,7 +544,7 @@ if (!cep_txn_commit(&txn)) {
 
 ## 8) Integration guidance & gotchas
 
-* **Rendezvous refresh (retired).** The rendezvous helpers were removed; strip old registration calls and leave a `TODO` where a replacement scheduler still needs to land.
+* **Rendezvous refresh (retired).** The rendezvous helpers were removed; strip old registration calls and route long-running work through pack-owned state machines until a replacement scheduler lands.
 * **Don’t mutate mid‑beat registrations.** Register enzymes freely, but let CEP **activate** them between beats (`activate_pending`) to avoid agenda drift .
 * **Prefer soft deletes** for observability; reserve hard deletes for GC or error recovery workflows. Past traversals depend on timestamps and history lists .
 * **Respect locks**. Both **data** and **store** locks check the *entire ancestor chain*; if anything is locked above, mutations are denied to keep invariants intact  .
@@ -555,18 +555,18 @@ if (!cep_txn_commit(&txn)) {
 
 ## 9) Lifecycle signals in practice
 
-Heartbeat init/shutdown pulses now mirror production beats, so tooling and tests can treat them as first-class events instead of ad-hoc bootstrap helpers.
+Heartbeat init/shutdown operations now mirror production beats, so tooling and tests can treat them as first-class events instead of ad-hoc bootstrap helpers.
 
 ### Technical details
 - Call `cep_heartbeat_begin()` right after `cep_heartbeat_configure()` when you want the system-init cascade; follow it with `cep_heartbeat_step()` so any pack-specific init descriptors you registered actually execute.
-- `cep_heartbeat_emit_shutdown()` enqueues the shutdown signal on the live agenda, runs the same commit path as a normal beat, and writes a short breadcrumb even when directory logging stays disabled.
-- Each bootstrap helper now marks its subsystem as ready by writing to `/sys/state/<scope>` (`status=ready`, `ready_beat=<n>`) and emitting `CEP:sig_sys/ready/<scope>`. Shutdown walks the scopes in reverse dependency order, records `status=teardown` / `td_beat`, emits `CEP:sig_sys/teardown/<scope>`, and finally logs the traditional `shutdown` pulse.
-- The `/sys/state` dictionary is durable, so tooling can poll readiness/teardown even if the corresponding impulses have already been consumed; readiness helpers return `false` if prerequisites have not finished booting.
+- `cep_heartbeat_emit_shutdown()` enqueues the shutdown operation on the live agenda and drives the same commit path as a normal beat.
+- Each bootstrap helper now marks its subsystem as ready by writing to `/sys/state/<scope>` (`status=ready`, `ready_beat=<n>`). Shutdown walks the scopes in reverse dependency order, records `status=teardown` / `td_beat`, and closes the `op/shdn` timeline once all scopes report `ok`.
+- The `/sys/state` dictionary and `/rt/ops/<oid>` branches are durable, so tooling can poll readiness/teardown even if the corresponding operations have already completed; readiness helpers return `false` if prerequisites have not finished booting.
 
 ### Q&A
-- *How do I check that init ran during a test?* Inspect `/journal/sys_log` or verify that `cep_heartbeat_sys_root()` picked up the expected namespaces after the first beat—both are populated by the init enzyme.
-- *How do I know a subsystem is ready for work?* Read `/sys/state/<scope>/status` (expect `"ready"`), or call `cep_lifecycle_scope_is_ready(scope)`. Scopes emit deterministic `CEP:sig_sys/ready/<scope>` impulses once bootstraps complete.
-- *Can I replay init mid-run?* Yes. Call `cep_heartbeat_restart()`, then `cep_heartbeat_begin()` and a single `cep_heartbeat_step()`; the sys-log will capture each pulse so you can line them up with assertions.
+- *How do I check that init ran during a test?* Inspect `/rt/ops/<boot_oid>` or verify that `cep_heartbeat_sys_root()` picked up the expected namespaces after the first beat—both advance as the boot operation progresses.
+- *How do I know a subsystem is ready for work?* Read `/sys/state/<scope>/status` (expect `"ready"`), or call `cep_lifecycle_scope_is_ready(scope)`. Awaiters can also subscribe to the boot/shutdown operations via `cep_op_await`.
+- *Can I replay init mid-run?* Yes. Call `cep_heartbeat_restart()`, then `cep_heartbeat_begin()` and a single `cep_heartbeat_step()`; the boot operation will record the fresh states so you can line them up with assertions.
 - *Will emitting shutdown twice cause trouble?* No. The helper is idempotent; once `sys_shutdown_emitted` flips, subsequent calls simply return `true`.
 
 ---
@@ -575,7 +575,7 @@ Heartbeat init/shutdown pulses now mirror production beats, so tooling and tests
 
 - *Do I need to call the phase helpers manually?* No. They are wired into `cep_heartbeat_resolve_agenda()` and `cep_heartbeat_stage_commit()`. Manual calls are only for bespoke schedulers.
 - *What happens to mid-beat registrations?* They are counted and deferred; the agenda for the current beat never mutates.
-- *What should I do with old `cep_mailroom_*` calls?* Delete them. Register pack-owned routing enzymes or write directly into your target inboxes, and leave a `TODO` where replacements still need to land.
+- *What should I do with old `cep_mailroom_*` calls?* Delete them. Register pack-owned routing enzymes or write directly into your target inboxes, and track any longer-term dispatcher work in your pack backlog instead of leaving code placeholders.
 - *How do I stage intents safely without the mailroom?* Wrap your writes with `cep_txn_begin()`/`cep_txn_commit()` (or an equivalent helper) inside your pack so veiled staging and audit links stay explicit.
 - *Do I still call pack bootstraps?* Yes. Each optional pack must provision its own ledgers, inboxes, or indexes before handling impulses.
 - *How do I disable the automatic beat stamp in serialization?* Supply your own `cepSerializationHeader` with `journal_metadata_present = false` (and your own metadata) or set the boolean to `false` before invoking `cep_serialization_emit_cell()`.

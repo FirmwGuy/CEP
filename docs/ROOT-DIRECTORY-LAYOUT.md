@@ -6,8 +6,8 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
 ## Technical Details
 ### Always-on roots (created by `cep_heartbeat_bootstrap`)
 - `/sys` – core counters, configuration toggles, and name tables the kernel reads each beat. The `/sys/state/<scope>` dictionary also records lifecycle readiness (`status`, `ready_beat`) and teardown metadata (`td_beat`) for kernel subsystems.
-- `/rt` – heartbeat staging area. The runtime keeps beat journals here when directory capture is enabled.
-- `/journal` – append-only heartbeat evidence. The kernel writes intent/outcome records here; other layers can add ledgers alongside them. Lifecycle signals append a short note under `/journal/sys_log` so you can confirm when init/shutdown fired.
+- `/rt` – heartbeat staging area. The runtime keeps beat journals here when directory capture is enabled and always maintains `/rt/ops` for live operations such as `op/boot` and `op/shdn`.
+- `/journal` – append-only evidence for stream/library effects. Kernel helpers attach intent/outcome entries to stream cells here; packs can add their own ledgers alongside them when they need extra audit trails.
 - `/env` – handles and stream proxies bound to external resources. Enzymes dereference entries through the proxy helpers in `cep_cell`.
 - `/cas` – content-addressable payload store. Large blobs land here so data cells can reference hashes instead of duplicating bytes.
 - `/lib` – library snapshots for proxy-backed streams.
@@ -21,6 +21,7 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
   - `/agenda` – ordered ledger of resolved enzymes and dispatch results.
   - `/stage` – mutation log populated as enzymes commit changes.
     Transaction helpers add short `txn commit/abort: ...` notes here so you can match unveil decisions to beat numbers.
+- `/rt/ops/<oid>` – operation dictionaries recording envelopes, state history, close status, and watcher metadata for lifecycle and pack-defined operations.
 
 ## Q&A
 - **When do the beat folders appear?** As soon as `cepHeartbeatPolicy.ensure_directories` is left at its default `true`. Turning it off skips `/rt/beat/<n>` entirely so long-running captures do not grow without bound.
