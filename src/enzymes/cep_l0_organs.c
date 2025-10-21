@@ -15,7 +15,9 @@
 typedef enum {
     CEP_L0_ORGAN_SYS_STATE = 0,
     CEP_L0_ORGAN_SYS_ORGANS,
+    CEP_L0_ORGAN_SYS_NAMEPOOL,
     CEP_L0_ORGAN_RT_OPS,
+    CEP_L0_ORGAN_RT_BEAT,
     CEP_L0_ORGAN_JOURNAL,
     CEP_L0_ORGAN_ENV,
     CEP_L0_ORGAN_CAS,
@@ -30,10 +32,18 @@ typedef struct {
     const char* label;
     const char* path_text;
     cepEnzyme   callback;
+    const char* ctor_label;
+    const char* dtor_label;
+    cepEnzyme   ctor_callback;
+    cepEnzyme   dtor_callback;
     cepDT       path_segments[3];
     size_t      segment_count;
     cepDT       validator_name;
+    cepDT       constructor_name;
+    cepDT       destructor_name;
     bool        validator_ready;
+    bool        constructor_ready;
+    bool        destructor_ready;
 } cepL0OrganDefinition;
 
 typedef struct {
@@ -54,13 +64,22 @@ typedef struct {
 
 static int cep_l0_organ_vl_sys_state(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l0_organ_vl_sys_organs(const cepPath* signal_path, const cepPath* target_path);
+static int cep_l0_organ_vl_sys_namepool(const cepPath* signal_path, const cepPath* target_path);
+static int cep_l0_organ_ct_sys_namepool(const cepPath* signal_path, const cepPath* target_path);
+static int cep_l0_organ_dt_sys_namepool(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l0_organ_vl_rt_ops(const cepPath* signal_path, const cepPath* target_path);
+static int cep_l0_organ_vl_rt_beat(const cepPath* signal_path, const cepPath* target_path);
+static int cep_l0_organ_ct_rt_beat(const cepPath* signal_path, const cepPath* target_path);
+static int cep_l0_organ_dt_rt_beat(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l0_organ_vl_journal(const cepPath* signal_path, const cepPath* target_path);
+static int cep_l0_organ_ct_journal(const cepPath* signal_path, const cepPath* target_path);
+static int cep_l0_organ_dt_journal(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l0_organ_vl_env(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l0_organ_vl_cas(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l0_organ_vl_lib(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l0_organ_vl_tmp(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l0_organ_vl_enzymes(const cepPath* signal_path, const cepPath* target_path);
+static void cep_l0_validation_issue(cepL0OrganValidationRun* run, const char* fmt, ...);
 
 static cepL0OrganDefinition CEP_L0_ORGAN_DEFS[CEP_L0_ORGAN_COUNT] = {
     [CEP_L0_ORGAN_SYS_STATE] = {
@@ -75,17 +94,41 @@ static cepL0OrganDefinition CEP_L0_ORGAN_DEFS[CEP_L0_ORGAN_COUNT] = {
         .path_text  = "/sys/organs",
         .callback   = cep_l0_organ_vl_sys_organs,
     },
+    [CEP_L0_ORGAN_SYS_NAMEPOOL] = {
+        .kind          = "sys_namepool",
+        .label         = "organ.sys_namepool.vl",
+        .ctor_label    = "organ.sys_namepool.ct",
+        .dtor_label    = "organ.sys_namepool.dt",
+        .path_text     = "/sys/namepool",
+        .callback      = cep_l0_organ_vl_sys_namepool,
+        .ctor_callback = cep_l0_organ_ct_sys_namepool,
+        .dtor_callback = cep_l0_organ_dt_sys_namepool,
+    },
     [CEP_L0_ORGAN_RT_OPS] = {
         .kind       = "rt_ops",
         .label      = "organ.rt_ops.vl",
         .path_text  = "/rt/ops",
         .callback   = cep_l0_organ_vl_rt_ops,
     },
+    [CEP_L0_ORGAN_RT_BEAT] = {
+        .kind          = "rt_beat",
+        .label         = "organ.rt_beat.vl",
+        .ctor_label    = "organ.rt_beat.ct",
+        .dtor_label    = "organ.rt_beat.dt",
+        .path_text     = "/rt/beat",
+        .callback      = cep_l0_organ_vl_rt_beat,
+        .ctor_callback = cep_l0_organ_ct_rt_beat,
+        .dtor_callback = cep_l0_organ_dt_rt_beat,
+    },
     [CEP_L0_ORGAN_JOURNAL] = {
         .kind       = "journal",
         .label      = "organ.journal.vl",
+        .ctor_label = "organ.journal.ct",
+        .dtor_label = "organ.journal.dt",
         .path_text  = "/journal",
         .callback   = cep_l0_organ_vl_journal,
+        .ctor_callback = cep_l0_organ_ct_journal,
+        .dtor_callback = cep_l0_organ_dt_journal,
     },
     [CEP_L0_ORGAN_ENV] = {
         .kind       = "env",
@@ -135,10 +178,20 @@ static void cep_l0_organs_initialise(void) {
     sys_organs->path_segments[1] = *CEP_DTAW("CEP", "organs");
     sys_organs->segment_count = 2u;
 
+    cepL0OrganDefinition* sys_namepool = &CEP_L0_ORGAN_DEFS[CEP_L0_ORGAN_SYS_NAMEPOOL];
+    sys_namepool->path_segments[0] = *CEP_DTAW("CEP", "sys");
+    sys_namepool->path_segments[1] = *CEP_DTAW("CEP", "namepool");
+    sys_namepool->segment_count = 2u;
+
     cepL0OrganDefinition* rt_ops = &CEP_L0_ORGAN_DEFS[CEP_L0_ORGAN_RT_OPS];
     rt_ops->path_segments[0] = *CEP_DTAW("CEP", "rt");
     rt_ops->path_segments[1] = *CEP_DTAW("CEP", "ops");
     rt_ops->segment_count = 2u;
+
+    cepL0OrganDefinition* rt_beat = &CEP_L0_ORGAN_DEFS[CEP_L0_ORGAN_RT_BEAT];
+    rt_beat->path_segments[0] = *CEP_DTAW("CEP", "rt");
+    rt_beat->path_segments[1] = *CEP_DTAW("CEP", "beat");
+    rt_beat->segment_count = 2u;
 
     cepL0OrganDefinition* journal = &CEP_L0_ORGAN_DEFS[CEP_L0_ORGAN_JOURNAL];
     journal->path_segments[0] = *CEP_DTAW("CEP", "journal");
@@ -221,6 +274,209 @@ static cepCell* cep_l0_organ_resolve_root_from_segments(const cepL0OrganDefiniti
     }
     return current;
 }
+
+static cepCell* cep_l0_organ_resolve_target_root(const cepPath* target_path, const char* expected_kind) {
+    if (!target_path || !target_path->length) {
+        return NULL;
+    }
+
+    cepCell* target = cep_cell_find_by_path_past(cep_root(), target_path, 0);
+    if (!target) {
+        return NULL;
+    }
+
+    cepCell* resolved = cep_cell_resolve(target);
+    if (!resolved) {
+        return NULL;
+    }
+
+    if (!expected_kind) {
+        return resolved;
+    }
+
+    cepOrganRoot info = {0};
+    if (!cep_organ_root_for_cell(resolved, &info) || !info.descriptor || !info.descriptor->kind) {
+        return NULL;
+    }
+
+    if (strcmp(info.descriptor->kind, expected_kind) != 0) {
+        return NULL;
+    }
+
+    return resolved;
+}
+
+static bool cep_l0_data_matches_string(const cepCell* cell, const char* expected) {
+    if (!cell || !expected || !cep_cell_has_data(cell)) {
+        return false;
+    }
+
+    const cepData* data = cell->data;
+    size_t length = strlen(expected) + 1u;
+    if (data->datatype != CEP_DATATYPE_VALUE || data->size != length) {
+        return false;
+    }
+
+    return memcmp(data->value, expected, length) == 0;
+}
+
+static bool cep_l0_meta_validate_schema(cepCell* meta, const char* schema_label, cepL0OrganValidationRun* run) {
+    if (!meta || !schema_label) {
+        return true;
+    }
+
+    cepCell* resolved = cep_cell_resolve(meta);
+    if (!resolved || !cep_cell_require_dictionary_store(&resolved)) {
+        if (run) {
+            cep_l0_validation_issue(run, "meta branch unresolved or not dictionary");
+        }
+        return false;
+    }
+
+    cepDT schema_name = *CEP_DTAW("CEP", "schema");
+    cepCell* schema_cell = cep_cell_find_by_name(resolved, &schema_name);
+    if (!schema_cell) {
+        if (run) {
+            cep_l0_validation_issue(run, "meta/schema missing");
+        }
+        return false;
+    }
+
+    schema_cell = cep_cell_resolve(schema_cell);
+    if (!schema_cell) {
+        if (run) {
+            cep_l0_validation_issue(run, "meta/schema unresolved");
+        }
+        return false;
+    }
+
+    if (!cep_l0_data_matches_string(schema_cell, schema_label)) {
+        if (run) {
+            cep_l0_validation_issue(run, "meta/schema mismatch expected=%s", schema_label);
+        }
+        return false;
+    }
+
+    if (run) {
+        run->checked_values += 1u;
+    }
+    return true;
+}
+
+static bool cep_l0_meta_set_schema(cepCell* root, const char* schema_label) {
+    if (!root || !schema_label) {
+        return false;
+    }
+
+    cepCell* resolved = root;
+    if (!cep_cell_require_dictionary_store(&resolved)) {
+        return false;
+    }
+
+    cepDT meta_name = *CEP_DTAW("CEP", "meta");
+    cepCell* meta = cep_cell_find_by_name(resolved, &meta_name);
+
+    bool restore_root_writable = resolved->store ? resolved->store->writable : true;
+    if (resolved->store && !resolved->store->writable) {
+        resolved->store->writable = 1u;
+    }
+
+    if (!meta) {
+        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+        meta = cep_cell_add_dictionary(resolved, &meta_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        if (!meta) {
+            if (resolved->store) {
+                resolved->store->writable = restore_root_writable;
+            }
+            return false;
+        }
+    } else {
+        meta = cep_cell_resolve(meta);
+        if (!meta || !cep_cell_require_dictionary_store(&meta)) {
+            if (resolved->store) {
+                resolved->store->writable = restore_root_writable;
+            }
+            return false;
+        }
+    }
+
+    if (resolved->store) {
+        resolved->store->writable = restore_root_writable;
+    }
+
+    bool restore_meta_writable = meta->store ? meta->store->writable : true;
+    if (meta->store && !meta->store->writable) {
+        meta->store->writable = 1u;
+    }
+
+    cepDT schema_name = *CEP_DTAW("CEP", "schema");
+    cepCell* schema_cell = cep_cell_find_by_name(meta, &schema_name);
+    size_t length = strlen(schema_label) + 1u;
+    cepDT string_type = cep_ops_make_dt("val/str");
+
+    if (!schema_cell) {
+        if (!cep_dict_add_value(meta, &schema_name, &string_type, (void*)schema_label, length, length)) {
+            if (meta->store) {
+                meta->store->writable = restore_meta_writable;
+            }
+            return false;
+        }
+    } else {
+        schema_cell = cep_cell_resolve(schema_cell);
+        if (!schema_cell || !cep_cell_has_data(schema_cell)) {
+            if (meta->store) {
+                meta->store->writable = restore_meta_writable;
+            }
+            return false;
+        }
+        if (!cep_cell_update(schema_cell, length, length, (void*)schema_label, false)) {
+            if (meta->store) {
+                meta->store->writable = restore_meta_writable;
+            }
+            return false;
+        }
+    }
+
+    if (meta->store) {
+        meta->store->writable = restore_meta_writable;
+    }
+
+    return true;
+}
+
+static bool cep_l0_meta_drop(cepCell* root) {
+    if (!root) {
+        return true;
+    }
+
+    cepCell* resolved = cep_cell_resolve(root);
+    if (!resolved || !resolved->store) {
+        return false;
+    }
+
+    cepDT meta_name = *CEP_DTAW("CEP", "meta");
+    cepCell* meta = cep_cell_find_by_name(resolved, &meta_name);
+    if (!meta) {
+        return true;
+    }
+
+    meta = cep_cell_resolve(meta);
+    if (!meta) {
+        return false;
+    }
+
+    bool restore_root_writable = resolved->store ? resolved->store->writable : true;
+    if (!resolved->store->writable) {
+        resolved->store->writable = 1u;
+    }
+
+    cep_cell_finalize_hard(meta);
+    cep_cell_remove_hard(meta, NULL);
+
+    resolved->store->writable = restore_root_writable;
+    return true;
+}
+
 
 static void cep_l0_validation_issue(cepL0OrganValidationRun* run, const char* fmt, ...) {
     if (!run || !fmt) {
@@ -604,14 +860,24 @@ static bool cep_l0_check_rt_ops(cepCell* root, cepL0OrganValidationRun* run) {
 
     return ok;
 }
-static bool cep_l0_check_children_are_lists(cepCell* root, cepL0OrganValidationRun* run) {
+static bool cep_l0_check_children_are_lists(cepCell* root, cepL0OrganValidationRun* run, const char* meta_schema) {
     bool ok = true;
+    cepDT meta_name = *CEP_DTAW("CEP", "meta");
+    bool meta_seen = false;
     for (cepCell* child = cep_cell_first_all(root); child; child = cep_cell_next_all(root, child)) {
         run->checked_nodes += 1u;
         cepCell* resolved = cep_cell_resolve(child);
         if (!resolved) {
             cep_l0_validation_issue(run, "journal child unresolved");
             ok = false;
+            continue;
+        }
+        const cepDT* child_name = cep_cell_get_name(child);
+        if (child_name && cep_dt_compare(child_name, &meta_name) == 0) {
+            meta_seen = true;
+            if (!cep_l0_meta_validate_schema(resolved, meta_schema, run)) {
+                ok = false;
+            }
             continue;
         }
         if (!resolved->store || resolved->store->indexing != CEP_INDEX_BY_INSERTION) {
@@ -623,6 +889,147 @@ static bool cep_l0_check_children_are_lists(cepCell* root, cepL0OrganValidationR
             run->checked_values += 1u;
         }
     }
+    if (meta_schema && !meta_seen) {
+        cep_l0_validation_issue(run, "meta/schema missing");
+        ok = false;
+    }
+    return ok;
+}
+
+static bool cep_l0_check_namepool(cepCell* root, cepL0OrganValidationRun* run) {
+    bool ok = true;
+    cepCell* resolved_root = root;
+    if (!cep_cell_require_dictionary_store(&resolved_root)) {
+        cep_l0_validation_issue(run, "namepool root not dictionary");
+        return false;
+    }
+
+    cepDT meta_name = *CEP_DTAW("CEP", "meta");
+    bool meta_seen = false;
+
+    for (cepCell* child = cep_cell_first_all(resolved_root); child; child = cep_cell_next_all(resolved_root, child)) {
+        run->checked_nodes += 1u;
+        cepCell* resolved = cep_cell_resolve(child);
+        if (!resolved) {
+            cep_l0_validation_issue(run, "namepool child unresolved");
+            ok = false;
+            continue;
+        }
+
+        const cepDT* name = cep_cell_get_name(child);
+        if (name && cep_dt_compare(name, &meta_name) == 0) {
+            meta_seen = true;
+            if (!cep_l0_meta_validate_schema(resolved, "cep:sys-namepool:v1", run)) {
+                ok = false;
+            }
+            continue;
+        }
+
+        if (!name || name->domain != CEP_ACRO("NP")) {
+            cep_l0_validation_issue(run, "namepool child has unexpected domain");
+            ok = false;
+            continue;
+        }
+
+        if (!cep_cell_require_dictionary_store(&resolved)) {
+            cep_l0_validation_issue(run, "namepool page not dictionary");
+            ok = false;
+            continue;
+        }
+
+        for (cepCell* slot = cep_cell_first_all(resolved); slot; slot = cep_cell_next_all(resolved, slot)) {
+            run->checked_values += 1u;
+            cepCell* entry = cep_cell_resolve(slot);
+            if (!entry || !cep_cell_has_data(entry)) {
+                cep_l0_validation_issue(run, "namepool slot missing data");
+                ok = false;
+                continue;
+            }
+
+            const cepData* data = entry->data;
+            if (data->datatype != CEP_DATATYPE_DATA || data->size == 0u) {
+                cep_l0_validation_issue(run, "namepool slot payload invalid");
+                ok = false;
+            }
+        }
+    }
+
+    if (!meta_seen) {
+        cep_l0_validation_issue(run, "namepool meta/schema missing");
+        ok = false;
+    }
+
+    return ok;
+}
+
+static bool cep_l0_check_rt_beat(cepCell* root, cepL0OrganValidationRun* run) {
+    bool ok = true;
+    cepCell* resolved_root = root;
+    if (!cep_cell_require_dictionary_store(&resolved_root)) {
+        cep_l0_validation_issue(run, "rt/beat root not dictionary");
+        return false;
+    }
+
+    cepDT meta_name = *CEP_DTAW("CEP", "meta");
+    cepDT inbox_name = *CEP_DTAW("CEP", "inbox");
+    cepDT agenda_name = *CEP_DTAW("CEP", "agenda");
+    cepDT stage_name = *CEP_DTAW("CEP", "stage");
+    bool meta_seen = false;
+
+    for (cepCell* child = cep_cell_first_all(resolved_root); child; child = cep_cell_next_all(resolved_root, child)) {
+        run->checked_nodes += 1u;
+        cepCell* beat = cep_cell_resolve(child);
+        if (!beat) {
+            cep_l0_validation_issue(run, "rt/beat child unresolved");
+            ok = false;
+            continue;
+        }
+
+        const cepDT* name = cep_cell_get_name(child);
+        if (name && cep_dt_compare(name, &meta_name) == 0) {
+            meta_seen = true;
+            if (!cep_l0_meta_validate_schema(beat, "cep:rt-beat:v1", run)) {
+                ok = false;
+            }
+            continue;
+        }
+
+        if (!cep_cell_require_dictionary_store(&beat)) {
+            cep_l0_validation_issue(run, "beat ledger node not dictionary");
+            ok = false;
+            continue;
+        }
+
+        cepCell* inbox = cep_cell_find_by_name(beat, &inbox_name);
+        cepCell* agenda = cep_cell_find_by_name(beat, &agenda_name);
+        cepCell* stage = cep_cell_find_by_name(beat, &stage_name);
+
+        if (!inbox || !agenda || !stage) {
+            cep_l0_validation_issue(run, "beat ledger missing inbox/agenda/stage");
+            ok = false;
+        }
+
+        cepCell* lists[] = { inbox ? cep_cell_resolve(inbox) : NULL,
+                             agenda ? cep_cell_resolve(agenda) : NULL,
+                             stage ? cep_cell_resolve(stage) : NULL };
+        for (size_t i = 0; i < 3; ++i) {
+            cepCell* list = lists[i];
+            if (!list || !list->store || list->store->indexing != CEP_INDEX_BY_INSERTION) {
+                cep_l0_validation_issue(run, "beat ledger list invalid");
+                ok = false;
+                continue;
+            }
+            for (cepCell* entry = cep_cell_first_all(list); entry; entry = cep_cell_next_all(list, entry)) {
+                run->checked_values += 1u;
+            }
+        }
+    }
+
+    if (!meta_seen) {
+        cep_l0_validation_issue(run, "rt/beat meta/schema missing");
+        ok = false;
+    }
+
     return ok;
 }
 
@@ -767,6 +1174,58 @@ static int cep_l0_organ_vl_sys_organs(const cepPath* signal_path, const cepPath*
     return cep_l0_validation_finish(&run);
 }
 
+static int cep_l0_organ_vl_sys_namepool(const cepPath* signal_path, const cepPath* target_path) {
+    (void)signal_path;
+    cep_l0_organs_initialise();
+
+    cepCell* root = NULL;
+    cepL0OrganValidationRun run;
+    const cepL0OrganDefinition* def = &CEP_L0_ORGAN_DEFS[CEP_L0_ORGAN_SYS_NAMEPOOL];
+    if (cep_l0_validation_prepare(target_path, def, &run, &root)) {
+        if (root) {
+            cepCell* resolved = cep_cell_resolve(root);
+            if (resolved) {
+                (void)cep_l0_check_namepool(resolved, &run);
+            } else {
+                cep_l0_validation_issue(&run, "namepool root unresolved");
+            }
+        }
+    }
+    return cep_l0_validation_finish(&run);
+}
+
+static int cep_l0_organ_ct_sys_namepool(const cepPath* signal_path, const cepPath* target_path) {
+    (void)signal_path;
+    cep_l0_organs_initialise();
+
+    cepCell* root = cep_l0_organ_resolve_target_root(target_path, "sys_namepool");
+    if (!root) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    if (!cep_l0_meta_set_schema(root, "cep:sys-namepool:v1")) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    return CEP_ENZYME_SUCCESS;
+}
+
+static int cep_l0_organ_dt_sys_namepool(const cepPath* signal_path, const cepPath* target_path) {
+    (void)signal_path;
+    cep_l0_organs_initialise();
+
+    cepCell* root = cep_l0_organ_resolve_target_root(target_path, "sys_namepool");
+    if (!root) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    if (!cep_l0_meta_drop(root)) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    return CEP_ENZYME_SUCCESS;
+}
+
 static int cep_l0_organ_vl_rt_ops(const cepPath* signal_path, const cepPath* target_path) {
     (void)signal_path;
     cep_l0_organs_initialise();
@@ -787,6 +1246,58 @@ static int cep_l0_organ_vl_rt_ops(const cepPath* signal_path, const cepPath* tar
     return cep_l0_validation_finish(&run);
 }
 
+static int cep_l0_organ_vl_rt_beat(const cepPath* signal_path, const cepPath* target_path) {
+    (void)signal_path;
+    cep_l0_organs_initialise();
+
+    cepCell* root = NULL;
+    cepL0OrganValidationRun run;
+    const cepL0OrganDefinition* def = &CEP_L0_ORGAN_DEFS[CEP_L0_ORGAN_RT_BEAT];
+    if (cep_l0_validation_prepare(target_path, def, &run, &root)) {
+        if (root) {
+            cepCell* resolved = cep_cell_resolve(root);
+            if (resolved) {
+                (void)cep_l0_check_rt_beat(resolved, &run);
+            } else {
+                cep_l0_validation_issue(&run, "rt/beat root unresolved");
+            }
+        }
+    }
+    return cep_l0_validation_finish(&run);
+}
+
+static int cep_l0_organ_ct_rt_beat(const cepPath* signal_path, const cepPath* target_path) {
+    (void)signal_path;
+    cep_l0_organs_initialise();
+
+    cepCell* root = cep_l0_organ_resolve_target_root(target_path, "rt_beat");
+    if (!root) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    if (!cep_l0_meta_set_schema(root, "cep:rt-beat:v1")) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    return CEP_ENZYME_SUCCESS;
+}
+
+static int cep_l0_organ_dt_rt_beat(const cepPath* signal_path, const cepPath* target_path) {
+    (void)signal_path;
+    cep_l0_organs_initialise();
+
+    cepCell* root = cep_l0_organ_resolve_target_root(target_path, "rt_beat");
+    if (!root) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    if (!cep_l0_meta_drop(root)) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    return CEP_ENZYME_SUCCESS;
+}
+
 static int cep_l0_organ_vl_journal(const cepPath* signal_path, const cepPath* target_path) {
     (void)signal_path;
     cep_l0_organs_initialise();
@@ -798,13 +1309,45 @@ static int cep_l0_organ_vl_journal(const cepPath* signal_path, const cepPath* ta
         if (root) {
             cepCell* resolved = cep_cell_resolve(root);
             if (resolved) {
-                (void)cep_l0_check_children_are_lists(resolved, &run);
+                (void)cep_l0_check_children_are_lists(resolved, &run, "cep:stream-ledger:v1");
             } else {
                 cep_l0_validation_issue(&run, "journal root unresolved");
             }
         }
     }
     return cep_l0_validation_finish(&run);
+}
+
+static int cep_l0_organ_ct_journal(const cepPath* signal_path, const cepPath* target_path) {
+    (void)signal_path;
+    cep_l0_organs_initialise();
+
+    cepCell* root = cep_l0_organ_resolve_target_root(target_path, "journal");
+    if (!root) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    if (!cep_l0_meta_set_schema(root, "cep:stream-ledger:v1")) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    return CEP_ENZYME_SUCCESS;
+}
+
+static int cep_l0_organ_dt_journal(const cepPath* signal_path, const cepPath* target_path) {
+    (void)signal_path;
+    cep_l0_organs_initialise();
+
+    cepCell* root = cep_l0_organ_resolve_target_root(target_path, "journal");
+    if (!root) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    if (!cep_l0_meta_drop(root)) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    return CEP_ENZYME_SUCCESS;
 }
 
 static int cep_l0_organ_vl_env(const cepPath* signal_path, const cepPath* target_path) {
@@ -950,6 +1493,72 @@ bool cep_l0_organs_register(cepEnzymeRegistry* registry) {
         if (cep_enzyme_register(registry, (const cepPath*)&query, &descriptor) != CEP_ENZYME_SUCCESS) {
             return false;
         }
+
+        if (def->ctor_callback) {
+            if (!def->constructor_ready) {
+                char buffer[32];
+                snprintf(buffer, sizeof(buffer), "org:%s:ct", def->kind);
+                def->constructor_name = cep_ops_make_dt(buffer);
+                def->constructor_ready = true;
+            }
+
+            cepPathConst1 ctor_query = {
+                .length = 1u,
+                .capacity = 1u,
+                .past = {
+                    { .dt = def->constructor_name, .timestamp = 0u },
+                },
+            };
+
+            cepEnzymeDescriptor ctor_descriptor = {
+                .name    = def->constructor_name,
+                .label   = def->ctor_label,
+                .before  = NULL,
+                .before_count = 0u,
+                .after   = NULL,
+                .after_count = 0u,
+                .callback = def->ctor_callback,
+                .flags    = CEP_ENZYME_FLAG_IDEMPOTENT | CEP_ENZYME_FLAG_EMIT_SIGNALS,
+                .match    = CEP_ENZYME_MATCH_EXACT,
+            };
+
+            if (cep_enzyme_register(registry, (const cepPath*)&ctor_query, &ctor_descriptor) != CEP_ENZYME_SUCCESS) {
+                return false;
+            }
+        }
+
+        if (def->dtor_callback) {
+            if (!def->destructor_ready) {
+                char buffer[32];
+                snprintf(buffer, sizeof(buffer), "org:%s:dt", def->kind);
+                def->destructor_name = cep_ops_make_dt(buffer);
+                def->destructor_ready = true;
+            }
+
+            cepPathConst1 dtor_query = {
+                .length = 1u,
+                .capacity = 1u,
+                .past = {
+                    { .dt = def->destructor_name, .timestamp = 0u },
+                },
+            };
+
+            cepEnzymeDescriptor dtor_descriptor = {
+                .name    = def->destructor_name,
+                .label   = def->dtor_label,
+                .before  = NULL,
+                .before_count = 0u,
+                .after   = NULL,
+                .after_count = 0u,
+                .callback = def->dtor_callback,
+                .flags    = CEP_ENZYME_FLAG_IDEMPOTENT | CEP_ENZYME_FLAG_EMIT_SIGNALS,
+                .match    = CEP_ENZYME_MATCH_EXACT,
+            };
+
+            if (cep_enzyme_register(registry, (const cepPath*)&dtor_query, &dtor_descriptor) != CEP_ENZYME_SUCCESS) {
+                return false;
+            }
+        }
     }
 
     return true;
@@ -991,6 +1600,60 @@ bool cep_l0_organs_bind_roots(void) {
             }
             if (!already_bound) {
                 return false;
+            }
+        }
+
+        if (def->ctor_callback) {
+            if (!def->constructor_ready) {
+                char buffer[32];
+                snprintf(buffer, sizeof(buffer), "org:%s:ct", def->kind);
+                def->constructor_name = cep_ops_make_dt(buffer);
+                def->constructor_ready = true;
+            }
+
+            rc = cep_cell_bind_enzyme(root, &def->constructor_name, true);
+            if (rc != CEP_ENZYME_SUCCESS) {
+                bool already_bound = false;
+                const cepEnzymeBinding* binding = cep_cell_enzyme_bindings(root);
+                for (const cepEnzymeBinding* node = binding; node; node = node->next) {
+                    if ((node->flags & CEP_ENZYME_BIND_TOMBSTONE) != 0u) {
+                        continue;
+                    }
+                    if (cep_dt_compare(&node->name, &def->constructor_name) == 0) {
+                        already_bound = true;
+                        break;
+                    }
+                }
+                if (!already_bound) {
+                    return false;
+                }
+            }
+        }
+
+        if (def->dtor_callback) {
+            if (!def->destructor_ready) {
+                char buffer[32];
+                snprintf(buffer, sizeof(buffer), "org:%s:dt", def->kind);
+                def->destructor_name = cep_ops_make_dt(buffer);
+                def->destructor_ready = true;
+            }
+
+            rc = cep_cell_bind_enzyme(root, &def->destructor_name, true);
+            if (rc != CEP_ENZYME_SUCCESS) {
+                bool already_bound = false;
+                const cepEnzymeBinding* binding = cep_cell_enzyme_bindings(root);
+                for (const cepEnzymeBinding* node = binding; node; node = node->next) {
+                    if ((node->flags & CEP_ENZYME_BIND_TOMBSTONE) != 0u) {
+                        continue;
+                    }
+                    if (cep_dt_compare(&node->name, &def->destructor_name) == 0) {
+                        already_bound = true;
+                        break;
+                    }
+                }
+                if (!already_bound) {
+                    return false;
+                }
             }
         }
     }

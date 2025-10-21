@@ -11,6 +11,7 @@
  */
 
 #include "cep_cell.h"
+#include "cep_organ.h"
 #include "stream/cep_stream_internal.h"
 
 CEP_DEFINE_STATIC_DT(dt_journal_name, CEP_ACRO("CEP"), CEP_WORD("journal"));
@@ -60,16 +61,26 @@ static cepCell* cep_stream_journal_node(cepCell* owner) {
         owner->store = store;
     }
 
+    cepDT organ_store = cep_organ_store_dt("stream_log");
     cepCell* journal = cep_cell_find_by_name(owner, dt_journal_name());
     if (!journal) {
         cepDT name_copy = *dt_journal_name();
-        cepDT list_type = *dt_list_type();
+        cepDT list_type = cep_dt_is_valid(&organ_store) ? organ_store : *dt_list_type();
         journal = cep_cell_add_list(owner,
                                     &name_copy,
                                     0,
                                     &list_type,
                                     CEP_STORAGE_LINKED_LIST);
+    } else {
+        journal = cep_cell_resolve(journal);
+        if (journal && journal->store && cep_dt_is_valid(&organ_store)) {
+            cep_store_set_dt(journal->store, &organ_store);
+        }
     }
+    if (journal) {
+        (void)cep_organ_request_constructor(journal);
+    }
+
     return journal;
 }
 

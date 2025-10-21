@@ -7,6 +7,7 @@
 #include "cep_cell.h"
 #include "cep_l0.h"
 #include "cep_namepool.h"
+#include "cep_organ.h"
 
 cepOpCount CEP_OP_COUNT;
 
@@ -49,6 +50,7 @@ void cep_cell_system_shutdown(void) {
     cep_cell_finalize_hard(&CEP_ROOT);
     CEP_0(&CEP_ROOT);
     cep_namepool_reset();
+    cep_organ_runtime_reset();
 }
 
 bool cep_cell_system_initialized(void) {

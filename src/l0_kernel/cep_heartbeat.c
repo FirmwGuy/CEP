@@ -28,6 +28,7 @@ static cepHeartbeatRuntime CEP_RUNTIME = {
     .phase   = CEP_BEAT_CAPTURE,
     .deferred_activations = 0u,
     .sys_shutdown_emitted = false,
+    .constructors_scheduled = false,
     .current_descriptor = NULL,
 };
 
@@ -62,6 +63,8 @@ CEP_DEFINE_STATIC_DT(dt_ist_store,      CEP_ACRO("CEP"), CEP_WORD("ist:store"));
 typedef struct {
     const char* kind;
     const char* label;
+    bool        has_constructor;
+    bool        has_destructor;
 } cepHeartbeatOrganDescriptorInit;
 
 static cepDT cep_heartbeat_make_validator_dt(const char* kind) {
@@ -76,17 +79,43 @@ static cepDT cep_heartbeat_make_validator_dt(const char* kind) {
     return cep_ops_make_dt(buffer);
 }
 
+static cepDT cep_heartbeat_make_constructor_dt(const char* kind) {
+    if (!kind || !*kind) {
+        return (cepDT){0};
+    }
+    char buffer[32];
+    int written = snprintf(buffer, sizeof buffer, "org:%s:ct", kind);
+    if (written <= 0 || (size_t)written >= sizeof buffer) {
+        return (cepDT){0};
+    }
+    return cep_ops_make_dt(buffer);
+}
+
+static cepDT cep_heartbeat_make_destructor_dt(const char* kind) {
+    if (!kind || !*kind) {
+        return (cepDT){0};
+    }
+    char buffer[32];
+    int written = snprintf(buffer, sizeof buffer, "org:%s:dt", kind);
+    if (written <= 0 || (size_t)written >= sizeof buffer) {
+        return (cepDT){0};
+    }
+    return cep_ops_make_dt(buffer);
+}
+
 static bool cep_heartbeat_register_l0_organs(void) {
     static const cepHeartbeatOrganDescriptorInit descriptors[] = {
-        { "sys_state",  "Kernel state org" },
-        { "sys_organs", "Organ descriptor registry" },
-        { "rt_ops",     "Runtime operations organ" },
-        { "journal",    "Beat journal organ" },
-        { "env",        "Environment organ" },
-        { "cas",        "Content store organ" },
-        { "lib",        "Library organ" },
-        { "tmp",        "Scratch queue organ" },
-        { "enzymes",    "Enzyme manifest organ" },
+        { "sys_state",   "Kernel state organ",          false, false },
+        { "sys_organs",  "Organ descriptor registry",   false, false },
+        { "sys_namepool","Namepool organ",              true,  true  },
+        { "rt_ops",      "Runtime operations organ",    false, false },
+        { "rt_beat",     "Beat journal organ",          true,  true  },
+        { "journal",     "Stream ledger organ",         true,  true  },
+        { "env",         "Environment organ",           false, false },
+        { "cas",         "Content store organ",         false, false },
+        { "lib",         "Library organ",               false, false },
+        { "tmp",         "Scratch queue organ",         false, false },
+        { "enzymes",     "Enzyme manifest organ",       false, false },
     };
 
     size_t count = sizeof descriptors / sizeof descriptors[0];
@@ -105,6 +134,12 @@ static bool cep_heartbeat_register_l0_organs(void) {
         descriptor.label = init->label;
         descriptor.store = store_dt;
         descriptor.validator = validator_dt;
+        if (init->has_constructor) {
+            descriptor.constructor = cep_heartbeat_make_constructor_dt(init->kind);
+        }
+        if (init->has_destructor) {
+            descriptor.destructor = cep_heartbeat_make_destructor_dt(init->kind);
+        }
 
         if (!cep_organ_register(&descriptor)) {
             return false;
@@ -481,21 +516,34 @@ static bool cep_heartbeat_append_list_message(cepCell* list, const char* message
 }
 
 
-static cepCell* cep_heartbeat_ensure_dictionary_child(cepCell* parent, const cepDT* name, bool* created) {
+static cepCell* cep_heartbeat_ensure_dictionary_child(cepCell* parent, const cepDT* name, const cepDT* store_dt, bool* created) {
     if (!parent || !name) {
         return NULL;
     }
 
     cepCell* child = cep_cell_find_by_name(parent, name);
     if (!child) {
-        cepDT dict_type = *dt_dictionary_type();
+        cepDT dict_type = store_dt ? cep_dt_clean(store_dt) : *dt_dictionary_type();
         cepDT name_copy = cep_dt_clean(name);
         child = cep_cell_add_dictionary(parent, &name_copy, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
         if (created) {
             *created = true;
         }
-    } else if (created) {
-        *created = false;
+    } else {
+        cepCell* resolved = cep_cell_resolve(child);
+        if (!resolved) {
+            return NULL;
+        }
+        if (!cep_cell_require_dictionary_store(&resolved)) {
+            return NULL;
+        }
+        if (store_dt && resolved->store) {
+            cep_store_set_dt(resolved->store, store_dt);
+        }
+        child = resolved;
+        if (created) {
+            *created = false;
+        }
     }
 
     return child;
@@ -543,7 +591,8 @@ static cepCell* cep_heartbeat_ensure_beat_node(cepBeatNumber beat) {
         return NULL;
     }
 
-    cepCell* beat_root = cep_heartbeat_ensure_dictionary_child(rt_root, dt_beat_root_name(), NULL);
+    cepDT beat_store_dt = cep_organ_store_dt("rt_beat");
+    cepCell* beat_root = cep_heartbeat_ensure_dictionary_child(rt_root, dt_beat_root_name(), &beat_store_dt, NULL);
     if (!beat_root) {
         return NULL;
     }
@@ -553,7 +602,7 @@ static cepCell* cep_heartbeat_ensure_beat_node(cepBeatNumber beat) {
         return NULL;
     }
 
-    cepCell* beat_cell = cep_heartbeat_ensure_dictionary_child(beat_root, &beat_name, NULL);
+    cepCell* beat_cell = cep_heartbeat_ensure_dictionary_child(beat_root, &beat_name, NULL, NULL);
     if (!beat_cell) {
         return NULL;
     }
@@ -571,6 +620,48 @@ static cepCell* cep_heartbeat_ensure_beat_node(cepBeatNumber beat) {
     }
 
     return beat_cell;
+}
+
+static void cep_heartbeat_schedule_bootstrap_organs(void) {
+    if (CEP_RUNTIME.constructors_scheduled) {
+        return;
+    }
+
+    bool ok = true;
+
+    cepCell* sys_root = cep_heartbeat_sys_root();
+    if (sys_root) {
+        cepCell* namepool = cep_cell_find_by_name(sys_root, CEP_DTAW("CEP", "namepool"));
+        if (namepool) {
+            cepCell* resolved = cep_cell_resolve(namepool);
+            if (resolved) {
+                ok = ok && cep_organ_request_constructor(resolved);
+            }
+        }
+    }
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (rt_root) {
+        cepCell* beat = cep_cell_find_by_name(rt_root, dt_beat_root_name());
+        if (beat) {
+            cepCell* resolved = cep_cell_resolve(beat);
+            if (resolved) {
+                ok = ok && cep_organ_request_constructor(resolved);
+            }
+        }
+    }
+
+    cepCell* journal_root = cep_heartbeat_journal_root();
+    if (journal_root) {
+        cepCell* resolved = cep_cell_resolve(journal_root);
+        if (resolved) {
+            ok = ok && cep_organ_request_constructor(resolved);
+        }
+    }
+
+    if (ok) {
+        CEP_RUNTIME.constructors_scheduled = true;
+    }
 }
 
 
@@ -974,6 +1065,7 @@ static void cep_runtime_reset_state(bool destroy_registry) {
     CEP_RUNTIME.deferred_activations = 0u;
     CEP_RUNTIME.sys_shutdown_emitted = false;
     CEP_RUNTIME.bootstrapping = false;
+    CEP_RUNTIME.constructors_scheduled = false;
 
     cep_lifecycle_reset_state();
     cep_organ_runtime_reset();
@@ -1540,6 +1632,7 @@ bool cep_heartbeat_bootstrap(void) {
     bool success = false;
     static const char* fail_reason = NULL;
     CEP_RUNTIME.bootstrapping = true;
+    CEP_RUNTIME.constructors_scheduled = false;
 
     bool first_bootstrap = (CEP_RUNTIME.topology.root == NULL);
 
@@ -1589,6 +1682,15 @@ bool cep_heartbeat_bootstrap(void) {
     CEP_DEFAULT_TOPOLOGY.rt = rt;
     if (!CEP_RUNTIME.topology.rt) {
         CEP_RUNTIME.topology.rt = rt;
+    }
+
+    cepDT beat_store_dt = cep_organ_store_dt("rt_beat");
+    if (!cep_dt_is_valid(&beat_store_dt)) {
+        CEP_BOOT_FAIL("beat store dt");
+    }
+    cepCell* beat_root_init = cep_heartbeat_ensure_dictionary_child(rt, dt_beat_root_name(), &beat_store_dt, NULL);
+    if (!beat_root_init) {
+        CEP_BOOT_FAIL("beat dictionary");
     }
 
     (void)cep_cell_ensure_dictionary_child(rt, dt_ops_rt_name(), CEP_STORAGE_RED_BLACK_T);
@@ -1778,6 +1880,7 @@ bool cep_heartbeat_startup(void) {
     if (!cep_boot_ops_progress()) {
         return false;
     }
+    cep_heartbeat_schedule_bootstrap_organs();
     return true;
 }
 
@@ -1805,6 +1908,7 @@ bool cep_heartbeat_restart(void) {
     if (!cep_boot_ops_progress()) {
         return false;
     }
+    cep_heartbeat_schedule_bootstrap_organs();
     return true;
 }
 
@@ -1830,6 +1934,7 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
     if (!cep_boot_ops_progress()) {
         return false;
     }
+    cep_heartbeat_schedule_bootstrap_organs();
     return true;
 }
 

@@ -5,7 +5,7 @@ Think of CEP's runtime as a pair of operations that bookend every session. `op/b
 
 ## Technical Details
 ### Phase 0 — Bootstrap prerequisites
-- `cep_l0_bootstrap()` remains the public entry point. It calls `cep_cell_system_ensure()`, `cep_heartbeat_bootstrap()`, and `cep_namepool_bootstrap()` in order. Each helper marks its lifecycle scope ready, which now drives the `op/boot` timeline.
+- `cep_l0_bootstrap()` remains the public entry point. It calls `cep_cell_system_ensure()`, `cep_heartbeat_bootstrap()`, and `cep_namepool_bootstrap()` in order. Each helper marks its lifecycle scope ready, which now drives the `op/boot` timeline. The first heartbeat startup schedules constructors for the namepool, beat-ledger, and stream-log organs so their schema metadata is in place before Stage E observers run.
 - `cep_cell_system_ensure()` initialises the root cell if needed. On shutdown `cep_cell_system_shutdown()` reverses the work so the next bootstrap starts cleanly.
 - `cep_heartbeat_bootstrap()` creates the always-on directories (`/sys`, `/rt`, `/journal`, `/env`, `/cas`, `/lib`, `/data`, `/tmp`, `/enzymes`), ensures the enzyme registry exists, registers built-in cell operation enzymes, and starts the boot operation if the policy flag `boot_ops` is enabled (it is required for new builds). The helper refreshes lifecycle bookkeeping and leaves the kernel scope marked ready.
 - `cep_namepool_bootstrap()` depends on the kernel scope. Once it succeeds, the boot operation records the final startup phase and closes with `sts:ok`.

@@ -10,6 +10,7 @@
 
 #include "cep_namepool.h"
 #include "cep_heartbeat.h"
+#include "cep_organ.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -522,6 +523,14 @@ bool cep_namepool_bootstrap(void) {
     }
 
     namepool_root = pool;
+
+    if (pool->store) {
+        cepDT organ_store = cep_organ_store_dt("sys_namepool");
+        if (cep_dt_is_valid(&organ_store)) {
+            cep_store_set_dt(pool->store, &organ_store);
+        }
+    }
+
     (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL);
     return true;
 }

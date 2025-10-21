@@ -54,7 +54,11 @@ when a new behavior needs a fresh word before it lands in code.
 | `label` | core | optional human-readable organ description stored in the spec branch. |
 | `meta` | core | metadata dictionary attached to runtime cells. |
 | `organ/<k>` | core | store tag pattern identifying typed organ root dictionaries. |
+| `organ/sys_namepool` | core | store tag applied to the namepool organ root under `/sys`. |
+| `organ/rt_beat` | core | store tag marking the heartbeat beat-ledger organ under `/rt/beat`. |
+| `organ/stream_log` | core | store tag attached to per-stream intent/outcome ledgers. |
 | `organs` | core | system dictionary publishing immutable organ descriptors. |
+| `schema` | core | value stored under `meta/schema` advertising an organ's schema revision. |
 | `txn` | core | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
 | `boot_oid` | core | `val/bytes` cell under `/sys/state` publishing the boot operation OID. |
 | `shdn_oid` | core | `val/bytes` cell under `/sys/state` publishing the shutdown operation OID. |
@@ -83,7 +87,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `cont` | ops | watcher continuation signal stored under `/watchers/<id>/cont`. |
 | `deadline` | ops | watcher timeout beat stored under `/watchers/<id>/deadline`. |
 | `envelope` | ops | immutable dictionary describing an operation's verb, target, mode, and issued beat. |
-| `enz_add` / `enz_cln` / `enz_del` / `enz_mov` / `enz_upd` | ops | canonical enzyme descriptors registered at bootstrap. |
+| `enz_add` / `enz_cln` / `enz_ctor` / `enz_del` / `enz_dtor` / `enz_mov` / `enz_upd` | ops | canonical enzyme descriptors registered at bootstrap. |
 | `history` | ops | dictionary logging state transitions (`0001/`, `0002/`, …). |
 | `issued_beat` | ops | beat index recorded in an operation envelope. |
 | `ist:flush` | ops | shutdown operation state indicating buffered work is being flushed. |
