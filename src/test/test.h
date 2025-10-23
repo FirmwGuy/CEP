@@ -60,6 +60,11 @@ MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fi
 #endif
 MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_organ_constructor_dossier(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_organ_destructor_dossier(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_organ_dossier_sequence(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_organ_constructor_bootstrap(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_organ_constructor_destructor_cycles(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
 

@@ -54,11 +54,10 @@ when a new behavior needs a fresh word before it lands in code.
 | `label` | core | optional human-readable organ description stored in the spec branch. |
 | `meta` | core | metadata dictionary attached to runtime cells. |
 | `organ/<k>` | core | store tag pattern identifying typed organ root dictionaries. |
-| `organ/sys_namepool` | core | store tag applied to the namepool organ root under `/sys`. |
-| `organ/rt_beat` | core | store tag marking the heartbeat beat-ledger organ under `/rt/beat`. |
-| `organ/stream_log` | core | store tag attached to per-stream intent/outcome ledgers. |
+| `organ/sys_namepool` | core | store tag assigned to the `/sys/namepool` dictionary (bootstrap service, not an organ). |
+| `organ/rt_beat` | core | store tag assigned to the `/rt/beat` organ root. |
+| `organ/journal` | core | store tag assigned to the `/journal` organ root. |
 | `organs` | core | system dictionary publishing immutable organ descriptors. |
-| `schema` | core | value stored under `meta/schema` advertising an organ's schema revision. |
 | `txn` | core | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
 | `boot_oid` | core | `val/bytes` cell under `/sys/state` publishing the boot operation OID. |
 | `shdn_oid` | core | `val/bytes` cell under `/sys/state` publishing the shutdown operation OID. |
@@ -87,7 +86,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `cont` | ops | watcher continuation signal stored under `/watchers/<id>/cont`. |
 | `deadline` | ops | watcher timeout beat stored under `/watchers/<id>/deadline`. |
 | `envelope` | ops | immutable dictionary describing an operation's verb, target, mode, and issued beat. |
-| `enz_add` / `enz_cln` / `enz_ctor` / `enz_del` / `enz_dtor` / `enz_mov` / `enz_upd` | ops | canonical enzyme descriptors registered at bootstrap. |
+| `enz_add` / `enz_cln` / `enz_del` / `enz_mov` / `enz_upd` | ops | canonical enzyme descriptors registered at bootstrap. |
 | `history` | ops | dictionary logging state transitions (`0001/`, `0002/`, …). |
 | `issued_beat` | ops | beat index recorded in an operation envelope. |
 | `ist:flush` | ops | shutdown operation state indicating buffered work is being flushed. |
@@ -108,6 +107,9 @@ when a new behavior needs a fresh word before it lands in code.
 | `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | ops | operation identifiers emitted by `sig_cell` payloads. |
 | `opm:states` | ops | operation mode indicating state-tracking semantics. |
 | `org:<k>:*` | ops | organ enzyme names (`org:<k>:vl`, `org:<k>:ct`, `org:<k>:dt`) bound at organ roots. |
+| `org:sys_namepool:*` | ops | namepool organ validator/constructor/destructor signals. |
+| `org:rt_beat:*` | ops | beat ledger organ validator/constructor/destructor signals. |
+| `org:journal:*` | ops | journal organ validator/constructor/destructor signals. |
 | `payload_id` | ops | optional `val/bytes` payload stored in envelopes and watcher entries. |
 | `role_parnt` / `role_source` / `role_subj` / `role_templ` | ops | role vocabulary consumed by mutation enzymes. |
 | `sig_cell` | ops | signal namespace for kernel cell operations. |
@@ -141,6 +143,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `oct_root` / `oct_space` | test | octree storage fixtures in randomized tests. |
 | `pq_buffer` / `pq_root` | test | packed-queue storage fixtures. |
 | `ser_child` / `ser_dict` / `ser_root` | test | serialization fixtures validating tree walkers. |
+| `org:fixture:*` | test | Stage E organ fixture signals exercising constructor/destructor/validator dossiers. |
 | `sig_apply` `sig_beta` `sig_broad` `sig_cycle` `sig_dedup` `sig_dup` `sig_empty` `sig_expect` `sig_gamma` `sig_hb` `sig_img` `sig_mask` `sig_match` `sig_nop` `sig_rand` `sig_root` `sig_rty` `sig_skip` `sig_thumb` `sig_tree` | test | assorted signal tags exercised by scheduler and heartbeat tests. |
 | `sys_child` / `sys_root` | test | synthetic system fixtures in randomized tests. |
 | `test_enz_*` (`test_enz_a`, `test_enz_b`, `test_enz_c`, `test_enz_d`, `test_enz_da`, `test_enz_e`, `test_enz_le`, `test_enz_ro`) | test | enzyme dependency graphs in unit tests. |

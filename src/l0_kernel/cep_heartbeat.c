@@ -28,7 +28,6 @@ static cepHeartbeatRuntime CEP_RUNTIME = {
     .phase   = CEP_BEAT_CAPTURE,
     .deferred_activations = 0u,
     .sys_shutdown_emitted = false,
-    .constructors_scheduled = false,
     .current_descriptor = NULL,
 };
 
@@ -67,55 +66,35 @@ typedef struct {
     bool        has_destructor;
 } cepHeartbeatOrganDescriptorInit;
 
+static cepDT cep_heartbeat_make_signal_dt(const char* kind, const char* suffix) {
+    if (!kind || !*kind || !suffix || !*suffix) {
+        return (cepDT){0};
+    }
+
+    char buffer[32];
+    int written = snprintf(buffer, sizeof buffer, "org:%s:%s", kind, suffix);
+    if (written <= 0 || (size_t)written >= sizeof buffer) {
+        return (cepDT){0};
+    }
+    return cep_ops_make_dt(buffer);
+}
+
 static cepDT cep_heartbeat_make_validator_dt(const char* kind) {
-    if (!kind || !*kind) {
-        return (cepDT){0};
-    }
-    char buffer[32];
-    int written = snprintf(buffer, sizeof buffer, "org:%s:vl", kind);
-    if (written <= 0 || (size_t)written >= sizeof buffer) {
-        return (cepDT){0};
-    }
-    return cep_ops_make_dt(buffer);
-}
-
-static cepDT cep_heartbeat_make_constructor_dt(const char* kind) {
-    if (!kind || !*kind) {
-        return (cepDT){0};
-    }
-    char buffer[32];
-    int written = snprintf(buffer, sizeof buffer, "org:%s:ct", kind);
-    if (written <= 0 || (size_t)written >= sizeof buffer) {
-        return (cepDT){0};
-    }
-    return cep_ops_make_dt(buffer);
-}
-
-static cepDT cep_heartbeat_make_destructor_dt(const char* kind) {
-    if (!kind || !*kind) {
-        return (cepDT){0};
-    }
-    char buffer[32];
-    int written = snprintf(buffer, sizeof buffer, "org:%s:dt", kind);
-    if (written <= 0 || (size_t)written >= sizeof buffer) {
-        return (cepDT){0};
-    }
-    return cep_ops_make_dt(buffer);
+    return cep_heartbeat_make_signal_dt(kind, "vl");
 }
 
 static bool cep_heartbeat_register_l0_organs(void) {
     static const cepHeartbeatOrganDescriptorInit descriptors[] = {
-        { "sys_state",   "Kernel state organ",          false, false },
-        { "sys_organs",  "Organ descriptor registry",   false, false },
-        { "sys_namepool","Namepool organ",              true,  true  },
-        { "rt_ops",      "Runtime operations organ",    false, false },
-        { "rt_beat",     "Beat journal organ",          true,  true  },
-        { "journal",     "Stream ledger organ",         true,  true  },
-        { "env",         "Environment organ",           false, false },
-        { "cas",         "Content store organ",         false, false },
-        { "lib",         "Library organ",               false, false },
-        { "tmp",         "Scratch queue organ",         false, false },
-        { "enzymes",     "Enzyme manifest organ",       false, false },
+        { "sys_state",     "Kernel state organ",            false, false },
+        { "sys_organs",    "Organ descriptor registry",     false, false },
+        { "rt_ops",        "Runtime operations organ",      false, false },
+        { "rt_beat",       "Heartbeat beat organ",          true,  true  },
+        { "journal",       "Beat journal organ",            true,  true  },
+        { "env",           "Environment organ",             false, false },
+        { "cas",           "Content store organ",           false, false },
+        { "lib",           "Library organ",                 false, false },
+        { "tmp",           "Scratch queue organ",           false, false },
+        { "enzymes",       "Enzyme manifest organ",         false, false },
     };
 
     size_t count = sizeof descriptors / sizeof descriptors[0];
@@ -135,10 +114,10 @@ static bool cep_heartbeat_register_l0_organs(void) {
         descriptor.store = store_dt;
         descriptor.validator = validator_dt;
         if (init->has_constructor) {
-            descriptor.constructor = cep_heartbeat_make_constructor_dt(init->kind);
+            descriptor.constructor = cep_heartbeat_make_signal_dt(init->kind, "ct");
         }
         if (init->has_destructor) {
-            descriptor.destructor = cep_heartbeat_make_destructor_dt(init->kind);
+            descriptor.destructor = cep_heartbeat_make_signal_dt(init->kind, "dt");
         }
 
         if (!cep_organ_register(&descriptor)) {
@@ -516,34 +495,21 @@ static bool cep_heartbeat_append_list_message(cepCell* list, const char* message
 }
 
 
-static cepCell* cep_heartbeat_ensure_dictionary_child(cepCell* parent, const cepDT* name, const cepDT* store_dt, bool* created) {
+static cepCell* cep_heartbeat_ensure_dictionary_child(cepCell* parent, const cepDT* name, bool* created) {
     if (!parent || !name) {
         return NULL;
     }
 
     cepCell* child = cep_cell_find_by_name(parent, name);
     if (!child) {
-        cepDT dict_type = store_dt ? cep_dt_clean(store_dt) : *dt_dictionary_type();
+        cepDT dict_type = *dt_dictionary_type();
         cepDT name_copy = cep_dt_clean(name);
         child = cep_cell_add_dictionary(parent, &name_copy, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
         if (created) {
             *created = true;
         }
-    } else {
-        cepCell* resolved = cep_cell_resolve(child);
-        if (!resolved) {
-            return NULL;
-        }
-        if (!cep_cell_require_dictionary_store(&resolved)) {
-            return NULL;
-        }
-        if (store_dt && resolved->store) {
-            cep_store_set_dt(resolved->store, store_dt);
-        }
-        child = resolved;
-        if (created) {
-            *created = false;
-        }
+    } else if (created) {
+        *created = false;
     }
 
     return child;
@@ -591,8 +557,7 @@ static cepCell* cep_heartbeat_ensure_beat_node(cepBeatNumber beat) {
         return NULL;
     }
 
-    cepDT beat_store_dt = cep_organ_store_dt("rt_beat");
-    cepCell* beat_root = cep_heartbeat_ensure_dictionary_child(rt_root, dt_beat_root_name(), &beat_store_dt, NULL);
+    cepCell* beat_root = cep_heartbeat_ensure_dictionary_child(rt_root, dt_beat_root_name(), NULL);
     if (!beat_root) {
         return NULL;
     }
@@ -602,7 +567,7 @@ static cepCell* cep_heartbeat_ensure_beat_node(cepBeatNumber beat) {
         return NULL;
     }
 
-    cepCell* beat_cell = cep_heartbeat_ensure_dictionary_child(beat_root, &beat_name, NULL, NULL);
+    cepCell* beat_cell = cep_heartbeat_ensure_dictionary_child(beat_root, &beat_name, NULL);
     if (!beat_cell) {
         return NULL;
     }
@@ -620,48 +585,6 @@ static cepCell* cep_heartbeat_ensure_beat_node(cepBeatNumber beat) {
     }
 
     return beat_cell;
-}
-
-static void cep_heartbeat_schedule_bootstrap_organs(void) {
-    if (CEP_RUNTIME.constructors_scheduled) {
-        return;
-    }
-
-    bool ok = true;
-
-    cepCell* sys_root = cep_heartbeat_sys_root();
-    if (sys_root) {
-        cepCell* namepool = cep_cell_find_by_name(sys_root, CEP_DTAW("CEP", "namepool"));
-        if (namepool) {
-            cepCell* resolved = cep_cell_resolve(namepool);
-            if (resolved) {
-                ok = ok && cep_organ_request_constructor(resolved);
-            }
-        }
-    }
-
-    cepCell* rt_root = cep_heartbeat_rt_root();
-    if (rt_root) {
-        cepCell* beat = cep_cell_find_by_name(rt_root, dt_beat_root_name());
-        if (beat) {
-            cepCell* resolved = cep_cell_resolve(beat);
-            if (resolved) {
-                ok = ok && cep_organ_request_constructor(resolved);
-            }
-        }
-    }
-
-    cepCell* journal_root = cep_heartbeat_journal_root();
-    if (journal_root) {
-        cepCell* resolved = cep_cell_resolve(journal_root);
-        if (resolved) {
-            ok = ok && cep_organ_request_constructor(resolved);
-        }
-    }
-
-    if (ok) {
-        CEP_RUNTIME.constructors_scheduled = true;
-    }
 }
 
 
@@ -1065,7 +988,6 @@ static void cep_runtime_reset_state(bool destroy_registry) {
     CEP_RUNTIME.deferred_activations = 0u;
     CEP_RUNTIME.sys_shutdown_emitted = false;
     CEP_RUNTIME.bootstrapping = false;
-    CEP_RUNTIME.constructors_scheduled = false;
 
     cep_lifecycle_reset_state();
     cep_organ_runtime_reset();
@@ -1103,20 +1025,46 @@ static cepCell* ensure_root_dictionary(cepCell* root, const cepDT* name, const c
 static cepCell* ensure_root_list(cepCell* root, const cepDT* name, const cepDT* store_dt) {
     cepCell* cell = cep_cell_find_by_name(root, name);
     if (!cell) {
+        CEP_DEBUG_PRINTF_STDOUT("[ensure_root_list] missing name ptr=%p domain=%016llx tag=%016llx\n",
+                                (void*)name,
+                                name ? (unsigned long long)cep_id(name->domain) : 0ull,
+                                name ? (unsigned long long)cep_id(name->tag) : 0ull);
         cepDT list_type = store_dt ? cep_dt_clean(store_dt) : *dt_list_type();
         cepDT name_copy = cep_dt_clean(name);
         cell = cep_cell_add_list(root, &name_copy, 0, &list_type, CEP_STORAGE_LINKED_LIST);
+        if (!cell) {
+            CEP_DEBUG_PRINTF_STDOUT("[ensure_root_list] add_list failed domain=%08x tag=%08x\n",
+                                    (unsigned)name_copy.domain,
+                                    (unsigned)name_copy.tag);
+        }
     } else {
         cepCell* resolved = cep_cell_resolve(cell);
         if (!resolved) {
+            CEP_DEBUG_PRINTF_STDOUT("[ensure_root_list] resolve failed domain=%08x tag=%08x\n",
+                                    name ? (unsigned)name->domain : 0u,
+                                    name ? (unsigned)name->tag : 0u);
             return NULL;
         }
-        if (cep_cell_is_immutable(resolved)) {
-            if (!resolved->store || resolved->store->indexing != CEP_INDEX_BY_INSERTION) {
+        if (resolved->store && resolved->store->indexing != CEP_INDEX_BY_INSERTION) {
+            CEP_DEBUG_PRINTF_STDOUT("[ensure_root_list] rebuilding list name=%016llx/%016llx indexing=%d\n",
+                                    (unsigned long long)cep_id(name ? name->domain : (cepID)0),
+                                    (unsigned long long)cep_id(name ? name->tag : (cepID)0),
+                                    resolved->store->indexing);
+            if (!cep_cell_is_root(resolved)) {
+                cep_cell_remove_hard(resolved, NULL);
+            }
+            cepDT list_type = store_dt ? cep_dt_clean(store_dt) : *dt_list_type();
+            cepDT name_copy = cep_dt_clean(name);
+            cell = cep_cell_add_list(root, &name_copy, 0, &list_type, CEP_STORAGE_LINKED_LIST);
+            if (!cell) {
+                CEP_DEBUG_PRINTF_STDOUT("[ensure_root_list] rebuild add_list failed\n");
                 return NULL;
             }
-        } else if (!resolved->store || resolved->store->indexing != CEP_INDEX_BY_INSERTION) {
-            return NULL;
+            resolved = cep_cell_resolve(cell);
+            if (!resolved || !resolved->store || resolved->store->indexing != CEP_INDEX_BY_INSERTION) {
+                CEP_DEBUG_PRINTF_STDOUT("[ensure_root_list] rebuild produced invalid list\n");
+                return NULL;
+            }
         }
         if (store_dt && resolved->store) {
             cep_store_set_dt(resolved->store, store_dt);
@@ -1404,6 +1352,13 @@ static bool cep_boot_ops_record_state(cepOID oid, const cepDT* state_dt, bool* f
     }
 
     if (!cep_op_state_set(oid, *state_dt, 0, NULL)) {
+        fprintf(stderr,
+                "[boot_ops] state_set failed oid=%llu:%llu state=%llu:%llu\n",
+                (unsigned long long)oid.domain,
+                (unsigned long long)oid.tag,
+                (unsigned long long)state_dt->domain,
+                (unsigned long long)state_dt->tag);
+        fflush(stderr);
         if (failure_flag) {
             *failure_flag = true;
         }
@@ -1495,6 +1450,8 @@ static bool cep_boot_ops_close_boot(bool success) {
                            NULL,
                            0u);
     if (!ok) {
+        fprintf(stderr, "[boot_ops] op_close boot failed success=%d\n", success ? 1 : 0);
+        fflush(stderr);
         CEP_LIFECYCLE_OPS_STATE.boot_failed = true;
         return false;
     }
@@ -1523,6 +1480,8 @@ static bool cep_boot_ops_close_shutdown(bool success) {
                            NULL,
                            0u);
     if (!ok) {
+        fprintf(stderr, "[boot_ops] op_close shutdown failed success=%d\n", success ? 1 : 0);
+        fflush(stderr);
         CEP_LIFECYCLE_OPS_STATE.shdn_failed = true;
         return false;
     }
@@ -1632,7 +1591,6 @@ bool cep_heartbeat_bootstrap(void) {
     bool success = false;
     static const char* fail_reason = NULL;
     CEP_RUNTIME.bootstrapping = true;
-    CEP_RUNTIME.constructors_scheduled = false;
 
     bool first_bootstrap = (CEP_RUNTIME.topology.root == NULL);
 
@@ -1684,12 +1642,10 @@ bool cep_heartbeat_bootstrap(void) {
         CEP_RUNTIME.topology.rt = rt;
     }
 
-    cepDT beat_store_dt = cep_organ_store_dt("rt_beat");
-    if (!cep_dt_is_valid(&beat_store_dt)) {
-        CEP_BOOT_FAIL("beat store dt");
-    }
-    cepCell* beat_root_init = cep_heartbeat_ensure_dictionary_child(rt, dt_beat_root_name(), &beat_store_dt, NULL);
-    if (!beat_root_init) {
+    cepDT beat_store = cep_organ_store_dt("rt_beat");
+    const cepDT* beat_name = dt_beat_root_name();
+    cepCell* beat_root = ensure_root_dictionary(rt, beat_name, &beat_store);
+    if (!beat_root) {
         CEP_BOOT_FAIL("beat dictionary");
     }
 
@@ -1751,6 +1707,12 @@ bool cep_heartbeat_bootstrap(void) {
 
     cepDT tmp_store = cep_organ_store_dt("tmp");
     const cepDT* tmp_name = dt_tmp_root_name();
+    fprintf(stderr, "[bootstrap tmp] tmp_name=%p domain=%016llx tag=%016llx store=%016llx/%016llx\n",
+            (void*)tmp_name,
+            tmp_name ? (unsigned long long)cep_id(tmp_name->domain) : 0ull,
+            tmp_name ? (unsigned long long)cep_id(tmp_name->tag) : 0ull,
+            (unsigned long long)cep_id(tmp_store.domain),
+            (unsigned long long)cep_id(tmp_store.tag));
     cepCell* tmp = ensure_root_list(root, tmp_name, &tmp_store);
     if (!tmp) {
         CEP_BOOT_FAIL("tmp list");
@@ -1809,6 +1771,8 @@ fail:
     CEP_RUNTIME.bootstrapping = false;
     if (!success && fail_reason) {
         CEP_DEBUG_PRINTF_STDOUT("[bootstrap] fail: %s\n", fail_reason);
+        fprintf(stderr, "[bootstrap] fail: %s\n", fail_reason);
+        fflush(stderr);
         fail_reason = NULL;
     }
 #undef CEP_BOOT_FAIL
@@ -1880,7 +1844,6 @@ bool cep_heartbeat_startup(void) {
     if (!cep_boot_ops_progress()) {
         return false;
     }
-    cep_heartbeat_schedule_bootstrap_organs();
     return true;
 }
 
@@ -1908,7 +1871,6 @@ bool cep_heartbeat_restart(void) {
     if (!cep_boot_ops_progress()) {
         return false;
     }
-    cep_heartbeat_schedule_bootstrap_organs();
     return true;
 }
 
@@ -1934,7 +1896,6 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
     if (!cep_boot_ops_progress()) {
         return false;
     }
-    cep_heartbeat_schedule_bootstrap_organs();
     return true;
 }
 
@@ -1987,8 +1948,11 @@ bool cep_heartbeat_stage_commit(void) {
 
     cep_beat_begin_commit();
 
-    if (!cep_stream_commit_pending())
+    if (!cep_stream_commit_pending()) {
+        fprintf(stderr, "[stage_commit] stream commit failed\n");
+        fflush(stderr);
         return false;
+    }
 
     if (cep_heartbeat_policy_use_dirs()) {
         size_t promoted = CEP_RUNTIME.inbox_next.count;
@@ -1998,12 +1962,16 @@ bool cep_heartbeat_stage_commit(void) {
         int written = snprintf(NULL, 0, "commit: promoted %zu impulse%s -> beat %" PRIu64,
                                 promoted, plural, (unsigned long long)next);
         if (written < 0) {
+            fprintf(stderr, "[stage_commit] snprintf size failed\n");
+            fflush(stderr);
             return false;
         }
 
         size_t size = (size_t)written + 1u;
         char* message = cep_malloc(size);
         if (!message) {
+            fprintf(stderr, "[stage_commit] message alloc failed\n");
+            fflush(stderr);
             return false;
         }
 
@@ -2013,11 +1981,15 @@ bool cep_heartbeat_stage_commit(void) {
         bool recorded = cep_heartbeat_record_stage_entry(current, message);
         cep_free(message);
         if (!recorded) {
+            fprintf(stderr, "[stage_commit] record stage entry failed\n");
+            fflush(stderr);
             return false;
         }
     }
 
     if (!cep_ops_stage_commit()) {
+        fprintf(stderr, "[stage_commit] ops stage commit failed err=%d\n", cep_ops_debug_last_error());
+        fflush(stderr);
         return false;
     }
 
@@ -2102,8 +2074,25 @@ bool cep_heartbeat_step(void) {
     }
 
     bool ok = cep_heartbeat_resolve_agenda();
-    ok = ok && cep_heartbeat_execute_agenda();
-    ok = ok && cep_heartbeat_stage_commit();
+    if (!ok) {
+        fprintf(stderr, "[heartbeat_step] resolve agenda failed\n");
+        fflush(stderr);
+        return false;
+    }
+
+    ok = cep_heartbeat_execute_agenda();
+    if (!ok) {
+        fprintf(stderr, "[heartbeat_step] execute agenda failed\n");
+        fflush(stderr);
+        return false;
+    }
+
+    ok = cep_heartbeat_stage_commit();
+    if (!ok) {
+        fprintf(stderr, "[heartbeat_step] stage commit failed\n");
+        fflush(stderr);
+        return false;
+    }
 
     if (ok && CEP_RUNTIME.current != CEP_BEAT_INVALID) {
         CEP_RUNTIME.current += 1u;
@@ -2168,6 +2157,8 @@ bool cep_heartbeat_process_impulses(void) {
 
     if (registry_size > 0u) {
         if (!cep_heartbeat_scratch_ensure_ordered(scratch, registry_size)) {
+            fprintf(stderr, "[process_impulses] ensure ordered failed registry_size=%zu\n", registry_size);
+            fflush(stderr);
             return false;
         }
     }
@@ -2187,6 +2178,8 @@ bool cep_heartbeat_process_impulses(void) {
     }
     size_t reserve = cep_next_pow_of_two(desired_slots);
     if (!cep_heartbeat_dispatch_cache_reserve(scratch, reserve)) {
+        fprintf(stderr, "[process_impulses] dispatch reserve failed reserve=%zu\n", reserve);
+        fflush(stderr);
         return false;
     }
 
@@ -2205,6 +2198,8 @@ bool cep_heartbeat_process_impulses(void) {
         uint64_t hash = cep_heartbeat_impulse_hash(record);
         cepHeartbeatDispatchCacheEntry* entry = cep_heartbeat_dispatch_cache_acquire(scratch, record, hash, &fresh);
         if (!entry) {
+            fprintf(stderr, "[process_impulses] dispatch entry acquire failed\n");
+            fflush(stderr);
             ok = false;
             break;
         }
@@ -2230,6 +2225,8 @@ bool cep_heartbeat_process_impulses(void) {
                 }
 
                 if (!cep_heartbeat_dispatch_entry_reserve_memo(entry, resolved)) {
+                    fprintf(stderr, "[process_impulses] memo reserve failed resolved=%zu\n", resolved);
+                    fflush(stderr);
                     ok = false;
                     break;
                 }
@@ -2244,6 +2241,8 @@ bool cep_heartbeat_process_impulses(void) {
         } else if (entry->descriptor_count > entry->memo_count) {
             size_t previous = entry->memo_count;
             if (!cep_heartbeat_dispatch_entry_reserve_memo(entry, entry->descriptor_count)) {
+                fprintf(stderr, "[process_impulses] memo reserve expansion failed count=%zu\n", entry->descriptor_count);
+                fflush(stderr);
                 ok = false;
                 break;
             }
@@ -2257,6 +2256,10 @@ bool cep_heartbeat_process_impulses(void) {
 
         if (entry->descriptor_count == 0u && cep_heartbeat_policy_use_dirs()) {
             ok = cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, NULL, CEP_ENZYME_SUCCESS, &impulse);
+            if (!ok) {
+                fprintf(stderr, "[process_impulses] record agenda entry failed (no-match)\n");
+                fflush(stderr);
+            }
         }
 
         if (entry->descriptor_count > 0u && entry->descriptors) {
@@ -2287,10 +2290,12 @@ bool cep_heartbeat_process_impulses(void) {
                 if (!should_run) {
                     if (cep_heartbeat_policy_use_dirs()) {
                         int rc_log = memo ? memo->last_rc : CEP_ENZYME_SUCCESS;
-                        if (!cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, descriptor, rc_log, &impulse)) {
-                            ok = false;
-                            break;
-                        }
+                    if (!cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, descriptor, rc_log, &impulse)) {
+                        fprintf(stderr, "[process_impulses] record agenda entry failed (skip)\n");
+                        fflush(stderr);
+                        ok = false;
+                        break;
+                    }
                     }
                     continue;
                 }
@@ -2317,11 +2322,18 @@ bool cep_heartbeat_process_impulses(void) {
 
                 if (cep_heartbeat_policy_use_dirs()) {
                     if (!cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, descriptor, rc, &impulse)) {
+                        fprintf(stderr, "[process_impulses] record agenda entry failed rc=%d\n", rc);
+                        fflush(stderr);
                         ok = false;
                         break;
                     }
                 }
                 if (rc == CEP_ENZYME_FATAL) {
+                    char fatal_label[64];
+                    const char* fatal_name = cep_heartbeat_descriptor_label(descriptor, fatal_label, sizeof fatal_label);
+                    fprintf(stderr, "[process_impulses] descriptor fatal rc label=%s\n",
+                            fatal_name ? fatal_name : "<null>");
+                    fflush(stderr);
                     ok = false;
                     break;
                 }
@@ -2410,10 +2422,14 @@ int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path,
     keeping the internal inbox layout consistent with the signal helper. */
 int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse) {
     if (!cep_heartbeat_bootstrap()) {
+        fprintf(stderr, "[enqueue_impulse] bootstrap failed\n");
+        fflush(stderr);
         return CEP_ENZYME_FATAL;
     }
 
     if (!impulse || (!impulse->signal_path && !impulse->target_path)) {
+        fprintf(stderr, "[enqueue_impulse] invalid impulse\n");
+        fflush(stderr);
         return CEP_ENZYME_FATAL;
     }
 
@@ -2427,16 +2443,22 @@ int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse)
 
     if (cep_heartbeat_policy_use_dirs() && record_beat != CEP_BEAT_INVALID) {
         if (!cep_heartbeat_ensure_beat_node(record_beat)) {
+            fprintf(stderr, "[enqueue_impulse] ensure beat node failed beat=%llu\n", (unsigned long long)record_beat);
+            fflush(stderr);
             return CEP_ENZYME_FATAL;
         }
     }
 
     if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.inbox_next, impulse)) {
+        fprintf(stderr, "[enqueue_impulse] queue append failed\n");
+        fflush(stderr);
         return CEP_ENZYME_FATAL;
     }
 
     if (cep_heartbeat_policy_use_dirs() && record_beat != CEP_BEAT_INVALID) {
         if (!cep_heartbeat_record_inbox_entry(record_beat, impulse)) {
+            fprintf(stderr, "[enqueue_impulse] record inbox entry failed\n");
+            fflush(stderr);
             return CEP_ENZYME_FATAL;
         }
     }

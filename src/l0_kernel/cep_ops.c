@@ -80,10 +80,12 @@ static cepOID cep_ops_oid_from_cell(const cepCell* cell) {
 
 static cepCell* cep_ops_root(bool create) {
     if (!cep_heartbeat_bootstrap()) {
+        CEP_DEBUG_PRINTF_STDOUT("[ops root] bootstrap failed\n");
         return NULL;
     }
     cepCell* rt = cep_heartbeat_rt_root();
     if (!rt) {
+        CEP_DEBUG_PRINTF_STDOUT("[ops root] rt_root missing\n");
         return NULL;
     }
     cepDT name = cep_ops_clean_dt(dt_ops_root_name());
@@ -92,13 +94,19 @@ static cepCell* cep_ops_root(bool create) {
         cepDT organ_dt = cep_organ_store_dt("rt_ops");
         if (!existing) {
             cepDT name_copy = name;
-            return cep_cell_add_dictionary(rt, &name_copy, 0, &organ_dt, CEP_STORAGE_RED_BLACK_T);
+            cepCell* added = cep_cell_add_dictionary(rt, &name_copy, 0, &organ_dt, CEP_STORAGE_RED_BLACK_T);
+            if (!added) {
+                CEP_DEBUG_PRINTF_STDOUT("[ops root] add_dictionary failed\n");
+            }
+            return added;
         }
         cepCell* resolved = cep_cell_resolve(existing);
         if (!resolved) {
+            CEP_DEBUG_PRINTF_STDOUT("[ops root] resolve existing failed\n");
             return NULL;
         }
         if (!cep_cell_require_dictionary_store(&resolved)) {
+            CEP_DEBUG_PRINTF_STDOUT("[ops root] require store failed\n");
             return NULL;
         }
         if (resolved->store) {

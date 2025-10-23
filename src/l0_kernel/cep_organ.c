@@ -28,6 +28,7 @@ typedef struct {
     size_t         capacity;
     cepCell*       root;
     bool           bootstrapped;
+    bool           dt_dirty;
 } cepOrganRegistryState;
 
 static cepOrganRegistryState CEP_ORGAN_REGISTRY = {0};
@@ -40,6 +41,8 @@ CEP_DEFINE_STATIC_DT(dt_ctor_field,       CEP_ACRO("CEP"), CEP_WORD("ctor"));
 CEP_DEFINE_STATIC_DT(dt_dtor_field,       CEP_ACRO("CEP"), CEP_WORD("dtor"));
 CEP_DEFINE_STATIC_DT(dt_kind_field,       CEP_ACRO("CEP"), CEP_WORD("kind"));
 CEP_DEFINE_STATIC_DT(dt_label_field,      CEP_ACRO("CEP"), CEP_WORD("label"));
+
+static void cep_organ_registry_require_refresh(void);
 
 void cep_organ_runtime_reset(void) {
     for (size_t i = 0; i < CEP_ORGAN_REGISTRY.count; ++i) {
@@ -57,6 +60,7 @@ void cep_organ_runtime_reset(void) {
     CEP_ORGAN_REGISTRY.count = 0;
     CEP_ORGAN_REGISTRY.root = NULL;
     CEP_ORGAN_REGISTRY.bootstrapped = false;
+    CEP_ORGAN_REGISTRY.dt_dirty = false;
 }
 
 static void cep_organ_report_issue(const char* stage, const char* detail) {
@@ -106,6 +110,8 @@ static cepOrganEntry* cep_organ_registry_find_by_store(const cepDT* store) {
     if (!store || !cep_dt_is_valid(store) || CEP_ORGAN_REGISTRY.count == 0u) {
         return NULL;
     }
+
+    cep_organ_registry_require_refresh();
 
     cepDT cleaned = cep_dt_clean(store);
     for (size_t i = 0; i < CEP_ORGAN_REGISTRY.count; ++i) {
@@ -517,8 +523,22 @@ static bool cep_organ_enqueue_signal(const cepDT* signal_dt, const cepCell* root
     };
 
     int rc = cep_heartbeat_enqueue_impulse(CEP_BEAT_INVALID, &impulse);
+    if (rc != CEP_ENZYME_SUCCESS) {
+        char detail[80];
+        snprintf(detail,
+                 sizeof detail,
+                 "enqueue_failed rc=%d signal=%s target=%s",
+                 rc,
+                 signal_dt ? cep_namepool_lookup(signal_dt->domain, NULL) : "<nil>",
+                 signal_dt ? cep_namepool_lookup(signal_dt->tag, NULL) : "<nil>");
+        cep_organ_report_issue("enqueue", detail);
+    }
     cep_free(signal_path);
     cep_free(target_path);
+    CEP_DEBUG_PRINTF_STDOUT("[organ enqueue] signal=%s:%s rc=%d\n",
+                            signal_dt ? cep_namepool_lookup(signal_dt->domain, NULL) : "<nil>",
+                            signal_dt ? cep_namepool_lookup(signal_dt->tag, NULL) : "<nil>",
+                            rc);
     return rc == CEP_ENZYME_SUCCESS;
 }
 
@@ -534,11 +554,20 @@ bool cep_organ_runtime_bootstrap(void) {
             return true;
         }
 
+        char detail[128];
+        snprintf(detail,
+                 sizeof detail,
+                 "cached_root_invalid resolved=%p normal=%d store=%p",
+                 (void*)resolved,
+                 resolved ? (cep_cell_is_normal(resolved) ? 1 : 0) : 0,
+                 resolved ? (void*)resolved->store : NULL);
+        cep_organ_report_issue("runtime_bootstrap", detail);
         CEP_ORGAN_REGISTRY.root = NULL;
         CEP_ORGAN_REGISTRY.bootstrapped = false;
     }
 
     if (!cep_heartbeat_bootstrap()) {
+        cep_organ_report_issue("runtime_bootstrap", "heartbeat_bootstrap_failed");
         return false;
     }
 
@@ -551,20 +580,24 @@ bool cep_organ_runtime_bootstrap(void) {
     if (!organs_root) {
         cepCell* sys_root = cep_heartbeat_sys_root();
         if (!sys_root) {
+            cep_organ_report_issue("runtime_bootstrap", "sys_root_missing");
             return false;
         }
         cepDT organ_dt = cep_organ_store_dt("sys_organs");
         cepDT name_copy = *dt_organs_root_name();
         organs_root = cep_cell_add_dictionary(sys_root, &name_copy, 0, &organ_dt, CEP_STORAGE_RED_BLACK_T);
         if (!organs_root) {
+            cep_organ_report_issue("runtime_bootstrap", "sys_organs_add_dictionary_failed");
             return false;
         }
     } else {
         cepCell* resolved = cep_cell_resolve(organs_root);
         if (!resolved) {
+            cep_organ_report_issue("runtime_bootstrap", "topology_organs_resolve_failed");
             return false;
         }
         if (!cep_cell_require_dictionary_store(&resolved)) {
+            cep_organ_report_issue("runtime_bootstrap", "topology_organs_not_dictionary");
             return false;
         }
         if (resolved->store) {
@@ -693,10 +726,11 @@ bool cep_organ_root_for_cell(const cepCell* cell, cepOrganRoot* out) {
 bool cep_organ_request_constructor(const cepCell* root) {
     const cepOrganDescriptor* descriptor = cep_organ_descriptor_for_cell(root);
     if (!descriptor || !cep_dt_is_valid(&descriptor->constructor)) {
+        CEP_DEBUG_PRINTF_STDOUT("[organ req ctor] descriptor missing root=%p\n", (void*)root);
         return true;
     }
 
-    cepDT signal = cep_ops_make_dt("op/ct");
+    cepDT signal = cep_dt_clean(&descriptor->constructor);
     return cep_organ_enqueue_signal(&signal, root);
 }
 
@@ -709,7 +743,7 @@ bool cep_organ_request_destructor(const cepCell* root) {
         return true;
     }
 
-    cepDT signal = cep_ops_make_dt("op/dt");
+    cepDT signal = cep_dt_clean(&descriptor->destructor);
     return cep_organ_enqueue_signal(&signal, root);
 }
 
@@ -723,15 +757,110 @@ bool cep_organ_request_validation(const cepCell* cell) {
 
     cepOrganRoot info = {0};
     if (!cep_organ_root_for_cell(cell, &info) || !info.descriptor) {
+        char detail[64];
+        snprintf(detail, sizeof detail, "root_lookup_failed cell=%p", (void*)cell);
+        cep_organ_report_issue("request_validation", detail);
         return false;
     }
 
     if (!cep_dt_is_valid(&info.descriptor->validator)) {
+        char detail[64];
+        snprintf(detail, sizeof detail, "invalid_descriptor descriptor=%p", (void*)info.descriptor);
+        cep_organ_report_issue("request_validation", detail);
         return false;
     }
 
     cepDT signal = cep_dt_clean(&info.descriptor->validator);
     return cep_organ_enqueue_signal(&signal, info.root);
+}
+
+static const char* cep_organ_guess_kind(const cepCell* root) {
+    if (!root) {
+        return NULL;
+    }
+
+    const cepCell* resolved = cep_cell_resolve((cepCell*)root);
+    if (!resolved || !cep_cell_is_normal(resolved)) {
+        return NULL;
+    }
+
+    const cepDT* name = cep_cell_get_name(resolved);
+    const cepCell* parent = cep_cell_parent(resolved);
+    const cepDT* parent_name = parent ? cep_cell_get_name(parent) : NULL;
+
+    if (name && cep_dt_compare(name, CEP_DTAW("CEP", "beat")) == 0) {
+        if (parent_name && cep_dt_compare(parent_name, CEP_DTAW("CEP", "rt")) == 0) {
+            return "rt_beat";
+        }
+    }
+    if (name && cep_dt_compare(name, CEP_DTAW("CEP", "journal")) == 0) {
+        return "journal";
+    }
+
+    return NULL;
+}
+
+/* Clears an organ root in place so follow-up constructors can rebuild the
+ * branch. The helper resolves the supplied node to the concrete organ root,
+ * ensures its store is writable long enough to hard-delete every child, keeps
+ * the original store tag intact, and restores the writable flag afterwards so
+ * existing lifecycle policy remains unchanged. */
+bool cep_organ_clear_root(cepCell* root) {
+    if (!root) {
+        return false;
+    }
+
+    cepCell* resolved = cep_cell_resolve(root);
+    if (!resolved || !cep_cell_is_normal(resolved)) {
+        return false;
+    }
+    if (!cep_cell_require_dictionary_store(&resolved) || !resolved->store) {
+        return false;
+    }
+
+    if (cep_cell_store_locked_hierarchy(resolved)) {
+    CEP_DEBUG_PRINTF_STDOUT("[organ clear] root locked root=%p\n", (void*)resolved);
+        return false;
+    }
+
+    cepStore* store = resolved->store;
+    const char* kind = NULL;
+    const cepOrganDescriptor* descriptor = cep_organ_descriptor_for_cell(resolved);
+    if (descriptor && descriptor->kind) {
+        kind = descriptor->kind;
+    } else {
+        kind = cep_organ_guess_kind(resolved);
+        if (kind) {
+            cepDT inferred = cep_organ_store_dt(kind);
+            if (cep_dt_is_valid(&inferred)) {
+                descriptor = cep_organ_descriptor(&inferred);
+            }
+        }
+    }
+
+    cepDT expected = {0};
+    if (descriptor && descriptor->kind) {
+        expected = cep_organ_store_dt(descriptor->kind);
+    } else if (kind) {
+        expected = cep_organ_store_dt(kind);
+    } else {
+        expected = store->dt;
+    }
+
+    unsigned writable_before = store->writable;
+    if (!store->writable) {
+        store->writable = 1u;
+    }
+
+    cep_store_delete_children_hard(store);
+
+    if (cep_dt_is_valid(&expected)) {
+        cep_store_set_dt(store, &expected);
+    }
+
+    store->writable = writable_before;
+
+    return true;
 }
 
 /* Composes the canonical `organ/<kind>` store identifier used to mark organ
@@ -752,5 +881,137 @@ cepDT cep_organ_store_dt(const char* kind) {
     cepDT dt = {0};
     dt.domain = cep_namepool_intern_cstr("CEP");
     dt.tag = cep_namepool_intern_cstr(buffer);
+    if (!dt.domain || !dt.tag) {
+        char detail[128];
+        snprintf(detail,
+                 sizeof detail,
+                 "store_dt_intern_failed kind=%s domain=%016llx tag=%016llx",
+                 kind,
+                 (unsigned long long)cep_id(dt.domain),
+                 (unsigned long long)cep_id(dt.tag));
+        cep_organ_report_issue("store_dt", detail);
+    }
     return dt;
+}
+
+static cepDT cep_organ_make_signal_dt(const char* kind, const char* suffix) {
+    cepDT invalid = {0};
+    if (!kind || !*kind || !suffix || !*suffix) {
+        return invalid;
+    }
+
+    char buffer[48];
+    int written = snprintf(buffer, sizeof buffer, "org:%s:%s", kind, suffix);
+    if (written <= 0 || (size_t)written >= sizeof buffer) {
+        return invalid;
+    }
+    return cep_ops_make_dt(buffer);
+}
+
+static bool cep_organ_registry_refresh(void) {
+    if (!CEP_ORGAN_REGISTRY.dt_dirty) {
+        return true;
+    }
+
+    bool bootstrapped = CEP_ORGAN_REGISTRY.bootstrapped && CEP_ORGAN_REGISTRY.root;
+    if (!bootstrapped) {
+        char note[128];
+        snprintf(note,
+                 sizeof note,
+                 "bootstrap_required dirty=%d root=%p bootstrapped=%d",
+                 CEP_ORGAN_REGISTRY.dt_dirty ? 1 : 0,
+                 (void*)CEP_ORGAN_REGISTRY.root,
+                 CEP_ORGAN_REGISTRY.bootstrapped ? 1 : 0);
+        cep_organ_report_issue("registry_refresh", note);
+        if (!cep_organ_runtime_bootstrap()) {
+            return false;
+        }
+    } else {
+        cepCell* resolved = cep_cell_resolve(CEP_ORGAN_REGISTRY.root);
+        if (!resolved || !cep_cell_is_normal(resolved) || !cep_cell_require_dictionary_store(&resolved)) {
+            char note[128];
+            snprintf(note,
+                     sizeof note,
+                     "root_invalid resolved=%p has_store=%d is_normal=%d",
+                     (void*)resolved,
+                     resolved && resolved->store ? 1 : 0,
+                     resolved ? (cep_cell_is_normal(resolved) ? 1 : 0) : 0);
+            cep_organ_report_issue("registry_refresh", note);
+            CEP_ORGAN_REGISTRY.bootstrapped = false;
+            CEP_ORGAN_REGISTRY.root = NULL;
+            if (!cep_organ_runtime_bootstrap()) {
+                return false;
+            }
+        } else {
+            CEP_ORGAN_REGISTRY.root = resolved;
+        }
+    }
+
+    CEP_ORGAN_REGISTRY.dt_dirty = false;
+    bool ok = true;
+
+    for (size_t i = 0; i < CEP_ORGAN_REGISTRY.count; ++i) {
+        cepOrganEntry* entry = &CEP_ORGAN_REGISTRY.entries[i];
+        const char* kind = entry->desc.kind;
+        if (!kind || !*kind) {
+            continue;
+        }
+
+        cepDT updated_store = cep_organ_store_dt(kind);
+        if (cep_dt_is_valid(&updated_store)) {
+            entry->desc.store = updated_store;
+        } else {
+            ok = false;
+        }
+
+        if (cep_dt_is_valid(&entry->desc.validator)) {
+            cepDT updated_validator = cep_organ_make_signal_dt(kind, "vl");
+            if (cep_dt_is_valid(&updated_validator)) {
+                entry->desc.validator = updated_validator;
+            } else {
+                ok = false;
+            }
+        }
+
+        if (cep_dt_is_valid(&entry->desc.constructor)) {
+            cepDT updated_ctor = cep_organ_make_signal_dt(kind, "ct");
+            if (cep_dt_is_valid(&updated_ctor)) {
+                entry->desc.constructor = updated_ctor;
+            } else {
+                ok = false;
+            }
+        }
+
+        if (cep_dt_is_valid(&entry->desc.destructor)) {
+            cepDT updated_dtor = cep_organ_make_signal_dt(kind, "dt");
+            if (cep_dt_is_valid(&updated_dtor)) {
+                entry->desc.destructor = updated_dtor;
+            } else {
+                ok = false;
+            }
+        }
+
+        if (!cep_organ_publish_entry(entry)) {
+            ok = false;
+        }
+    }
+
+    if (!ok) {
+        CEP_ORGAN_REGISTRY.dt_dirty = true;
+    }
+    return ok;
+}
+
+static void cep_organ_registry_require_refresh(void) {
+    if (CEP_ORGAN_REGISTRY.dt_dirty) {
+        (void)cep_organ_registry_refresh();
+    }
+}
+
+void cep_organ_registry_mark_dirty(void) {
+    CEP_ORGAN_REGISTRY.dt_dirty = true;
+}
+
+bool cep_organ_registry_refresh_descriptors(void) {
+    return CEP_ORGAN_REGISTRY.dt_dirty ? cep_organ_registry_refresh() : true;
 }

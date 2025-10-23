@@ -9,6 +9,7 @@
 
 
 #include "test.h"
+#include "cep_ops.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
@@ -45,6 +46,9 @@ bool test_stagee_heartbeat_step(const char* label) {
     bool ok = cep_heartbeat_step();
     cepBeatNumber after = cep_heartbeat_current();
     test_stagee_tracef("%s after beat=%" PRIu64 " ok=%d", label, (uint64_t)after, ok ? 1 : 0);
+    if (!ok && test_stagee_trace_enabled()) {
+        test_stagee_tracef("%s heartbeat_step failed ops_error=%d", label, cep_ops_debug_last_error());
+    }
     return ok;
 }
 
@@ -158,6 +162,46 @@ MunitTest tests[] = {
     {
         "/organ/rt_ops",
         test_organ_rt_ops_validator,
+        test_stagee_watchdog_setup,
+        test_stagee_watchdog_tear_down,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/organ/bootstrap/constructors",
+        test_organ_constructor_bootstrap,
+        test_stagee_watchdog_setup,
+        test_stagee_watchdog_tear_down,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/organ/destructors/cycles",
+        test_organ_constructor_destructor_cycles,
+        test_stagee_watchdog_setup,
+        test_stagee_watchdog_tear_down,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/organ/constructors",
+        test_organ_constructor_dossier,
+        test_stagee_watchdog_setup,
+        test_stagee_watchdog_tear_down,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/organ/destructors",
+        test_organ_destructor_dossier,
+        test_stagee_watchdog_setup,
+        test_stagee_watchdog_tear_down,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/organ/dossiers",
+        test_organ_dossier_sequence,
         test_stagee_watchdog_setup,
         test_stagee_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,

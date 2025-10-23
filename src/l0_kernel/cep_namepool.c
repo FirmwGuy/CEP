@@ -412,11 +412,17 @@ static cepID cep_namepool_intern_common(const char* text, size_t length, bool is
     }
 
     if (!cep_namepool_bootstrap()) {
+        CEP_DEBUG_PRINTF_STDOUT("[namepool] bootstrap failed while interning '%.*s'\n",
+                                (int)length,
+                                text ? text : "");
         return 0;
     }
 
     if (name_bucket_cap == 0u) {
         if (!cep_namepool_reserve_buckets(CEP_NAMEPOOL_INITIAL_BUCKETS)) {
+            CEP_DEBUG_PRINTF_STDOUT("[namepool] reserve buckets failed initial for '%.*s'\n",
+                                    (int)length,
+                                    text ? text : "");
             return 0;
         }
     }
@@ -426,6 +432,9 @@ static cepID cep_namepool_intern_common(const char* text, size_t length, bool is
 
     if (name_bucket_count >= name_bucket_threshold) {
         if (!cep_namepool_reserve_buckets(name_bucket_cap ? (name_bucket_cap << 1u) : CEP_NAMEPOOL_INITIAL_BUCKETS)) {
+            CEP_DEBUG_PRINTF_STDOUT("[namepool] grow buckets failed for '%.*s'\n",
+                                    (int)length,
+                                    text ? text : "");
             return 0;
         }
     }
@@ -438,6 +447,9 @@ static cepID cep_namepool_intern_common(const char* text, size_t length, bool is
         if (!bucket->entry) {
             cepNamePoolEntry* entry = cep_namepool_new_entry(hash, text, length, is_static, glob_hint);
             if (!entry) {
+                CEP_DEBUG_PRINTF_STDOUT("[namepool] new entry failed for '%.*s'\n",
+                                        (int)length,
+                                        text ? text : "");
                 return 0;
             }
             bucket->hash = hash;
@@ -514,23 +526,30 @@ bool cep_namepool_bootstrap(void) {
 
     cepDT pool_name = *dt_namepool_root_name();
     cepCell* pool = cep_cell_find_by_name(sys, &pool_name);
+
     if (!pool) {
         cepDT dict_type = *dt_dictionary_type();
-        pool = cep_cell_add_dictionary(sys, &pool_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        cepDT name_copy = cep_dt_clean(&pool_name);
+        pool = cep_cell_add_dictionary(sys, &name_copy, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
         if (!pool) {
             return false;
         }
     }
 
-    namepool_root = pool;
-
-    if (pool->store) {
-        cepDT organ_store = cep_organ_store_dt("sys_namepool");
-        if (cep_dt_is_valid(&organ_store)) {
-            cep_store_set_dt(pool->store, &organ_store);
-        }
+    cepCell* resolved_pool = cep_cell_resolve(pool);
+    if (!resolved_pool) {
+        return false;
+    }
+    if (!cep_cell_require_dictionary_store(&resolved_pool)) {
+        return false;
     }
 
+    namepool_root = resolved_pool;
+
+    if (resolved_pool->store) {
+        cepDT pool_store = cep_organ_store_dt("sys_namepool");
+        cep_store_set_dt(resolved_pool->store, &pool_store);
+    }
     (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL);
     return true;
 }
@@ -547,7 +566,11 @@ cepID cep_namepool_intern_cstr(const char* text) {
     if (!text) {
         return 0;
     }
-    return cep_namepool_intern(text, strlen(text));
+    cepID id = cep_namepool_intern(text, strlen(text));
+    if (!id) {
+        CEP_DEBUG_PRINTF_STDOUT("[namepool] intern_cstr failed text='%s'\n", text ? text : "<null>");
+    }
+    return id;
 }
 
 /** Register a static caller-owned string without copying it into the pool so
@@ -653,6 +676,48 @@ bool cep_namepool_reference_is_glob(cepID id) {
     return entry->glob;
 }
 
+static void cep_namepool_free_pages(void) {
+    if (!name_pages) {
+        return;
+    }
+
+    for (size_t i = 0; i < name_page_count; ++i) {
+        if (name_pages[i]) {
+            CEP_DEBUG_PRINTF_STDOUT("[namepool:page_free] index=%zu page=%p\n", i, (void*)name_pages[i]);
+            cep_free(name_pages[i]);
+            name_pages[i] = NULL;
+        }
+    }
+    cep_free(name_pages);
+    name_pages = NULL;
+    name_page_count = 0u;
+    name_page_cap = 0u;
+}
+
+static void cep_namepool_free_buckets(void) {
+    if (!name_buckets) {
+        return;
+    }
+    CEP_DEBUG_PRINTF_STDOUT("[namepool:buckets_free] table=%p cap=%zu count=%zu\n",
+           (void*)name_buckets,
+           name_bucket_cap,
+           name_bucket_count);
+    cep_free(name_buckets);
+    name_buckets = NULL;
+    name_bucket_cap = 0u;
+    name_bucket_count = 0u;
+    name_bucket_threshold = 0u;
+}
+
+void cep_namepool_clear_cache(void) {
+    CEP_DEBUG_PRINTF_STDOUT("[namepool:clear_cache] root=%p pages=%p bucketTable=%p\n",
+           (void*)namepool_root,
+           (void*)name_pages,
+           (void*)name_buckets);
+    cep_namepool_free_pages();
+    cep_namepool_free_buckets();
+}
+
 /** Reset cached namepool metadata so a fresh bootstrap can rebuild dictionaries
     after the cell system shuts down. */
 void cep_namepool_reset(void) {
@@ -664,32 +729,8 @@ void cep_namepool_reset(void) {
            name_bucket_cap,
            name_bucket_count,
            name_bucket_threshold);
-    if (name_pages) {
-        for (size_t i = 0; i < name_page_count; ++i) {
-            if (name_pages[i]) {
-                CEP_DEBUG_PRINTF_STDOUT("[namepool:page_free] index=%zu page=%p\n", i, (void*)name_pages[i]);
-                cep_free(name_pages[i]);
-                name_pages[i] = NULL;
-            }
-        }
-        cep_free(name_pages);
-    }
-    name_pages = NULL;
-    name_page_count = 0u;
-    name_page_cap = 0u;
-
-    if (name_buckets) {
-        CEP_DEBUG_PRINTF_STDOUT("[namepool:buckets_free] table=%p cap=%zu count=%zu\n",
-               (void*)name_buckets,
-               name_bucket_cap,
-               name_bucket_count);
-        cep_free(name_buckets);
-    }
-    name_buckets = NULL;
-    name_bucket_cap = 0u;
-    name_bucket_count = 0u;
-    name_bucket_threshold = 0u;
-
+    cep_namepool_free_pages();
+    cep_namepool_free_buckets();
     namepool_root = NULL;
 
     CEP_DEBUG_PRINTF_STDOUT("[namepool:reset_done] root=%p pages=%p bucketTable=%p\n",

@@ -35,7 +35,10 @@ bool    cep_organ_root_for_cell(const cepCell* cell, cepOrganRoot* out);
 bool    cep_organ_request_constructor(const cepCell* root);
 bool    cep_organ_request_destructor(const cepCell* root);
 bool    cep_organ_request_validation(const cepCell* cell);
+bool    cep_organ_clear_root(cepCell* root);
 cepDT   cep_organ_store_dt(const char* kind);
+void    cep_organ_registry_mark_dirty(void);
+bool    cep_organ_registry_refresh_descriptors(void);
 
 #ifdef __cplusplus
 }

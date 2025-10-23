@@ -128,6 +128,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_locking_randomized.c',
     'src/test/l0_kernel/test_scheduler_randomized.c',
     'src/test/l0_kernel/test_organ_validators.c',
+    'src/test/l0_kernel/test_organ_dossiers.c',
     'src/test/l0_kernel/test_serialization_randomized.c',
     'src/test/l0_kernel/test_streams_randomized.c',
     )

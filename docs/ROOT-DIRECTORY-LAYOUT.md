@@ -5,9 +5,9 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
 
 ## Technical Details
 ### Always-on roots (created by `cep_heartbeat_bootstrap`)
-- `/sys` – core counters, configuration toggles, and name tables the kernel reads each beat. The `/sys/state/<scope>` dictionary also records lifecycle readiness (`status`, `ready_beat`) and teardown metadata (`td_beat`) for kernel subsystems. The namepool organ publishes its schema under `/sys/namepool/meta/schema` so tooling can fingerprint the table layout.
+- `/sys` – core counters, configuration toggles, and name tables the kernel reads each beat. The `/sys/state/<scope>` dictionary also records lifecycle readiness (`status`, `ready_beat`) and teardown metadata (`td_beat`) for kernel subsystems.
 - `/rt` – heartbeat staging area. The runtime keeps beat journals here when directory capture is enabled and always maintains `/rt/ops` for live operations such as `op/boot` and `op/shdn`.
-- `/journal` – append-only evidence for stream/library effects. Kernel helpers attach intent/outcome entries to stream cells here; packs can add their own ledgers alongside them when they need extra audit trails. The stream-log organ seeds `/journal/meta/schema` with `cep:stream-ledger:v1` so readers can verify the layout before traversing entries.
+- `/journal` – append-only evidence for stream/library effects. Kernel helpers attach intent/outcome entries to stream cells here; packs can add their own ledgers alongside them when they need extra audit trails.
 - `/env` – handles and stream proxies bound to external resources. Enzymes dereference entries through the proxy helpers in `cep_cell`.
 - `/cas` – content-addressable payload store. Large blobs land here so data cells can reference hashes instead of duplicating bytes.
 - `/lib` – library snapshots for proxy-backed streams.
@@ -16,7 +16,7 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
 - `/enzymes` – registry manifest (`cep_enzyme_register`, `cep_enzyme_descriptor`) and their metadata.
 
 ### Beat evidence (`cepHeartbeatPolicy.ensure_directories`)
-- `/rt/beat/<n>` – numeric dictionary created when `ensure_directories` is true (the default). The beat-ledger organ stamps `/rt/beat/meta/schema` with `cep:rt-beat:v1` to document the inbox/agenda/stage layout.
+- `/rt/beat/<n>` – numeric dictionary created when `ensure_directories` is true (the default).
   - `/inbox` – text log of impulses accepted for the beat.
   - `/agenda` – ordered ledger of resolved enzymes and dispatch results.
   - `/stage` – mutation log populated as enzymes commit changes.

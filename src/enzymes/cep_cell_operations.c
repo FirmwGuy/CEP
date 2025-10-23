@@ -8,18 +8,11 @@
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_heartbeat.h"
 #include "../l0_kernel/cep_organ.h"
-#include "../l0_kernel/cep_ops.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
-
-typedef struct {
-    unsigned    length;
-    unsigned    capacity;
-    cepPast     past[1];
-} cepPathConst1;
 
 typedef struct {
     unsigned    length;
@@ -96,8 +89,6 @@ CEP_DEFINE_STATIC_DT(dt_enz_update, CEP_ACRO("CEP"), CEP_WORD("enz_upd"))
 CEP_DEFINE_STATIC_DT(dt_enz_delete, CEP_ACRO("CEP"), CEP_WORD("enz_del"))
 CEP_DEFINE_STATIC_DT(dt_enz_move, CEP_ACRO("CEP"), CEP_WORD("enz_mov"))
 CEP_DEFINE_STATIC_DT(dt_enz_clone, CEP_ACRO("CEP"), CEP_WORD("enz_cln"))
-CEP_DEFINE_STATIC_DT(dt_enz_constructor, CEP_ACRO("CEP"), CEP_WORD("enz_ctor"))
-CEP_DEFINE_STATIC_DT(dt_enz_destructor, CEP_ACRO("CEP"), CEP_WORD("enz_dtor"))
 
 
 static cepCell* cep_cell_enzyme_resolve(const cepPath* path) {
@@ -498,79 +489,10 @@ static int cep_cell_enzyme_clone(const cepPath* signal, const cepPath* target) {
     return CEP_ENZYME_SUCCESS;
 }
 
-static int cep_cell_enzyme_constructor_dispatch(const cepPath* signal, const cepPath* target) {
-    (void)signal;
-
-    cepCell* root = cep_cell_enzyme_resolve(target);
-    if (!root) {
-        return CEP_ENZYME_FATAL;
-    }
-
-    root = cep_cell_enzyme_resolve_link(root);
-    if (!root) {
-        return CEP_ENZYME_FATAL;
-    }
-
-    const cepOrganDescriptor* descriptor = (root->store) ? cep_organ_descriptor(&root->store->dt) : NULL;
-    if (!descriptor || !cep_dt_is_valid(&descriptor->constructor)) {
-        return CEP_ENZYME_SUCCESS;
-    }
-
-    cepPathConst1 ctor_path = {
-        .length = 1u,
-        .capacity = 1u,
-        .past = {
-            { .dt = cep_dt_clean(&descriptor->constructor), .timestamp = 0u },
-        },
-    };
-
-    if (cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, (const cepPath*)&ctor_path, target) != CEP_ENZYME_SUCCESS) {
-        return CEP_ENZYME_FATAL;
-    }
-
-    return CEP_ENZYME_SUCCESS;
-}
-
-static int cep_cell_enzyme_destructor_dispatch(const cepPath* signal, const cepPath* target) {
-    (void)signal;
-
-    cepCell* root = cep_cell_enzyme_resolve(target);
-    if (!root) {
-        return CEP_ENZYME_FATAL;
-    }
-
-    root = cep_cell_enzyme_resolve_link(root);
-    if (!root) {
-        return CEP_ENZYME_FATAL;
-    }
-
-    const cepOrganDescriptor* descriptor = (root->store) ? cep_organ_descriptor(&root->store->dt) : NULL;
-    if (!descriptor || !cep_dt_is_valid(&descriptor->destructor)) {
-        return CEP_ENZYME_SUCCESS;
-    }
-
-    cepPathConst1 dtor_path = {
-        .length = 1u,
-        .capacity = 1u,
-        .past = {
-            { .dt = cep_dt_clean(&descriptor->destructor), .timestamp = 0u },
-        },
-    };
-
-    if (cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, (const cepPath*)&dtor_path, target) != CEP_ENZYME_SUCCESS) {
-        return CEP_ENZYME_FATAL;
-    }
-
-    return CEP_ENZYME_SUCCESS;
-}
-
 static bool cep_cell_operations_populate(cepEnzymeRegistry* registry) {
     if (!registry) {
         return false;
     }
-
-    cepDT op_ct = cep_ops_make_dt("op/ct");
-    cepDT op_dt = cep_ops_make_dt("op/dt");
 
     struct {
         cepPathConst2       path;
@@ -681,48 +603,6 @@ static bool cep_cell_operations_populate(cepEnzymeRegistry* registry) {
                 .match    = CEP_ENZYME_MATCH_EXACT,
             },
         },
-        {
-            .path = {
-                .length = 2u,
-                .capacity = 2u,
-                .past = {
-                    { .dt = *dt_signal_cell(), .timestamp = 0u },
-                    { .dt = op_ct,             .timestamp = 0u },
-                },
-            },
-            .descriptor = {
-                .name    = *dt_enz_constructor(),
-                .label   = "cell.construct",
-                .before  = NULL,
-                .before_count = 0u,
-                .after   = NULL,
-                .after_count = 0u,
-                .callback = cep_cell_enzyme_constructor_dispatch,
-                .flags    = CEP_ENZYME_FLAG_IDEMPOTENT | CEP_ENZYME_FLAG_EMIT_SIGNALS,
-                .match    = CEP_ENZYME_MATCH_EXACT,
-            },
-        },
-        {
-            .path = {
-                .length = 2u,
-                .capacity = 2u,
-                .past = {
-                    { .dt = *dt_signal_cell(), .timestamp = 0u },
-                    { .dt = op_dt,             .timestamp = 0u },
-                },
-            },
-            .descriptor = {
-                .name    = *dt_enz_destructor(),
-                .label   = "cell.destruct",
-                .before  = NULL,
-                .before_count = 0u,
-                .after   = NULL,
-                .after_count = 0u,
-                .callback = cep_cell_enzyme_destructor_dispatch,
-                .flags    = CEP_ENZYME_FLAG_IDEMPOTENT | CEP_ENZYME_FLAG_EMIT_SIGNALS,
-                .match    = CEP_ENZYME_MATCH_EXACT,
-            },
-        },
     };
 
     for (size_t i = 0; i < cep_lengthof(entries); ++i) {
@@ -741,7 +621,7 @@ bool cep_cell_operations_register(cepEnzymeRegistry* registry) {
         return false;
     }
 
-    const size_t expected = 7u;
+    const size_t expected = 5u;
     cepCellOperationsRegistryRecord* record = cep_cell_operations_registry_record_find(registry);
     size_t current_size = cep_enzyme_registry_size(registry);
 

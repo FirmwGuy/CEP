@@ -11,6 +11,8 @@ extern "C" {
 
 bool cep_l0_organs_register(cepEnzymeRegistry* registry);
 bool cep_l0_organs_bind_roots(void);
+void cep_l0_organs_invalidate_signals(void);
+void cep_l0_organs_refresh_store_dts(void);
 
 #ifdef __cplusplus
 }
