@@ -1,4 +1,4 @@
-/* Stage E organ dossier tests confirm constructors and destructors emit their
+/* Organ Validation Harness (OVH) dossier tests confirm constructors and destructors emit their
  * heartbeat operations, reusing a fixture organ so we can observe `op/ct` and
  * `op/dt` timelines alongside validator dossiers. Each test bootstraps the
  * runtime, registers the fixture enzymes, drives the heartbeat, and inspects
@@ -32,8 +32,8 @@ static void organ_dossier_prepare_runtime(void) {
     munit_assert_true(cep_heartbeat_startup());
 
     for (int i = 0; i < 6; ++i) {
-        test_stagee_tracef("organ_dossier_prepare_runtime iteration=%d", i);
-        munit_assert_true(test_stagee_heartbeat_step("organ_dossier_prepare_runtime"));
+        test_ovh_tracef("organ_dossier_prepare_runtime iteration=%d", i);
+        munit_assert_true(test_ovh_heartbeat_step("organ_dossier_prepare_runtime"));
     }
 }
 
@@ -54,16 +54,16 @@ static cepCell* organ_dossier_find_cell(cepCell* parent, const cepDT* name) {
 }
 
 static void organ_dossier_trace_ops_size(const char* label, cepCell* ops_root) {
-    if (!test_stagee_trace_enabled() || !ops_root)
+    if (!test_ovh_trace_enabled() || !ops_root)
         return;
-    test_stagee_tracef("%s ops_children=%zu", label, cep_cell_children(ops_root));
+    test_ovh_tracef("%s ops_children=%zu", label, cep_cell_children(ops_root));
 }
 
 static void organ_dossier_wait_for_operation(const char* label,
                                              cepCell* ops_root,
                                              size_t before_count) {
     for (int beat = 0; beat < 12; ++beat) {
-        munit_assert_true(test_stagee_heartbeat_step(label));
+        munit_assert_true(test_ovh_heartbeat_step(label));
         organ_dossier_trace_ops_size(label, ops_root);
         if (cep_cell_children(ops_root) > before_count) {
             return;
@@ -251,37 +251,37 @@ static bool organ_fixture_path_text(const cepPath* target_path, char* buffer, si
 static bool organ_fixture_emit_dossier(const cepPath* target, const char* verb_tag, const char* log_label) {
     char path_buffer[128];
     if (!organ_fixture_path_text(target, path_buffer, sizeof path_buffer)) {
-        if (test_stagee_trace_enabled()) {
-            test_stagee_tracef("%s path decode failed", log_label ? log_label : "fixture_emit");
+        if (test_ovh_trace_enabled()) {
+            test_ovh_tracef("%s path decode failed", log_label ? log_label : "fixture_emit");
         }
         return false;
     }
-    if (test_stagee_trace_enabled() && log_label) {
-        test_stagee_tracef("%s begin target=%s", log_label, path_buffer);
+    if (test_ovh_trace_enabled() && log_label) {
+        test_ovh_tracef("%s begin target=%s", log_label, path_buffer);
     }
     cepDT verb = cep_ops_make_dt(verb_tag);
     cepDT mode = cep_ops_make_dt("opm:states");
     cepOID oid = cep_op_start(verb, path_buffer, mode, NULL, 0u, 0u);
     if (!cep_oid_is_valid(oid)) {
-        if (test_stagee_trace_enabled()) {
-            test_stagee_tracef("%s op_start failed err=%d", log_label ? log_label : "fixture_emit", cep_ops_debug_last_error());
+        if (test_ovh_trace_enabled()) {
+            test_ovh_tracef("%s op_start failed err=%d", log_label ? log_label : "fixture_emit", cep_ops_debug_last_error());
         }
         return false;
     }
     if (!cep_op_state_set(oid, cep_ops_make_dt("ist:ok"), 0u, NULL)) {
-        if (test_stagee_trace_enabled()) {
-            test_stagee_tracef("%s state_set failed err=%d", log_label ? log_label : "fixture_emit", cep_ops_debug_last_error());
+        if (test_ovh_trace_enabled()) {
+            test_ovh_tracef("%s state_set failed err=%d", log_label ? log_label : "fixture_emit", cep_ops_debug_last_error());
         }
         return false;
     }
     if (!cep_op_close(oid, cep_ops_make_dt("sts:ok"), NULL, 0u)) {
-        if (test_stagee_trace_enabled()) {
-            test_stagee_tracef("%s close failed err=%d", log_label ? log_label : "fixture_emit", cep_ops_debug_last_error());
+        if (test_ovh_trace_enabled()) {
+            test_ovh_tracef("%s close failed err=%d", log_label ? log_label : "fixture_emit", cep_ops_debug_last_error());
         }
         return false;
     }
-    if (test_stagee_trace_enabled() && log_label) {
-        test_stagee_tracef("%s success oid=%" PRIu64 ":%" PRIu64,
+    if (test_ovh_trace_enabled() && log_label) {
+        test_ovh_tracef("%s success oid=%" PRIu64 ":%" PRIu64,
                            log_label,
                            (unsigned long long)oid.domain,
                            (unsigned long long)oid.tag);

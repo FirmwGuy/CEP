@@ -1712,7 +1712,7 @@ static int cep_l0_organ_vl_enzymes(const cepPath* signal_path, const cepPath* ta
 }
 
 /* Register validator descriptors for every Layer 0 organ so the heartbeat
- * dispatcher can route `op/vl` impulses through the Stage E adoption checks.
+ * dispatcher can route `op/vl` impulses through the OVH adoption checks.
  * The helper populates the registry once per process, caching the generated
  * `org:<kind>:vl` identifiers to avoid repeated namepool work. */
 bool cep_l0_organs_register(cepEnzymeRegistry* registry) {

@@ -36,10 +36,10 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - **Tooling & Planning**
   - `docs/BUILD.md` — Meson/Ninja workflow, options, and sanitizer toggles before compiling or running tests.
   - `docs/DEBUG-MACROS.md` — Debug-only macro behavior, asserts inside control flow, and release-build caveats.
-  - `docs/TEST-WATCHDOG-GUIDE.md` — Harness watchdog expectations, tracing controls, and Stage E fixtures.
+- `docs/TEST-WATCHDOG-GUIDE.md` — Harness watchdog expectations, tracing controls, and Organ Validation Harness (OVH) fixtures.
   - `docs/TOOLS.md` — Repo scripts for fixtures, code maps, and Doxygen post-processing.
   - `docs/L0_KERNEL/L0_ROADMAP.md` — Active milestones, TODO markers, and planned helper work.
-  - `docs/L0_KERNEL/L0R-STAGE-E-ADOPTION.md` — Layer 0 subsystem map outlining Stage E organ/OPS migration commitments.
+- `docs/L0_KERNEL/L0_ROADMAP.md` — Layer 0 subsystem map outlining OVH organ/OPS adoption commitments.
   - `docs/L0_KERNEL/topics/RAW-TRAVERSAL-HELPERS.md` — Upcoming `*_all` traversal APIs; recheck before touching traversal internals.
 
 - **Contextual (Read Once, Revisit When Needed)**

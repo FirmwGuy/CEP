@@ -16,38 +16,38 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-static bool stagee_trace_initialized;
-static bool stagee_trace_enabled_flag;
+static bool ovh_trace_initialized;
+static bool ovh_trace_enabled_flag;
 
-bool test_stagee_trace_enabled(void) {
-    if (!stagee_trace_initialized) {
+bool test_ovh_trace_enabled(void) {
+    if (!ovh_trace_initialized) {
         const char* env = getenv("TEST_WATCHDOG_TRACE");
-        stagee_trace_enabled_flag = (env && env[0] && env[0] != '0');
-        stagee_trace_initialized = true;
+        ovh_trace_enabled_flag = (env && env[0] && env[0] != '0');
+        ovh_trace_initialized = true;
     }
-    return stagee_trace_enabled_flag;
+    return ovh_trace_enabled_flag;
 }
 
-void test_stagee_tracef(const char* fmt, ...) {
-    if (!test_stagee_trace_enabled())
+void test_ovh_tracef(const char* fmt, ...) {
+    if (!test_ovh_trace_enabled())
         return;
     va_list args;
     va_start(args, fmt);
-    fputs("[stagee] ", stderr);
+    fputs("[ovh] ", stderr);
     vfprintf(stderr, fmt, args);
     fputc('\n', stderr);
     fflush(stderr);
     va_end(args);
 }
 
-bool test_stagee_heartbeat_step(const char* label) {
+bool test_ovh_heartbeat_step(const char* label) {
     cepBeatNumber before = cep_heartbeat_current();
-    test_stagee_tracef("%s before beat=%" PRIu64, label, (uint64_t)before);
+    test_ovh_tracef("%s before beat=%" PRIu64, label, (uint64_t)before);
     bool ok = cep_heartbeat_step();
     cepBeatNumber after = cep_heartbeat_current();
-    test_stagee_tracef("%s after beat=%" PRIu64 " ok=%d", label, (uint64_t)after, ok ? 1 : 0);
-    if (!ok && test_stagee_trace_enabled()) {
-        test_stagee_tracef("%s heartbeat_step failed ops_error=%d", label, cep_ops_debug_last_error());
+    test_ovh_tracef("%s after beat=%" PRIu64 " ok=%d", label, (uint64_t)after, ok ? 1 : 0);
+    if (!ok && test_ovh_trace_enabled()) {
+        test_ovh_tracef("%s heartbeat_step failed ops_error=%d", label, cep_ops_debug_last_error());
     }
     return ok;
 }
@@ -146,64 +146,64 @@ MunitTest tests[] = {
     {
         "/heartbeat/bootstrap",
         test_heartbeat_bootstrap,
-        test_stagee_watchdog_setup,
-        test_stagee_watchdog_tear_down,
+        test_ovh_watchdog_setup,
+        test_ovh_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
     {
         "/organ/sys_state",
         test_organ_sys_state_validator,
-        test_stagee_watchdog_setup,
-        test_stagee_watchdog_tear_down,
+        test_ovh_watchdog_setup,
+        test_ovh_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
     {
         "/organ/rt_ops",
         test_organ_rt_ops_validator,
-        test_stagee_watchdog_setup,
-        test_stagee_watchdog_tear_down,
+        test_ovh_watchdog_setup,
+        test_ovh_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
     {
         "/organ/bootstrap/constructors",
         test_organ_constructor_bootstrap,
-        test_stagee_watchdog_setup,
-        test_stagee_watchdog_tear_down,
+        test_ovh_watchdog_setup,
+        test_ovh_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
     {
         "/organ/destructors/cycles",
         test_organ_constructor_destructor_cycles,
-        test_stagee_watchdog_setup,
-        test_stagee_watchdog_tear_down,
+        test_ovh_watchdog_setup,
+        test_ovh_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
     {
         "/organ/constructors",
         test_organ_constructor_dossier,
-        test_stagee_watchdog_setup,
-        test_stagee_watchdog_tear_down,
+        test_ovh_watchdog_setup,
+        test_ovh_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
     {
         "/organ/destructors",
         test_organ_destructor_dossier,
-        test_stagee_watchdog_setup,
-        test_stagee_watchdog_tear_down,
+        test_ovh_watchdog_setup,
+        test_ovh_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
     {
         "/organ/dossiers",
         test_organ_dossier_sequence,
-        test_stagee_watchdog_setup,
-        test_stagee_watchdog_tear_down,
+        test_ovh_watchdog_setup,
+        test_ovh_watchdog_tear_down,
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },

@@ -1,4 +1,4 @@
-/* Validator adoption tests: ensure Stage E organ validators execute via
+/* Validator adoption tests: ensure the Organ Validation Harness (OVH) validators execute via
  * OPS/STATES and close dossiers cleanly for representative subsystems. The
  * checks drive a lightweight heartbeat cycle so we can observe the emitted
  * dossiers without rebuilding the entire runtime fixture. */
@@ -28,8 +28,8 @@ static void organ_prepare_runtime(void) {
     /* Advance a few beats so the boot dossier reaches ist:ok before we queue
      * organ validators. */
     for (int i = 0; i < 6; ++i) {
-        test_stagee_tracef("organ_prepare_runtime iteration=%d", i);
-        munit_assert_true(test_stagee_heartbeat_step("organ_prepare_runtime"));
+        test_ovh_tracef("organ_prepare_runtime iteration=%d", i);
+        munit_assert_true(test_ovh_heartbeat_step("organ_prepare_runtime"));
     }
 }
 
@@ -50,9 +50,9 @@ static cepCell* organ_find_cell(cepCell* parent, const cepDT* name) {
 }
 
 static void organ_trace_ops_size(const char* label, cepCell* ops_root) {
-    if (!test_stagee_trace_enabled() || !ops_root)
+    if (!test_ovh_trace_enabled() || !ops_root)
         return;
-    test_stagee_tracef("%s ops_children=%zu", label, cep_cell_children(ops_root));
+    test_ovh_tracef("%s ops_children=%zu", label, cep_cell_children(ops_root));
 }
 
 static bool organ_ops_has_entry(const char* target_path);
@@ -61,7 +61,7 @@ static void organ_wait_for_validator(const char* label,
                                      cepCell* ops_root,
                                      size_t before_count) {
     for (int beat = 0; beat < 32; ++beat) {
-        munit_assert_true(test_stagee_heartbeat_step(label));
+        munit_assert_true(test_ovh_heartbeat_step(label));
         organ_trace_ops_size(label, ops_root);
         if (cep_cell_children(ops_root) > before_count) {
             return;
@@ -72,7 +72,7 @@ static void organ_wait_for_validator(const char* label,
 
 static void organ_step_beats(const char* label, unsigned count) {
     for (unsigned i = 0; i < count; ++i) {
-        munit_assert_true(test_stagee_heartbeat_step(label));
+        munit_assert_true(test_ovh_heartbeat_step(label));
     }
 }
 
@@ -101,14 +101,14 @@ static cepCell* organ_resolve_meta_node(cepCell* root) {
 
 static void organ_assert_schema_present(cepCell* root) {
     cepCell* meta = organ_resolve_meta_node(root);
-    if (!meta && test_stagee_trace_enabled()) {
+    if (!meta && test_ovh_trace_enabled()) {
         cepCell* resolved_root = root;
         if (cep_cell_require_dictionary_store(&resolved_root)) {
-            test_stagee_tracef("organ schema debug: immutable=%d children=%zu",
+            test_ovh_tracef("organ schema debug: immutable=%d children=%zu",
                                cep_cell_is_immutable(resolved_root) ? 1 : 0,
                                cep_cell_children(resolved_root));
             cepCell* meta_lookup = cep_cell_find_by_name(resolved_root, CEP_DTAW("CEP", "meta"));
-            test_stagee_tracef("organ schema debug: meta_lookup=%p", (void*)meta_lookup);
+            test_ovh_tracef("organ schema debug: meta_lookup=%p", (void*)meta_lookup);
             for (cepCell* child = cep_cell_first_all(resolved_root);
                  child;
                  child = cep_cell_next_all(resolved_root, child)) {
@@ -141,7 +141,7 @@ static void organ_assert_schema_present(cepCell* root) {
                         tag_text = tag_buf;
                     }
                 }
-                test_stagee_tracef("organ schema missing meta child dom=%s tag=%s",
+                test_ovh_tracef("organ schema missing meta child dom=%s tag=%s",
                                    domain_text,
                                    tag_text);
             }
@@ -393,10 +393,10 @@ MunitResult test_organ_constructor_destructor_cycles(const MunitParameter params
     cepCell* journal_root = cep_heartbeat_journal_root();
     munit_assert_not_null(journal_root);
 
-    if (test_stagee_trace_enabled()) {
+    if (test_ovh_trace_enabled()) {
         cepDT expected_beat = cep_organ_store_dt("rt_beat");
         cepDT expected_journal = cep_organ_store_dt("journal");
-        test_stagee_tracef("expected store dt: beat=%08x/%08x journal=%08x/%08x",
+        test_ovh_tracef("expected store dt: beat=%08x/%08x journal=%08x/%08x",
                            (unsigned)expected_beat.domain,
                            (unsigned)expected_beat.tag,
                            (unsigned)expected_journal.domain,
@@ -425,10 +425,10 @@ MunitResult test_organ_constructor_destructor_cycles(const MunitParameter params
     organ_wait_for_validator("organ_destructor_cycles:vl_journal_before", ops_root, before);
     organ_assert_latest_success("/journal");
 
-    if (test_stagee_trace_enabled()) {
+    if (test_ovh_trace_enabled()) {
         const cepStore* beat_store = beat_root ? beat_root->store : NULL;
         const cepStore* journal_store = journal_root ? journal_root->store : NULL;
-        test_stagee_tracef("pre-dtor store dt: beat=%08x/%08x journal=%08x/%08x",
+        test_ovh_tracef("pre-dtor store dt: beat=%08x/%08x journal=%08x/%08x",
                            beat_store ? (unsigned)beat_store->dt.domain : 0u,
                            beat_store ? (unsigned)beat_store->dt.tag : 0u,
                            journal_store ? (unsigned)journal_store->dt.domain : 0u,
@@ -448,10 +448,10 @@ MunitResult test_organ_constructor_destructor_cycles(const MunitParameter params
     organ_assert_schema_present(beat_root);
     organ_assert_schema_present(journal_root);
 
-    if (test_stagee_trace_enabled()) {
+    if (test_ovh_trace_enabled()) {
         const cepStore* beat_store = beat_root ? beat_root->store : NULL;
         const cepStore* journal_store = journal_root ? journal_root->store : NULL;
-        test_stagee_tracef("post-dtor store dt: beat=%08x/%08x journal=%08x/%08x",
+        test_ovh_tracef("post-dtor store dt: beat=%08x/%08x journal=%08x/%08x",
                            beat_store ? (unsigned)beat_store->dt.domain : 0u,
                            beat_store ? (unsigned)beat_store->dt.tag : 0u,
                            journal_store ? (unsigned)journal_store->dt.domain : 0u,

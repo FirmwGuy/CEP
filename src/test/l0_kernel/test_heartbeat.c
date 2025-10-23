@@ -18,29 +18,29 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define STAGEE_WATCHDOG_DEFAULT_SECONDS 240u
+#define OVH_WATCHDOG_DEFAULT_SECONDS 240u
 
-/* Stage E suites arm a watchdog so hang regressions end quickly; this setup resolves
+/* OVH suites arm a watchdog so hang regressions end quickly; this setup resolves
    the requested timeout (allowing per-test overrides) and returns the armed fixture. */
-void* test_stagee_watchdog_setup(const MunitParameter params[], void* user_data) {
+void* test_ovh_watchdog_setup(const MunitParameter params[], void* user_data) {
     (void)user_data;
-    unsigned seconds = test_watchdog_resolve_timeout(params, STAGEE_WATCHDOG_DEFAULT_SECONDS);
+    unsigned seconds = test_watchdog_resolve_timeout(params, OVH_WATCHDOG_DEFAULT_SECONDS);
     const char* raw = getenv("TEST_WATCHDOG_TRACE");
     printf("[debug] trace flag=%d raw_env=%s\n",
-           test_stagee_trace_enabled()? 1:0,
+           test_ovh_trace_enabled()? 1:0,
            raw ? raw : "(null)");
     fflush(stdout);
-    if (test_stagee_trace_enabled()) {
-        test_stagee_tracef("watchdog setup seconds=%u", seconds);
+    if (test_ovh_trace_enabled()) {
+        test_ovh_tracef("watchdog setup seconds=%u", seconds);
     }
     return test_watchdog_create(seconds);
 }
 
-/* Stage E watchdog tear-down stops the background watchdog thread to avoid leaking
+/* OVH watchdog tear-down stops the background watchdog thread to avoid leaking
    workers between suites once the test has either completed or timed out. */
-void test_stagee_watchdog_tear_down(void* fixture) {
-    if (test_stagee_trace_enabled()) {
-        test_stagee_tracef("watchdog teardown");
+void test_ovh_watchdog_tear_down(void* fixture) {
+    if (test_ovh_trace_enabled()) {
+        test_ovh_tracef("watchdog teardown");
     }
     test_watchdog_destroy((TestWatchdog*)fixture);
 }
@@ -108,11 +108,11 @@ static size_t heartbeat_watchers_count(cepCell* op) {
 }
 
 static void heartbeat_trace_op_state(const char* label, cepCell* op) {
-    if (!test_stagee_trace_enabled() || !op)
+    if (!test_ovh_trace_enabled() || !op)
         return;
     cepDT state = heartbeat_read_dt_field(op, "state");
     size_t watchers = heartbeat_watchers_count(op);
-    test_stagee_tracef("%s state=0x%llx:0x%llx watchers=%zu",
+    test_ovh_tracef("%s state=0x%llx:0x%llx watchers=%zu",
                        label,
                        (unsigned long long)state.domain,
                        (unsigned long long)state.tag,
@@ -721,8 +721,8 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
 static void heartbeat_drive_boot_completion(cepOID boot_oid) {
     (void)boot_oid;
     for (int i = 0; i < 6; ++i) {
-        test_stagee_tracef("boot_completion iteration=%d", i);
-        munit_assert_true(test_stagee_heartbeat_step("boot_completion"));
+        test_ovh_tracef("boot_completion iteration=%d", i);
+        munit_assert_true(test_ovh_heartbeat_step("boot_completion"));
     }
 }
 
@@ -731,7 +731,7 @@ static MunitResult test_heartbeat_boot_timeline(const MunitParameter params[], v
     (void)user_data_or_fixture;
 
     test_runtime_shutdown();
-    test_stagee_tracef("boot_timeline: after runtime shutdown");
+    test_ovh_tracef("boot_timeline: after runtime shutdown");
 
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
@@ -740,17 +740,17 @@ static MunitResult test_heartbeat_boot_timeline(const MunitParameter params[], v
         .boot_ops = true,
     };
 
-    test_stagee_tracef("boot_timeline: configuring heartbeat");
+    test_ovh_tracef("boot_timeline: configuring heartbeat");
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    test_stagee_tracef("boot_timeline: bootstrap");
+    test_ovh_tracef("boot_timeline: bootstrap");
     munit_assert_true(cep_l0_bootstrap());
-    test_stagee_tracef("boot_timeline: startup");
+    test_ovh_tracef("boot_timeline: startup");
     munit_assert_true(cep_heartbeat_startup());
 
     cepOID boot_oid = heartbeat_read_oid("boot_oid");
     munit_assert_true(cep_oid_is_valid(boot_oid));
     heartbeat_drive_boot_completion(boot_oid);
-    test_stagee_tracef("boot_timeline completed boot sequence beat=%" PRIu64, (uint64_t)cep_heartbeat_current());
+    test_ovh_tracef("boot_timeline completed boot sequence beat=%" PRIu64, (uint64_t)cep_heartbeat_current());
 
     const char* expected_states[] = {
         "ist:run",
@@ -778,7 +778,7 @@ static MunitResult test_heartbeat_shutdown_timeline(const MunitParameter params[
     (void)user_data_or_fixture;
 
     test_runtime_shutdown();
-    test_stagee_tracef("shutdown_timeline: after runtime shutdown");
+    test_ovh_tracef("shutdown_timeline: after runtime shutdown");
 
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
@@ -787,17 +787,17 @@ static MunitResult test_heartbeat_shutdown_timeline(const MunitParameter params[
         .boot_ops = true,
     };
 
-    test_stagee_tracef("shutdown_timeline: configuring heartbeat");
+    test_ovh_tracef("shutdown_timeline: configuring heartbeat");
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    test_stagee_tracef("shutdown_timeline: bootstrap");
+    test_ovh_tracef("shutdown_timeline: bootstrap");
     munit_assert_true(cep_l0_bootstrap());
-    test_stagee_tracef("shutdown_timeline: startup");
+    test_ovh_tracef("shutdown_timeline: startup");
     munit_assert_true(cep_heartbeat_startup());
 
     cepOID boot_oid = heartbeat_read_oid("boot_oid");
     munit_assert_true(cep_oid_is_valid(boot_oid));
     heartbeat_drive_boot_completion(boot_oid);
-    test_stagee_tracef("shutdown_timeline boot ready beat=%" PRIu64, (uint64_t)cep_heartbeat_current());
+    test_ovh_tracef("shutdown_timeline boot ready beat=%" PRIu64, (uint64_t)cep_heartbeat_current());
 
     munit_assert_true(cep_heartbeat_emit_shutdown());
 
@@ -805,8 +805,8 @@ static MunitResult test_heartbeat_shutdown_timeline(const MunitParameter params[
     munit_assert_true(cep_oid_is_valid(shdn_oid));
 
     for (int i = 0; i < 6; ++i) {
-        test_stagee_tracef("shutdown_timeline iteration=%d", i);
-        munit_assert_true(test_stagee_heartbeat_step("shutdown_timeline"));
+        test_ovh_tracef("shutdown_timeline iteration=%d", i);
+        munit_assert_true(test_ovh_heartbeat_step("shutdown_timeline"));
     }
 
     const char* expected_states[] = {
@@ -835,7 +835,7 @@ static MunitResult test_heartbeat_boot_awaiters(const MunitParameter params[], v
     (void)user_data_or_fixture;
 
     test_runtime_shutdown();
-    test_stagee_tracef("boot_awaiters: after runtime shutdown");
+    test_ovh_tracef("boot_awaiters: after runtime shutdown");
 
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
@@ -844,11 +844,11 @@ static MunitResult test_heartbeat_boot_awaiters(const MunitParameter params[], v
         .boot_ops = true,
     };
 
-    test_stagee_tracef("boot_awaiters: configuring heartbeat");
+    test_ovh_tracef("boot_awaiters: configuring heartbeat");
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    test_stagee_tracef("boot_awaiters: bootstrap");
+    test_ovh_tracef("boot_awaiters: bootstrap");
     munit_assert_true(cep_l0_bootstrap());
-    test_stagee_tracef("boot_awaiters: startup");
+    test_ovh_tracef("boot_awaiters: startup");
     munit_assert_true(cep_heartbeat_startup());
 
     cepOID boot_oid = heartbeat_read_oid("boot_oid");
@@ -890,19 +890,19 @@ static MunitResult test_heartbeat_boot_awaiters(const MunitParameter params[], v
     munit_assert_true(await_ok);
     munit_assert_size(heartbeat_watchers_count(boot_op), ==, 1u);
 
-    munit_assert_true(test_stagee_heartbeat_step("boot_awaiters step1"));
+    munit_assert_true(test_ovh_heartbeat_step("boot_awaiters step1"));
     boot_op = heartbeat_find_op_cell(boot_oid);
     heartbeat_trace_op_state("boot_awaiters step1", boot_op);
-    munit_assert_true(test_stagee_heartbeat_step("boot_awaiters step2"));
+    munit_assert_true(test_ovh_heartbeat_step("boot_awaiters step2"));
     boot_op = heartbeat_find_op_cell(boot_oid);
     heartbeat_trace_op_state("boot_awaiters step2", boot_op);
 
-    munit_assert_true(test_stagee_heartbeat_step("boot_awaiters step3"));
+    munit_assert_true(test_ovh_heartbeat_step("boot_awaiters step3"));
     boot_op = heartbeat_find_op_cell(boot_oid);
     heartbeat_trace_op_state("boot_awaiters step3", boot_op);
     munit_assert_size(heartbeat_watchers_count(boot_op), ==, 0u);
 
-    munit_assert_true(test_stagee_heartbeat_step("boot_awaiters step4"));
+    munit_assert_true(test_ovh_heartbeat_step("boot_awaiters step4"));
     boot_op = heartbeat_find_op_cell(boot_oid);
     heartbeat_trace_op_state("boot_awaiters step4", boot_op);
     munit_assert_int(heartbeat_cont_calls, ==, 1);
@@ -1418,21 +1418,21 @@ MunitResult test_heartbeat_bootstrap(const MunitParameter params[], void* user_d
     test_boot_cycle_prepare(params);
     TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
     munit_assert_not_null(watchdog);
-    test_stagee_tracef("heartbeat_bootstrap: begin boot_timeline");
+    test_ovh_tracef("heartbeat_bootstrap: begin boot_timeline");
     MunitResult result = test_heartbeat_boot_timeline(params, NULL);
     if (result != MUNIT_OK) {
         test_watchdog_signal(watchdog);
         return result;
     }
 
-    test_stagee_tracef("heartbeat_bootstrap: begin shutdown_timeline");
+    test_ovh_tracef("heartbeat_bootstrap: begin shutdown_timeline");
     result = test_heartbeat_shutdown_timeline(params, NULL);
     if (result != MUNIT_OK) {
         test_watchdog_signal(watchdog);
         return result;
     }
 
-    test_stagee_tracef("heartbeat_bootstrap: begin boot_awaiters");
+    test_ovh_tracef("heartbeat_bootstrap: begin boot_awaiters");
     result = test_heartbeat_boot_awaiters(params, NULL);
     test_watchdog_signal(watchdog);
     return result;

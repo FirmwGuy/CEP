@@ -143,7 +143,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `oct_root` / `oct_space` | test | octree storage fixtures in randomized tests. |
 | `pq_buffer` / `pq_root` | test | packed-queue storage fixtures. |
 | `ser_child` / `ser_dict` / `ser_root` | test | serialization fixtures validating tree walkers. |
-| `org:fixture:*` | test | Stage E organ fixture signals exercising constructor/destructor/validator dossiers. |
+| `org:fixture:*` | test | OVH (Organ Validation Harness) fixture signals exercising constructor/destructor/validator dossiers. |
 | `sig_apply` `sig_beta` `sig_broad` `sig_cycle` `sig_dedup` `sig_dup` `sig_empty` `sig_expect` `sig_gamma` `sig_hb` `sig_img` `sig_mask` `sig_match` `sig_nop` `sig_rand` `sig_root` `sig_rty` `sig_skip` `sig_thumb` `sig_tree` | test | assorted signal tags exercised by scheduler and heartbeat tests. |
 | `sys_child` / `sys_root` | test | synthetic system fixtures in randomized tests. |
 | `test_enz_*` (`test_enz_a`, `test_enz_b`, `test_enz_c`, `test_enz_d`, `test_enz_da`, `test_enz_e`, `test_enz_le`, `test_enz_ro`) | test | enzyme dependency graphs in unit tests. |
