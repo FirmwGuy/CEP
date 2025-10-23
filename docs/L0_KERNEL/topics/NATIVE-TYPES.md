@@ -81,7 +81,7 @@ Older drafts enumerated built‑in binary types (BOOLEAN, INT32, FLOAT64, UTF8, 
 
 ---
 
-## 4) Q&A
+## Global Q&A
 
 Q: Why make native data opaque?
 A: To keep the kernel small, deterministic, and future‑proof. Opaque bytes avoid a built‑in type explosion and push meaning to upper-layer packs, where it can evolve without touching L0.

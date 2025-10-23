@@ -53,7 +53,7 @@
   - Backlinks are in‑memory pointers within the same process space; this guarantees no broken references under normal operation.
   - Finalization of a target asserts `shadowing == NONE` to prevent orphaned links.
 
-## Q&A
+## Global Q&A
 - Why force links to resolve to non‑link targets?
   - It simplifies reasoning and ensures consistent behavior: a link behaves like the target it represents, not like a chain of aliases.
 

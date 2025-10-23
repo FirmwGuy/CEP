@@ -34,7 +34,7 @@ If you know how to keep Oracle packages humming, you already understand most of 
 - **Schema migrations**
   - Because CEP is append-only, structural changes resemble forward-only migrations. Use enzymes to emit reform stories under `/data/flow/**` or `/data/err/**`; serialization snapshots (`cep_serialization_emit_cell`) replace your datapump exports when you need to move state between environments.
 
-## Q&A
+## Global Q&A
 - **Can I still rely on declarative constraints?**  
   CEP layer zero does not enforce SQL constraints. You model invariants with enzymes or upper-layer packs. Think of it as moving from `ALTER TABLE ... ADD CONSTRAINT` to deterministic hooks that run each beat.
 

@@ -15,8 +15,10 @@ CEP bundles a handful of helper scripts in `tools/` so you can keep the build ar
   Prints the current version number, favouring the latest Git tag (minus any leading `v`). Used by Meson to feed Doxygen, yet safe to run standalone (`python tools/git_tag_version.py`) when you need to confirm the tag that build tooling will advertise.
 - **`tools/run_doxygen.py`**  
   Lightweight wrapper that runs Doxygen, optionally triggers a post-processing step (such as `fix_doxygen_toc.py`), and touches a stamp file so Meson knows the doc build succeeded. Meson’s `docs_html` target uses it; invoke it manually if you maintain a custom documentation pipeline.
+- **`tools/check_docs_structure.py`**  
+  Scans every Markdown file under `docs/` and fails if a document is missing a terminal `## Global Q&A` section. Run it in CI or pre-commit hooks to keep the new structural contract intact.
 
-## Q&A
+## Global Q&A
 - **Do I need to install anything extra to use these helpers?**  
   No additional Python packages are required; the scripts only rely on the standard library and tools already present in the repository’s Meson workflows (ctags, cscope, Doxygen).
 - **Can I run the scripts from outside the repo root?**  

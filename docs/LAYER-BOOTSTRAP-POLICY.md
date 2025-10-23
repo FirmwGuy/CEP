@@ -23,7 +23,7 @@ CEP’s kernel (Layer 0) must start, run, and shut down without assuming any h
   - Offer a `*_shutdown()` routine that releases pack-local resources and marks its lifecycle scope as `teardown`.  
   - Kernel shutdown (`cep_heartbeat_emit_shutdown`) should succeed whether or not a pack ran; missing teardown hooks must not crash the heartbeat.
 
-## Q&A
+## Global Q&A
 - **Can a pack preload kernel state for convenience?**  
   No. Import data through the pack’s public bootstrap or ingest helpers so dependency direction stays “kernel → pack”, never the reverse.
 

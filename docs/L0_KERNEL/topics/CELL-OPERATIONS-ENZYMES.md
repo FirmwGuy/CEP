@@ -29,7 +29,7 @@ The cell operation enzymes let schedulers apply familiar tree edits (add, update
 
 ---
 
-## Q&A
+## Global Q&A
 - **When should I call the register helper?** During registry bootstrap, right after `cep_enzyme_registry_init()`. It is cheap to invoke multiple times and will no-op once the descriptors are present.
 - **Do I need to provide both subject and source links?** Only for update and move. Add and clone accept either `role_template` or `role_source`, while delete only cares about `role_subject`.
 - **What happens if I omit `arg_pos` on a list store?** The helper treats the absence as "append" for insertion-ordered stores and "use the implicit store policy" for others, so you get the default ordering.

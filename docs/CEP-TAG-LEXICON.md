@@ -169,7 +169,7 @@ when a new behavior needs a fresh word before it lands in code.
   character constraints to preserve compatibility with the packed `cepDT`
   encoding.
 
-## Q&A
+## Global Q&A
 - **Why force every domain to `CEP`?** It removes a whole axis of collisions and
   lets us reason about “what” without worrying about “where”. Tags now carry the
   meaning; the domain just declares “kernel-owned”.

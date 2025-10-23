@@ -9,7 +9,7 @@ Locking lets you "freeze" a portion of the tree so structure or payloads stay pu
 - Structural helpers (`cep_store_add_child`, `cep_store_delete_children_hard`, soft/hard child removal, dictionary/sort reindexing) now short-circuit when a store in scope is locked. Payload writers (`cep_cell_update`, stream write/map/unmap) do the same for data locks.
 - `cep_cell_delete*` obey locks too: soft or hard deletes of data, children, or stores back off if the affected subtree is frozen, preserving append-only semantics.
 
-## Q&A
+## Global Q&A
 - **Do locks stop reads?** No. Traversal, serialization, and read-only mapping still work; only structural or payload mutations are blocked.
 - **Can I nest locks?** Yes. You can lock a parent and then a child, but the second call will fail until the parent is unlocked—locks freeze whole subtrees.
 - **What happens if I try to write while locked?** The helper returns `false`/`NULL`, and stream write/map helpers emit error journal entries instead of committing changes.

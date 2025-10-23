@@ -21,6 +21,61 @@ Together, these pieces let you build **local‑first trees, reactive dataflows, 
 
 ---
 
+## Topics Overview
+
+### Append-Only and Idempotency
+This topic tracks how Layer 0 preserves deterministic history for both payloads and structure. It explains the twin timelines (`cepData` for bytes, `cepStore` for children), how timestamps reconstruct past states without cloning trees, and why duplicate updates short-circuit instead of forking history. Use it whenever you need to reason about replay, soft versus hard deletes, or store snapshot costs.
+
+### Cell-Bound Enzyme Bindings
+Layer 0 stores enzyme bindings on cell timelines so work dispatch honours ancestry and tombstones. The bindings topic walks through propagation flags, inheritance rules, and how tombstone entries mask older registrations. Read it before editing binding persistence or introducing new dispatch helpers.
+
+### Cell-Operations Enzymes
+Standard organ and cell operations surface as reusable enzymes. This chapter documents the supported verbs, required signal shapes, and the invariants the kernels expect callers to maintain. Lean on it when wiring automation packs or auditing which helper enzymes already exist.
+
+### Developer Handbook
+The handbook is the pragmatic orientation for contributors working inside `cep_cell.*` and its storage backends. It maps repository layout, highlights coding conventions, and lists the tests and fixtures that prove new work. Consult it whenever you are preparing a kernel patch or onboarding a teammate.
+
+### Debug Macros
+Layer 0’s debug wrappers keep guardrails active in debug builds without polluting release binaries. The debug macros topic explains when `CEP_DEBUG`, `CEP_ASSERT`, and `CEP_NOT_ASSERT` execute, how they interact with control flow, and the logging helpers that stay behind the `CEP_ENABLE_DEBUG` flag.
+
+### External Libraries Interface
+Adapters keep external handles and libraries deterministic by routing them through proxy ops. This document describes the adapter vtables, retain/release contracts, and the serialization hooks that capture library state for replay. Use it when extending or auditing handle-bearing payloads.
+
+### Glob Matching
+Domain/tag identifiers support globbing for routing and discovery. The glob guide explains the numeric encodings, wildcard sentinels, and matching rules the runtime enforces. Review it before adjusting `cep_id_matches` or adding new wildcard patterns.
+
+### Heartbeat and Enzymes
+The heartbeat topic narrates the capture → compute → commit lifecycle, impulse queues, dependency sorting, and agenda replay rules. It anchors enzyme scheduling semantics so you can reason about deterministic work ordering and beat-level safety checks.
+
+### IO Streams and Foreign Resources
+Streaming payloads bridge kernel cells with foreign resources. This topic covers the effect log, CAS guarantees, chunk management, and the guardrails for mapping external handles into CEP. It is required reading before changing stream ingestion or library-backed handles.
+
+### Links and Shadowing
+Links turn the tree into a safe graph via backlinks and shadow metadata. The document details attach/detach flows, target-dead propagation, and how clones or moves rebind shadows without breaking invariants. Consult it before touching link code or designing link-heavy features.
+
+### Locking
+Layer 0 enforces deterministic mutation using hierarchical locks. The locking topic explains store/data lock scopes, ancestor scans, and the failure modes to avoid when holding locks across beats. Use it when introducing new mutation helpers or debugging concurrency issues.
+
+### Native Types
+Native payloads are opaque bytes labelled by compact domain/tag identifiers. This document clarifies VALUE/DATA/HANDLE/STREAM semantics, hashing rules, and how upper layers layer meaning on top. Visit it before altering payload structures or introducing new tag conventions.
+
+### Organs Authoring
+Organ descriptors register constructors, destructors, and validators that bring packs to life. The organs guide steps through descriptor fields, lifecycle expectations, and validator binding discipline so optional packs remain deterministic. Check it prior to creating new organs or refactoring descriptors.
+
+### Proxy Cells
+Proxy cells virtualise resources via adapters that snapshot and restore state during serialization. The proxy topic captures adapter responsibilities, error reporting, and lifecycle transitions. Read it when extending proxy capabilities or auditing the replay pipeline.
+
+### Raw Traversal Helpers
+Traversal helpers are evolving to add `*_all` style APIs. This roadmap outlines the planned interfaces, invariants, and compatibility goals. Use it to coordinate traversal work and avoid diverging from the agreed successor APIs.
+
+### Serialization and Streams
+Serialization describes the manifest layout, chunk framing, hash strategy, and apply process that keep replicas faithful. It explains how staged transactions commit atomically and how proxies participate. Review it before extending the wire format or building ingestion tooling.
+
+### Startup and Shutdown
+Lifecycle operations (`op/boot` and `op/shdn`) replace ad-hoc signals. The startup topic documents the state machine, watchers, and published OIDs so packs can synchronise safely with the kernel. Re-read it before modifying lifecycle helpers or writing tooling against the operation timelines.
+
+---
+
 ## Core concepts
 
 ### 1) Cells: data + children (with time)
@@ -235,13 +290,6 @@ Veiled subtrees let you build a complex branch exactly where it belongs while ke
 - The transaction helpers (`cep_txn_begin`, `cep_txn_mark_ready`, `cep_txn_commit`, `cep_txn_abort`) stage a new dictionary child directly under the final parent, mark the entire subtree veiled, and emit `meta/txn/state` breadcrumbs (`building → ready → committed/aborted`). Commit walks the subtree once, stamps missing timestamps, lifts the veil, and records a heartbeat stage note so observers can match the event to a beat.
 - Link plumbing enforces the boundary: top-level veiled roots cannot be linked while veiled, and veiled descendants only accept links from inside the same veiled ancestor. Store insertion paths inherit the veil automatically so any child attached during the transaction stays hidden until commit.
 
-### Q&A
-- **How do I inspect a staged branch while debugging?** Call `cep_cell_visible_latest(root, CEP_VIS_INCLUDE_VEILED)` or pass the same mask into the `_past` variants; the rest of the API stays unchanged.
-- **What happens if commit fails?** `cep_txn_commit` returns `false` and leaves the subtree veiled; you can retry after fixing the underlying issue or call `cep_txn_abort` to tear it down.
-- **Can I link to a veiled node from elsewhere?** No. Veiled parents reject all links until they are unveiled, and children only accept intra-subtree links, keeping accidental early exposure at bay.
-
----
-
 ## Operational notes & guardrails
 
 * **Locking:** coarse flags exist for child stores and data payloads (`cep_store_lock/cep_data_lock`) and are checked up the ancestry to prevent unsafe mutations. These are **in‑tree logical locks**, not OS‑level primitives; coordinate your own threading policy. 
@@ -275,3 +323,12 @@ Veiled subtrees let you build a complex branch exactly where it belongs while ke
 ## Closing thought
 
 This API is a compact **data+compute micro‑kernel**: trees with **deterministic history**, **pluggable storage**, **routable names**, **references with lifecycle**, **reactive work** with dependency ordering, and **streaming** across boundaries. That combination is rare—and it opens the door to building **auditable, reactive, distributed systems** while staying close to the metal.
+
+---
+
+## Global Q&A
+- **Where should I start when untangling a kernel bug?** Skim this overview, then drop into the specific topic that matches the subsystem (e.g., append-only history, locking, or serialization). Each topic links directly to the code it describes.
+- **How do I confirm a feature exists today versus being on the roadmap?** Check `docs/DOCS-INDEX.md`; planned entries (like Raw Traversal Helpers) are tagged so you do not assume finished behaviour.
+- **What guarantees keep new mutations deterministic?** Append-only timelines, hierarchical locks, and beat-scoped agenda ordering. Changes that bypass those hooks need design review before landing.
+- **Where do I record new architectural rationale?** Create an `L0-DESIGN-*.md` paper following `docs/L0_KERNEL/L0-DESIGN-GUIDE.md` whenever behaviour or invariants change materially.
+- **How can I preview veiled or staged work without breaking invariants?** Use `cep_cell_visible_latest` or the `_past` variants with `CEP_VIS_INCLUDE_VEILED` so you inspect transactions without exposing them to other readers.

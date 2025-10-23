@@ -96,7 +96,7 @@ Adapters expose their serialization hooks through `cepLibraryOps` (see `src/l0_k
 - Offline tooling that cannot request retransmission should log the gap, halt ingestion, and mark the archive as incomplete so operators can regenerate the missing heartbeat.
 - Control chunks (class 0x0000) can carry retry hints or checkpoints; receivers may resume from the last confirmed control chunk after the gap is repaired.
 
-## Q&A
+## Global Q&A
 
 - **Q: How do heartbeats relate to serialization transactions?**
   **A:** Emit a new transaction ID whenever you complete a heartbeat commit or switch to a new subtree. Replayers stay in lockstep by consuming all chunks with that ID before advancing the heartbeat, mirroring the order enforced by `cep_stream_commit_pending`.

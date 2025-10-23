@@ -44,7 +44,7 @@ This inventory will guide the follow-up tasks that adopt `*_all` after API appro
 - Documentation in the public header points out that these helpers deliberately bypass veil/deletion semantics and should be used sparingly.
 - No behavioural change is introduced until callers switch to the new API.
 
-## Q&A
+## Global Q&A
 
 **Q: Why not keep calling `store_first_child_internal` directly?**  
 A: Because it leaks storage internals into higher-level code. Naming the intent (`*_all`) keeps the responsibility obvious and reduces the chance of mix-ups with the visible helpers.

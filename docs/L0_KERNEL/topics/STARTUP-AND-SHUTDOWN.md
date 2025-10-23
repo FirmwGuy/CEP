@@ -45,7 +45,18 @@ Watchers can attach to any of these states (or `sts:ok`) via `cep_op_await()`. R
 - `/rt/ops/<oid>/close/` – sealed dictionary with `status` (`sts:*`), `closed_beat`, and optional `summary_id`.
 - `/rt/ops/<oid>/watchers/` – dictionary of live watcher entries. The branch is empty after watchers fire or expire.
 
-## Q&A
+
+## Layer-0 Operating Principles
+- **Operation-first lifecycle.** Treat `op/boot` and `op/shdn` as the canonical lifecycle record. Align new packs or services with those operations instead of adding bespoke state trackers.
+- **Append-only cells.** Stage replacements off-tree and graft them atomically. Direct edits of `/data` or `/rt/ops` break replay guarantees.
+- **Phase discipline.** Capture → compute → commit is the only legal mutation flow. Use the `cep_beat_begin_*` helpers and keep shutdown transitions within the same rules.
+- **Watcher hygiene.** Prefer `cep_op_await` over polling. Remember that watchers fire during stage commit and enqueue continuations for the next beat.
+- **Path-based lookups.** Treat cached `cepCell*` pointers as ephemeral. Resolve by path across phase boundaries so store promotion or restart cannot strand stale handles.
+- **Public-surface tests.** Layer‑0 suites step the heartbeat and call exported APIs. Avoid reaching around the public surface; that bypasses the very operations that keep lifecycle deterministic.
+
+---
+
+## Global Q&A
 **Q: What order should I follow when bringing CEP online?**  
 Call `cep_l0_bootstrap()` first, then run any optional pack bootstrap that depends on the heartbeat, then invoke `cep_heartbeat_startup()` followed by `cep_heartbeat_begin()` (or drive beats manually with `cep_heartbeat_step()`). The boot operation appears during bootstrap; `ist:kernel` records immediately and the remaining milestones (`ist:store`, `ist:packs`, `ist:ok`) land on successive beats as you continue stepping.
 
@@ -69,10 +80,3 @@ Resolve the published OIDs and inspect the corresponding operation branches. His
 **Q: What happens if the shutdown encounter fails?**  
 `cep_boot_ops_close_shutdown()` closes the operation with `sts:fail` (and final `ist:fail`) if any state transition or watcher notification fails. Awaiters waiting on `sts:ok` will instead receive the failure status on the next beat.
 
-## Layer-0 Operating Principles
-- **Operation-first lifecycle.** Treat `op/boot` and `op/shdn` as the canonical lifecycle record. Align new packs or services with those operations instead of adding bespoke state trackers.
-- **Append-only cells.** Stage replacements off-tree and graft them atomically. Direct edits of `/data` or `/rt/ops` break replay guarantees.
-- **Phase discipline.** Capture → compute → commit is the only legal mutation flow. Use the `cep_beat_begin_*` helpers and keep shutdown transitions within the same rules.
-- **Watcher hygiene.** Prefer `cep_op_await` over polling. Remember that watchers fire during stage commit and enqueue continuations for the next beat.
-- **Path-based lookups.** Treat cached `cepCell*` pointers as ephemeral. Resolve by path across phase boundaries so store promotion or restart cannot strand stale handles.
-- **Public-surface tests.** Layer‑0 suites step the heartbeat and call exported APIs. Avoid reaching around the public surface; that bypasses the very operations that keep lifecycle deterministic.

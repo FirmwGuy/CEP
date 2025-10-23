@@ -28,7 +28,7 @@ Distribution notes:
 
 ---
 
-## Q&A
+## Global Q&A
 
 - Why MPL‑2.0 for the core?
   - MPL offers file‑level copyleft: improvements to CEP files must remain open,

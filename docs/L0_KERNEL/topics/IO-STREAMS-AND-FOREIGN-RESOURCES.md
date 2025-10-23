@@ -155,7 +155,7 @@ This section sketches how the above maps onto existing headers without binding t
 
 This keeps deterministic replay intact while making external I/O practical for both tiny and massive resources.
 
-## Q&A
+## Global Q&A
 
 - *Is this just a version control system for the outside world?*
   Not exactly. CEP uses an append‑only effect log with preconditions and content‑addressed inputs. You can add snapshots/checkpoints, but the source of truth is ordered intents and outcomes, not merged diffs.

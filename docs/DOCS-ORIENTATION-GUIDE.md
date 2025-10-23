@@ -1,7 +1,7 @@
 # CEP Documentation Orientation Guide
 
 ## Introduction
-When you jump back into CEP, this cheat sheet points you straight to the docs that matter most so you can refresh key ideas without rereading the entire library every session.
+When you jump back into CEP, this cheat sheet points you straight to the docs that matter most so you can refresh key ideas without rereading the entire library every session. Start with `docs/DOCS-INDEX.md` if you need the full inventory or a quick status check on any guide.
 
 ## Technical Details
 - **Core Architecture**
@@ -35,19 +35,27 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 
 - **Tooling & Planning**
   - `docs/BUILD.md` — Meson/Ninja workflow, options, and sanitizer toggles before compiling or running tests.
-  - `docs/DEBUG-MACROS.md` — Debug-only macro behavior, asserts inside control flow, and release-build caveats.
+  - `docs/L0_KERNEL/topics/DEBUG-MACROS.md` — Debug-only macro behavior, asserts inside control flow, and release-build caveats.
 - `docs/TEST-WATCHDOG-GUIDE.md` — Harness watchdog expectations, tracing controls, and Organ Validation Harness (OVH) fixtures.
   - `docs/TOOLS.md` — Repo scripts for fixtures, code maps, and Doxygen post-processing.
   - `docs/L0_KERNEL/L0_ROADMAP.md` — Active milestones, TODO markers, and planned helper work.
 - `docs/L0_KERNEL/L0_ROADMAP.md` — Layer 0 subsystem map outlining OVH organ/OPS adoption commitments.
   - `docs/L0_KERNEL/topics/RAW-TRAVERSAL-HELPERS.md` — Upcoming `*_all` traversal APIs; recheck before touching traversal internals.
+- `docs/L0_KERNEL/design/DESIGN-INDEX.md` — Status board for Layer 0 design papers.
+  - `docs/L0_KERNEL/design/L0-DESIGN-GUIDE.md` — Expectations for the new Design document tier that records architectural rationale.
+  - `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` — Rationale behind beat ordering, enzyme dependencies, and OPS timelines.
+  - `docs/L0_KERNEL/design/L0-DESIGN-SERIALIZATION.md` — Design trade-offs for manifests, chunking, and replay safety.
+  - `docs/L0_KERNEL/design/L0-DESIGN-CELL-AND-STORE.md` — Why cells stay append-only and how store backends uphold invariants.
+  - `docs/L0_KERNEL/design/L0-DESIGN-PROXY-AND-HANDLES.md` — Lifecycle rules for proxy payloads, adapters, and external handles.
+  - `docs/L0_KERNEL/design/L0-DESIGN-NAMEPOOL-AND-NAMING.md` — Domain/Tag rationale, glob semantics, and namepool lifecycle.
+  - `docs/L0_KERNEL/design/L0-DESIGN-ORGANS-AND-LIFECYCLE.md` — Organ descriptors, constructors/validators, and teardown guarantees.
 
 - **Contextual (Read Once, Revisit When Needed)**
   - `docs/LICENSING.md` — Licensing split across core, tests, and third-party components.
   - `docs/CEP-FOR-PL-SQL-DEVS.md` — Translation layer for database-centric contributors.
   - `docs/Doxyfile.in` — Doxygen template; helpful when altering documentation tooling.
 
-## Q&A
+## Global Q&A
 - **What do I skim every time I start coding?** Revisit the Core Architecture block, then dip into Data & Storage or Runtime sections that match the subsystem you plan to touch.
 - **When do I open the External Integrations docs?** Any time you touch serialization, streams, handles, or proxy cells—those docs spell out determinism rules the kernel must follow.
 - **How do I add new terminology?** Update `docs/CEP-TAG-LEXICON.md` first, then reference the new tag in code or docs; this keeps tooling and reviewers aligned.

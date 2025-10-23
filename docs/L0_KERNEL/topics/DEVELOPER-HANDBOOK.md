@@ -1,17 +1,24 @@
 # L0 Topic: Developer Handbook
 
-## Overview
-- Scope: Hands-on guidance for implementing and extending CEP Layer 0 (Kernel) and preparing for Layers 1–2. Focus on `cep_cell.*` as the foundation. Ignore enzymes/heartbeat modules for now unless explicitly noted.
-- Model: Deterministic, stepwise system built from immutable facts (cells) and structured child-storage (stores). Determinism and replayability are non‑negotiable design constraints.
+## Introduction
+Layer 0 kernel work thrives on deliberate practice more than memorising every helper. This handbook is the front door for engineers who need to touch `cep_cell.*`, storage backends, or the surrounding utilities without breaking determinism. It assumes you already skimmed the Layer 0 overview and now want the practical checklist that keeps day-to-day changes safe.
 
-## Repository Layout
+Use it whenever you are onboarding a teammate or jumping back into kernel code after a break: it points to the right files, the support docs to reread, and the build/test rituals that prevent regressions.
+
+## Technical Details
+### Scope at a Glance
+- Hands-on guidance for implementing and extending CEP Layer 0 (Kernel) and preparing for Layers 1–2.
+- Focus on `cep_cell.*` as the foundation; enzyme/heartbeat modules appear only when absolutely required.
+- Determinism and replayability are non-negotiable design constraints; every helper choice should reinforce them.
+
+### Repository Layout
 - `src/l0_kernel/cep_cell.h|.c` — Core cell/data/store types and operations.
 - `src/l0_kernel/storage/*` — Pluggable child-storage implementations (linked list, dynamic array, packed queue, RB-tree, octree).
 - `src/l0_kernel/cep_molecule.h` — Low-level utilities: memory, alignment, branch prediction, small helpers.
 - `src/test/*` — MUnit tests, examples of API usage.
 - `docs/CEP.md` — Conceptual blueprint: layers, execution model, goals.
 
-## Related Docs
+### Related Docs
 - Core cell model
   - `docs/L0_KERNEL/topics/NATIVE-TYPES.md` — L0 native types, canonical encoding, hashing/comparison.
   - `docs/L0_KERNEL/topics/LINKS-AND-SHADOWING.md` — Link resolution, backlinks, and shadowing (tree → safe graph).
@@ -23,7 +30,7 @@
   - `docs/L0_KERNEL/topics/EXTERNAL-LIBRARIES-INTERFACE.md` — Access to foreign structures; handles vs snapshots; zero‑copy rules.
   - `docs/L0_KERNEL/topics/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect log, streams, preconditions, CAS, replay modes.
 
-## Build & Test (MSYS/bash)
+### Build & Test (MSYS/bash)
 - Meson/Ninja (recommended)
   - Configure: `meson setup build`
   - Build: `meson compile -C build`
@@ -32,12 +39,12 @@
   - Build: `make -C unix`
   - Run tests with debug logs: `../build-make/bin/cep_tests --log-visible debug`
   - Clean: `make -C unix clean`
-## Notes
+### Notes
 
 - Toolchain: gcc + Meson/Ninja on MSYS2 UCRT64 and Manjaro works out of the box; fallback Makefile uses `gcc + make`.
 - CFLAGS are tuned for this codebase: assertions are used heavily; do not strip them while developing.
 
-## Kernel Concepts (L0)
+### Kernel Concepts (L0)
 - cepID: 64-bit value encoded with naming bits. Supports multiple naming modes: word (lowercase), acronym (upper), reference, numeric. Helpers convert to/from compact encodings.
 - cepDT: Domain-Tag pair (name). Comparison is lexicographic: first domain, then tag.
 - cepMetacell: Metadata + name bits (type, visibility, shadowing, domain, tag). Same size/layout as cepDT; system bits occupy 2×6 positions.
@@ -67,7 +74,7 @@ Layer 0 now ships a handful of ergonomic helpers so contributors can focus on be
 - `cep_cell_put_text()` / `cep_cell_put_uint64()` / `cep_cell_put_dt()` replace the common "remove child → format value → add child" dance. They coerce parents into dictionaries, drop old values safely, and update the content hash so monitoring remains consistent.
 - `cep_cell_clear_children()` wipes a store while keeping the container alive, and `cep_cell_copy_children(src, dst, deep)` copies an entire subtree, handling link resolution and memory ownership for you.
 
-**Q&A**
+### Quick Q&A
 - **When should I prefer the wrappers over manual calls?** Whenever you are writing Layer‑0 code that needs to mutate dictionaries or copy children—using the wrappers keeps link handling and hashing consistent across modules.
 - **Do the setters allocate when the value text already matches?** No. They remove any existing child first, then insert the new payload; idempotent callers can rely on the helper without pre-checking.
 - **Can I still access the lower-level API?** Absolutely. The wrappers sit on top of the regular `cep_cell_add_*` family, so specialised code can drop down a level when it needs bespoke behaviour.
@@ -94,12 +101,22 @@ Short nicknames stay on the label; long nicknames get filed once and every cell 
 - Refcounts: dynamic interns bump a refcount and can be released via `cep_namepool_release(id)` when modules unload. Static interns are permanent. Lookup returns the canonical byte pointer for logging or API use.
 - Validation: `cep_id_text_valid` and `cep_dt_is_valid` now treat reference IDs as first-class, so downstream code doesn’t need special cases.
 
-#### Q&A
+##
+### Developer Q&A
+- **How do I guarantee replayability while adding features?** Make every choice explicit and logged. No implicit randomness—tie ordering to store/indexing helpers and record decisions so the heartbeat can replay them.
+- **Can I modify facts in place?** Treat `cepData` as the current value only; if you need immutable history, append new cells or rely on higher-layer packs to version meaning explicitly.
+- **Where should I look when performance slips?** Profile the relevant store first, then cross-reference `docs/L0_KERNEL/L0-TUNING-NOTES.md` to adjust storage or payload choices before reaching for new helpers.
+- **When do I need to update other docs?** After touching kernel internals, check `docs/L0_KERNEL/L0-OVERVIEW.md`, this handbook, and any affected topic files so the narrative matches the code.
+- **What if I discover an undocumented convention?** Add it to the Style Guide section here, update the lexicon or overview as needed, and note the change in `docs/DOCS-INDEX.md` for the next audit.
+
+---
+
+### Namepool Q&A
 - **Do I have to call the pool for every name?** No. Only call it if you need a reference ID explicitly; helpers such as `cep_cell_set_name` already fall back to word/acronym/numeric.
 - **What happens during replay?** The `/CEP/sys/namepool` cells are part of the append-only history. Replaying rebuilds the same table so `(page,slot)` IDs are stable.
 - **How do I remove dynamic names?** Keep the ID and call `cep_namepool_release(id)` once you no longer use it (e.g., when unloading a shared library). The pool clears the slot when the refcount drops to zero.
 
-## Core Invariants
+### Core Invariants
 - Deterministic operations: no nondeterministic iteration over children; ordering is defined by storage/indexing.
 - Valid names only: `cep_dt_is_valid()` for any DT used; ID/naming helpers gate correctness.
 - Ownership clarity:
@@ -108,7 +125,7 @@ Short nicknames stay on the label; long nicknames get filed once and every cell 
   - Transfers move structs without deep copies unless explicitly cloning.
 - Memory discipline: allocate via `cep_malloc*`, free via `cep_free`, use `CEP_0()` to zero-initialize, and clean up on all exit paths. Most functions assert on preconditions.
 
-## Primary API (Patterns)
+### Primary API (Patterns)
 - Initialize a cell
   - Empty: `cep_cell_initialize_empty(&c, CEP_DT...)`
   - With data: `cep_cell_initialize_value(...)` or `cep_cell_initialize_data(...)`
@@ -130,7 +147,7 @@ Short nicknames stay on the label; long nicknames get filed once and every cell 
   - Delete data/store: `cep_cell_delete_data|store|children`
   - Sort: `cep_cell_to_dictionary`, `cep_cell_sort(compare, ctx)`
 
-## Child Storage Strategies
+### Child Storage Strategies
 - Linked list (`cep_linked_list.h`)
   - Strengths: fast prepend/append; simple sorted insertion; easy traversal.
   - Cost: O(n) random access; more pointers per node.
@@ -147,7 +164,7 @@ Short nicknames stay on the label; long nicknames get filed once and every cell 
   - Strengths: spatial indexing with user comparator.
   - Precondition: requires center/subwide bound and comparator.
 
-## Hash-Indexed Stores
+### Hash-Indexed Stores
 Hash-indexed stores keep duplicate detection consistent without changing the public API. Linked lists, dynamic arrays, and red-black trees accept `CEP_INDEX_BY_HASH`, but they still rely on their comparator to walk the full collection (hashes are used only for equality checks). The dedicated hash-table backend is the only one that actually buckets by hash and resizes to keep lookups near O(1).
 
 #### Technical Details
@@ -157,12 +174,12 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
 - Traversal: `cep_cell_traverse` and `store_traverse` iterate in hash/secondary order with no sentinel callback at the end, matching the behaviour of the other sorted backends.
 - Testing: `test_cell_tech_hash` in `src/test/l0_kernel/test_cell.c` seeds each supported backend, verifies comparator lookups, forces rehashing or tree rotations, and checks aggregate sums to confirm bookkeeping stays consistent.
 
-#### Q&A
+#### Hash-Indexed Store Q&A
 - **When should I choose the hash-table storage over a red-black tree?** Pick the hash-table when you need predictable O(1) inserts and primarily fetch by key. Reach for the tree when ordered neighbour queries or range scans matter more than raw insertion speed.
 - **Do I need to recompute hashes after mutating payload data?** Yes. Update the stored hash (for example via `cep_data_compute_hash`) before reinserting or replacing the child so bucket placement stays correct.
 - **Can I mix `CEP_INDEX_BY_HASH` with append/prepend helpers?** No. Hash-indexed stores expect comparator-driven inserts. Use `cep_cell_add` with a prepared child; append/prepend remain reserved for insertion-order storage.
 
-## Coding Conventions
+### Coding Conventions
 - Assertions everywhere: validate pointers, modes, and index ranges. Fail fast in debug.
 - Avoid hidden side effects: functions that mutate also document store/indexing prerequisites (e.g., insertion-only vs. dictionary vs. sorted modes).
 - Clear lifetimes: if you allocate, you free. For DATA, always set destructor or adopt ownership.
@@ -172,7 +189,7 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
   - Acronyms: ASCII 0x20–0x5F up to 9 chars.
   - Numeric: parent-local auto-id unless explicitly set.
 
-## Testing Guidelines
+### Testing Guidelines
 - Prefer MUnit patterns shown in `src/test/test_cell.c`:
   - Zero/one/multi-item operations per storage flavor.
   - Nested structure tests for traversal correctness.
@@ -182,7 +199,7 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
   - Keep hash indexing coverage current across linked list/array/tree and the hash-table backend.
   - Add range queries and path iteration robustness.
 
-## Roadmap (Kernel-Focused)
+### Roadmap (Kernel-Focused)
 ### 1) Complete Data Backends
    - Extend HANDLE/STREAM history snapshots and diagnostics; the read/write path now lives in `cep_cell_stream.c`.
    - Clarify resource lifecycle: reference counting or explicit unref on HANDLE/STREAM.
@@ -205,7 +222,7 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
 ### 8) Persistence Hooks (Pre-Enzyme)
    - Define snapshot/restore surfaces at cell/store boundaries; hash and encoding metadata are already present.
 
-## Integration Previews (Beyond Kernel)
+### Integration Previews (Beyond Kernel)
 - Heartbeat (L0 runtime):
   - Step boundary semantics: outputs from step N appear in N+1; never earlier.
   - Memory safety: per-beat staging structures; commit on tick.
@@ -214,20 +231,20 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
   - Contract: consume cells, emit cells; no hidden side effects; declare domains touched.
   - Safety: deterministic within a heartbeat, with full provenance (who/why).
 
-## Contributing Checklist
+### Contributing Checklist
 - Does the new code preserve determinism and ordering contracts of the chosen storage/indexing?
 - Are all pointer and mode preconditions asserted?
 - Are lifetimes clear and destructors set where needed?
 - Are name/ID rules respected and validated?
 - Are tests added to cover normal, boundary, and error paths for the new behavior?
 
-## Common Pitfalls
+### Common Pitfalls
 - Forgetting to set `store->owner` when attaching a store or after transfers.
 - Mutating data when `writable` is false.
 - Using insertion-only operations on dictionary/sorted stores (asserts will fire).
 - Not updating auto-id when IDs are auto-pending; call `store_check_auto_id` flow via existing add/append helpers.
 
-## Minimal Usage Example
+### Minimal Usage Example
 - Create a dictionary under root, insert a value, and query it:
   - `cep_cell_system_initiate();`
   - `cepCell* dict = cep_cell_add_dictionary(cep_root(), CEP_DTWA("CEP","temp"), 0, CEP_DTWA("CEP","dictionary"), CEP_STORAGE_ARRAY, 16);`
@@ -237,27 +254,29 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
   - `assert(found == item);`
   - `cep_cell_system_shutdown();`
 
-## Style Guide (Local)
+### Style Guide (Local)
 - Prefer small `static inline` helpers in headers for fast-path checks.
 - Keep public entry points in `.c` minimal and assert-rich.
 - No one-letter variables in public APIs; keep internal helpers concise and consistent with existing code.
 - Avoid adding external dependencies; keep Layer 0 standalone and portable.
 
-## Where to Look When Extending
+### Where to Look When Extending
 - Storage feature patterns: mirror linked list/array APIs to keep store-agnostic logic in `cep_cell.c` straightforward.
 - Name encoding: see `CEP_TEXT_TO_*` macros for adding custom naming schemes if ever needed.
 - Tests as documentation: `src/test/test_cell.c` shows expected semantics across all storage/indexing pairs.
 
-## FAQs
-- Q: How do I ensure replayability while adding new features?
-  - A: Make all choices explicit and logged (test-visible). No implicit randomness; tie ordering to store/indexing.
-- Q: Can I modify facts in place?
-  - A: Treat `cepData` as the cell’s current value; if you need immutable audit, version externally (future layers) or append new cells.
-- Q: What about performance?
-  - A: Choose the right store. Profile later, but keep algorithmic complexity honest (avoid O(n^2) hot paths).
-
-## Next Steps You Can Pick Up
+### Next Steps You Can Pick Up
 - Extend HANDLE/STREAM support with historical snapshots and error-channel integration so adapters surface deterministic diagnostics.
 - Add hash-based indexing across list/array/tree with a thin hash adapter.
 - Introduce range queries for dictionaries/catalogs (include tests mirroring by-name/by-key behavior).
 - Add regression tests that exercise the adaptive traversal stack at extreme depths and report the high-water metrics.
+
+---
+
+## Global Q&A
+- **How do I guarantee replayability while adding features?** Make every choice explicit and logged. No implicit randomness—tie ordering to store/indexing helpers and record decisions so the heartbeat can replay them.
+- **Can I modify facts in place?** Treat `cepData` as the current value only; if you need immutable history, append new cells or rely on higher-layer packs to version meaning explicitly.
+- **Where should I look when performance slips?** Profile the relevant store first, then cross-reference `docs/L0_KERNEL/L0-TUNING-NOTES.md` to adjust storage or payload choices before reaching for new helpers.
+- **When do I need to update other docs?** After touching kernel internals, check `docs/L0_KERNEL/L0-OVERVIEW.md`, this handbook, and any affected topic files so the narrative matches the code.
+- **What if I discover an undocumented convention?** Add it to the Style Guide section here, extend the lexicon if naming changes, and note the update in `docs/DOCS-INDEX.md` for the next audit.
+

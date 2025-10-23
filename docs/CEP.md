@@ -138,7 +138,7 @@ Cognition - Perspective, Interpretation, Convention, Summary.
 Society - Law, Reform, Council, Province, Federation.
 Culture - Story, Legend, Myth, Archetype, Chronicle, Chant, Icon.
 
-## 3) Q&A
+## Global Q&A
 
 Is CEP a programming language?
 - No. It is the stage where many languages can perform.

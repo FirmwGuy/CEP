@@ -23,7 +23,7 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
     Transaction helpers add short `txn commit/abort: ...` notes here so you can match unveil decisions to beat numbers.
 - `/rt/ops/<oid>` – operation dictionaries recording envelopes, state history, close status, and watcher metadata for lifecycle and pack-defined operations.
 
-## Q&A
+## Global Q&A
 - **When do the beat folders appear?** As soon as `cepHeartbeatPolicy.ensure_directories` is left at its default `true`. Turning it off skips `/rt/beat/<n>` entirely so long-running captures do not grow without bound.
 - **What lives under `/data` after bootstrap?** Only what subsystems ask for. The bare kernel leaves it empty; upper-layer packs are responsible for seeding their own ledgers (for example, `/data/flow` or `/data/coh`) when they bootstrap.
 - **Can I add my own root directories?** Yes—create them under `/data` or `/env` as needed. The bootstrap only guarantees the paths listed in this document.

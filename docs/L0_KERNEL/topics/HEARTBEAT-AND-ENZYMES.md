@@ -135,41 +135,16 @@ OPS/STATES gives every long-running operation a tidy logbook under `/rt/ops/<oid
 - **Heartbeat integration.** The heartbeat calls `cep_ops_stage_commit()` during commit so awaiter continuations and timeouts ride the same promotion path as other impulses. Tests advance beats with `cep_heartbeat_step()` and drain the agenda with `cep_heartbeat_resolve_agenda()` to assert single-fire behaviour.
 - **Inspection.** `cep_op_get(oid, buf, cap)` emits a compact textual summary (OID, state, status, watcher count) for tooling. For deeper audits, traverse `/rt/ops/<oid>` directly: envelope and close are immutable, while history and watchers remain append-only/mutable as expected.
 
-### Q&A
-- *When should I prefer `opm:direct` vs. `opm:states`?* Pick `opm:direct` for two-pulse work (start → close). Choose `opm:states` when intermediate checkpoints (`ist:skel`, `ist:unveil`, ...) need to be observable or awaitable.
-- *How do I unit-test awaiters?* Register a test enzyme on `op/cont` (or `op/tmo`), call `cep_op_await()`, advance with `cep_heartbeat_step()`, then call `cep_heartbeat_resolve_agenda()`. The enzyme should run exactly once—if it triggers immediately, the state was already satisfied; if it never fires, the watcher was misconfigured.
-- *What happens if I call `cep_op_state_set()` after `cep_op_close()`?* The helper returns `false`. Closing seals the managed branch, so subsequent writes must go through a new operation if additional work is needed.
-- *Can I stash large artefacts alongside the close summary?* Yes. Store a CAS handle or library reference in the `summary` payload; the close branch keeps it immutable while leaving the heavy bytes in the content store.
-
-## Q&A
-
-- Why call functions “enzymes” and messages “signals/impulses”? 
-  Enzymes are the actors that catalyze work; signals are the conditions that trigger them. This mirrors the biological metaphor and keeps terminology clear: functions do work; signals request work.
-
-- Can multiple enzymes react to the same signal? 
-  Yes. Any bound enzyme whose descriptor also passes the signal filter runs. Order remains deterministic: specificity, name, and registration order decide ties after dependencies are satisfied.
-
-- How do enzymes coordinate when dynamic registration changes the available set during a beat?
-  Enzymes declare a stable `cepDT` name plus optional `before` / `after` lists.
-  At resolve time CEP builds a temporary dependency graph of the enzymes that
-  match the impulse, performs a topological sort, and orders the agenda
-  accordingly. Registration can occur at program start, shared-library load, or
-  mid-run: the dependency metadata keeps execution deterministic in all cases.
-  The heartbeat’s memoised cache is scoped to the current beat, so once pending
-  registrations are activated they cause a fresh resolve and populate new cache
-  entries automatically.
-
-- What prevents infinite loops? 
-  Budgets, match constraints, and idempotent checks. If an enzyme would emit the same signal repeatedly without changing state, it should detect and skip.
-
-- Is execution parallel? 
-  It can be, as long as determinism is preserved (e.g., fixed agenda order with isolated staging and a deterministic commit phase). The model does not require parallelism.
-
-- How do failures get retried? 
-  A retry policy may re-enqueue the pair for N+1 with counters/backoff. Enzymes must be idempotent so retries don’t corrupt state.
-
-- Do enzymes need access to raw data? 
-  Prefer handles/streams and content-addressed bytes with journaling, so work is replayable and auditable.
-
-- How do I choose query paths? 
-  Register by the most stable and meaningful discriminator you have: often the signal namespace (intent) and, secondarily, target domains.
+## Global Q&A
+- **When should I prefer `opm:direct` vs. `opm:states`?** Use `opm:direct` for two-pulse work (start → close). Choose `opm:states` when intermediate checkpoints must be observable or awaitable.
+- **How do I unit-test awaiters?** Register a test enzyme on `op/cont` (or `op/tmo`), call `cep_op_await()`, step the heartbeat once, then resolve the agenda. The enzyme should fire exactly once; if it never runs, revisit the watcher inputs.
+- **What happens if I call `cep_op_state_set()` after `cep_op_close()`?** The helper returns `false`; closing seals the branch, so further work must run through a new operation.
+- **Can I stash large artefacts alongside the close summary?** Yes. Put a CAS handle or library reference in the `summary` payload—close keeps it immutable while the bytes live in content storage.
+- **Why call functions “enzymes” and messages “signals/impulses”?** Enzymes catalyse work while signals request it. The metaphor keeps roles clear: callbacks act; impulses ask.
+- **Can multiple enzymes react to the same signal?** Yes. Any bound enzyme matching the filter runs. Deterministic ordering comes from specificity, name, and registration order after dependencies resolve.
+- **How do enzymes coordinate when registrations change mid-beat?** Descriptors declare `before`/`after` lists. The resolver builds a dependency graph of matched enzymes each beat, topologically sorts it, and caches the result until pending registrations activate.
+- **What prevents infinite loops?** Budgets, match constraints, and idempotent checks. An enzyme emitting the same signal without state change should detect and bail.
+- **Is execution parallel?** It can be, provided agenda order and commit determinism hold. Parallel workers must respect staging and the final single commit.
+- **How do failures get retried?** Retry policies re-enqueue the signal for beat N+1 with counters/backoff. Enzymes must remain idempotent so retries stay safe.
+- **Do enzymes need direct access to payload bytes?** Prefer handles/streams plus journalled content IDs so work stays replayable and auditable.
+- **How do I choose query paths?** Register using the most stable discriminator you have—often the signal namespace plus domain/tag filters that reflect intent.

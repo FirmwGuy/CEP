@@ -46,7 +46,15 @@ Bringing stream helpers into the enzyme catalogue would let impulse-driven workf
 - Mirror the cell operation structure: each wrapper advertises a deterministic label, relies on the same registry plumbing, and stays idempotent by default to avoid duplicate writes when impulses retry.
 - Phase one (stdio) and phase two (ZIP) adapters already exist; extend coverage to foreign stream integrations while keeping dependency footprints reviewable.
 
-#### Q&A
+### Milestone Q&A
+- **Why does Milestone 1 stop at VALUE/DATA payloads?** Milestone 1 locked down history and idempotence for VALUE/DATA; HANDLE/STREAM read/write landed afterward, with historical snapshots still tracking under later milestones.
+- **Do link shadows matter before the runtime ships?** Yes. Without cleanup the archive helpers leak state, so shadow hygiene is part of structural resilience.
+- **Can we expose child hashes before Milestone 2?** Only after comparator/hash dedupe is complete; otherwise repeated inserts risk drifting snapshots.
+- **What happens to proxy-backed cells?** They graduate in the extended feature milestone once historicity, traversal, and runtime loops are stable.
+
+---
+
+### Milestone Q&A
 - **Why start with stream wrappers?** They are the most common side-effecting calls that still bypass the heartbeat; wrapping them aligns IO with the impulse dispatch contract.
 - **Will this replace the existing API?** No. Direct calls stay available for tight loops, but enzymes give orchestration layers a safer entry point.
 - **Do we need new storage metadata?** Only lightweight descriptors (e.g., flush depth, rotation policy) so the resolver can track idempotency and retries.
@@ -63,8 +71,12 @@ Bringing stream helpers into the enzyme catalogue would let impulse-driven workf
   - ✅ Multi-beat `op/boot`/`op/shdn` timelines publish `ist:*` milestones across successive beats and honour awaiters without the legacy signal shim.
 - **Milestone 4 - Extended feature set**: 📎 Planned — add HANDLE/STREAM lifetimes, proxy lifecycle polish, deep cloning, persistence hooks, and expanded tests once the core runtime is proven.
 
-## Q&A
-- **Why does Milestone 1 stop at VALUE/DATA payloads?** Milestone 1 locked down history and idempotence for VALUE/DATA; HANDLE/STREAM read/write landed afterward, with historical snapshots still tracking under later milestones.
-- **Do link shadows matter before the runtime ships?** Yes. Without cleanup the archive helpers leak state, so shadow hygiene is part of structural resilience.
-- **Can we expose child hashes before Milestone 2?** Only after comparator/hash dedupe is complete; otherwise repeated inserts risk drifting snapshots.
-- **What happens to proxy-backed cells?** They graduate in the extended feature milestone once historicity, traversal, and runtime loops are stable.
+---
+
+## Global Q&A
+- **How often should this roadmap be refreshed?** Revisit it whenever a milestone ships or slips. Update the status badges and notes so kernel contributors know which areas are active.
+- **What if I need to work ahead of a planned milestone?** Coordinate with the milestone owner, record the change here, and update any linked TODOs so parallel work stays aligned.
+- **How do I record a new Layer 0 initiative?** Add it under the appropriate milestone with status emoji, scope notes, and the owning module so the index file stays coherent.
+- **Do roadmap entries replace TODO files?** No. Keep TODOs for execution details; the roadmap summarises intent and sequencing across the kernel.
+- **Where do I flag dependencies on upper-layer packs?** Note them in the milestone body and cross-link to pack documentation so Layer 0 changes don’t outpace integration plans.
+

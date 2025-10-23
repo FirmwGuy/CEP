@@ -59,7 +59,7 @@ CEP implements append-only storage through two complementary timelines: `cepData
 - Immutable children do *not* inherit automatic cleanup from their parents; delete the parent before sealing or plan to keep the branch resident. Future GC paths may add explicit teardown hooks.
 - `cep_cell_digest(node, CEP_DIGEST_SHA256, out)` produces a canonical SHA-256 fingerprint for a sealed subtree (name, payload, store layout, and child digests in name order). Workflows can capture this digest before and after a change to prove the structure stayed untouched.
 
-## Q&A
+## Global Q&A
 - What problem does append-only solve?
   - It guarantees that every historical state stays available while still making the latest view fast to read, which is essential for auditing and recovery.
 - How do timestamps help with history?

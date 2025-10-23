@@ -216,13 +216,7 @@ OPS/STATES records each long-running task under `/rt/ops/<oid>` so callers can w
 - `cep_ops_stage_commit()` runs at the end of every heartbeat commit so continuations and TTL expiries share the same promotion path as other impulses. Entries flagged `armed=true` fire their continuation; entries whose `deadline <= current` emit `op/tmo`. Tests typically call `cep_heartbeat_step()` followed by `cep_heartbeat_resolve_agenda()` to assert single-fire behaviour.
 - `cep_op_get(oid, buf, cap)` generates a quick textual summary (OID components, state, status, watcher count). For deeper inspection, walk the dossier directly—`envelope/` and `close/` are sealed, `history/` is append-only, and `watchers/` stays mutable.
 
-#### Q&A
-- *When should I choose `opm:direct` over `opm:states`?* `opm:direct` fits two-impulse flows (start → close). `opm:states` is for multi-phase work where intermediate checkpoints (`ist:skel`, `ist:unveil`, …) must be observable or awaitable.
-- *How do I test awaiters deterministically?* Register a test enzyme on `op/cont` (or `op/tmo`), call `cep_op_await()`, advance a beat with `cep_heartbeat_step()`, then call `cep_heartbeat_resolve_agenda()`. The enzyme should trigger exactly once—immediately if the state already matched, otherwise on the next beat.
-- *Can I attach large artefacts to the close record?* Yes. Place a CAS handle or library reference in the `summary` payload. The `close/summary_id` leaf is immutable so downstream readers always observe the same pointer to external content.
-
----
-
+##
 ## 2) Serialization & streams (wire format)
 
 ### 2.1 Chunk framing and the control header
@@ -563,22 +557,20 @@ Heartbeat init/shutdown operations now mirror production beats, so tooling and t
 - Each bootstrap helper now marks its subsystem as ready by writing to `/sys/state/<scope>` (`status=ready`, `ready_beat=<n>`). Shutdown walks the scopes in reverse dependency order, records `status=teardown` / `td_beat`, and closes the `op/shdn` timeline once all scopes report `ok`.
 - The `/sys/state` dictionary and `/rt/ops/<oid>` branches are durable, so tooling can poll readiness/teardown even if the corresponding operations have already completed; readiness helpers return `false` if prerequisites have not finished booting.
 
-### Q&A
+## Global Q&A
 - *How do I check that init ran during a test?* Inspect `/rt/ops/<boot_oid>` or verify that `cep_heartbeat_sys_root()` picked up the expected namespaces after the first beat—both advance as the boot operation progresses.
-- *How do I know a subsystem is ready for work?* Read `/sys/state/<scope>/status` (expect `"ready"`), or call `cep_lifecycle_scope_is_ready(scope)`. Awaiters can also subscribe to the boot/shutdown operations via `cep_op_await`.
-- *Can I replay init mid-run?* Yes. Call `cep_heartbeat_restart()`, then `cep_heartbeat_begin()` and a single `cep_heartbeat_step()`; the boot operation will record the fresh states so you can line them up with assertions.
+- *How do I know a subsystem is ready for work?* Read `/sys/state/<scope>/status` (expect "ready"), or call `cep_lifecycle_scope_is_ready(scope)`. Awaiters can also subscribe to the boot/shutdown operations via `cep_op_await`.
+- *Can I replay init mid-run?* Yes. Call `cep_heartbeat_restart()`, then `cep_heartbeat_begin()` and a single `cep_heartbeat_step()`; the boot operation records the fresh states so you can line them up with assertions.
 - *Will emitting shutdown twice cause trouble?* No. The helper is idempotent; once `sys_shutdown_emitted` flips, subsequent calls simply return `true`.
-
----
-
-## Q&A
-
 - *Do I need to call the phase helpers manually?* No. They are wired into `cep_heartbeat_resolve_agenda()` and `cep_heartbeat_stage_commit()`. Manual calls are only for bespoke schedulers.
 - *What happens to mid-beat registrations?* They are counted and deferred; the agenda for the current beat never mutates.
-- *What should I do with old `cep_mailroom_*` calls?* Delete them. Register pack-owned routing enzymes or write directly into your target inboxes, and track any longer-term dispatcher work in your pack backlog instead of leaving code placeholders.
-- *How do I stage intents safely without the mailroom?* Wrap your writes with `cep_txn_begin()`/`cep_txn_commit()` (or an equivalent helper) inside your pack so veiled staging and audit links stay explicit.
+- *What should I do with old `cep_mailroom_*` calls?* Delete them. Register pack-owned routing enzymes or write directly into your target inboxes, and track longer-term dispatcher work in your pack backlog.
+- *How do I stage intents safely without the mailroom?* Wrap writes with `cep_txn_begin()`/`cep_txn_commit()` (or an equivalent helper) so veiled staging and audit links stay explicit.
 - *Do I still call pack bootstraps?* Yes. Each optional pack must provision its own ledgers, inboxes, or indexes before handling impulses.
-- *How do I disable the automatic beat stamp in serialization?* Supply your own `cepSerializationHeader` with `journal_metadata_present = false` (and your own metadata) or set the boolean to `false` before invoking `cep_serialization_emit_cell()`.
+- *How do I disable the automatic beat stamp in serialization?* Supply your own `cepSerializationHeader` with `journal_metadata_present = false` (and custom metadata) or set the boolean to `false` before emitting cells.
 - *What toggles `journal_decision_replay`?* Higher layers set it when replaying stored decisions; the kernel preserves the advisory flag during round-trips.
-- *Do parent links survive hard deletes?* They are regular links, so removing the parent turns them into shadow entries flagged via the existing link lifecycle—useful when diagnosing stale references.
-- *Should I hash huge blobs with `cep_cell_content_hash()`?* Treat it as an integrity hint rather than a cryptographic guarantee. For large or high-assurance payloads, store your own checksum alongside the data and regard the built-in hash as advisory.
+- *Do parent links survive hard deletes?* They remain as shadow entries flagged via the link lifecycle—useful when diagnosing stale references.
+- *Should I hash huge blobs with `cep_cell_content_hash()`?* Treat it as an integrity hint. For high-assurance payloads, store your own checksum alongside the data and view the built-in hash as advisory.
+- *When should I choose `opm:direct` over `opm:states`?* `opm:direct` fits two-impulse flows (start → close). `opm:states` is for multi-phase work where intermediate checkpoints must be observable or awaitable.
+- *How do I test awaiters deterministically?* Register a test enzyme on `op/cont` (or `op/tmo`), call `cep_op_await()`, advance a beat with `cep_heartbeat_step()`, then resolve the agenda. The enzyme should fire exactly once—immediately if the state already matched, otherwise on the next beat.
+- *Can I attach large artefacts to the close record?* Yes. Drop a CAS handle or library reference into the `summary` payload; the close branch keeps it immutable while heavy bytes live in content storage.

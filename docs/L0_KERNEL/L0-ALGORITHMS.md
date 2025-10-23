@@ -204,3 +204,12 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 * **Append‑only + traversal** give you “time travel” for both data and shape without copying trees; **reindex snapshots** make order reconstructions deterministic across beats (history of siblings is preserved only when order changes) .
 * **Serialization** uses **paths**, not addresses—paired with append‑only rules and per‑segment timestamps, you can faithfully reconstruct historical or live state on another process, including **proxy** payloads via library snapshots/restores .
 * **Enzyme bindings** are stored on data/store timelines (append‑only), and the dispatcher intentionally consults the **effective** set along the path (with propagation and tombstones) before matching against signal indexes, then performs a topology‑respecting, preference‑sorted topological order build  .
+
+---
+
+## Global Q&A
+- **Where do I confirm the code path for a specific algorithm?** Each section above ends with pointers into `src/l0_kernel`; check the cited functions before making changes so you do not miss coupled helpers.
+- **How do I know if an algorithm still matches the implementation?** Rebuild the code map (`meson compile -C build code_map`) and search the referenced symbols; if behaviour diverged, update both this report and the owning topic doc.
+- **What is the safe way to add a new cross-cutting algorithm?** Propose it via a Design doc, add the implementation with focused tests, and extend this report so reviewers understand how the new behaviour interacts with existing invariants.
+- **When should I snapshot store layout manually?** Almost never—let the store helpers capture snapshots when indexing changes. Manual snapshots risk diverging from the append-only model.
+- **How do I debug scheduling issues?** Cross-reference the Heartbeat and Enzymes topic; agenda construction relies on the dependency graph described there and the algorithm notes listed here.

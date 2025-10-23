@@ -206,3 +206,12 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 * **Links**: avoid massive backlink sets on hot targets; detaches are O(k) in number of links .
 * **Enzymes**: set `CEP_ENZYME_CAPACITY_HINT`; keep `before[]/after[]` minimal; consistent DT naming; register outside live beats when possible; activation of pending is explicit and rebuilds indexes once  .
 * **Serialization**: `cep_serialization_emit_cell` with tuned `blob_payload_bytes`; reader stages per‑tx and commits atomically; optional payload hashing trades CPU for verification .
+
+---
+
+## Global Q&A
+- **How do I validate a tuning recommendation before adopting it?** Trace the cited APIs in `src/l0_kernel`, gather metrics with your workload, and confirm results against the performance notes here; update the doc if reality diverges.
+- **What if a tuning knob conflicts with determinism guarantees?** Determinism wins. Revisit the corresponding topic (e.g., append-only or locking) and adjust the recommendation, capturing the trade-off in a Design doc if necessary.
+- **Where should I log new anti-patterns?** Add them to the Anti-Patterns section once you have a failing scenario and a fix. Reference test cases or benchmarks so others can reproduce the issue.
+- **Do these notes apply to planned traversal helpers?** Mostly—planned helpers will inherit the same storage behaviours. Cross-check `RAW-TRAVERSAL-HELPERS.md` for any new caveats as the APIs land.
+- **How often should we refresh these guidelines?** Revisit after major performance work, releasing a new measurement appendix if the recommended defaults change.

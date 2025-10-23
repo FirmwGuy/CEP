@@ -112,7 +112,18 @@ Imagine putting a sticky note on a folder that says â€œrun these helpers here.â€
 - Unbind/inheritance: support a tombstone to cancel a parent binding at a child when needed.
 - Observability: expose counters (suppressed-by-signal, dual-path vs single, average `|E_cell|`, signal bucket sizes, matching wildcard nodes) and optional per-beat trace for a few impulses.
 
-## Q&A
+
+## Implementation Snapshot (Current Runtime)
+
+- **Bindings stay literal.** Only concrete `cepDT` names are stored on cells. Wildcard behaviour is provided by signal queries whose segments carry either the glob bit (embedded `*`) or the `CEP_ID_GLOB_MULTI` sentinel.
+- **Segment-scoped multi-glob.** The `CEP_ID_GLOB_MULTI` sentinel still matters: it lets an impulse cover any child under a structural branch or any payload descriptor at the leaf without enumerating every value.
+- **Wildcard registry restored.** Alongside the sorted indexes, the dispatcher now maintains a wildcard head index so multi-segment `CEP_ID_GLOB_MULTI` queries trigger without enumerating every branch; literal paths still ride the original sorted arrays.
+- **Policy backlog.** Only TARGET_THEN_SIGNAL dispatch ships; alternate combine modes (OR, TARGET_ONLY, SIGNAL_ONLY, STRICT_BOTH) stay queued in the dispatcher backlog (tracked in `src/l0_kernel/cep_enzyme.c`).
+- **Veiled staging is silent.** Bindings that live under a veiled subtree (including the root created by `cep_txn_begin`) stay invisible to the resolver until the transaction commits and the veil lifts.
+
+---
+
+## Global Q&A
 
 - Why bind on parents instead of every child?
   Parent bindings apply to the subtree, avoiding write amplification. Resolve unions ancestor lists to reconstruct the effective set for a leaf.
@@ -134,10 +145,3 @@ Imagine putting a sticky note on a folder that says â€œrun these helpers here.â€
 
 ---
 
-## Implementation Snapshot (Current Runtime)
-
-- **Bindings stay literal.** Only concrete `cepDT` names are stored on cells. Wildcard behaviour is provided by signal queries whose segments carry either the glob bit (embedded `*`) or the `CEP_ID_GLOB_MULTI` sentinel.
-- **Segment-scoped multi-glob.** The `CEP_ID_GLOB_MULTI` sentinel still matters: it lets an impulse cover any child under a structural branch or any payload descriptor at the leaf without enumerating every value.
-- **Wildcard registry restored.** Alongside the sorted indexes, the dispatcher now maintains a wildcard head index so multi-segment `CEP_ID_GLOB_MULTI` queries trigger without enumerating every branch; literal paths still ride the original sorted arrays.
-- **Policy backlog.** Only TARGET_THEN_SIGNAL dispatch ships; alternate combine modes (OR, TARGET_ONLY, SIGNAL_ONLY, STRICT_BOTH) stay queued in the dispatcher backlog (tracked in `src/l0_kernel/cep_enzyme.c`).
-- **Veiled staging is silent.** Bindings that live under a veiled subtree (including the root created by `cep_txn_begin`) stay invisible to the resolver until the transaction commits and the veil lifts.

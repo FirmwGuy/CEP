@@ -136,7 +136,7 @@ If any condition is violated or uncertain, take a snapshot into `cepData.DATA` a
 
 ---
 
-## Q&A
+## Global Q&A
 
 Q: Can the kernel peek inside a C struct from a library?
 A: No. CEP treats foreign structs as opaque. Access happens through adapter getters that return snapshots or controlled views.

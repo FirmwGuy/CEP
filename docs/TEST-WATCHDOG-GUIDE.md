@@ -10,7 +10,7 @@ When long-running tests stall, the watchdog is what yanks them back. This primer
 - The shared `test_ovh_watchdog_setup/tear_down` fixture arms watchdogs for `/CEP/heartbeat/bootstrap`, `/CEP/organ/sys_state`, and `/CEP/organ/rt_ops`, ensuring they signal completion before teardown.
 - You can still request a shorter runtime by passing `timeout=60` (or similar) through Meson: `meson test -C build-asan-linux --test-args="--param timeout 60"`.
 
-## Q&A
+## Global Q&A
 
 - **How do I see when the watchdog fires?** Export `TEST_WATCHDOG_TRACE=1` before launching the suite; the harness will print `[watchdog] armed`, `[watchdog] cleared`, or `[watchdog] expired` with elapsed seconds.
 - **Can I run a suite longer than five minutes?** Not without changing the clamp; the ceiling is intentionally capped at 300 s to prevent runaway jobs in CI. If you truly need more, adjust `WATCHDOG_MAX_TIMEOUT_SECONDS` locally.

@@ -1,6 +1,6 @@
-# CEP Debug Macro Guide
+# L0 Topic: Debug Macros
 
-CEP wraps much of its diagnostic scaffolding in macros so release builds stay lean while debug builds keep every guardrail. This guide explains how those wrappers behave so you can keep your control flow predictable when toggling between debug and non-debug configurations.
+CEP wraps much of its diagnostic scaffolding in macros so release builds stay lean while debug builds keep every guardrail. This topic explains how those wrappers behave so you can keep your control flow predictable when toggling between debug and non-debug configurations.
 
 ## Technical Details
 
@@ -9,7 +9,7 @@ CEP wraps much of its diagnostic scaffolding in macros so release builds stay le
 - `CEP_NOT_ASSERT(expr)` inverts `CEP_ASSERT(expr)` and is a drop-in replacement for `!(expr)` when you want the same assertion checks in debug builds. There is no `CEP_NON_ASSERT` alias; code should use `CEP_NOT_ASSERT` consistently.
 - Because `CEP_ASSERT` returns the expression's truthiness, prefer side-effect-free predicates. If the predicate must perform work (e.g., calling a validator), make sure that work is safe to repeat and remains required in production.
 
-## Q&A
+## Global Q&A
 
 - **Can I gate a whole debug-only block with `if (CEP_DEBUG(...))`?** No. `CEP_DEBUG` has no return value and removes its payload in non-debug builds; wrap the block directly in `CEP_DEBUG({ ...; })` instead.
 - **Is it safe to keep release-critical logic inside `CEP_DEBUG`?** Only if losing that logic in production is acceptable. Anything that must happen in every build should live outside the macro.

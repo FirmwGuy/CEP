@@ -82,30 +82,6 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
 - IDEs
   - Many IDEs understand Meson; or configure an external build with `meson compile -C build`.
 
-## Q&A
-
-- Why Meson instead of raw Makefiles?
-  - Meson is portable, fast (via Ninja), and keeps build artifacts out of your source tree with minimal configuration.
-
-- Do I need Clang?
-  - No. GCC is enough. Clang is optional for extra diagnostics, sanitizers, and tooling (`clang-tidy`, `clang-format`).
-
-- Where are the build outputs?
-  - Binaries are placed in the `build/` folder (e.g., `build/cep_tests[.exe]`).
-
-- Can I build in a different folder?
-  - Yes. For example: `meson setup out/win-ucrt64 && meson compile -C out/win-ucrt64`.
-
-- How do I run tests?
-  - `meson test -C build` runs the suite and prints results.
-- How do I run just one test (or pass parameters)?
-  - The harness uses [munit](https://nemequ.github.io/munit/) flags. Run the executable directly:
-    - Discover tests: `./build/cep_tests.exe --list`
-    - Run a single test: `./build/cep_tests.exe --single /CEP/heartbeat`
-    - Pass parameters: `./build/cep_tests.exe --param boot_cycle after_reboot /CEP/heartbeat`
-    - Fail fast / show stderr: `./build/cep_tests.exe --fatal-failures --show-stderr`
-    - Set a deterministic seed: `./build/cep_tests.exe --seed 0x1234abcd`
-    - Debug/instrument on Linux: `./build/cep_tests --no-fork` keeps execution in a single process so your debugger or probes do not lose track when munit would otherwise fork.
 
 ## Build Variants and Options
 
@@ -141,3 +117,31 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
 ## Debug Instrumentation
 
 - Wrap any ad-hoc diagnostics in the `CEP_DEBUG_*` macros (see `src/l0_kernel/cep_molecule.h`) so debug prints build only when `CEP_ENABLE_DEBUG` is defined.
+
+---
+
+## Global Q&A
+
+- Why Meson instead of raw Makefiles?
+  - Meson is portable, fast (via Ninja), and keeps build artifacts out of your source tree with minimal configuration.
+
+- Do I need Clang?
+  - No. GCC is enough. Clang is optional for extra diagnostics, sanitizers, and tooling (`clang-tidy`, `clang-format`).
+
+- Where are the build outputs?
+  - Binaries are placed in the `build/` folder (e.g., `build/cep_tests[.exe]`).
+
+- Can I build in a different folder?
+  - Yes. For example: `meson setup out/win-ucrt64 && meson compile -C out/win-ucrt64`.
+
+- How do I run tests?
+  - `meson test -C build` runs the suite and prints results.
+- How do I run just one test (or pass parameters)?
+  - The harness uses [munit](https://nemequ.github.io/munit/) flags. Run the executable directly:
+    - Discover tests: `./build/cep_tests.exe --list`
+    - Run a single test: `./build/cep_tests.exe --single /CEP/heartbeat`
+    - Pass parameters: `./build/cep_tests.exe --param boot_cycle after_reboot /CEP/heartbeat`
+    - Fail fast / show stderr: `./build/cep_tests.exe --fatal-failures --show-stderr`
+    - Set a deterministic seed: `./build/cep_tests.exe --seed 0x1234abcd`
+    - Debug/instrument on Linux: `./build/cep_tests --no-fork` keeps execution in a single process so your debugger or probes do not lose track when munit would otherwise fork.
+

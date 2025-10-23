@@ -11,7 +11,7 @@ Globbing lets CEP reuse familiar "match anything" patterns when inspecting cell 
 - Serialization and replay preserve glob semantics. Each manifest segment and data descriptor carries a dedicated glob byte; readers restore the hint directly without recomputing from the identifier.
 - Literal cell construction APIs reject globbed names; the wildcard syntax is reserved for query-time structures (enzyme patterns, lookups, traversal filters) rather than persistent node names.
 
-## Q&A
+## Global Q&A
 - **Can I use `*` inside domains?** No. Domain segments still rely on the reserved sentinel IDs (`CEP_ID_GLOB_MULTI`, `CEP_ID_GLOB_STAR`, `CEP_ID_GLOB_QUESTION`) for wildcard behaviour.
 - **Does `*` behave like UNIX globs or regex?** The implementation matches the classic single-segment glob: `*` consumes any number of characters within the tag; there is no implicit path separator handling or character classes.
 - **Do I need to set the glob bit manually when building `cepDT` values?** No. Use `cep_dt_make` or the `CEP_DT*` convenience macros and the bit is derived from the tag automatically.

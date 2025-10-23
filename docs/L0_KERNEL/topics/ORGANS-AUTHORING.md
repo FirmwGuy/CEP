@@ -10,7 +10,7 @@ Organs let you treat an entire subtree as a typed unit with clear lifecycle hook
 - **Constructor/destructor dispatch.** The stock `sig_cell` enzymes detect organ roots. After a successful insert, `cep_organ_request_constructor` queues `op/ct` for the new root when a constructor is defined. During deletes, `cep_organ_request_destructor` queues `op/dt` and the `sig_cell` handler skips immediate removal so the destructor enzyme can tear down state (and ultimately delete) deterministically.
 - **Validator wrapper.** `cep_organ_request_validation` locates the containing organ for any cell and enqueues the organ-specific `org:<kind>:vl` signal against the root. The validator enzyme receives the impulse with the root as target, starts the appropriate `op/vl` OPS/STATES sequence, and closes with `sts:ok` or `sts:fail` once checks finish.
 
-## Q&A
+## Global Q&A
 - **When should I register my organ descriptor?** Do it during bootstrap before binding enzymes. Registration must happen once; repeated calls return success only if the descriptor is identical.
 - **What if my organ doesn’t need a constructor or destructor?** Leave the corresponding `cepDT` fields invalid (`{0}`). The runtime treats them as absent and the `sig_cell` enzymes become no-ops for that pathway.
 - **How do I trigger validation on demand?** Call `cep_organ_request_validation(cell)` with any node inside the organ. It finds the root, enqueues `org:<kind>:vl`, and the validator runs on the next beat without you having to build paths manually.
