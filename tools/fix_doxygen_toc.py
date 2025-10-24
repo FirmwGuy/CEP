@@ -195,17 +195,16 @@ def reorder_navtree(navtree_path: Path) -> Dict[str, int]:
 
     root = navtree[0]
     children = root[2]
-    l0_indices = [
-        idx for idx, node in enumerate(children) if node[0].startswith("L0 Kernel:")
+    index_and_nodes = [
+        (idx, node)
+        for idx, node in enumerate(children)
+        if node[0].startswith("L0 Kernel:")
     ]
-    if not l0_indices:
+    if not index_and_nodes:
         return {}
 
-    block_start, block_end = min(l0_indices), max(l0_indices) + 1
-    if l0_indices != list(range(block_start, block_end)):
-        raise ValueError("L0 Kernel entries are not contiguous in NAVTREE")
-
-    l0_block = children[block_start:block_end]
+    first_index = min(idx for idx, _ in index_and_nodes)
+    l0_block = [node for _, node in index_and_nodes]
 
     def find_node(block: Iterable[List], keywords: Iterable[str]):
         for node in block:
@@ -234,7 +233,9 @@ def reorder_navtree(navtree_path: Path) -> Dict[str, int]:
     if not new_block:
         return {}
 
-    children[block_start:block_end] = new_block
+    for idx, _ in sorted(index_and_nodes, key=lambda item: item[0], reverse=True):
+        del children[idx]
+    children[first_index:first_index] = new_block
 
     new_payload = json.dumps(navtree, indent=2, ensure_ascii=False)
     if not new_payload.endswith("\n"):
@@ -242,7 +243,7 @@ def reorder_navtree(navtree_path: Path) -> Dict[str, int]:
     navtree_path.write_text(prefix + new_payload + suffix, encoding="utf-8")
 
     updated_indices = {
-        node[1]: idx for idx, node in enumerate(children) if block_start <= idx < block_start + len(new_block)
+        node[1]: first_index + offset for offset, node in enumerate(new_block)
     }
     return updated_indices
 

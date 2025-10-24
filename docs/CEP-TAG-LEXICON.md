@@ -44,7 +44,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `ctor` | core | spec field storing the optional organ constructor enzyme name. |
 | `env` | core | runtime environment subtree for external handles. |
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
-| `inbox` | core | captured impulses queued for the current beat. |
+| `impulses` | core | beat impulse log recorded under `/rt/beat/<n>/impulses` (legacy `inbox` link retained for one release). |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |
 | `kind` | core | short organ slug persisted under `/sys/organs/<k>/spec/kind`. |

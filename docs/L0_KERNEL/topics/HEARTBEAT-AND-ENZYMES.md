@@ -2,10 +2,10 @@
 
 ## Introduction
 
-Think of CEP like a well-run workshop on a steady rhythm. Every few moments (a heartbeat), the team checks an inbox of small notes (signals) that say what needs doing and where. Skilled helpers (enzymes) pick the notes that match their job and do the work in a safe workbench. Results don’t appear instantly; they show up on the next beat. This rhythm keeps everything predictable, auditable, and calm.
+Think of CEP like a well-run workshop on a steady rhythm. Every few moments (a heartbeat), the team checks an impulse ledger—an inbox of small notes (signals) that say what needs doing and where. Skilled helpers (enzymes) pick the notes that match their job and do the work in a safe workbench. Results don’t appear instantly; they show up on the next beat. This rhythm keeps everything predictable, auditable, and calm.
 
 What this means in simple terms:
-- Signals are short requests dropped into an inbox.
+- Signals are short requests dropped into the impulse ledger (`/rt/beat/<N>/impulses`).
 - Enzymes are the workers (functions) that react to those requests.
 - Work from beat N becomes visible at beat N+1, making the system easy to reason about and replay.
 
@@ -18,7 +18,7 @@ What this means in simple terms:
 - Registry: a dictionary of “query” paths → lists of enzyme functions. An enzyme becomes available for processing only after registration under a query path.
 
 ### Filesystem Layout (Runtime)
-- `rt/beat/<N>/inbox` — when `cepHeartbeatPolicy.ensure_directories` is true (enabled by default), each appended signal is logged here as a text value (`signal=/… target=/…`).
+- `rt/beat/<N>/impulses` — when `cepHeartbeatPolicy.ensure_directories` is true (enabled by default), each appended signal is logged here as a text value (`signal=/… target=/…`). A legacy link named `inbox` points to the same list for one release.
 - `rt/beat/<N>/agenda` — enzymes that executed during beat N, recorded with their name, return code, and the impulse that triggered them.
 - `rt/beat/<N>/stage` — commit notes for beat N (for example, how many impulses were promoted to beat N+1).
 - Other runtime folders (tokens, locks, budgets, metrics) integrate with scheduling but are optional to the core mechanism.
@@ -48,19 +48,19 @@ What this means in simple terms:
   - If no `target_path` is present, resolve candidates directly from the signal index (broadcast).
 - Matching policy for descriptors remains deterministic: prefer higher specificity, then descriptor name, then registration order.
 - Ordering
-  - Inbox order is by insertion.
+- Impulse ledger order is by insertion.
   - Resolved enzymes run through Kahn’s algorithm to honour `before`/`after` constraints. When several enzymes are simultaneously ready, the dispatcher keeps the priority tuple: dual-path matches (target + signal) ahead of single-path, higher combined specificity, descriptor name, then registration order.
   - Each descriptor runs at most once per `(signal_path, target_path, beat)` pair.
 
 ### Heartbeat Cycle
 1) Begin beat N: create/ensure `rt/beat/<N>/*` structures.
-2) Resolve agenda: for each inbox item, find all matching enzymes via the registry, order them deterministically, and enqueue them in `rt/beat/<N>/agenda`. The dispatcher memoises the resolved descriptor list for each unique `(signal_path, target_path)` pair during the beat so later duplicates reuse the cached ordering instead of repeating the registry scan.
+2) Resolve agenda: for each impulse ledger entry, find all matching enzymes via the registry, order them deterministically, and enqueue them in `rt/beat/<N>/agenda`. The dispatcher memoises the resolved descriptor list for each unique `(signal_path, target_path)` pair during the beat so later duplicates reuse the cached ordering instead of repeating the registry scan.
 3) Execute agenda: call each enzyme with `(signal_path, target_path)`.
-4) Staging: enzymes write outputs and side effects to `rt/beat/<N>/stage` and may emit new signals destined for `rt/beat/<N+1>/inbox`.
+4) Staging: enzymes write outputs and side effects to `rt/beat/<N>/stage` and may emit new signals destined for `rt/beat/<N+1>/impulses`.
 5) Commit boundary (N → N+1): staged outputs become visible; newly emitted signals are now eligible for processing in the next beat.
 
 ### Emitting New Work
-- Within an enzyme body, call `cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, signal, target)`; the runtime targets the next beat, records the textual entry under `rt/beat/<N+1>/inbox`, and queues the impulse in memory. Large payloads should be written to a content store (e.g., under `cas/…`) and referenced by hash in staged outputs or journals.
+- Within an enzyme body, call `cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, signal, target)`; the runtime targets the next beat, records the textual entry under `rt/beat/<N+1>/impulses`, and queues the impulse in memory. Large payloads should be written to a content store (e.g., under `cas/…`) and referenced by hash in staged outputs or journals.
 
 ### Error Handling and Idempotency
 - Return values: enzymes return a status code (e.g., 0 = success; negative for retryable or permanent failures).
@@ -101,7 +101,7 @@ bool cep_heartbeat_step(void) {
 During setup, register descriptors first and then call `cep_cell_bind_enzyme` on the cells that should emit the work. Bindings are append-only at runtime; apply them before starting the heartbeat loop to keep the beat boundary deterministic.
 
 ### Example Flow
-1) Beat 1, `cep_heartbeat_enqueue_signal` records `(signal=/signals/image/thumbnail, target=/env/fs/projects/p1/img123.jpg)` under `rt/beat/1/inbox` and queues it for the next beat.
+1) Beat 1, `cep_heartbeat_enqueue_signal` records `(signal=/signals/image/thumbnail, target=/env/fs/projects/p1/img123.jpg)` under `rt/beat/1/impulses` and queues it for the next beat.
 2) Registry has descriptors:
    - `resize_image` registered under `/signals/image/thumbnail`.
    - `image_metadata` registered under `/env/fs/projects/*`.
@@ -111,16 +111,16 @@ During setup, register descriptors first and then call `cep_cell_bind_enzyme` on
 5) Beat 2 repeats the process, using bindings under `/data/assets/` to drive follow-up work, while `rt/beat/2` accumulates the agenda and stage logs for auditing.
 
 ### Design Invariants
-- Deterministic order at every step (inbox insertion, match ordering,
+- Deterministic order at every step (impulse insertion, match ordering,
   dependency-aware enzyme ordering, name-based tie-breaks).
 - Single-run per enzyme per pair in a beat.
 - No visibility leaks: outputs from N only become visible at N+1.
 - Pure path addressing: enzymes receive only paths, never raw internal pointers.
 
 ### Testing Notes
-- Unit-test matching rules with fixed registries and synthetic inboxes.
+- Unit-test matching rules with fixed registries and synthetic impulse ledgers.
 - Simulate multiple beats to confirm N→N+1 visibility and idempotency.
-- Verify that reordering registrations or inbox entries changes outcomes only as defined by the deterministic rules.
+- Verify that reordering registrations or impulse ledger entries changes outcomes only as defined by the deterministic rules.
 
 ## OPS/STATES Operations
 

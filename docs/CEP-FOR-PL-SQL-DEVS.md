@@ -1,6 +1,6 @@
 # CEP for PL/SQL Developers
 
-If you know how to keep Oracle packages humming, you already understand most of CEP’s rhythm. Think of it as a runtime that always journals its mutations, feeds messages through a persistent inbox, and lets you swap “stored procedures” without breaking determinism. This guide translates the familiar PL/SQL instincts into CEP’s layer-zero vocabulary so you can stay productive while the environment shifts from databases to beats.
+If you know how to keep Oracle packages humming, you already understand most of CEP’s rhythm. Think of it as a runtime that always journals its mutations, feeds messages through a persistent impulse ledger, and lets you swap “stored procedures” without breaking determinism. This guide translates the familiar PL/SQL instincts into CEP’s layer-zero vocabulary so you can stay productive while the environment shifts from databases to beats.
 
 ## Technical Details
 - **Data model: tables vs. cells**

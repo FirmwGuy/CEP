@@ -51,7 +51,8 @@ CEP_DEFINE_STATIC_DT(dt_tmp_root_name,  CEP_ACRO("CEP"), CEP_WORD("tmp"));
 CEP_DEFINE_STATIC_DT(dt_enzymes_root_name, CEP_ACRO("CEP"), CEP_WORD("enzymes"));
 CEP_DEFINE_STATIC_DT(dt_organs_root_name,  CEP_ACRO("CEP"), CEP_WORD("organs"));
 CEP_DEFINE_STATIC_DT(dt_beat_root_name, CEP_ACRO("CEP"), CEP_WORD("beat"));
-CEP_DEFINE_STATIC_DT(dt_inbox_name,     CEP_ACRO("CEP"), CEP_WORD("inbox"));
+CEP_DEFINE_STATIC_DT(dt_impulses_name,  CEP_ACRO("CEP"), CEP_WORD("impulses"));
+CEP_DEFINE_STATIC_DT(dt_inbox_legacy_name, CEP_ACRO("CEP"), CEP_WORD("inbox"));
 CEP_DEFINE_STATIC_DT(dt_agenda_name,    CEP_ACRO("CEP"), CEP_WORD("agenda"));
 CEP_DEFINE_STATIC_DT(dt_stage_name,     CEP_ACRO("CEP"), CEP_WORD("stage"));
 CEP_DEFINE_STATIC_DT(dt_boot_oid_field, CEP_ACRO("CEP"), CEP_WORD("boot_oid"));
@@ -530,6 +531,72 @@ static cepCell* cep_heartbeat_ensure_list_child(cepCell* parent, const cepDT* na
     return child;
 }
 
+static bool cep_heartbeat_ensure_legacy_inbox_alias(cepCell* beat_cell, cepCell* impulses_cell) {
+    if (!beat_cell || !impulses_cell) {
+        return false;
+    }
+
+    cepCell* legacy = cep_cell_find_by_name(beat_cell, dt_inbox_legacy_name());
+    if (!legacy) {
+        cepDT alias_name = cep_dt_clean(dt_inbox_legacy_name());
+        cepCell* alias = cep_cell_add_link(beat_cell, &alias_name, 0, impulses_cell);
+        if (!alias) {
+            return false;
+        }
+        /* FIXME: Drop the legacy `inbox` alias once downstream tooling is updated.
+         * The link survives for one release to keep older consumers alive. */
+        cep_link_set(alias, impulses_cell);
+        return true;
+    }
+
+    cepCell* resolved = cep_cell_resolve(legacy);
+    if (resolved != impulses_cell) {
+        if (cep_cell_is_link(legacy)) {
+            cep_link_set(legacy, impulses_cell);
+        } else {
+            cepDT new_name = cep_dt_clean(dt_impulses_name());
+            cep_cell_set_name(legacy, &new_name);
+            return cep_heartbeat_ensure_legacy_inbox_alias(beat_cell, impulses_cell);
+        }
+    }
+
+    return true;
+}
+
+static cepCell* cep_heartbeat_resolve_impulse_log(cepCell* beat_cell) {
+    if (!beat_cell) {
+        return NULL;
+    }
+
+    cepCell* impulses = cep_cell_find_by_name(beat_cell, dt_impulses_name());
+    if (impulses && cep_cell_is_link(impulses)) {
+        impulses = cep_cell_resolve(impulses);
+    }
+
+    if (!impulses) {
+        cepCell* legacy = cep_cell_find_by_name(beat_cell, dt_inbox_legacy_name());
+        if (legacy && !cep_cell_is_link(legacy)) {
+            cepDT new_name = cep_dt_clean(dt_impulses_name());
+            cep_cell_set_name(legacy, &new_name);
+            impulses = legacy;
+        }
+    }
+
+    if (!impulses) {
+        impulses = cep_heartbeat_ensure_list_child(beat_cell, dt_impulses_name());
+    }
+
+    if (!impulses) {
+        return NULL;
+    }
+
+    if (!cep_heartbeat_ensure_legacy_inbox_alias(beat_cell, impulses)) {
+        return NULL;
+    }
+
+    return impulses;
+}
+
 
 static bool cep_heartbeat_set_numeric_name(cepDT* name, cepBeatNumber beat) {
     if (!name || beat == CEP_BEAT_INVALID) {
@@ -572,7 +639,7 @@ static cepCell* cep_heartbeat_ensure_beat_node(cepBeatNumber beat) {
         return NULL;
     }
 
-    if (!cep_heartbeat_ensure_list_child(beat_cell, dt_inbox_name())) {
+    if (!cep_heartbeat_resolve_impulse_log(beat_cell)) {
         return NULL;
     }
 
@@ -588,7 +655,7 @@ static cepCell* cep_heartbeat_ensure_beat_node(cepBeatNumber beat) {
 }
 
 
-static bool cep_heartbeat_record_inbox_entry(cepBeatNumber beat, const cepImpulse* impulse) {
+static bool cep_heartbeat_record_impulse_entry(cepBeatNumber beat, const cepImpulse* impulse) {
     if (!cep_heartbeat_policy_use_dirs() || beat == CEP_BEAT_INVALID || !impulse) {
         return true;
     }
@@ -598,12 +665,9 @@ static bool cep_heartbeat_record_inbox_entry(cepBeatNumber beat, const cepImpuls
         return false;
     }
 
-    cepCell* inbox = cep_cell_find_by_name(beat_cell, dt_inbox_name());
-    if (!inbox) {
-        inbox = cep_heartbeat_ensure_list_child(beat_cell, dt_inbox_name());
-        if (!inbox) {
-            return false;
-        }
+    cepCell* impulses = cep_heartbeat_resolve_impulse_log(beat_cell);
+    if (!impulses) {
+        return false;
     }
 
     char* signal = cep_heartbeat_path_to_string(impulse->signal_path);
@@ -630,7 +694,7 @@ static bool cep_heartbeat_record_inbox_entry(cepBeatNumber beat, const cepImpuls
     }
 
     snprintf(message, size, "signal=%s target=%s", signal, target);
-    bool ok = cep_heartbeat_append_list_message(inbox, message);
+    bool ok = cep_heartbeat_append_list_message(impulses, message);
 
     cep_free(message);
     cep_free(signal);
@@ -974,8 +1038,8 @@ static void cep_runtime_reset_state(bool destroy_registry) {
         CEP_RUNTIME.registry = NULL;
     }
 
-    cep_heartbeat_impulse_queue_destroy(&CEP_RUNTIME.inbox_current);
-    cep_heartbeat_impulse_queue_destroy(&CEP_RUNTIME.inbox_next);
+    cep_heartbeat_impulse_queue_destroy(&CEP_RUNTIME.impulses_current);
+    cep_heartbeat_impulse_queue_destroy(&CEP_RUNTIME.impulses_next);
     cep_heartbeat_dispatch_cache_destroy(&CEP_RUNTIME.scratch);
 
     CEP_RUNTIME.current = CEP_BEAT_INVALID;
@@ -1835,8 +1899,8 @@ bool cep_heartbeat_startup(void) {
 
     CEP_RUNTIME.current = CEP_RUNTIME.policy.start_at;
     CEP_RUNTIME.running = true;
-    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
-    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_current);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_next);
     if (cep_boot_ops_enabled()) {
         (void)cep_boot_ops_start_boot();
     }
@@ -1862,8 +1926,8 @@ bool cep_heartbeat_restart(void) {
 
     CEP_RUNTIME.current = CEP_RUNTIME.policy.start_at;
     CEP_RUNTIME.running = true;
-    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
-    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_current);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_next);
     if (cep_boot_ops_enabled()) {
         (void)cep_boot_ops_start_boot();
     }
@@ -1879,7 +1943,7 @@ bool cep_heartbeat_restart(void) {
  * replay scenarios where the caller chooses the next cadence.
  */
 /** Prepare runtime bookkeeping for the selected beat number so resolve and
-    execution have fresh inboxes and caches. */
+    execution have fresh impulse queues and caches. */
 bool cep_heartbeat_begin(cepBeatNumber beat) {
     if (!cep_heartbeat_bootstrap()) {
         return false;
@@ -1887,8 +1951,8 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
 
     CEP_RUNTIME.current = beat;
     CEP_RUNTIME.running = true;
-    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_current);
-    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_current);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_next);
     if (cep_boot_ops_enabled()) {
         (void)cep_boot_ops_start_boot();
     }
@@ -1901,9 +1965,9 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
 
 
 /* Resolves the agenda for the current beat by activating deferred enzyme
- * registrations and draining the impulse inbox into deterministic execution order.
+ * registrations and draining the impulse queue into deterministic execution order.
  */
-/** Resolve the execution agenda for the current beat by draining the inbox,
+/** Resolve the execution agenda for the current beat by draining the impulse queue,
     matching impulses, and building the ordered list of enzymes to run. */
 bool cep_heartbeat_resolve_agenda(void) {
     if (!CEP_RUNTIME.running) {
@@ -1955,7 +2019,7 @@ bool cep_heartbeat_stage_commit(void) {
     }
 
     if (cep_heartbeat_policy_use_dirs()) {
-        size_t promoted = CEP_RUNTIME.inbox_next.count;
+        size_t promoted = CEP_RUNTIME.impulses_next.count;
         const char* plural = (promoted == 1u) ? "" : "s";
         cepBeatNumber current = (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current;
         cepBeatNumber next = (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current + 1u;
@@ -1993,8 +2057,8 @@ bool cep_heartbeat_stage_commit(void) {
         return false;
     }
 
-    cep_heartbeat_impulse_queue_swap(&CEP_RUNTIME.inbox_current, &CEP_RUNTIME.inbox_next);
-    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.inbox_next);
+    cep_heartbeat_impulse_queue_swap(&CEP_RUNTIME.impulses_current, &CEP_RUNTIME.impulses_next);
+    cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_next);
     cep_beat_begin_capture();
     return true;
 }
@@ -2144,8 +2208,8 @@ void cep_heartbeat_shutdown(void) {
 }
 
 
-/** Drain the current inbox and move impulses into the agenda cache so resolve
-    and execute phases operate on stable snapshots. */
+/** Drain the in-memory impulse queue and move entries into the agenda cache so
+    resolve and execute phases operate on stable snapshots. */
 bool cep_heartbeat_process_impulses(void) {
     if (!CEP_RUNTIME.running) {
         return false;
@@ -2163,8 +2227,8 @@ bool cep_heartbeat_process_impulses(void) {
         }
     }
 
-    cepHeartbeatImpulseQueue* inbox = &CEP_RUNTIME.inbox_current;
-    size_t impulse_count = inbox->count;
+    cepHeartbeatImpulseQueue* queue = &CEP_RUNTIME.impulses_current;
+    size_t impulse_count = queue->count;
 
     if (impulse_count == 0u) {
         cep_heartbeat_scratch_next_generation(scratch);
@@ -2188,7 +2252,7 @@ bool cep_heartbeat_process_impulses(void) {
     bool ok = true;
 
     for (size_t i = 0; i < impulse_count && ok; ++i) {
-        cepHeartbeatImpulseRecord* record = &inbox->records[i];
+        cepHeartbeatImpulseRecord* record = &queue->records[i];
         cepImpulse impulse = {
             .signal_path = record->signal_path,
             .target_path = record->target_path,
@@ -2301,7 +2365,7 @@ bool cep_heartbeat_process_impulses(void) {
                 }
 
                 CEP_RUNTIME.current_descriptor = descriptor;
-                size_t before_signals = CEP_RUNTIME.inbox_next.count;
+                size_t before_signals = CEP_RUNTIME.impulses_next.count;
                 int rc = descriptor->callback(impulse.signal_path, impulse.target_path);
                 CEP_RUNTIME.current_descriptor = NULL;
                 CEP_DEBUG_PRINTF("DEBUG heartbeat: descriptor %llu:%llu callback=%p rc=%d\n",
@@ -2309,7 +2373,7 @@ bool cep_heartbeat_process_impulses(void) {
                         (unsigned long long)descriptor->name.tag,
                         (void*)descriptor->callback,
                         rc);
-                size_t after_signals = CEP_RUNTIME.inbox_next.count;
+                size_t after_signals = CEP_RUNTIME.impulses_next.count;
                 bool emitted = after_signals > before_signals;
 
                 if (memo) {
@@ -2339,7 +2403,7 @@ bool cep_heartbeat_process_impulses(void) {
                 }
 
                 if (rc == CEP_ENZYME_RETRY) {
-                    if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.inbox_next, &impulse)) {
+                    if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.impulses_next, &impulse)) {
                         ok = false;
                         break;
                     }
@@ -2349,9 +2413,9 @@ bool cep_heartbeat_process_impulses(void) {
     }
 
     for (size_t i = 0; i < impulse_count; ++i) {
-        cep_heartbeat_impulse_record_clear(&inbox->records[i]);
+        cep_heartbeat_impulse_record_clear(&queue->records[i]);
     }
-    inbox->count = 0u;
+    queue->count = 0u;
 
     cep_heartbeat_dispatch_cache_cleanup_generation(scratch);
 
@@ -2419,7 +2483,7 @@ int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path,
 
 
 /** Queue a fully materialised impulse that already contains cloned paths,
-    keeping the internal inbox layout consistent with the signal helper. */
+    keeping the internal impulse queue layout consistent with the signal helper. */
 int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse) {
     if (!cep_heartbeat_bootstrap()) {
         fprintf(stderr, "[enqueue_impulse] bootstrap failed\n");
@@ -2449,15 +2513,15 @@ int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse)
         }
     }
 
-    if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.inbox_next, impulse)) {
+    if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.impulses_next, impulse)) {
         fprintf(stderr, "[enqueue_impulse] queue append failed\n");
         fflush(stderr);
         return CEP_ENZYME_FATAL;
     }
 
     if (cep_heartbeat_policy_use_dirs() && record_beat != CEP_BEAT_INVALID) {
-        if (!cep_heartbeat_record_inbox_entry(record_beat, impulse)) {
-            fprintf(stderr, "[enqueue_impulse] record inbox entry failed\n");
+        if (!cep_heartbeat_record_impulse_entry(record_beat, impulse)) {
+            fprintf(stderr, "[enqueue_impulse] record impulse entry failed\n");
             fflush(stderr);
             return CEP_ENZYME_FATAL;
         }

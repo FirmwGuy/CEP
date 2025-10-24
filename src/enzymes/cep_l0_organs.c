@@ -18,7 +18,8 @@ CEP_DEFINE_STATIC_DT(dt_meta_name, CEP_ACRO("CEP"), CEP_WORD("meta"));
 CEP_DEFINE_STATIC_DT(dt_schema_name, CEP_ACRO("CEP"), CEP_WORD("schema"));
 CEP_DEFINE_STATIC_DT(dt_schema_summary, CEP_ACRO("CEP"), CEP_WORD("summary"));
 CEP_DEFINE_STATIC_DT(dt_schema_layout, CEP_ACRO("CEP"), CEP_WORD("layout"));
-CEP_DEFINE_STATIC_DT(dt_inbox_name, CEP_ACRO("CEP"), CEP_WORD("inbox"));
+CEP_DEFINE_STATIC_DT(dt_impulses_name, CEP_ACRO("CEP"), CEP_WORD("impulses"));
+CEP_DEFINE_STATIC_DT(dt_inbox_legacy_name, CEP_ACRO("CEP"), CEP_WORD("inbox"));
 CEP_DEFINE_STATIC_DT(dt_agenda_name, CEP_ACRO("CEP"), CEP_WORD("agenda"));
 CEP_DEFINE_STATIC_DT(dt_stage_name, CEP_ACRO("CEP"), CEP_WORD("stage"));
 CEP_DEFINE_STATIC_DT(dt_ops_envelope_name, CEP_ACRO("CEP"), CEP_WORD("envelope"));
@@ -31,8 +32,8 @@ CEP_DEFINE_STATIC_DT(dt_ops_status_field, CEP_ACRO("CEP"), CEP_WORD("status"));
 
 static cepCell* cep_l0_ops_root(void);
 
-static const char* const CEP_L0_SCHEMA_RT_BEAT_SUMMARY     = "Heartbeat beat ledger capturing inbox, agenda, and stage evidence per beat.";
-static const char* const CEP_L0_SCHEMA_RT_BEAT_LAYOUT      = "<beat>/inbox|agenda|stage lists preserve capture, compute, commit ordering.";
+static const char* const CEP_L0_SCHEMA_RT_BEAT_SUMMARY     = "Heartbeat beat ledger capturing impulses, agenda, and stage evidence per beat.";
+static const char* const CEP_L0_SCHEMA_RT_BEAT_LAYOUT      = "<beat>/impulses|agenda|stage lists preserve capture, compute, commit ordering.";
 static const char* const CEP_L0_SCHEMA_JOURNAL_SUMMARY     = "Append-only runtime journal for organ operations and stream evidence.";
 static const char* const CEP_L0_SCHEMA_JOURNAL_LAYOUT      = "Child dictionaries map channels to insertion-ordered ledger lists.";
 typedef enum {
@@ -1173,10 +1174,31 @@ static bool cep_l0_check_rt_beat(cepCell* root, cepL0OrganValidationRun* run) {
             continue;
         }
 
+        cepCell* impulses = cep_cell_find_by_name(resolved, dt_impulses_name());
+        cepCell* legacy_inbox = cep_cell_find_by_name(resolved, dt_inbox_legacy_name());
+        if (!impulses && legacy_inbox && !cep_cell_is_link(legacy_inbox)) {
+            impulses = legacy_inbox;
+        }
+
+        cepCell* resolved_impulses = impulses ? cep_cell_resolve(impulses) : NULL;
+        cepCell* resolved_legacy = legacy_inbox ? cep_cell_resolve(legacy_inbox) : NULL;
+
+        if (!resolved_impulses) {
+            cep_l0_validation_issue(run, "rt_beat impulses list missing");
+            ok = false;
+        }
+
+        if (!resolved_legacy || resolved_legacy != resolved_impulses) {
+            cep_l0_validation_issue(run, "rt_beat impulses alias missing or misconfigured");
+            ok = false;
+        }
+        /* FIXME: Remove legacy inbox alias validation once `/rt/beat/<n>/inbox`
+         * is retired; the alias exists only for one release. */
+
         cepCell* lists[] = {
-            cep_cell_find_by_name(resolved, dt_inbox_name()),
-            cep_cell_find_by_name(resolved, dt_agenda_name()),
-            cep_cell_find_by_name(resolved, dt_stage_name()),
+            resolved_impulses,
+            cep_cell_resolve(cep_cell_find_by_name(resolved, dt_agenda_name())),
+            cep_cell_resolve(cep_cell_find_by_name(resolved, dt_stage_name())),
         };
 
         for (size_t idx = 0; idx < cep_lengthof(lists); ++idx) {

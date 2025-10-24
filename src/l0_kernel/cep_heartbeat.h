@@ -82,7 +82,7 @@ typedef struct {
 
 /**
  * @struct cepHeartbeatImpulseQueue
- * @brief Expandable buffer that backs heartbeat inboxes.
+ * @brief Expandable buffer that backs heartbeat impulse queues.
  */
 typedef struct {
     cepHeartbeatImpulseRecord* records;
@@ -144,8 +144,8 @@ typedef struct {
     cepHeartbeatTopology      topology;
     cepHeartbeatPolicy        policy;
     cepEnzymeRegistry*        registry;
-    cepHeartbeatImpulseQueue  inbox_current;
-    cepHeartbeatImpulseQueue  inbox_next;
+    cepHeartbeatImpulseQueue  impulses_current;
+    cepHeartbeatImpulseQueue  impulses_next;
     cepHeartbeatScratch       scratch;
     bool                      running;
     size_t                    deferred_activations;

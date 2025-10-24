@@ -17,7 +17,7 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
 
 ### Beat evidence (`cepHeartbeatPolicy.ensure_directories`)
 - `/rt/beat/<n>` – numeric dictionary created when `ensure_directories` is true (the default).
-  - `/inbox` – text log of impulses accepted for the beat.
+  - `/impulses` – text log of impulses accepted for the beat (legacy `/inbox` link preserved for one release).
   - `/agenda` – ordered ledger of resolved enzymes and dispatch results.
   - `/stage` – mutation log populated as enzymes commit changes.
     Transaction helpers add short `txn commit/abort: ...` notes here so you can match unveil decisions to beat numbers.
