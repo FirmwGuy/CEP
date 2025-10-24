@@ -119,6 +119,12 @@ During setup, register descriptors first and then call `cep_cell_bind_enzyme` on
 4) `resize_image` stages thumbnail bytes and calls `cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, /signals/db/write, /data/assets/img123/thumbnail)` to record the follow-up impulse.
 5) Beat 2 repeats the process, using bindings under `/data/assets/` to drive follow-up work, while `rt/beat/2` accumulates the agenda and stage logs for auditing.
 
+### Mailbox TTL and retention helpers
+- `cep_mailbox_select_message_id()` enforces the caller → digest → counter precedence for message identifiers and detects collisions by hashing sealed envelopes before beats advance.
+- `cep_mailbox_resolve_ttl()` projects per-message TTLs against mailbox policy and topology defaults, capturing both beat deadlines and wallclock deadlines (or the `ttl_mode="forever"` sentinel for private inboxes). When a policy provides only wallclock TTLs, heuristics consult `/rt/analytics/spacing` so retention enzymes still receive a projected beat—toggle `cep_mailbox_disable_wallclock()` to freeze this behaviour while debugging.
+- `cep_mailbox_record_expiry()` writes deterministic expiry buckets under `meta/runtime/expiries/<beat>/` and `meta/runtime/exp_wall/<unix_ns>/` so retention work queues persist inside the tree.
+- `cep_mailbox_plan_retention()` scans those buckets each beat, returning two partitions (beat-first, wallclock-first) plus hints about future work so enzymes can purge deterministically and requeue themselves when necessary.
+
 ### Design Invariants
 - Deterministic order at every step (impulse insertion, match ordering,
   dependency-aware enzyme ordering, name-based tie-breaks).
@@ -131,6 +137,7 @@ During setup, register descriptors first and then call `cep_cell_bind_enzyme` on
 - Simulate multiple beats to confirm N→N+1 visibility and idempotency.
 - Verify that reordering registrations or impulse ledger entries changes outcomes only as defined by the deterministic rules.
 - Inject deterministic timestamps through `cep_heartbeat_publish_wallclock()`, assert the `/meta/unix_ts_ns` payloads, and check spacing analytics stay within the pruning window.
+- Cover mailbox flows by exercising `cep_mailbox_resolve_ttl()` (beat + wallclock precedence), `cep_mailbox_record_expiry()` (bucket topology), and `cep_mailbox_plan_retention()` (partitioning) for both public boards and private inboxes.
 
 ## OPS/STATES Operations
 

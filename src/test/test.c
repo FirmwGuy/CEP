@@ -128,6 +128,22 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/mailbox/public",
+        test_mailbox_board,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/mailbox/private",
+        test_mailbox_private,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
         "/ops",
         test_ops,
         NULL,

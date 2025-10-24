@@ -1,4 +1,4 @@
-# L0 Design Document Index
+# L0 Design: Document Index
 
 ## Introduction
 This index tracks the planned and published design papers for Layer 0 so contributors know which subsystems already have rationale documented and which ones still need deep dives.

@@ -22,6 +22,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/LAYER-BOOTSTRAP-POLICY.md` — Kernel vs. pack responsibilities during bootstrap.
   - `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md` — Boot/shutdown operation timeline, states, and awaiter guidance.
   - `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` — Beat phases, agenda ordering, and signal staging contracts.
+  - `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` — Mailbox identity helpers, TTL precedence, and retention planning.
   - `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md` — Binding inheritance, wildcard routing, and tombstones.
   - `docs/L0_KERNEL/topics/CELL-OPERATIONS-ENZYMES.md` — Reference semantics for the standard `sig_cell/op_*` helpers.
   - `docs/L0_KERNEL/topics/ORGANS-AUTHORING.md` — Register organ descriptors, enforce validator bindings, and coordinate ctor/dtor/validation ops.
@@ -49,6 +50,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/design/L0-DESIGN-PROXY-AND-HANDLES.md` — Lifecycle rules for proxy payloads, adapters, and external handles.
   - `docs/L0_KERNEL/design/L0-DESIGN-NAMEPOOL-AND-NAMING.md` — Domain/Tag rationale, glob semantics, and namepool lifecycle.
   - `docs/L0_KERNEL/design/L0-DESIGN-ORGANS-AND-LIFECYCLE.md` — Organ descriptors, constructors/validators, and teardown guarantees.
+  - `docs/L0_KERNEL/design/L0-DESIGN-MAILBOX-LIFECYCLE.md` — Rationale behind mailbox identity precedence, TTL policy resolution, and retention buckets.
 
 - **Contextual (Read Once, Revisit When Needed)**
   - `docs/LICENSING.md` — Licensing split across core, tests, and third-party components.

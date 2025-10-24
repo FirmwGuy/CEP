@@ -1,4 +1,4 @@
-# L0 Kernel: Design Document Guide
+# L0 Design: Document Guide
 
 ## Introduction
 Design documents capture the architectural story behind Layer 0 implementations. They explain why an API or subsystem looks the way it does, how alternatives were weighed, and which invariants the code now relies on. Read this guide before drafting a new `L0-DESIGN-*.md` so design intent stays consistent with the rest of CEP’s documentation stack.

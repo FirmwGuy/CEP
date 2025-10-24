@@ -1,4 +1,4 @@
-# Organ Authoring Guide
+# L0 Topic: Organ Authoring Guide
 
 ## Introduction
 Organs let you treat an entire subtree as a typed unit with clear lifecycle hooks. This guide explains how organ metadata is published, how the runtime enforces validator bindings, and how optional constructor/destructor enzymes are dispatched so authors can rely on deterministic workflows instead of ad-hoc glue.

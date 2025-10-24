@@ -56,6 +56,9 @@ Links turn the tree into a safe graph via backlinks and shadow metadata. The doc
 ### Locking
 Layer 0 enforces deterministic mutation using hierarchical locks. The locking topic explains store/data lock scopes, ancestor scans, and the failure modes to avoid when holding locks across beats. Use it when introducing new mutation helpers or debugging concurrency issues.
 
+### Mailbox Lifecycle
+Mailbox organs now ship with shared helpers that settle message identity, TTL precedence, and retention buckets. `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` documents the layout under `meta/`, the `msgs/` store, and how `cep_mailbox_select_message_id()`, `cep_mailbox_resolve_ttl()`, and `cep_mailbox_plan_retention()` cooperate with the heartbeat. Revisit it before wiring board/news workflows, private inbox policies, or retention enzymes so behaviour stays deterministic across beats and replays.
+
 ### Native Types
 Native payloads are opaque bytes labelled by compact domain/tag identifiers. This document clarifies VALUE/DATA/HANDLE/STREAM semantics, hashing rules, and how upper layers layer meaning on top. Visit it before altering payload structures or introducing new tag conventions.
 
@@ -141,6 +144,8 @@ Every beat now records a Unix timestamp (`/rt/beat/<N>/meta/unix_ts_ns`) via the
 On top, **enzymes** are your **work units**: you register descriptors with a DT name, label, **before/after dependencies**, flags (idempotent/stateful/emit‑signals), and a **match policy** (exact or prefix). The registry **defers activation** of new registrations until the next beat (freezing the current agenda), and **resolves** work by intersecting target‑bound bindings with signal‑indexed candidates, ranking by **specificity**, and then doing a stable **topological sort** by dependencies.  
 
 You get a **reactive dataflow kernel** that respects ordering constraints, reproducibility, and “nothing changes mid‑cycle” guarantees.
+
+Mailbox retention hooks into the same cadence. Mailbox helpers resolve per-message TTLs against mailbox policy (message → mailbox → topology, with private inboxes pinning `ttl_mode="forever"`), stash beat and wallclock deadlines under `meta/runtime/expiries*`, and hand enzymes ready-to-run partitions each beat—all while honouring heartbeat spacing analytics when wallclock-only deadlines need a projected beat. Debug switches let you freeze the heuristics during instrumentation, but the defaults stay deterministic and replay-safe.
 
 ---
 
