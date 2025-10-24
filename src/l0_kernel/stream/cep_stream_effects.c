@@ -5,6 +5,7 @@
 
 
 #include "cep_stream_internal.h"
+#include "cep_heartbeat.h"
 
 #include <string.h>
 
@@ -202,7 +203,14 @@ static void cep_stream_record_outcome(cepStreamWriteIntent* intent, bool committ
         .committed_at     = cep_cell_timestamp_next(),
         .flags            = committed ? CEP_STREAM_INTENT_COMMITTED : CEP_STREAM_INTENT_DIVERGED,
         .reserved         = 0,
+        .unix_ts_ns       = 0u,
     };
+
+    cepBeatNumber current_beat = (cepBeatNumber)cep_beat_index();
+    uint64_t unix_ts = 0u;
+    if (cep_heartbeat_beat_to_unix(current_beat, &unix_ts)) {
+        outcome.unix_ts_ns = unix_ts;
+    }
 
     cep_stream_append_outcome(intent->stream, &outcome);
 

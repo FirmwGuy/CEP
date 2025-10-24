@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "cep_enzyme.h"
+#include "cep_heartbeat.h"
 #include "cep_namepool.h"
 #include "cep_organ.h"
 
@@ -16,6 +17,7 @@ CEP_DEFINE_STATIC_DT(dt_watchers_name,      CEP_ACRO("CEP"), CEP_WORD("watchers"
 CEP_DEFINE_STATIC_DT(dt_state_field,        CEP_ACRO("CEP"), CEP_WORD("state"));
 CEP_DEFINE_STATIC_DT(dt_code_field,         CEP_ACRO("CEP"), CEP_WORD("code"));
 CEP_DEFINE_STATIC_DT(dt_note_field,         CEP_ACRO("CEP"), CEP_WORD("note"));
+CEP_DEFINE_STATIC_DT(dt_unix_ts_field,      CEP_ACRO("CEP"), CEP_WORD("unix_ts_ns"));
 CEP_DEFINE_STATIC_DT(dt_verb_field,         CEP_ACRO("CEP"), CEP_WORD("verb"));
 CEP_DEFINE_STATIC_DT(dt_target_field,       CEP_ACRO("CEP"), CEP_WORD("target"));
 CEP_DEFINE_STATIC_DT(dt_mode_field,         CEP_ACRO("CEP"), CEP_WORD("mode"));
@@ -280,6 +282,12 @@ static bool cep_ops_append_history(cepCell* op,
 
     if (!cep_ops_write_u64(entry, dt_beat_field(), beat)) {
         return false;
+    }
+    uint64_t unix_ts = 0u;
+    if (cep_heartbeat_beat_to_unix((cepBeatNumber)beat, &unix_ts)) {
+        if (!cep_ops_write_u64(entry, dt_unix_ts_field(), unix_ts)) {
+            return false;
+        }
     }
     if (!cep_ops_write_dt(entry, dt_state_field(), state)) {
         return false;

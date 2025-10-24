@@ -45,6 +45,10 @@ when a new behavior needs a fresh word before it lands in code.
 | `env` | core | runtime environment subtree for external handles. |
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `impulses` | core | beat impulse log recorded under `/rt/beat/<n>/impulses` (legacy `inbox` link retained for one release). |
+| `analytics` | core | runtime analytics root under `/rt/analytics`. |
+| `spacing` | core | beat-to-beat spacing metrics recorded by the heartbeat analytics helper. |
+| `interval_ns` | core | nanosecond interval payload inside spacing analytics entries. |
+| `unix_ts_ns` | core | per-beat Unix timestamp stored under `/rt/beat/<n>/meta/unix_ts_ns` and mirrored into stage notes, OPS history, and stream journals. |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |
 | `kind` | core | short organ slug persisted under `/sys/organs/<k>/spec/kind`. |

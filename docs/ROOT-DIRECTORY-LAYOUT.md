@@ -18,10 +18,12 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
 ### Beat evidence (`cepHeartbeatPolicy.ensure_directories`)
 - `/rt/beat/<n>` – numeric dictionary created when `ensure_directories` is true (the default).
   - `/impulses` – text log of impulses accepted for the beat (legacy `/inbox` link preserved for one release).
+  - `/meta/unix_ts_ns` – per-beat Unix timestamp (nanoseconds) captured for deterministic logging.
   - `/agenda` – ordered ledger of resolved enzymes and dispatch results.
-  - `/stage` – mutation log populated as enzymes commit changes.
+  - `/stage` – mutation log populated as enzymes commit changes (stage notes append `ts=<unix_ts_ns>` alongside the human-readable note).
     Transaction helpers add short `txn commit/abort: ...` notes here so you can match unveil decisions to beat numbers.
 - `/rt/ops/<oid>` – operation dictionaries recording envelopes, state history, close status, and watcher metadata for lifecycle and pack-defined operations.
+- `/rt/analytics/spacing` – rolling beat-interval metrics (latest 256 deltas, pruned until L1 regulators replace the helper).
 
 ## Global Q&A
 - **When do the beat folders appear?** As soon as `cepHeartbeatPolicy.ensure_directories` is left at its default `true`. Turning it off skips `/rt/beat/<n>` entirely so long-running captures do not grow without bound.

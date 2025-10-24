@@ -136,6 +136,8 @@ Cells can represent **external resources** (files, GPU buffers, remote handles) 
 
 The **heartbeat** provides a global beat number and impulse queue plumbing so the system can **stage signals** and **drive deterministic cycles**. 
 
+Every beat now records a Unix timestamp (`/rt/beat/<N>/meta/unix_ts_ns`) via the mandatory wallclock capture pipeline. Callers publish the timestamp using `cep_heartbeat_publish_wallclock()`, read it back with `cep_heartbeat_beat_to_unix()`, and can resize the retention window for spacing analytics through `cep_heartbeat_set_spacing_window()`. Stage notes, OPS history entries, and stream journals automatically embed the captured `unix_ts_ns`, keeping textual diagnostics aligned with beat counters.
+
 On top, **enzymes** are your **work units**: you register descriptors with a DT name, label, **before/after dependencies**, flags (idempotent/stateful/emit‑signals), and a **match policy** (exact or prefix). The registry **defers activation** of new registrations until the next beat (freezing the current agenda), and **resolves** work by intersecting target‑bound bindings with signal‑indexed candidates, ranking by **specificity**, and then doing a stable **topological sort** by dependencies.  
 
 You get a **reactive dataflow kernel** that respects ordering constraints, reproducibility, and “nothing changes mid‑cycle” guarantees.

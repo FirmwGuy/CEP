@@ -11,6 +11,7 @@
 #include "cep_enzyme.h"
 #include "cep_ops.h"
 #include "cep_l0.h"
+#include "stream/cep_stream_internal.h"
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -1356,6 +1357,287 @@ static MunitResult test_heartbeat_signal_broadcast(void) {
     return MUNIT_OK;
 }
 
+static MunitResult test_heartbeat_wallclock_capture(void) {
+    test_runtime_shutdown();
+
+    cepHeartbeatPolicy policy = {
+        .start_at = 0u,
+        .ensure_directories = true,
+        .enforce_visibility = false,
+        .boot_ops = true,
+        .spacing_window = 0u,
+    };
+    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
+    munit_assert_true(cep_heartbeat_startup());
+
+    size_t default_spacing_window = cep_heartbeat_get_spacing_window();
+    munit_assert_size(default_spacing_window, >, 0u);
+
+    const uint64_t ts_beat0 = 1000000ull;
+    const uint64_t ts_beat1 = 1005000ull;
+
+    munit_assert_true(cep_heartbeat_publish_wallclock(0u, ts_beat0));
+
+    uint64_t retrieved = 0u;
+    munit_assert_true(cep_heartbeat_beat_to_unix(0u, &retrieved));
+    munit_assert_uint64(retrieved, ==, ts_beat0);
+
+    munit_assert_true(cep_heartbeat_publish_wallclock(1u, ts_beat1));
+    munit_assert_true(cep_heartbeat_beat_to_unix(1u, &retrieved));
+    munit_assert_uint64(retrieved, ==, ts_beat1);
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    munit_assert_not_null(rt_root);
+
+    cepCell* beat_root = cep_cell_find_by_name(rt_root, CEP_DTAW("CEP", "beat"));
+    munit_assert_not_null(beat_root);
+    beat_root = cep_cell_resolve(beat_root);
+    munit_assert_not_null(beat_root);
+
+    cepDT beat0_name = cep_dt_make(CEP_ACRO("HB"), cep_id_to_numeric((cepID)(0u + 1u)));
+    beat0_name.glob = 0u;
+    cepCell* beat0_cell = cep_cell_find_by_name(beat_root, &beat0_name);
+    munit_assert_not_null(beat0_cell);
+    beat0_cell = cep_cell_resolve(beat0_cell);
+    munit_assert_not_null(beat0_cell);
+
+    cepCell* meta0 = cep_cell_find_by_name(beat0_cell, CEP_DTAW("CEP", "meta"));
+    munit_assert_not_null(meta0);
+    meta0 = cep_cell_resolve(meta0);
+    munit_assert_not_null(meta0);
+
+    cepCell* ts0_node = cep_cell_find_by_name(meta0, CEP_DTAW("CEP", "unix_ts_ns"));
+    munit_assert_not_null(ts0_node);
+    ts0_node = cep_cell_resolve(ts0_node);
+    munit_assert_not_null(ts0_node);
+    munit_assert_true(cep_cell_has_data(ts0_node));
+    const char* ts0_payload = (const char*)cep_cell_data(ts0_node);
+    munit_assert_not_null(ts0_payload);
+    char* ts0_end = NULL;
+    uint64_t parsed_ts0 = strtoull(ts0_payload, &ts0_end, 10);
+    munit_assert_not_null(ts0_end);
+    munit_assert_char(*ts0_end, ==, '\0');
+    munit_assert_uint64(parsed_ts0, ==, ts_beat0);
+
+    cepCell* analytics_root = cep_cell_find_by_name(rt_root, CEP_DTAW("CEP", "analytics"));
+    munit_assert_not_null(analytics_root);
+    analytics_root = cep_cell_resolve(analytics_root);
+    munit_assert_not_null(analytics_root);
+
+    cepCell* spacing = cep_cell_find_by_name(analytics_root, CEP_DTAW("CEP", "spacing"));
+    munit_assert_not_null(spacing);
+    spacing = cep_cell_resolve(spacing);
+    munit_assert_not_null(spacing);
+
+    cepDT beat1_name = cep_dt_make(CEP_ACRO("HB"), cep_id_to_numeric((cepID)(1u + 1u)));
+    beat1_name.glob = 0u;
+    cepCell* beat1_entry = cep_cell_find_by_name(spacing, &beat1_name);
+    munit_assert_not_null(beat1_entry);
+    beat1_entry = cep_cell_resolve(beat1_entry);
+    munit_assert_not_null(beat1_entry);
+
+    cepCell* interval_node = cep_cell_find_by_name(beat1_entry, CEP_DTAW("CEP", "interval_ns"));
+    munit_assert_not_null(interval_node);
+    interval_node = cep_cell_resolve(interval_node);
+    munit_assert_not_null(interval_node);
+    munit_assert_true(cep_cell_has_data(interval_node));
+    const char* interval_text = (const char*)cep_cell_data(interval_node);
+    munit_assert_not_null(interval_text);
+    char* interval_end = NULL;
+    uint64_t interval_value = strtoull(interval_text, &interval_end, 10);
+    munit_assert_not_null(interval_end);
+    munit_assert_char(*interval_end, ==, '\0');
+    munit_assert_uint64(interval_value, ==, ts_beat1 - ts_beat0);
+
+    cepBeatNumber last_spacing_beat = 1u;
+    uint64_t rolling_ts = ts_beat1;
+    for (cepBeatNumber beat = 2u; beat < default_spacing_window + 3u; ++beat) {
+        rolling_ts += 1000ull;
+        munit_assert_true(cep_heartbeat_publish_wallclock(beat, rolling_ts));
+        last_spacing_beat = beat;
+    }
+    munit_assert_not_null(spacing->store);
+    munit_assert_size(spacing->store->chdCount, <=, default_spacing_window);
+
+    cepBeatNumber earliest_beat = CEP_BEAT_INVALID;
+    cepBeatNumber max_beat = 0u;
+    for (cepCell* entry = cep_cell_first_all(spacing);
+         entry;
+         entry = cep_cell_next_all(spacing, entry)) {
+        const cepDT* name = cep_cell_get_name(entry);
+        munit_assert_not_null(name);
+        uint64_t numeric = cep_id(name->tag);
+        munit_assert_uint64(numeric, >, 0u);
+        cepBeatNumber beat = (cepBeatNumber)(numeric - 1u);
+        if (earliest_beat == CEP_BEAT_INVALID || beat < earliest_beat) {
+            earliest_beat = beat;
+        }
+        if (beat > max_beat) {
+            max_beat = beat;
+        }
+    }
+
+    cepBeatNumber expected_min = (last_spacing_beat > default_spacing_window)
+        ? (last_spacing_beat - default_spacing_window + 1u)
+        : 1u;
+    munit_assert_uint64(earliest_beat, >=, expected_min);
+    munit_assert_uint64(max_beat, ==, last_spacing_beat);
+
+    size_t new_window = 32u;
+    munit_assert_true(cep_heartbeat_set_spacing_window(new_window));
+    munit_assert_size(cep_heartbeat_get_spacing_window(), ==, new_window);
+
+    spacing = cep_cell_find_by_name(analytics_root, CEP_DTAW("CEP", "spacing"));
+    munit_assert_not_null(spacing);
+    spacing = cep_cell_resolve(spacing);
+    munit_assert_not_null(spacing);
+
+    earliest_beat = CEP_BEAT_INVALID;
+    max_beat = 0u;
+    size_t entry_count = 0u;
+    for (cepCell* entry = cep_cell_first_all(spacing);
+         entry;
+         entry = cep_cell_next_all(spacing, entry)) {
+        const cepDT* name = cep_cell_get_name(entry);
+        munit_assert_not_null(name);
+        if (!cep_id_is_numeric(name->tag)) {
+            continue;
+        }
+        uint64_t numeric = cep_id(name->tag);
+        cepBeatNumber beat = (cepBeatNumber)(numeric - 1u);
+        if (earliest_beat == CEP_BEAT_INVALID || beat < earliest_beat) {
+            earliest_beat = beat;
+        }
+        if (beat > max_beat) {
+            max_beat = beat;
+        }
+        entry_count += 1u;
+    }
+    munit_assert_size(entry_count, <=, new_window);
+    expected_min = (last_spacing_beat > new_window)
+        ? (last_spacing_beat - new_window + 1u)
+        : 1u;
+    munit_assert_uint64(earliest_beat, >=, expected_min);
+    munit_assert_uint64(max_beat, ==, last_spacing_beat);
+
+    munit_assert_true(cep_heartbeat_publish_wallclock(0u, ts_beat0));
+    munit_assert_true(cep_heartbeat_stage_note("txn commit: sample"));
+
+    bool stage_note_found = false;
+    for (cepCell* beat_entry = cep_cell_first_all(beat_root);
+         beat_entry && !stage_note_found;
+         beat_entry = cep_cell_next_all(beat_root, beat_entry)) {
+        if (!beat_entry) {
+            continue;
+        }
+        cepCell* resolved_entry = cep_cell_resolve(beat_entry);
+        if (!resolved_entry) {
+            continue;
+        }
+        const cepDT* beat_name = cep_cell_get_name(beat_entry);
+        if (!beat_name || !cep_id_is_numeric(beat_name->tag)) {
+            continue;
+        }
+        uint64_t numeric = cep_id(beat_name->tag);
+        if (numeric == 0u) {
+            continue;
+        }
+        cepBeatNumber beat_number = (cepBeatNumber)(numeric - 1u);
+        cepCell* stage = cep_cell_find_by_name(resolved_entry, CEP_DTAW("CEP", "stage"));
+        if (!stage) {
+            continue;
+        }
+        stage = cep_cell_resolve(stage);
+        if (!stage) {
+            continue;
+        }
+
+        for (cepCell* note_entry = cep_cell_first_all(stage);
+             note_entry;
+             note_entry = cep_cell_next_all(stage, note_entry)) {
+            cepCell* resolved_note = cep_cell_resolve(note_entry);
+            if (!resolved_note || !cep_cell_has_data(resolved_note)) {
+                continue;
+            }
+            const char* message = (const char*)cep_cell_data(resolved_note);
+            if (!message) {
+                continue;
+            }
+            static const char* stage_prefix = "txn commit: samp";
+            if (strncmp(message, stage_prefix, strlen(stage_prefix)) != 0) {
+                continue;
+            }
+
+            uint64_t expected_note_ts = 0u;
+            munit_assert_true(cep_heartbeat_beat_to_unix(beat_number, &expected_note_ts));
+            stage_note_found = true;
+            break;
+        }
+    }
+    munit_assert_true(stage_note_found);
+
+    cepDT verb = cep_ops_make_dt("op/vl");
+    cepDT mode = cep_ops_make_dt("opm:states");
+    cepOID oid = cep_op_start(verb,
+                              "/tmp/history",
+                              mode,
+                              NULL,
+                              0u,
+                              0u);
+    munit_assert_true(cep_oid_is_valid(oid));
+    munit_assert_true(cep_op_state_set(oid, cep_ops_make_dt("ist:skel"), 0, NULL));
+    munit_assert_true(cep_op_state_set(oid, cep_ops_make_dt("ist:unveil"), 0, NULL));
+    munit_assert_true(cep_op_close(oid, cep_ops_make_dt("sts:ok"), NULL, 0u));
+
+    cepCell* op_cell = heartbeat_find_op_cell(oid);
+    munit_assert_not_null(op_cell);
+    cepDT history_name = cep_ops_make_dt("history");
+    cepCell* history = cep_cell_find_by_name(op_cell, &history_name);
+    munit_assert_not_null(history);
+    cepCell* first_history = cep_cell_first(history);
+    munit_assert_not_null(first_history);
+    cepDT ts_field = cep_ops_make_dt("unix_ts_ns");
+    cepCell* ts_cell = cep_cell_find_by_name(first_history, &ts_field);
+    munit_assert_not_null(ts_cell);
+    const uint64_t* recorded_ts = (const uint64_t*)cep_cell_data(ts_cell);
+    munit_assert_not_null(recorded_ts);
+    munit_assert_uint64(*recorded_ts, ==, ts_beat0);
+
+    typedef struct {
+        uint64_t offset;
+        uint64_t requested;
+        uint64_t actual;
+        uint64_t hash;
+        uint32_t flags;
+        uint32_t reserved;
+        uint64_t unix_ts_ns;
+    } TestStreamJournalEntry;
+
+    cepDT stream_name = cep_dt_make(CEP_ACRO("CEP"), cep_id_to_numeric((cepID)1234));
+    stream_name.glob = 0u;
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepCell* stream_cell = cep_cell_add_dictionary(rt_root,
+                                                  &stream_name,
+                                                  0,
+                                                  &dict_type,
+                                                  CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(stream_cell);
+
+    cep_stream_journal(stream_cell, 0u, 0u, 0u, 0u, 0u);
+    cepCell* journal = cep_cell_find_by_name(stream_cell, CEP_DTAW("CEP", "journal"));
+    munit_assert_not_null(journal);
+    journal = cep_cell_resolve(journal);
+    munit_assert_not_null(journal);
+    cepCell* journal_entry = cep_cell_last_all(journal);
+    munit_assert_not_null(journal_entry);
+    const TestStreamJournalEntry* journal_data = (const TestStreamJournalEntry*)cep_cell_data(journal_entry);
+    munit_assert_not_null(journal_data);
+    munit_assert_uint64(journal_data->unix_ts_ns, ==, ts_beat0);
+
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
 static MunitResult test_heartbeat_boot_ops_required(void) {
     test_runtime_shutdown();
 
@@ -1402,6 +1684,11 @@ MunitResult test_heartbeat_single(const MunitParameter params[], void* user_data
         return result;
     }
     result = test_heartbeat_signal_broadcast();
+    if (result != MUNIT_OK) {
+        return result;
+    }
+
+    result = test_heartbeat_wallclock_capture();
     if (result != MUNIT_OK) {
         return result;
     }

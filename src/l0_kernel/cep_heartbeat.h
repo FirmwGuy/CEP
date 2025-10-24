@@ -68,6 +68,7 @@ typedef struct {
     bool                ensure_directories;
     bool                enforce_visibility;
     bool                boot_ops;
+    size_t              spacing_window;
 } cepHeartbeatPolicy;
 
 /**
@@ -152,6 +153,9 @@ typedef struct {
     bool                      sys_shutdown_emitted;
     bool                      bootstrapping;
     const cepEnzymeDescriptor* current_descriptor;
+    cepBeatNumber             last_wallclock_beat;
+    uint64_t                  last_wallclock_ns;
+    size_t                    spacing_window;
 } cepHeartbeatRuntime;
 
 
@@ -163,6 +167,10 @@ bool  cep_heartbeat_begin(cepBeatNumber beat);
 bool  cep_heartbeat_resolve_agenda(void);
 bool  cep_heartbeat_execute_agenda(void);
 bool  cep_heartbeat_stage_commit(void);
+bool  cep_heartbeat_publish_wallclock(cepBeatNumber beat, uint64_t unix_timestamp_ns);
+bool  cep_heartbeat_beat_to_unix(cepBeatNumber beat, uint64_t* unix_timestamp_ns);
+size_t cep_heartbeat_get_spacing_window(void);
+bool   cep_heartbeat_set_spacing_window(size_t window);
 /**
  * Emit a short message into the current beat's stage ledger so other layers
  * can trace significant events (such as veiled transaction commits) alongside
@@ -173,6 +181,7 @@ bool  cep_heartbeat_stage_note(const char* message);
 bool  cep_heartbeat_step(void);
 bool  cep_heartbeat_emit_shutdown(void);
 void  cep_heartbeat_shutdown(void);
+void  cep_heartbeat_detach_topology(void);
 
 
 cepOpCount   cep_beat_index(void);

@@ -19,8 +19,10 @@ What this means in simple terms:
 
 ### Filesystem Layout (Runtime)
 - `rt/beat/<N>/impulses` — when `cepHeartbeatPolicy.ensure_directories` is true (enabled by default), each appended signal is logged here as a text value (`signal=/… target=/…`). A legacy link named `inbox` points to the same list for one release.
+- `rt/beat/<N>/meta/unix_ts_ns` — persisted Unix timestamp (nanoseconds) for beat `N`, supplied by deterministic instrumentation.
 - `rt/beat/<N>/agenda` — enzymes that executed during beat N, recorded with their name, return code, and the impulse that triggered them.
 - `rt/beat/<N>/stage` — commit notes for beat N (for example, how many impulses were promoted to beat N+1).
+- `rt/analytics/spacing` — sliding window (256 entries) of beat-to-beat intervals, pruned by the heartbeat until L1 regulators take over.
 - Other runtime folders (tokens, locks, budgets, metrics) integrate with scheduling but are optional to the core mechanism.
 
 ### Signal Structure
@@ -61,6 +63,13 @@ What this means in simple terms:
 
 ### Emitting New Work
 - Within an enzyme body, call `cep_heartbeat_enqueue_signal(CEP_BEAT_INVALID, signal, target)`; the runtime targets the next beat, records the textual entry under `rt/beat/<N+1>/impulses`, and queues the impulse in memory. Large payloads should be written to a content store (e.g., under `cas/…`) and referenced by hash in staged outputs or journals.
+- Enzymes may emit additional signals; the helper appends those to the next beat’s queue and logs the textual summary under `rt/beat/<N+1>/impulses` so replay has a durable ledger.
+
+### Wallclock capture and spacing analytics
+- Call `cep_heartbeat_publish_wallclock(beat, unix_ts_ns)` once per beat with a deterministically captured Unix timestamp (nanoseconds). The helper writes the value to `/rt/beat/<beat>/meta/unix_ts_ns`, rejects conflicting rewrites, and records the interval since the previous timestamp under `/rt/analytics/spacing/<beat>/interval_ns`.
+- Retrieve stored timestamps via `cep_heartbeat_beat_to_unix()`. Until L1 predators/regulators supervise analytics retention, the spacing helper prunes the dictionary to the most recent 256 entries using hard deletes—`FIXME` notes in code document the future cleanup.
+- Adjust the spacing retention window at runtime with `cep_heartbeat_set_spacing_window()` (and inspect it via `cep_heartbeat_get_spacing_window()`); the pruner trims analytics immediately when the window shrinks.
+- Stage notes, OPS history entries, and stream journal/outcome records now embed the captured `unix_ts_ns` so textual logs and binary payloads share human-readable timestamps alongside beat counters.
 
 ### Error Handling and Idempotency
 - Return values: enzymes return a status code (e.g., 0 = success; negative for retryable or permanent failures).
@@ -121,6 +130,7 @@ During setup, register descriptors first and then call `cep_cell_bind_enzyme` on
 - Unit-test matching rules with fixed registries and synthetic impulse ledgers.
 - Simulate multiple beats to confirm N→N+1 visibility and idempotency.
 - Verify that reordering registrations or impulse ledger entries changes outcomes only as defined by the deterministic rules.
+- Inject deterministic timestamps through `cep_heartbeat_publish_wallclock()`, assert the `/meta/unix_ts_ns` payloads, and check spacing analytics stay within the pruning window.
 
 ## OPS/STATES Operations
 

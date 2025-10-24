@@ -44,6 +44,7 @@ typedef struct {
     uint64_t committed_at;
     uint32_t flags;
     uint32_t reserved;
+    uint64_t unix_ts_ns;
 } cepStreamOutcomeEntry;
 
 enum {

@@ -6,6 +6,7 @@
 
 #include "cep_cell.h"
 #include "cep_l0.h"
+#include "cep_heartbeat.h"
 #include "cep_namepool.h"
 
 cepOpCount CEP_OP_COUNT;
@@ -45,6 +46,8 @@ void cep_cell_system_shutdown(void) {
     if (!cep_cell_system_initialized()) {
         return;
     }
+
+    cep_heartbeat_detach_topology();
 
     cep_cell_finalize_hard(&CEP_ROOT);
     CEP_0(&CEP_ROOT);

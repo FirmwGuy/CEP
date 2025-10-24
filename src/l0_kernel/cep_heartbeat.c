@@ -29,6 +29,8 @@ static cepHeartbeatRuntime CEP_RUNTIME = {
     .deferred_activations = 0u,
     .sys_shutdown_emitted = false,
     .current_descriptor = NULL,
+    .last_wallclock_beat = CEP_BEAT_INVALID,
+    .last_wallclock_ns = 0u,
 };
 
 static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
@@ -59,6 +61,11 @@ CEP_DEFINE_STATIC_DT(dt_boot_oid_field, CEP_ACRO("CEP"), CEP_WORD("boot_oid"));
 CEP_DEFINE_STATIC_DT(dt_shdn_oid_field, CEP_ACRO("CEP"), CEP_WORD("shdn_oid"));
 CEP_DEFINE_STATIC_DT(dt_ist_kernel,     CEP_ACRO("CEP"), CEP_WORD("ist:kernel"));
 CEP_DEFINE_STATIC_DT(dt_ist_store,      CEP_ACRO("CEP"), CEP_WORD("ist:store"));
+CEP_DEFINE_STATIC_DT(dt_meta_name,      CEP_ACRO("CEP"), CEP_WORD("meta"));
+CEP_DEFINE_STATIC_DT(dt_unix_ts_name, CEP_ACRO("CEP"), CEP_WORD("unix_ts_ns"));
+CEP_DEFINE_STATIC_DT(dt_analytics_root_name, CEP_ACRO("CEP"), CEP_WORD("analytics"));
+CEP_DEFINE_STATIC_DT(dt_spacing_name,   CEP_ACRO("CEP"), CEP_WORD("spacing"));
+CEP_DEFINE_STATIC_DT(dt_interval_ns_name, CEP_ACRO("CEP"), CEP_WORD("interval_ns"));
 
 typedef struct {
     const char* kind;
@@ -66,6 +73,11 @@ typedef struct {
     bool        has_constructor;
     bool        has_destructor;
 } cepHeartbeatOrganDescriptorInit;
+
+#define CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT 256u
+
+static cepCell* ensure_root_dictionary(cepCell* root, const cepDT* name, const cepDT* store_dt);
+static cepCell* ensure_root_list(cepCell* root, const cepDT* name, const cepDT* store_dt);
 
 static cepDT cep_heartbeat_make_signal_dt(const char* kind, const char* suffix) {
     if (!kind || !*kind || !suffix || !*suffix) {
@@ -531,6 +543,31 @@ static cepCell* cep_heartbeat_ensure_list_child(cepCell* parent, const cepDT* na
     return child;
 }
 
+static cepCell* cep_heartbeat_ensure_meta_child(cepCell* beat_cell) {
+    if (!beat_cell) {
+        return NULL;
+    }
+
+    cepCell* meta = cep_cell_find_by_name(beat_cell, dt_meta_name());
+    if (!meta) {
+        cepDT meta_name = cep_dt_clean(dt_meta_name());
+        cepDT dict_type = *dt_dictionary_type();
+        meta = cep_cell_add_dictionary(beat_cell, &meta_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    } else {
+        meta = cep_cell_resolve(meta);
+    }
+
+    if (!meta) {
+        return NULL;
+    }
+
+    if (!cep_cell_require_dictionary_store(&meta)) {
+        return NULL;
+    }
+
+    return meta;
+}
+
 static bool cep_heartbeat_ensure_legacy_inbox_alias(cepCell* beat_cell, cepCell* impulses_cell) {
     if (!beat_cell || !impulses_cell) {
         return false;
@@ -648,6 +685,10 @@ static cepCell* cep_heartbeat_ensure_beat_node(cepBeatNumber beat) {
     }
 
     if (!cep_heartbeat_ensure_list_child(beat_cell, dt_stage_name())) {
+        return NULL;
+    }
+
+    if (!cep_heartbeat_ensure_meta_child(beat_cell)) {
         return NULL;
     }
 
@@ -814,7 +855,54 @@ bool cep_heartbeat_stage_note(const char* message) {
         return true;
 
     cepBeatNumber beat = (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current;
-    return cep_heartbeat_record_stage_entry(beat, message);
+    const char* final_message = message;
+    char* formatted = NULL;
+
+    cepCell* beat_cell = cep_heartbeat_ensure_beat_node(beat);
+    if (!beat_cell) {
+        return false;
+    }
+
+    uint64_t unix_ts = 0u;
+    bool have_unix_ts = cep_heartbeat_beat_to_unix(beat, &unix_ts);
+    if (!have_unix_ts) {
+        cepCell* meta = cep_cell_find_by_name(beat_cell, dt_meta_name());
+        if (meta) {
+            meta = cep_cell_resolve(meta);
+            if (meta) {
+                cepCell* ts_cell = cep_cell_find_by_name(meta, dt_unix_ts_name());
+                if (ts_cell) {
+                    ts_cell = cep_cell_resolve(ts_cell);
+                    if (ts_cell && cep_cell_has_data(ts_cell)) {
+                        const char* stored_text = (const char*)cep_cell_data(ts_cell);
+                        if (stored_text) {
+                            char* endptr = NULL;
+                            uint64_t parsed = (uint64_t)strtoull(stored_text, &endptr, 10);
+                            if (endptr && *endptr == '\0') {
+                                unix_ts = parsed;
+                                have_unix_ts = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (have_unix_ts) {
+        int written = snprintf(NULL, 0, "%s ts=%" PRIu64, message, unix_ts);
+        if (written > 0) {
+            formatted = cep_malloc((size_t)written + 1u);
+            if (formatted) {
+                snprintf(formatted, (size_t)written + 1u, "%s ts=%" PRIu64, message, unix_ts);
+                final_message = formatted;
+            }
+        }
+    }
+
+    bool ok = cep_heartbeat_record_stage_entry(beat, final_message);
+    cep_free(formatted);
+    return ok;
 }
 
 
@@ -1049,9 +1137,13 @@ static void cep_runtime_reset_state(bool destroy_registry) {
     memset(&CEP_RUNTIME.policy, 0, sizeof(CEP_RUNTIME.policy));
     CEP_RUNTIME.policy.ensure_directories = true;
     CEP_RUNTIME.policy.boot_ops = true;
+    CEP_RUNTIME.policy.spacing_window = CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT;
     CEP_RUNTIME.deferred_activations = 0u;
     CEP_RUNTIME.sys_shutdown_emitted = false;
     CEP_RUNTIME.bootstrapping = false;
+    CEP_RUNTIME.last_wallclock_beat = CEP_BEAT_INVALID;
+    CEP_RUNTIME.last_wallclock_ns = 0u;
+    CEP_RUNTIME.spacing_window = CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT;
 
     cep_lifecycle_reset_state();
     cep_organ_runtime_reset();
@@ -1060,6 +1152,11 @@ static void cep_runtime_reset_state(bool destroy_registry) {
 
 static void cep_runtime_reset_defaults(void) {
     memset(&CEP_DEFAULT_TOPOLOGY, 0, sizeof(CEP_DEFAULT_TOPOLOGY));
+}
+
+void cep_heartbeat_detach_topology(void) {
+    cep_runtime_reset_state(true);
+    cep_runtime_reset_defaults();
 }
 
 
@@ -1136,6 +1233,95 @@ static cepCell* ensure_root_list(cepCell* root, const cepDT* name, const cepDT* 
         cell = resolved;
     }
     return cell;
+}
+
+static void cep_heartbeat_prune_spacing(cepCell* spacing) {
+    if (!spacing) {
+        return;
+    }
+
+    size_t target_window = CEP_RUNTIME.spacing_window ? CEP_RUNTIME.spacing_window : CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT;
+    if (target_window == 0u) {
+        target_window = CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT;
+    }
+
+    size_t count = 0u;
+    cepCell* oldest_entry = NULL;
+    cepBeatNumber oldest_beat = CEP_BEAT_INVALID;
+    for (cepCell* entry = cep_cell_first_all(spacing);
+         entry;
+         entry = cep_cell_next_all(spacing, entry)) {
+        count += 1u;
+        const cepDT* name = cep_cell_get_name(entry);
+        if (!name || !cep_id_is_numeric(name->tag)) {
+            continue;
+        }
+        cepBeatNumber beat = (cepBeatNumber)(cep_id(name->tag) - 1u);
+        if (oldest_entry == NULL || beat < oldest_beat) {
+            oldest_entry = entry;
+            oldest_beat = beat;
+        }
+    }
+
+    while (count > target_window && oldest_entry) {
+        cep_cell_remove_hard(oldest_entry, NULL);
+        count -= 1u;
+
+        if (count <= target_window) {
+            break;
+        }
+
+        oldest_entry = NULL;
+        oldest_beat = CEP_BEAT_INVALID;
+        for (cepCell* entry = cep_cell_first_all(spacing);
+             entry;
+             entry = cep_cell_next_all(spacing, entry)) {
+            const cepDT* name = cep_cell_get_name(entry);
+            if (!name || !cep_id_is_numeric(name->tag)) {
+                continue;
+            }
+            cepBeatNumber beat = (cepBeatNumber)(cep_id(name->tag) - 1u);
+            if (oldest_entry == NULL || beat < oldest_beat) {
+                oldest_entry = entry;
+                oldest_beat = beat;
+            }
+        }
+    }
+}
+
+static bool cep_heartbeat_record_spacing(cepBeatNumber beat, uint64_t interval_ns) {
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (!rt_root) {
+        return false;
+    }
+
+    cepCell* analytics_root = ensure_root_dictionary(rt_root, dt_analytics_root_name(), NULL);
+    if (!analytics_root) {
+        return false;
+    }
+
+    cepCell* spacing = ensure_root_dictionary(analytics_root, dt_spacing_name(), NULL);
+    if (!spacing) {
+        return false;
+    }
+
+    cepDT beat_name;
+    if (!cep_heartbeat_set_numeric_name(&beat_name, beat)) {
+        return false;
+    }
+
+    cepCell* entry = cep_heartbeat_ensure_dictionary_child(spacing, &beat_name, NULL);
+    if (!entry) {
+        return false;
+    }
+
+    if (!cep_cell_put_uint64(entry, dt_interval_ns_name(), interval_ns)) {
+        return false;
+    }
+
+    /* FIXME: Replace hard-prune once L1 predators/regulators manage analytics retention. */
+    cep_heartbeat_prune_spacing(spacing);
+    return true;
 }
 
 static void cep_lifecycle_reset_state(void) {
@@ -1883,6 +2069,10 @@ bool cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHear
     CEP_RUNTIME.topology = merged;
     CEP_RUNTIME.policy   = *policy;
     CEP_RUNTIME.policy.boot_ops = policy->boot_ops;
+    if (CEP_RUNTIME.policy.spacing_window == 0u) {
+        CEP_RUNTIME.policy.spacing_window = CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT;
+    }
+    CEP_RUNTIME.spacing_window = CEP_RUNTIME.policy.spacing_window;
     return true;
 }
 
@@ -1899,6 +2089,9 @@ bool cep_heartbeat_startup(void) {
 
     CEP_RUNTIME.current = CEP_RUNTIME.policy.start_at;
     CEP_RUNTIME.running = true;
+    CEP_RUNTIME.spacing_window = (CEP_RUNTIME.policy.spacing_window != 0u)
+        ? CEP_RUNTIME.policy.spacing_window
+        : CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT;
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_current);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_next);
     if (cep_boot_ops_enabled()) {
@@ -1926,6 +2119,9 @@ bool cep_heartbeat_restart(void) {
 
     CEP_RUNTIME.current = CEP_RUNTIME.policy.start_at;
     CEP_RUNTIME.running = true;
+    CEP_RUNTIME.spacing_window = (CEP_RUNTIME.policy.spacing_window != 0u)
+        ? CEP_RUNTIME.policy.spacing_window
+        : CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT;
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_current);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_next);
     if (cep_boot_ops_enabled()) {
@@ -2425,6 +2621,211 @@ bool cep_heartbeat_process_impulses(void) {
      * */
      
     return ok;
+}
+
+
+bool cep_heartbeat_publish_wallclock(cepBeatNumber beat, uint64_t unix_timestamp_ns) {
+    if (beat == CEP_BEAT_INVALID) {
+        return false;
+    }
+
+    if (!cep_heartbeat_bootstrap()) {
+        return false;
+    }
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (!rt_root) {
+        return false;
+    }
+
+    cepCell* beat_root = ensure_root_dictionary(rt_root, dt_beat_root_name(), NULL);
+    if (!beat_root) {
+        return false;
+    }
+
+    cepDT beat_name;
+    if (!cep_heartbeat_set_numeric_name(&beat_name, beat)) {
+        return false;
+    }
+
+    cepCell* beat_cell = cep_heartbeat_ensure_dictionary_child(beat_root, &beat_name, NULL);
+    if (!beat_cell) {
+        return false;
+    }
+
+    cepCell* meta = cep_heartbeat_ensure_meta_child(beat_cell);
+    if (!meta) {
+        return false;
+    }
+
+    cepCell* existing = cep_cell_find_by_name(meta, dt_unix_ts_name());
+    if (existing) {
+        existing = cep_cell_resolve(existing);
+    }
+    if (existing && cep_cell_has_data(existing)) {
+        const char* stored_text = (const char*)cep_cell_data(existing);
+        if (stored_text) {
+            char* endptr = NULL;
+            uint64_t parsed = strtoull(stored_text, &endptr, 10);
+            if (endptr && *endptr == '\0' && parsed == unix_timestamp_ns) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if (!cep_cell_put_uint64(meta, dt_unix_ts_name(), unix_timestamp_ns)) {
+        return false;
+    }
+
+    if (CEP_RUNTIME.last_wallclock_beat != CEP_BEAT_INVALID &&
+        beat > CEP_RUNTIME.last_wallclock_beat) {
+        uint64_t interval = (unix_timestamp_ns >= CEP_RUNTIME.last_wallclock_ns)
+            ? (unix_timestamp_ns - CEP_RUNTIME.last_wallclock_ns)
+            : 0u;
+        if (!cep_heartbeat_record_spacing(beat, interval)) {
+            return false;
+        }
+    }
+
+    if (CEP_RUNTIME.last_wallclock_beat == CEP_BEAT_INVALID ||
+        beat >= CEP_RUNTIME.last_wallclock_beat) {
+        CEP_RUNTIME.last_wallclock_beat = beat;
+        CEP_RUNTIME.last_wallclock_ns = unix_timestamp_ns;
+    }
+
+    return true;
+}
+
+
+bool cep_heartbeat_beat_to_unix(cepBeatNumber beat, uint64_t* unix_timestamp_ns) {
+    if (!unix_timestamp_ns || beat == CEP_BEAT_INVALID) {
+        return false;
+    }
+
+    if (!cep_cell_system_initialized()) {
+        return false;
+    }
+
+    if (!cep_heartbeat_bootstrap()) {
+        return false;
+    }
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (!rt_root || cep_cell_is_void(rt_root)) {
+        return false;
+    }
+
+    cepCell* beat_root = cep_cell_find_by_name(rt_root, dt_beat_root_name());
+    if (!beat_root || cep_cell_is_void(beat_root)) {
+        return false;
+    }
+
+    cepCell* resolved_root = cep_cell_resolve(beat_root);
+    if (!resolved_root || cep_cell_is_void(resolved_root) || !resolved_root->store) {
+        return false;
+    }
+
+    cepDT beat_name;
+    if (!cep_heartbeat_set_numeric_name(&beat_name, beat)) {
+        return false;
+    }
+
+    cepCell* beat_cell = cep_cell_find_by_name(resolved_root, &beat_name);
+    if (!beat_cell || cep_cell_is_void(beat_cell)) {
+        return false;
+    }
+
+    beat_cell = cep_cell_resolve(beat_cell);
+    if (!beat_cell || cep_cell_is_void(beat_cell)) {
+        return false;
+    }
+
+    cepCell* meta = cep_cell_find_by_name(beat_cell, dt_meta_name());
+    if (!meta || cep_cell_is_void(meta)) {
+        return false;
+    }
+
+    meta = cep_cell_resolve(meta);
+    if (!meta || cep_cell_is_void(meta)) {
+        return false;
+    }
+
+    cepCell* timestamp = cep_cell_find_by_name(meta, dt_unix_ts_name());
+    if (!timestamp || cep_cell_is_void(timestamp)) {
+        return false;
+    }
+
+    timestamp = cep_cell_resolve(timestamp);
+    if (!timestamp || !cep_cell_has_data(timestamp)) {
+        return false;
+    }
+
+    const char* stored_text = (const char*)cep_cell_data(timestamp);
+    if (!stored_text) {
+        return false;
+    }
+
+    char* endptr = NULL;
+    uint64_t parsed = (uint64_t)strtoull(stored_text, &endptr, 10);
+    if (!endptr || *endptr != '\0') {
+        return false;
+    }
+
+    *unix_timestamp_ns = parsed;
+    return true;
+}
+
+
+size_t cep_heartbeat_get_spacing_window(void) {
+    size_t window = CEP_RUNTIME.spacing_window;
+    if (window == 0u) {
+        window = CEP_RUNTIME.policy.spacing_window;
+    }
+    if (window == 0u) {
+        window = CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT;
+    }
+    return window;
+}
+
+
+bool cep_heartbeat_set_spacing_window(size_t window) {
+    if (window == 0u) {
+        return false;
+    }
+
+    if (!cep_heartbeat_bootstrap()) {
+        return false;
+    }
+
+    CEP_RUNTIME.spacing_window = window;
+    CEP_RUNTIME.policy.spacing_window = window;
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (!rt_root) {
+        return true;
+    }
+
+    cepCell* analytics_root = cep_cell_find_by_name(rt_root, dt_analytics_root_name());
+    if (!analytics_root) {
+        return true;
+    }
+    analytics_root = cep_cell_resolve(analytics_root);
+    if (!analytics_root) {
+        return false;
+    }
+
+    cepCell* spacing = cep_cell_find_by_name(analytics_root, dt_spacing_name());
+    if (!spacing) {
+        return true;
+    }
+    spacing = cep_cell_resolve(spacing);
+    if (!spacing) {
+        return false;
+    }
+
+    cep_heartbeat_prune_spacing(spacing);
+    return true;
 }
 
 

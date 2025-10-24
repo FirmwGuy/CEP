@@ -11,6 +11,7 @@
  */
 
 #include "cep_cell.h"
+#include "cep_heartbeat.h"
 #include "stream/cep_stream_internal.h"
 
 CEP_DEFINE_STATIC_DT(dt_journal_name, CEP_ACRO("CEP"), CEP_WORD("journal"));
@@ -81,6 +82,7 @@ typedef struct {
     uint64_t    hash;
     uint32_t    flags;
     uint32_t    reserved;
+    uint64_t    unix_ts_ns;
 } cepStreamJournalEntry;
 
 static const cepLibraryBinding* cep_library_binding_const(const cepCell* library);
@@ -176,7 +178,14 @@ void cep_stream_journal(cepCell* owner, unsigned flags, uint64_t offset, size_t 
         .hash      = hash,
         .flags     = flags,
         .reserved  = 0,
+        .unix_ts_ns = 0u,
     };
+
+    cepBeatNumber current_beat = (cepBeatNumber)cep_beat_index();
+    uint64_t unix_ts = 0u;
+    if (cep_heartbeat_beat_to_unix(current_beat, &unix_ts)) {
+        entry.unix_ts_ns = unix_ts;
+    }
 
     cep_cell_append_value(journal,
                           (cepDT*)dt_journal_entry_name(),
