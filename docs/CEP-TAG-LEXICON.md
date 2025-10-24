@@ -43,11 +43,13 @@ when a new behavior needs a fresh word before it lands in code.
 | `dtor` | core | spec field storing the optional organ destructor enzyme name. |
 | `ctor` | core | spec field storing the optional organ constructor enzyme name. |
 | `env` | core | runtime environment subtree for external handles. |
+| `envelope` | core | sealed message metadata dictionary under a mailbox message. |
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `impulses` | core | beat impulse log recorded under `/rt/beat/<n>/impulses` (legacy `inbox` link retained for one release). |
 | `analytics` | core | runtime analytics root under `/rt/analytics`. |
 | `spacing` | core | beat-to-beat spacing metrics recorded by the heartbeat analytics helper. |
 | `interval_ns` | core | nanosecond interval payload inside spacing analytics entries. |
+| `issued_unix_ns` | core | unix timestamp captured alongside `issued_beat` inside a mailbox envelope. |
 | `unix_ts_ns` | core | per-beat Unix timestamp stored under `/rt/beat/<n>/meta/unix_ts_ns` and mirrored into stage notes, OPS history, and stream journals. |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |
@@ -57,6 +59,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `log` | core | log entry tag attached to beat records. |
 | `label` | core | optional human-readable organ description stored in the spec branch. |
 | `meta` | core | metadata dictionary attached to runtime cells. |
+| `msgs` | core | mailbox message dictionary keyed by local message ID. |
 | `organ/<k>` | core | store tag pattern identifying typed organ root dictionaries. |
 | `organ/sys_namepool` | core | store tag assigned to the `/sys/namepool` dictionary (bootstrap service, not an organ). |
 | `organ/rt_beat` | core | store tag assigned to the `/rt/beat` organ root. |
@@ -66,11 +69,15 @@ when a new behavior needs a fresh word before it lands in code.
 | `boot_oid` | core | `val/bytes` cell under `/sys/state` publishing the boot operation OID. |
 | `shdn_oid` | core | `val/bytes` cell under `/sys/state` publishing the shutdown operation OID. |
 | `namepool` | core | identifier intern table. |
+| `next_msg_id` | core | deterministic counter stored under `meta/runtime/next_msg_id`. |
 | `outcome` | core | execution result record written after enzymes run. |
 | `target` | core | canonical link entry used by helper-built facet dictionaries. |
 | `parent` | core | provenance pointer stored inside `meta/parents`. |
 | `parents` | core | provenance list capturing the source lineage. |
 | `rt` | core | runtime staging root holding beat journals. |
+| `runtime` | core | per-mailbox runtime metadata bucket (ID counters, expiry buckets). |
+| `expiries` | core | beat-indexed expiry bucket dictionary under mailbox runtime metadata. |
+| `exp_wall` | core | unix timestamp expiry bucket dictionary under mailbox runtime metadata. |
 | `stage` | core | per-beat stage log recording committed mutations. |
 | `spec` | core | immutable organ descriptor snapshot stored under `/sys/organs/<k>/spec`. |
 | `store` | core | spec field recording the organ root store DT. |
@@ -78,6 +85,10 @@ when a new behavior needs a fresh word before it lands in code.
 | `sys` | core | system namespace with counters and configuration. |
 | `text` | core | namepool payload store for textual data. |
 | `tmp` | core | scratch list reserved for tooling. |
+| `ttl` | core | TTL dictionary attached to envelopes or mailbox policy nodes. |
+| `ttl_beats` | core | relative TTL expressed in heartbeat counts. |
+| `ttl_unix_ns` | core | relative TTL expressed in wallclock nanoseconds. |
+| `ttl_mode` | core | TTL control flag (`"forever"` disables expiry at that scope). |
 | `validator` | core | spec field storing the required organ validator enzyme name. |
 
 #### Operational Tags
@@ -117,6 +128,10 @@ when a new behavior needs a fresh word before it lands in code.
 | `payload_id` | ops | optional `val/bytes` payload stored in envelopes and watcher entries. |
 | `role_parnt` / `role_source` / `role_subj` / `role_templ` | ops | role vocabulary consumed by mutation enzymes. |
 | `sig_cell` | ops | signal namespace for kernel cell operations. |
+| `sig_mail/arrive` | ops | mailbox arrival impulse emitted during beat capture. |
+| `sig_mail/ack` | ops | mailbox acknowledgement impulse emitted when a subscriber reads or acknowledges a message. |
+| `sig_mail/ttl` | ops | retention impulse emitted when a TTL deadline matures. |
+| `sig_mail/route` | ops | optional routing impulse for fan-out or mirrors. |
 | `state` | ops | current logical state (`ist:*`) stored on an operation root. |
 | `status` | ops | terminal status (`sts:*`) recorded under `/close/status`. |
 | `sts:cnl` | ops | cancellation status recorded when an operation is aborted. |
@@ -124,6 +139,9 @@ when a new behavior needs a fresh word before it lands in code.
 | `sts:ok` | ops | success status recorded when an operation completes normally. |
 | `summary_id` | ops | optional summary payload identifier stored under `/close/summary_id`. |
 | `ttl` | ops | watcher expiry interval in beats. |
+| `enz_mail_dispatch` | ops | enzyme descriptor handling `sig_mail/arrive`. |
+| `enz_mail_ack` | ops | enzyme descriptor handling `sig_mail/ack`. |
+| `enz_mail_retention` | ops | enzyme descriptor handling `sig_mail/ttl`. |
 | `watchers` | ops | dictionary tracking pending awaiters. |
 | `want` | ops | requested state or status captured for a watcher. |
 | `closed_beat` | ops | beat index recorded when the `/close/` branch was sealed. |
