@@ -12,6 +12,7 @@ CEP’s kernel (Layer 0) must start, run, and shut down without assuming any h
   - Treat the pack as a plugin that calls into public L0 APIs. Its bootstrap should probe for prerequisites (for example, heartbeat readiness) and bail out cleanly if unavailable.  
   - Registration should be idempotent. Repeated calls must verify existing descriptors or state rather than mutating blindly.  
   - Readiness evidence belongs to the pack itself. Publish it through an operation timeline (for example, `op/pack_boot`) or a pack-owned subtree only after the pack has prepared its storage and registered enzymes.
+  - Route CEI facts either to the default diagnostics mailbox (`/data/mailbox/diag`) or a pack-owned mailbox; keep severity handling central by calling `cep_cei_emit()` instead of reinventing error pipelines.  
   - Startup and shutdown operations progress one beat at a time; keep stepping the heartbeat until the expected `ist:*` or `sts:*` state is visible on `/rt/ops/<boot_oid>` before assuming the kernel is ready.
 
 - **Testing packs**  

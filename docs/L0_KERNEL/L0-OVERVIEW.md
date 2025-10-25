@@ -14,6 +14,8 @@ This L0 Kernel API gives you a **hierarchical, time‑aware data kernel** (“ce
 * **Links with backlink (shadow) tracking**, so references stay coherent through lifecycle events. 
 * **Proxies and library bindings** to virtualize payloads and streams behind an adapter. 
 * A **reactive “enzyme” layer** for deterministic, dependency‑aware work dispatch driven by paths and heartbeats.   
+* A **beat-recorded Operations timeline** (`op/*`) with watcher support so long-running work, boot, and shutdown stay observable and awaitable.
+* A **Common Error Interface** that centralises diagnostics, routes structured Error Facts through mailboxes, and enforces severity-driven OPS/shutdown policy.
 * A compact **chunked serialization** format with staged reading/commit and optional blob chunking for large payloads. 
 * An optional **namepool** to intern strings when you need textual names bound to IDs. 
 
@@ -59,6 +61,12 @@ Layer 0 enforces deterministic mutation using hierarchical locks. The locking 
 ### Mailbox Lifecycle
 Mailbox organs now ship with shared helpers that settle message identity, TTL precedence, and retention buckets. `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` documents the layout under `meta/`, the `msgs/` store, and how `cep_mailbox_select_message_id()`, `cep_mailbox_resolve_ttl()`, and `cep_mailbox_plan_retention()` cooperate with the heartbeat. Revisit it before wiring board/news workflows, private inbox policies, or retention enzymes so behaviour stays deterministic across beats and replays.
 
+### Common Error Interface (CEI)
+Layer 0’s CEI helper (`docs/L0_KERNEL/topics/CEI.md`) centralises diagnostics. It seeds the default diagnostics mailbox at `/data/mailbox/diag`, assembles structured Error Facts via `cep_cei_emit`, can emit `sig_cei/*` impulses, and enforces severity policy (OPS closure, fatal shutdown). Pair it with the mailbox topic before altering diagnostics routing or severity handling.
+
+### Operations Timeline and Watchers
+Operations run as append-only dossiers under `/rt/ops/<oid>` with envelopes, history, close branches, and watcher ledgers. `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md` and `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` explain how `cep_op_start`, `cep_op_close`, and `cep_op_await` coordinate with lifecycle scopes and the heartbeat so packs can observe boot/shutdown progress—or stitch their own long-running work—without polling.
+
 ### Native Types
 Native payloads are opaque bytes labelled by compact domain/tag identifiers. This document clarifies VALUE/DATA/HANDLE/STREAM semantics, hashing rules, and how upper layers layer meaning on top. Visit it before altering payload structures or introducing new tag conventions.
 
@@ -75,7 +83,7 @@ Traversal helpers are evolving to add `*_all` style APIs. This roadmap outlines 
 Serialization describes the manifest layout, chunk framing, hash strategy, and apply process that keep replicas faithful. It explains how staged transactions commit atomically and how proxies participate. Review it before extending the wire format or building ingestion tooling.
 
 ### Startup and Shutdown
-Lifecycle operations (`op/boot` and `op/shdn`) replace ad-hoc signals. The startup topic documents the state machine, watchers, and published OIDs so packs can synchronise safely with the kernel. Re-read it before modifying lifecycle helpers or writing tooling against the operation timelines.
+Lifecycle operations (`op/boot` and `op/shdn`) replace ad-hoc signals. `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md` walks through the lifecycle scopes (`kernel`, `store`, `packs`), the bootstrap entry points (`cep_l0_bootstrap`, `cep_heartbeat_configure`, `cep_heartbeat_startup`, `cep_heartbeat_begin`), and the orderly teardown path so packs can synchronise safely. It also covers heartbeat wallclock capture and the watcher APIs that surface state changes without polling. Re-read it before modifying lifecycle helpers or writing tooling against the operation timelines.
 
 ---
 

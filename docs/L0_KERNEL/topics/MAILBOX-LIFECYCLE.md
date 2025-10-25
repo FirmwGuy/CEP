@@ -26,7 +26,12 @@ Mailboxes give packs a structured way to capture messages, enforce retention pol
 3. Write the message subtree under `msgs/<id>` and call `cep_mailbox_record_expiry()` once the message is visible.
 4. In your retention enzyme, call `cep_mailbox_plan_retention()` at the start of the beat, process due partitions, and requeue yourself if `has_future_*` flags remain true.
 
-## Q&A
+### Diagnostics mailboxes and CEI
+- Layer 0 seeds a diagnostics mailbox at `/data/mailbox/diag` during bootstrap. `cep_cei_emit()` falls back to that mailbox whenever callers do not supply `mailbox_root`, ensuring CEI facts always land somewhere deterministic.
+- The diagnostics mailbox carries the same `meta/runtime/expiries*` structure as any other mailbox. CEI requests populate TTL hints (`ttl_beats`, `ttl_unix_ns`, `forever`) before the helper records deadlines through `cep_mailbox_record_expiry()`.
+- Use the shared mailbox when you need a universal CEI feed; packs can still pass their own mailbox root to keep partitioned diagnostics but should reuse the same TTL planning helpers so retention enzymes behave consistently.
+
+## Global Q&A
 - **Why does the helper fall back to a counter instead of failing?** Mailboxes are often fed by external systems that cannot always deliver stable digests. The counter fallback keeps ingestion deterministic while still flagging collisions for manual diagnostics.
 - **Do private inboxes need TTLs?** Private inbox policy defaults to `ttl_mode="forever"`, but per-message overrides still win. This lets packs honour “forever” semantics without relaxing the enforcement machinery.
 - **Can I skip the analytics dependency?** Yes. Toggle `cep_mailbox_disable_wallclock(true)` when you are debugging without spacing data. The resolved structure records that heuristics were skipped so retention enzymes can adjust expectations.

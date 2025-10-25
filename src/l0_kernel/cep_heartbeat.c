@@ -5,6 +5,7 @@
 
 
 #include "cep_heartbeat.h"
+#include "cep_cei.h"
 #include "cep_heartbeat_internal.h"
 #include "cep_namepool.h"
 #include "../enzymes/cep_cell_operations.h"
@@ -1953,6 +1954,9 @@ bool cep_heartbeat_bootstrap(void) {
     CEP_DEFAULT_TOPOLOGY.data = data;
     if (!CEP_RUNTIME.topology.data) {
         CEP_RUNTIME.topology.data = data;
+    }
+    if (!cep_cei_diagnostics_mailbox()) {
+        CEP_BOOT_FAIL("cei diagnostics mailbox");
     }
 
     cepDT tmp_store = cep_organ_store_dt("tmp");

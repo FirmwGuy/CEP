@@ -144,6 +144,38 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/cei/mailbox",
+        test_cei_mailbox,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/cei/signal_ledger",
+        test_cei_signal_ledger,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/cei/op_failure",
+        test_cei_op_failure,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/cei/fatal_shutdown",
+        test_cei_fatal_shutdown,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
         "/ops",
         test_ops,
         NULL,

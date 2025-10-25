@@ -44,12 +44,13 @@ when a new behavior needs a fresh word before it lands in code.
 | `ctor` | core | spec field storing the optional organ constructor enzyme name. |
 | `env` | core | runtime environment subtree for external handles. |
 | `envelope` | core | sealed message metadata dictionary under a mailbox message. |
+| `err` | core | root dictionary encapsulating a structured Common Error Interface fact. |
 | `enzymes` | core | registry dictionary exposing registered enzymes. |
 | `impulses` | core | beat impulse log recorded under `/rt/beat/<n>/impulses` (legacy `inbox` link retained for one release). |
 | `analytics` | core | runtime analytics root under `/rt/analytics`. |
 | `spacing` | core | beat-to-beat spacing metrics recorded by the heartbeat analytics helper. |
 | `interval_ns` | core | nanosecond interval payload inside spacing analytics entries. |
-| `issued_unix_ns` | core | unix timestamp captured alongside `issued_beat` inside a mailbox envelope. |
+| `issued_unix` | core | unix timestamp captured alongside `issued_beat` inside a mailbox envelope. |
 | `unix_ts_ns` | core | per-beat Unix timestamp stored under `/rt/beat/<n>/meta/unix_ts_ns` and mirrored into stage notes, OPS history, and stream journals. |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |
@@ -57,9 +58,11 @@ when a new behavior needs a fresh word before it lands in code.
 | `lib` | core | library snapshot directory for proxied streams. |
 | `list` | core | store tag for linked-list containers. |
 | `log` | core | log entry tag attached to beat records. |
+| `origin` | core | dictionary describing the module, organ, or enzyme that emitted a CEI fact. |
 | `label` | core | optional human-readable organ description stored in the spec branch. |
 | `meta` | core | metadata dictionary attached to runtime cells. |
 | `msgs` | core | mailbox message dictionary keyed by local message ID. |
+| `topic` | core | short subject tag used by CEI facts for routing and filtering. |
 | `organ/<k>` | core | store tag pattern identifying typed organ root dictionaries. |
 | `organ/sys_namepool` | core | store tag assigned to the `/sys/namepool` dictionary (bootstrap service, not an organ). |
 | `organ/rt_beat` | core | store tag assigned to the `/rt/beat` organ root. |
@@ -90,6 +93,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `ttl_unix_ns` | core | relative TTL expressed in wallclock nanoseconds. |
 | `ttl_mode` | core | TTL control flag (`"forever"` disables expiry at that scope). |
 | `validator` | core | spec field storing the required organ validator enzyme name. |
+| `sev:*` (`sev:fatal`, `sev:crit`, `sev:usage`, `sev:warn`, `sev:debug`) | core | severity vocabulary used by CEI to express runtime impact. |
 
 #### Operational Tags
 | Tag / Pattern | Status | Purpose |
@@ -132,6 +136,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `sig_mail/ack` | ops | mailbox acknowledgement impulse emitted when a subscriber reads or acknowledges a message. |
 | `sig_mail/ttl` | ops | retention impulse emitted when a TTL deadline matures. |
 | `sig_mail/route` | ops | optional routing impulse for fan-out or mirrors. |
+| `sig_cei/*` | ops | error-channel signals dispatched by CEI helper emissions and consumed by bound enzymes. |
 | `state` | ops | current logical state (`ist:*`) stored on an operation root. |
 | `status` | ops | terminal status (`sts:*`) recorded under `/close/status`. |
 | `sts:cnl` | ops | cancellation status recorded when an operation is aborted. |

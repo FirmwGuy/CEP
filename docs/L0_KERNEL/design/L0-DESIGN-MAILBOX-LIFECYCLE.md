@@ -20,7 +20,7 @@ Mailboxes sit at the crossroads of Layer‑0 identity, policy, and retention. Th
 - **Decision:** Store expiry buckets inside `meta/runtime/` as dictionaries of links. Separate beat (`expiries/<beat>/`) and wallclock (`exp_wall/<unix_ns>/`) queues so enzymes can partition work and honour whichever policy triggered the expiry. `cep_mailbox_plan_retention()` returns copies of due IDs plus hints (`has_future_*`) so the enzyme can reschedule itself without re-traversing buckets mid-beat. A FIXME remains to hand off long-lived backlog management to L1 regulators when that infrastructure exists.
 - **Alternatives considered:** Streaming buckets straight from `/rt/analytics` would couple policy to analytics retention and break replay. Deleting messages inline without staging would violate the append-only contract. The current queue design keeps retention work explicit, auditable, and safe to replay.
 
-## Q&A
+## Global Q&A
 - **Why are expiry buckets links instead of copies?** Links let us preserve the append-only store, avoid duplicating payload state, and keep retention enzymes focused solely on scheduling. If a message moves or is recomputed, link resolution still hits the current canonical location.
 - **What happens if spacing analytics are disabled?** The resolver records that heuristics were skipped. Retention enzymes still get wallclock deadlines, and tests can toggle `cep_mailbox_disable_wallclock(true)` to maintain predictable behaviour without analytics data.
 - **Could we share buckets across mailboxes?** Not without sacrificing locality. Keeping buckets inside each mailbox root keeps per-mailbox policy changes isolated and lets packs manage retention without scanning global structures.

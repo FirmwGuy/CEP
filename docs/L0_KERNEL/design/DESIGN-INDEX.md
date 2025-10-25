@@ -12,6 +12,7 @@ This index tracks the planned and published design papers for Layer 0 so contr
 | `docs/L0_KERNEL/design/L0-DESIGN-PROXY-AND-HANDLES.md` | Published | Proxy cells, external handles, library adapters | Covers lifecycle guarantees for foreign resources and serialization hooks. |
 | `docs/L0_KERNEL/design/L0-DESIGN-NAMEPOOL-AND-NAMING.md` | Published | Domain/tag encoding, namepool lifecycle | Document glob rules, intern semantics, and collision handling (future work). |
 | `docs/L0_KERNEL/design/L0-DESIGN-ORGANS-AND-LIFECYCLE.md` | Published | Organ descriptors, ctor/dtor/validator lifecycle | Capture invariants for organ authoring, validation, and bootstrap/teardown sequencing. |
+| `docs/L0_KERNEL/design/L0-DESIGN-CEI.md` | Published | Common Error Interface helper, diagnostics mailbox, severity policies | Records why CEI centralises error emission, how severity affects OPS/shutdown, and where diagnostics live. |
 
 ## Global Q&A
 - **How do I request a new design paper?** Add it to this index with status `Planned`, then follow the design guide to scope and author the document.

@@ -21,7 +21,7 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/TOOLS.md` | Repository helper scripts | `tools/` utilities | Live | Update when adding new scripts or changing entry points. |
 | `docs/L0_KERNEL/L0-OVERVIEW.md` | Layer 0 umbrella overview and topic summaries | Cells, stores, lifecycle, topics/ subtree | Live | Now includes paragraphs summarising each topic under `topics/`. |
 | `docs/L0_KERNEL/L0-ALGORITHMS.md` | Cross-cutting algorithm explanations | Append-only history, links, traversal, serialization | Live | Add algorithm entries as new cross-cutting behaviours ship. |
-| `docs/L0_KERNEL/L0-INTEGRATION-GUIDE.md` | Integration patterns (enzymes, serialization, proxies) | Heartbeat, registry, serialization stack | Live | Legacy CEI references removed; reflects current APIs. |
+| `docs/L0_KERNEL/L0-INTEGRATION-GUIDE.md` | Integration patterns (enzymes, serialization, proxies) | Heartbeat, registry, serialization stack | Live | Includes CEI helper usage alongside OPS and heartbeat integration patterns. |
 | `docs/L0_KERNEL/L0-TUNING-NOTES.md` | Performance knobs and anti-patterns | Storage selection, history tuning, serialization parameters | Live | Verify recommendations whenever benchmarks change. |
 | `docs/L0_KERNEL/design/DESIGN-INDEX.md` | Status tracker for design docs | Layer 0 subsystems | Live | Lists published and planned design papers. |
 | `docs/L0_KERNEL/design/L0-DESIGN-GUIDE.md` | Structure for new Design documents | Design rationale workflow | Live | Use as the template when adding `L0-DESIGN-*.md` papers. |
@@ -31,6 +31,7 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/L0_KERNEL/design/L0-DESIGN-PROXY-AND-HANDLES.md` | Proxy/handle rationale | External resources, adapters | Live | Captures lifecycle, serialization, and error propagation rules. |
 | `docs/L0_KERNEL/design/L0-DESIGN-NAMEPOOL-AND-NAMING.md` | Naming rationale | Domain/tag encoding, namepool lifecycle | Live | Explains glob semantics, reference IDs, and replay guarantees. |
 | `docs/L0_KERNEL/design/L0-DESIGN-ORGANS-AND-LIFECYCLE.md` | Organ rationale | Descriptor lifecycle, validators/destructors | Live | Records boot/shutdown sequencing and validation rules. |
+| `docs/L0_KERNEL/design/L0-DESIGN-CEI.md` | CEI rationale | Diagnostics mailbox bootstrap, severity mapping, shutdown policy | Live | Explains why CEI centralises error facts and how severities drive OPS/shutdown actions. |
 | `docs/L0_KERNEL/L0_ROADMAP.md` | Planned Layer 0 refactors and milestones | Kernel backlog | Planned | Outlines work-in-progress items; consult before large kernel edits. |
 | `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md` | Append-only semantics and idempotent operations | Cell mutation paths | Live | Coordinate with `src/l0_kernel/cep_cell.c`. |
 | `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md` | Binding enzymes to cells and inheritance rules | Enzyme registry, timeline storage | Live | Matches current binding propagation logic. |
@@ -39,6 +40,8 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/L0_KERNEL/topics/EXTERNAL-LIBRARIES-INTERFACE.md` | Adapters for foreign libraries and handles | Proxy/library ops | Live | Ensure adapter API changes are reflected. |
 | `docs/L0_KERNEL/topics/GLOB-MATCHING.md` | Domain/tag glob semantics | Naming helpers | Live | Keep examples aligned with `cep_id_matches`. |
 | `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` | Heartbeat phases and enzyme scheduling | Heartbeat engine, registry | Live | Sync with agenda ordering rules. |
+| `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` | Mailbox lifecycle | `cep_mailbox_*`, retention planners | Live | Documents diagnostics mailbox defaults and CEI TTL interplay. |
+| `docs/L0_KERNEL/topics/CEI.md` | Common Error Interface helper and diagnostics mailbox usage | `cep_cei_emit`, `sig_cei/*`, OPS severity policies | Live | Pair with the CEI design note before changing error reporting. |
 | `docs/L0_KERNEL/topics/IO-STREAMS-AND-FOREIGN-RESOURCES.md` | Streaming payloads and foreign resource lifecycles | Proxy streams, CAS, transaction helpers | Live | Mentions mailroom legacy only as historical context. |
 | `docs/L0_KERNEL/topics/LINKS-AND-SHADOWING.md` | Link lifecycle and shadow bookkeeping | `cep_link_*`, `cep_shadow_*` | Live | Verify when link storage changes. |
 | `docs/L0_KERNEL/topics/LOCKING.md` | Data/store locking rules | Lock hierarchy checks | Live | Matches `cep_cell_*_locked_hierarchy`. |

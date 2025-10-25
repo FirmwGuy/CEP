@@ -30,6 +30,7 @@ What this means in simple terms:
   - `signal_path` — the “what” of the request (kind, intent, domain).
   - `target_path` — the “where” (cell to act upon).
 - Example: `(signal=/signals/image/thumbnail, target=/env/fs/projects/p1/img123.jpg)`
+- CEI uses the reserved `sig_cei/<sev>` namespace so any component can subscribe to error severities. `cep_cei_emit()` enqueues those impulses for `cep_heartbeat_next()`, and they appear in the beat ledger (`rt/beat/<n>/impulses`) like any other signal.
 
 ### Registering Enzymes
 - API sketch

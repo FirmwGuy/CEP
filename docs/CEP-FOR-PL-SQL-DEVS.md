@@ -22,7 +22,7 @@ If you know how to keep Oracle packages humming, you already understand most of 
   - Instead of `USER_OBJECTS`, CEP tracks identifiers through `cep_namepool_*` helpers. Interpreting a `CEP_NAMING_REFERENCE` is similar to looking up a `NAME_ID` in a support table. Use the namepool when your identifiers exceed the 11-character word limit or when you need glob-aware patterns (`CEP_ID_GLOB_MULTI`).
 
 - **Error handling and CEI**
-  - The legacy CEI (CEP Error Impulses) channel was removed. Route diagnostics through your own enzymes (for example, append summaries under `/journal/<pack>` or `/journal/events`) and log any required follow-up in your pack planning docs until the unified diagnostics surface ships.
+  - Layer 0 now ships the Common Error Interface. Call `cep_cei_emit` when you would have raised an exception: it builds a structured error fact, drops it into the diagnostics mailbox at `/data/mailbox/diag`, and can optionally emit `sig_cei/*` signals or close OPS dossiers. Packs that need private channels can still create their own mailboxes; just pass the root into `cep_cei_emit`.
 
 - **Replacing packages**
   - Migrate package state by modelling it as a subtree under `/data/<package>` with child stores for configuration, caches, and derived facts. Package procedures map to enzymes and helper functions map to plain C utilities that operate on cells.

@@ -26,6 +26,9 @@ Use it whenever you are onboarding a teammate or jumping back into kernel code a
 - Runtime and scheduling
   - `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` — Beat model, scheduling, enzyme contracts, replay safety.
   - `docs/ROOT-DIRECTORY-LAYOUT.md` — Recommended root structure, journal/CAS, visibility rules.
+  - `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` — Operations timeline, watcher lifecycle, shutdown sequencing rationale.
+  - `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` — Mailbox helpers, TTL planning, retention metadata.
+  - `docs/L0_KERNEL/topics/CEI.md` — Common Error Interface helper, diagnostics mailbox defaults, severity policy integration.
 - External I/O
   - `docs/L0_KERNEL/topics/EXTERNAL-LIBRARIES-INTERFACE.md` — Access to foreign structures; handles vs snapshots; zero‑copy rules.
   - `docs/L0_KERNEL/topics/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect log, streams, preconditions, CAS, replay modes.
@@ -58,6 +61,15 @@ Use it whenever you are onboarding a teammate or jumping back into kernel code a
   - Storage: linked list, array, packed queue, red-black tree, octree.
   - Indexing: insertion order, by name, by user compare, by hash+compare.
 - cepCell: The unit node. Holds metacell, optional data or link, and optional store for children.
+
+### Operations timeline (OPS) essentials
+Long-running work, lifecycle boot/shutdown, and pack-specific jobs should surface through the OPS API so tooling can observe progress deterministically. Use `cep_op_start(verb_dt, target_path, mode_dt, payload, size, ttl)` to open a dossier under `/rt/ops/<oid>`, then append state/history entries with the helper routines in `cep_ops.c` or close it via `cep_op_close(oid, status_dt, summary, len)`. Watchers attach with `cep_op_await(oid, want_dt, ttl, continuation_dt, payload, size)` and fire during heartbeat commit, eliminating the need for polling. Always consult `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` before adjusting sequencing so envelope creation, history ordering, and watcher TTL behaviour stay deterministic.
+
+### Diagnostics mailbox and CEI helper
+`cep_cei_emit` is the canonical path for recording structured Error Facts. It resolves the diagnostics mailbox at `/data/mailbox/diag` (or a mailbox you pass in), stages an immutable `err/` branch, records TTL metadata via `cep_mailbox_record_expiry`, and optionally emits `sig_cei/<severity>` impulses or closes an OPS dossier when `attach_to_op` is set. Always ensure the heartbeat has been configured (`cep_heartbeat_configure`) and started so the diagnostics mailbox exists, and favour `cep_cell_put_*` helpers when adding fields to avoid breaking hashing. The mailbox topic and CEI paper detail TTL precedence, retention bookkeeping, and severity policy—revisit them before altering message layout or introducing new severities.
+
+### Lifecycle scopes and bootstrap cadence
+Kernel startup is deterministic: call `cep_l0_bootstrap()` to provision the cell system, heartbeat, diagnostics mailbox, and namepool; then configure the heartbeat (`cep_heartbeat_configure`), run `cep_heartbeat_startup`, and begin beats via `cep_heartbeat_begin` or `cep_heartbeat_step`. Each scope (`kernel`, `store`, `packs`) reports readiness through the `op/boot` dossier so packs can await specific states. Shutdown mirrors the sequence: `cep_heartbeat_emit_shutdown` opens `op/shdn`, lifecycle scopes unwind in reverse order, and shutdown closes with `sts:ok` unless a fatal CEI emission forces failure. The startup/shutdown topic documents the published OIDs and watcher guidance—skim it before modifying bootstrap helpers or writing tests that depend on lifecycle signalling.
 
 ### Naming vs Structural Tags
 - `cell->metacell.dt` carries the cell's own name (domain + tag). For dictionary children this matches the key assigned by the parent.
@@ -279,4 +291,3 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
 - **Where should I look when performance slips?** Profile the relevant store first, then cross-reference `docs/L0_KERNEL/L0-TUNING-NOTES.md` to adjust storage or payload choices before reaching for new helpers.
 - **When do I need to update other docs?** After touching kernel internals, check `docs/L0_KERNEL/L0-OVERVIEW.md`, this handbook, and any affected topic files so the narrative matches the code.
 - **What if I discover an undocumented convention?** Add it to the Style Guide section here, extend the lexicon if naming changes, and note the update in `docs/DOCS-INDEX.md` for the next audit.
-

@@ -8,6 +8,7 @@ Think of CEP's runtime as a pair of operations that bookend every session. `op/b
 - `cep_l0_bootstrap()` remains the public entry point. It calls `cep_cell_system_ensure()`, `cep_heartbeat_bootstrap()`, and `cep_namepool_bootstrap()` in order. Each helper marks its lifecycle scope ready, which now drives the `op/boot` timeline.
 - `cep_cell_system_ensure()` initialises the root cell if needed. On shutdown `cep_cell_system_shutdown()` reverses the work so the next bootstrap starts cleanly.
 - `cep_heartbeat_bootstrap()` creates the always-on directories (`/sys`, `/rt`, `/journal`, `/env`, `/cas`, `/lib`, `/data`, `/tmp`, `/enzymes`), ensures the enzyme registry exists, registers built-in cell operation enzymes, and starts the boot operation if the policy flag `boot_ops` is enabled (it is required for new builds). The helper refreshes lifecycle bookkeeping and leaves the kernel scope marked ready.
+- During bootstrap the diagnostics mailbox at `/data/mailbox/diag` is created so CEI emissions have a deterministic home even before packs register their own mailboxes.
 - `cep_namepool_bootstrap()` depends on the kernel scope. Once it succeeds, the boot operation records the final startup phase and closes with `sts:ok`.
 
 ### Phase 1 — Starting the heartbeat loop
@@ -30,6 +31,7 @@ Watchers can attach to any of these states (or `sts:ok`) via `cep_op_await()`. R
 
 ### Phase 3 — Shutdown cascade
 - `cep_heartbeat_emit_shutdown()` is the orderly teardown path. It ensures `op/shdn` exists, walks lifecycle scopes in teardown order, and lets the heartbeat advance the remaining states on subsequent beats. No legacy `CEP:sig_sys` pulses are emitted.
+- Fatal CEI emissions call `cep_heartbeat_emit_shutdown()` automatically after recording the Error Fact, ensuring shutdown always runs through the documented operation timeline.
 - `cep_heartbeat_shutdown()` wraps the orderly teardown, resets runtime scratch buffers, clears topology overrides, and calls `cep_cell_system_shutdown()` so the next bootstrap starts from a clean root.
 
 #### Shutdown operation timeline (`/rt/ops/<shdn_oid>`)
@@ -79,4 +81,3 @@ Resolve the published OIDs and inspect the corresponding operation branches. His
 
 **Q: What happens if the shutdown encounter fails?**  
 `cep_boot_ops_close_shutdown()` closes the operation with `sts:fail` (and final `ist:fail`) if any state transition or watcher notification fails. Awaiters waiting on `sts:ok` will instead receive the failure status on the next beat.
-

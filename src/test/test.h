@@ -68,6 +68,11 @@ MunitResult test_organ_dossier_sequence(const MunitParameter params[], void* use
 MunitResult test_organ_constructor_bootstrap(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_organ_constructor_destructor_cycles(const MunitParameter params[], void* user_data_or_fixture);
 
+MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_cei_signal_ledger(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_cei_op_failure(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_cei_fatal_shutdown(const MunitParameter params[], void* user_data_or_fixture);
+
 extern MunitSuite lock_suites[];
 
 static inline void test_runtime_shutdown(void) {
