@@ -16,7 +16,7 @@ TARGET := $(BIN_DIR)/cep_tests
 
 # Tools and flags
 CC ?= gcc
-CFLAGS ?= -g -Wall -D_GNU_SOURCE -fplan9-extensions \
+CFLAGS ?= -g -Wall -std=gnu11 -D_GNU_SOURCE -fplan9-extensions \
           -I$(SRCDIR)/l0_kernel -I$(SRCDIR)/l0_kernel/storage \
           -I$(SRCDIR)/enzymes \
           -I$(SRCDIR)/test
@@ -41,22 +41,12 @@ ifeq ($(USE_LIBZIP),1)
 endif
 
 # Sources and objects (core kernel plus tests)
-CORE_SRC := $(SRCDIR)/l0_kernel/cep_cell.c \
-            $(SRCDIR)/l0_kernel/cep_cell_stream.c \
-            $(SRCDIR)/l0_kernel/cep_cell_system.c \
-            $(SRCDIR)/l0_kernel/cep_identifier.c \
-            $(SRCDIR)/l0_kernel/cep_enzyme.c \
-            $(SRCDIR)/l0_kernel/cep_enzyme_bindings.c \
-            $(SRCDIR)/l0_kernel/cep_heartbeat.c \
-            $(SRCDIR)/l0_kernel/cep_heartbeat_queue.c \
-            $(SRCDIR)/l0_kernel/cep_namepool.c \
-            $(SRCDIR)/l0_kernel/cep_serialization.c \
-            $(SRCDIR)/l0_kernel/stream/cep_stream_effects.c \
-            $(SRCDIR)/l0_kernel/stream/cep_stream_stdio.c \
-            $(SRCDIR)/enzymes/cep_cell_operations.c \
+CORE_SRC := $(wildcard $(SRCDIR)/l0_kernel/*.c) \
+            $(wildcard $(SRCDIR)/l0_kernel/stream/*.c) \
+            $(wildcard $(SRCDIR)/enzymes/*.c)
 
-ifeq ($(USE_LIBZIP),1)
-  CORE_SRC += $(SRCDIR)/l0_kernel/stream/cep_stream_zip.c
+ifeq ($(USE_LIBZIP),0)
+  CORE_SRC := $(filter-out $(SRCDIR)/l0_kernel/stream/cep_stream_zip.c,$(CORE_SRC))
 endif
 
 # Collect test sources. The fallback bundle skips libzip/L2 fixtures; the Meson
