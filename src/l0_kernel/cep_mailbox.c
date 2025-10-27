@@ -307,6 +307,9 @@ bool cep_mailbox_select_message_id(cepCell* mailbox_root,
     memset(out_id, 0, sizeof *out_id);
 
     cepCell* resolved_mailbox = cep_mailbox_resolve((cepCell*)mailbox_root);
+    CEP_DEBUG_PRINTF("[mailbox_select] root=%p resolved=%p\n",
+                     (void*)mailbox_root,
+                     (void*)resolved_mailbox);
     if (!resolved_mailbox) {
         return false;
     }

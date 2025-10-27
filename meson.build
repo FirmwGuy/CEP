@@ -135,6 +135,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_organ_dossiers.c',
     'src/test/l0_kernel/test_serialization_randomized.c',
     'src/test/l0_kernel/test_streams_randomized.c',
+    'src/test/l0_kernel/test_prr.c',
     )
   test_dependencies = []
   if zip_dep.found()

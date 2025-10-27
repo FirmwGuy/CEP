@@ -124,6 +124,7 @@ bool cep_heartbeat_impulse_queue_append(cepHeartbeatImpulseQueue* queue, const c
             return false;
         }
     }
+    record->qos = impulse->qos;
 
     queue->count += 1u;
     return true;
@@ -136,4 +137,3 @@ void cep_heartbeat_impulse_queue_swap(cepHeartbeatImpulseQueue* a, cepHeartbeatI
 
     CEP_SWAP(*a, *b);
 }
-

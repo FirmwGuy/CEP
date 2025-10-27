@@ -71,6 +71,7 @@ MunitResult test_cell_operations_enzymes(const MunitParameter params[], void* us
         cepImpulse impulse = {
             .signal_path = signal_path,
             .target_path = NULL,
+        .qos = CEP_IMPULSE_QOS_NONE,
         };
         const cepEnzymeDescriptor* resolved[1] = {0};
         size_t found = cep_enzyme_resolve(registry, &impulse, resolved, cep_lengthof(resolved));

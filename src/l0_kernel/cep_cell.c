@@ -9,12 +9,11 @@
 #include "cep_namepool.h"
 
 #include <stdarg.h>
+#include <dlfcn.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
-
-extern cepStore* cep_ops_debug_history_store;
 
 typedef struct _cepStoreHistoryEntry cepStoreHistoryEntry;
 typedef struct _cepStoreHistory      cepStoreHistory;
@@ -1804,6 +1803,10 @@ cepCell* cep_cell_ensure_dictionary_child(cepCell* parent, const cepDT* name, un
     }
 
     if (cep_cell_is_immutable(owner)) {
+        CEP_DEBUG_PRINTF_STDOUT("[ensure_dict_child] immutable parent=%p domain=%016llx tag=%016llx\n",
+                                (void*)owner,
+                                name ? (unsigned long long)cep_id(name->domain) : 0ull,
+                                name ? (unsigned long long)cep_id(name->tag) : 0ull);
         return NULL;
     }
 
@@ -1812,11 +1815,18 @@ cepCell* cep_cell_ensure_dictionary_child(cepCell* parent, const cepDT* name, un
     /* Ensure the child is a writable dictionary before mutating; see the
        append-only guidelines in docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md. */
     if (!cep_cell_require_store(&parent, NULL)) {
+        CEP_DEBUG_PRINTF_STDOUT("[ensure_dict_child] require_store_failed parent=%p\n", (void*)owner);
         return NULL;
     }
 
     cepDT lookup = cep_dt_clean(name);
     cepCell* child = cep_cell_find_by_name(parent, &lookup);
+    if (!child) {
+        cepCell* veiled = cep_cell_find_by_name_all(parent, &lookup);
+        if (veiled) {
+            child = veiled;
+        }
+    }
     if (child) {
         cepCell* resolved = cep_cell_resolve(child);
         if (!resolved || !cep_cell_is_normal(resolved)) {
@@ -1833,13 +1843,56 @@ cepCell* cep_cell_ensure_dictionary_child(cepCell* parent, const cepDT* name, un
         if (!cep_cell_require_dictionary_store(&resolved)) {
             return NULL;
         }
+
+        if (resolved->store) {
+            if (resolved->store->owner != resolved) {
+                resolved->store->owner = resolved;
+            }
+            if (!resolved->store->writable) {
+                resolved->store->writable = 1u;
+            }
+            if (resolved->store->lock) {
+                resolved->store->lock = 0u;
+                resolved->store->lockOwner = NULL;
+            }
+            if (resolved->store->created == 0u) {
+                resolved->store->created = resolved->created
+                    ? resolved->created
+                    : cep_cell_timestamp_next();
+            }
+            if (resolved->store->deleted) {
+                resolved->store->deleted = 0u;
+            }
+        }
+
+        if (resolved->metacell.veiled) {
+            resolved->metacell.veiled = 0u;
+        }
+        if (resolved->deleted) {
+            resolved->deleted = 0u;
+        }
+        if (resolved->created == 0u) {
+            resolved->created = cep_cell_timestamp_next();
+        }
+        if (resolved->metacell.immutable) {
+            resolved->metacell.immutable = 0u;
+        }
+
         return resolved;
     }
 
     cepDT name_copy = lookup;
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
     unsigned store_kind = storage ? storage : CEP_STORAGE_RED_BLACK_T;
-    return cep_dict_add_dictionary(parent, &name_copy, &dict_type, store_kind);
+    cepCell* added = cep_dict_add_dictionary(parent, &name_copy, &dict_type, store_kind);
+    if (!added) {
+        CEP_DEBUG_PRINTF_STDOUT("[ensure_dict_child] add_dictionary_failed parent=%p name=%016llx/%016llx store_kind=%u\n",
+                                (void*)parent,
+                                (unsigned long long)cep_id(name_copy.domain),
+                                (unsigned long long)cep_id(name_copy.tag),
+                                store_kind);
+    }
+    return added;
 }
 
 cepCell* cep_cell_ensure_list_child(cepCell* parent, const cepDT* name, unsigned storage) {
@@ -1924,7 +1977,7 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
     cepDT lookup = cep_dt_clean(field);
     cepCell* existing = cep_cell_find_by_name(owner, &lookup);
     if (existing) {
-        cep_cell_remove_hard(owner, existing);
+        cep_cell_remove_hard(existing, NULL);
     }
 
     size_t len = strlen(text) + 1u;
@@ -2777,7 +2830,9 @@ void cep_store_delete_children_hard(cepStore* store) {
     }
 
     store->chdCount = 0;
-    store->autoid   = 1;
+    if (store->autoid == 0u) {
+        store->autoid = 1u;
+    }
 
     if (had_children)
         store->modified = cep_cell_timestamp_next();
@@ -2875,35 +2930,13 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
         assert(cep_store_valid(store) && !cep_cell_is_void(child));
     }
 
-#ifndef NDEBUG
-    static size_t history_log_budget = 0;
-    bool trace_history = false;
-    if (cep_ops_debug_history_store && store == cep_ops_debug_history_store) {
-        trace_history = true;
-    } else if (!cep_ops_debug_history_store && history_log_budget < 1000) {
-        trace_history = true;
+    if (cep_store_owner_is_immutable(store)) {
+        return NULL;
     }
-    if (trace_history) {
-    CEP_DEBUG_PRINTF_STDOUT("[history] add begin store=%p target=%p ctx=%zu chd=%zu owner_tag=%llu storage=%u indexing=%u\n",
-                (void*)store,
-                (void*)cep_ops_debug_history_store,
-                (size_t)context,
-                ((cepStoreNode*)store)->chdCount,
-                store->owner ? (unsigned long long)((cepCell*)store->owner)->metacell.dt.tag : 0ull,
-                store->storage,
-                store->indexing);
-        history_log_budget++;
+
+    if (!store->writable || cep_store_hierarchy_locked(store->owner)) {
+        return NULL;
     }
-#endif
-
-    if (cep_store_owner_is_immutable(store))
-        return NULL;
-
-    if (cep_store_owner_is_immutable(store))
-        return NULL;
-
-    if (!store->writable || cep_store_hierarchy_locked(store->owner))
-        return NULL;
 
     cepCell* existing = NULL;
 
@@ -2920,6 +2953,8 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
     }
 
     if (existing) {
+        const cepDT* existing_name = cep_cell_get_name(existing);
+        const cepDT* child_name = cep_cell_get_name(child);
         if (cep_cell_structural_equal(existing, child)) {
             cep_cell_finalize_hard(child);
             CEP_0(child);
@@ -2937,12 +2972,6 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
       {
         assert(store->chdCount >= (size_t)context);
         if (store->chdCount < (size_t)context) {
-            CEP_DEBUG_PRINTF_STDOUT("[context] violation store=%p chd=%zu ctx=%zu storage=%u owner_tag=%llu\n",
-                   (void*)store,
-                   ((cepStoreNode*)store)->chdCount,
-                   (size_t)context,
-                   store->storage,
-                   store->owner ? (unsigned long long)((cepCell*)store->owner)->metacell.dt.tag : 0ull);
             return NULL;
         }
 
@@ -2962,11 +2991,6 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
             } else if (index == 0u) {
                 cell = cep_store_append_child(store, true, child);
             } else {
-                CEP_DEBUG_PRINTF_STDOUT("[packedq] unsupported insert store=%p ctx=%zu chd=%zu owner=%p\n",
-                       (void*)store,
-                       index,
-                       store->chdCount,
-                       (void*)store->owner);
                 return NULL;
             }
             break;
@@ -3035,6 +3059,10 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
       }
     }
 
+    if (!cell) {
+        return NULL;
+    }
+
     store_check_auto_id(store, cell);
 
     //cep_cell_transfer(child, cell);
@@ -3046,17 +3074,6 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
     store->totCount++;
 
     store->modified = cep_cell_timestamp_next();   // Append-only trail lives in timestamps.
-
-#ifndef NDEBUG
-    static size_t history_after_budget = 0;
-    if (cep_ops_debug_history_store == store && history_after_budget < 50) {
-        CEP_DEBUG_PRINTF_STDOUT("[history] after store=%p chd=%zu owner_tag=%llu\n",
-               (void*)store,
-               ((cepStoreNode*)store)->chdCount,
-               store->owner ? (unsigned long long)((cepCell*)store->owner)->metacell.dt.tag : 0ull);
-        history_after_budget++;
-    }
-#endif
 
 #ifndef NDEBUG
     (void)context;
@@ -3474,6 +3491,87 @@ typedef struct {
     cepEntry*   userEntry;
 } cepTraverseFilterCtx;
 
+static bool cep_cell_lookup_beat_op_stamp(cepBeatNumber beat, cepOpCount* out) {
+    if (!out || beat == CEP_BEAT_INVALID || beat >= CEP_AUTOID_MAX) {
+        return false;
+    }
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (!rt_root || cep_cell_is_void(rt_root)) {
+        return false;
+    }
+
+    cepCell* beat_root = cep_cell_find_by_name(rt_root, CEP_DTAW("CEP", "beat"));
+    if (!beat_root || cep_cell_is_void(beat_root)) {
+        return false;
+    }
+
+    beat_root = cep_cell_resolve(beat_root);
+    if (!beat_root || cep_cell_is_void(beat_root) || !beat_root->store) {
+        return false;
+    }
+
+    cepDT beat_name = {
+        .domain = CEP_ACRO("HB"),
+        .tag = cep_id_to_numeric((cepID)(beat + 1u)),
+        .glob = 0u,
+    };
+
+    cepCell* beat_cell = cep_cell_find_by_name(beat_root, &beat_name);
+    if (!beat_cell || cep_cell_is_void(beat_cell)) {
+        return false;
+    }
+
+    beat_cell = cep_cell_resolve(beat_cell);
+    if (!beat_cell || cep_cell_is_void(beat_cell)) {
+        return false;
+    }
+
+    cepCell* meta = cep_cell_find_by_name(beat_cell, CEP_DTAW("CEP", "meta"));
+    if (!meta || cep_cell_is_void(meta)) {
+        return false;
+    }
+
+    meta = cep_cell_resolve(meta);
+    if (!meta || cep_cell_is_void(meta)) {
+        return false;
+    }
+
+    cepCell* runtime = cep_cell_find_by_name(meta, CEP_DTAW("CEP", "runtime"));
+    if (!runtime || cep_cell_is_void(runtime)) {
+        return false;
+    }
+
+    runtime = cep_cell_resolve(runtime);
+    if (!runtime || cep_cell_is_void(runtime)) {
+        return false;
+    }
+
+    cepCell* stamp_cell = cep_cell_find_by_name(runtime, CEP_DTAW("CEP", "op_stamp"));
+    if (!stamp_cell || cep_cell_is_void(stamp_cell)) {
+        return false;
+    }
+
+    stamp_cell = cep_cell_resolve(stamp_cell);
+    if (!stamp_cell || !cep_cell_has_data(stamp_cell)) {
+        return false;
+    }
+
+    const char* stored_text = (const char*)cep_cell_data(stamp_cell);
+    if (!stored_text) {
+        return false;
+    }
+
+    char* endptr = NULL;
+    uint64_t parsed = strtoull(stored_text, &endptr, 10);
+    if (!endptr || *endptr != '\0') {
+        return false;
+    }
+
+    *out = (cepOpCount)parsed;
+    return true;
+}
+
 static bool cep_traverse_visible_filter(cepEntry* entry, void* context) {
     cepTraverseFilterCtx* ctx = context;
     if (!ctx || !entry)
@@ -3500,10 +3598,82 @@ typedef struct {
     bool            aborted;
 } cepTraversePastCtx;
 
+static inline bool cep_cell_horizon_exempt(const cepCell* cell) {
+    if (!cell) {
+        return false;
+    }
 
-static inline const cepDataNode* cep_data_chain_find_snapshot(const cepData* data, cepOpCount snapshot) {
+    const cepHeartbeatTopology* topology = cep_heartbeat_topology();
+    if (!topology) {
+        return false;
+    }
+
+    cepCell* rt_root = topology->rt;
+    cepCell* sys_root = topology->sys;
+    const cepCell* current = cell;
+    while (current) {
+        if ((rt_root && current == rt_root) || (sys_root && current == sys_root)) {
+            return true;
+        }
+        const cepStore* parent = current->parent;
+        if (!parent) {
+            break;
+        }
+        current = parent->owner;
+    }
+
+    return false;
+}
+
+static inline cepOpCount cep_cell_effective_snapshot(const cepCell* cell, cepOpCount snapshot) {
+    if (snapshot) {
+        return snapshot;
+    }
+
+    if (cep_cell_horizon_exempt(cell)) {
+        return 0u;
+    }
+
+    cepBeatNumber horizon = cep_runtime_view_horizon();
+    if (horizon == CEP_BEAT_INVALID) {
+        return 0u;
+    }
+
+    cepOpCount horizon_floor = cep_runtime_view_horizon_floor_stamp();
+    if (!horizon_floor && horizon > 0u) {
+        cep_cell_lookup_beat_op_stamp(horizon - 1u, &horizon_floor);
+    }
+    if (!horizon_floor && horizon == 0u) {
+        horizon_floor = cep_runtime_view_horizon_stamp();
+    }
+    if (horizon_floor) {
+        return horizon_floor;
+    }
+
+    cepOpCount horizon_stamp = cep_runtime_view_horizon_stamp();
+    if (horizon_stamp > 1u) {
+        return horizon_stamp - 1u;
+    }
+
+    if (horizon > 0u) {
+        cepOpCount beat_stamp = 0u;
+        if (cep_cell_lookup_beat_op_stamp(horizon, &beat_stamp) && beat_stamp > 0u) {
+            return beat_stamp - 1u;
+        }
+        return (cepOpCount)(horizon - 1u);
+    }
+
+    return 1u;
+}
+
+
+static inline const cepDataNode* cep_data_chain_find_snapshot(const cepData* data,
+                                                              const cepCell* owner,
+                                                              cepOpCount snapshot) {
     if (!data)
         return NULL;
+
+    snapshot = cep_cell_effective_snapshot(owner, snapshot);
 
     if (data->deleted) {
         cepOpCount deleted = data->deleted;
@@ -3613,6 +3783,8 @@ bool cep_cell_visible_past(const cepCell* cell, cepOpCount timestamp, cepVisibil
     if (!cell)
         return false;
 
+    timestamp = cep_cell_effective_snapshot(cell, timestamp);
+
     bool alive = cep_cell_alive_at(cell, timestamp);
     if (!alive && !(mask & CEP_VIS_INCLUDE_DEAD))
         return false;
@@ -3674,20 +3846,112 @@ static cepCell* cep_txn_ensure_bucket(cepCell* root) {
 
     cepCell* meta = cep_cell_find_by_name(root, dt_meta_name());
     if (!meta) {
+        cepCell* meta_all = cep_cell_find_by_name_all(root, dt_meta_name());
+        if (meta_all) {
+            meta = meta_all;
+        }
+    }
+    if (!meta) {
         cepDT meta_name = *dt_meta_name();
         cepDT dict_type = *dt_dictionary_type();
         meta = cep_cell_add_dictionary(root, &meta_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
         if (!meta)
             return NULL;
+    } else {
+        cepCell* canonical = cep_cell_resolve(meta);
+        if (!canonical || !cep_cell_is_normal(canonical)) {
+            return NULL;
+        }
+        if (!cep_cell_require_dictionary_store(&canonical)) {
+            return NULL;
+        }
+        if (canonical->store) {
+            if (canonical->store->owner != canonical) {
+                canonical->store->owner = canonical;
+            }
+            if (!canonical->store->writable) {
+                canonical->store->writable = 1u;
+            }
+            if (canonical->store->lock) {
+                canonical->store->lock = 0u;
+                canonical->store->lockOwner = NULL;
+            }
+            if (canonical->store->created == 0u) {
+                canonical->store->created = canonical->created
+                    ? canonical->created
+                    : cep_cell_timestamp_next();
+            }
+            if (canonical->store->deleted) {
+                canonical->store->deleted = 0u;
+            }
+        }
+        /* Preserve veiled status; transactions rely on metadata staying veiled
+           until commit completes. */
+        if (canonical->deleted) {
+            canonical->deleted = 0u;
+        }
+        if (canonical->created == 0u) {
+            canonical->created = cep_cell_timestamp_next();
+        }
+        if (canonical->metacell.immutable) {
+            canonical->metacell.immutable = 0u;
+        }
+        meta = canonical;
     }
 
     cepCell* bucket = cep_cell_find_by_name(meta, dt_txn_name());
+    if (!bucket) {
+        cepCell* bucket_all = cep_cell_find_by_name_all(meta, dt_txn_name());
+        if (bucket_all) {
+            bucket = bucket_all;
+        }
+    }
     if (!bucket) {
         cepDT txn_name = *dt_txn_name();
         cepDT dict_type = *dt_dictionary_type();
         bucket = cep_cell_add_dictionary(meta, &txn_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
         if (!bucket)
             return NULL;
+    } else {
+        cepCell* canonical = cep_cell_resolve(bucket);
+        if (!canonical || !cep_cell_is_normal(canonical)) {
+            return NULL;
+        }
+        if (!cep_cell_require_dictionary_store(&canonical)) {
+            return NULL;
+        }
+        if (canonical->store) {
+            if (canonical->store->owner != canonical) {
+                canonical->store->owner = canonical;
+            }
+            if (!canonical->store->writable) {
+                canonical->store->writable = 1u;
+            }
+            if (canonical->store->lock) {
+                canonical->store->lock = 0u;
+                canonical->store->lockOwner = NULL;
+            }
+            if (canonical->store->created == 0u) {
+                canonical->store->created = canonical->created
+                    ? canonical->created
+                    : cep_cell_timestamp_next();
+            }
+            if (canonical->store->deleted) {
+                canonical->store->deleted = 0u;
+            }
+        }
+        /* Leave veiled state untouched so transactional callers control the
+           reveal window explicitly. */
+        if (canonical->deleted) {
+            canonical->deleted = 0u;
+        }
+        if (canonical->created == 0u) {
+            canonical->created = cep_cell_timestamp_next();
+        }
+        if (canonical->metacell.immutable) {
+            canonical->metacell.immutable = 0u;
+        }
+        bucket = canonical;
     }
 
     return bucket;
@@ -3839,6 +4103,8 @@ static inline cepCell* store_find_child_by_name_past(const cepStore* store, cons
 static inline cepCell* store_find_child_by_position_past(const cepStore* store, size_t position, cepOpCount snapshot) {
     assert(cep_store_valid(store));
 
+    snapshot = cep_cell_effective_snapshot(store ? store->owner : NULL, snapshot);
+
     if (!snapshot)
         return store_find_child_by_position(store, position);
 
@@ -3859,6 +4125,8 @@ static inline cepCell* store_find_child_by_position_past(const cepStore* store, 
 
 static inline cepCell* store_find_next_child_by_name_past(const cepStore* store, cepDT* name, uintptr_t* childIdx, cepOpCount snapshot) {
     assert(cep_store_valid(store) && cep_dt_is_valid(name));
+
+    snapshot = cep_cell_effective_snapshot(store ? store->owner : NULL, snapshot);
 
     if (!snapshot)
         return store_find_next_child_by_name(store, name, childIdx);
@@ -4615,6 +4883,39 @@ static void cep_cell_release_contents(cepCell* cell) {
         cepStore* store = cell->store;
         if (store) {
             // ToDo: clean shadow.
+            const cepDT* cell_name = cep_cell_get_name(cell);
+            cepCell* owner_cell = (cepCell*)store->owner;
+            const cepDT* owner_name = owner_cell ? cep_cell_get_name(owner_cell) : NULL;
+            void* caller = __builtin_return_address(0);
+            Dl_info caller_info = {0};
+            const char* caller_name = NULL;
+            const char* caller_image = NULL;
+            uintptr_t caller_offset = 0u;
+            if (dladdr(caller, &caller_info)) {
+                if (caller_info.dli_sname) {
+                    caller_name = caller_info.dli_sname;
+                }
+                if (caller_info.dli_fname) {
+                    caller_image = caller_info.dli_fname;
+                }
+                if (caller_info.dli_fbase) {
+                    caller_offset = (uintptr_t)((const char*)caller - (const char*)caller_info.dli_fbase);
+                }
+            }
+            fprintf(stderr,
+                    "[cell_release] cell=%p name=%016llx/%016llx store=%p owner=%p owner_name=%016llx/%016llx "
+                    "caller=%p caller_sym=%s image=%s offset=0x%zx\n",
+                    (void*)cell,
+                    cell_name ? (unsigned long long)cep_id(cell_name->domain) : 0ull,
+                    cell_name ? (unsigned long long)cep_id(cell_name->tag) : 0ull,
+                    (void*)store,
+                    (void*)owner_cell,
+                    owner_name ? (unsigned long long)cep_id(owner_name->domain) : 0ull,
+                    owner_name ? (unsigned long long)cep_id(owner_name->tag) : 0ull,
+                    caller,
+                    caller_name ? caller_name : "<unknown>",
+                    caller_image ? caller_image : "<unknown>",
+                    (size_t)caller_offset);
             cep_store_del(store);
             cell->store = NULL;
         }
@@ -4658,6 +4959,33 @@ void cep_cell_finalize(cepCell* cell) {
     if (shadowed)
         return;
 
+    void* caller = __builtin_return_address(0);
+    Dl_info caller_info = {0};
+    const char* caller_name = NULL;
+    const char* caller_image = NULL;
+    uintptr_t caller_offset = 0u;
+    if (dladdr(caller, &caller_info)) {
+        if (caller_info.dli_sname) {
+            caller_name = caller_info.dli_sname;
+        }
+        if (caller_info.dli_fname) {
+            caller_image = caller_info.dli_fname;
+        }
+        if (caller_info.dli_fbase) {
+            caller_offset = (uintptr_t)((const char*)caller - (const char*)caller_info.dli_fbase);
+        }
+    }
+    const cepDT* cell_name = cep_cell_get_name(cell);
+    fprintf(stderr,
+            "[cell_finalize] cell=%p name=%016llx/%016llx caller=%p caller_sym=%s image=%s offset=0x%zx\n",
+            (void*)cell,
+            cell_name ? (unsigned long long)cep_id(cell_name->domain) : 0ull,
+            cell_name ? (unsigned long long)cep_id(cell_name->tag) : 0ull,
+            caller,
+            caller_name ? caller_name : "<unknown>",
+            caller_image ? caller_image : "<unknown>",
+            (size_t)caller_offset);
+
     cep_cell_release_contents(cell);
 }
 
@@ -4670,6 +4998,33 @@ void cep_cell_finalize_hard(cepCell* cell) {
 
     if (cep_cell_is_shadowed(cell))
         cep_shadow_break_all(cell);
+
+    void* caller = __builtin_return_address(0);
+    Dl_info caller_info = {0};
+    const char* caller_name = NULL;
+    const char* caller_image = NULL;
+    uintptr_t caller_offset = 0u;
+    if (dladdr(caller, &caller_info)) {
+        if (caller_info.dli_sname) {
+            caller_name = caller_info.dli_sname;
+        }
+        if (caller_info.dli_fname) {
+            caller_image = caller_info.dli_fname;
+        }
+        if (caller_info.dli_fbase) {
+            caller_offset = (uintptr_t)((const char*)caller - (const char*)caller_info.dli_fbase);
+        }
+    }
+    const cepDT* cell_name = cep_cell_get_name(cell);
+    fprintf(stderr,
+            "[cell_finalize_hard] cell=%p name=%016llx/%016llx caller=%p caller_sym=%s image=%s offset=0x%zx\n",
+            (void*)cell,
+            cell_name ? (unsigned long long)cep_id(cell_name->domain) : 0ull,
+            cell_name ? (unsigned long long)cep_id(cell_name->tag) : 0ull,
+            caller,
+            caller_name ? caller_name : "<unknown>",
+            caller_image ? caller_image : "<unknown>",
+            (size_t)caller_offset);
 
     cep_cell_release_contents(cell);
 }
@@ -4699,6 +5054,27 @@ cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
     if (cep_cell_is_immutable(cell))
         return NULL;
     cepCell* inserted = cep_store_add_child(store, context, child);
+    if (!inserted) {
+        const cepDT* child_name = child ? cep_cell_get_name(child) : NULL;
+        cepCell* owner = store ? (cepCell*)store->owner : NULL;
+        const cepDT* owner_name = owner ? cep_cell_get_name(owner) : NULL;
+        fprintf(stderr,
+                "[cell_add] failed parent=%p store=%p store_writable=%u store_lock=%u "
+                "owner=%p owner_name=%016llx/%016llx owner_immutable=%u "
+                "child=%p child_name=%016llx/%016llx context=%zu\n",
+                (void*)cell,
+                (void*)store,
+                store ? (store->writable ? 1u : 0u) : 0u,
+                store ? store->lock : 0u,
+                (void*)owner,
+                owner_name ? (unsigned long long)cep_id(owner_name->domain) : 0ull,
+                owner_name ? (unsigned long long)cep_id(owner_name->tag) : 0ull,
+                owner ? (cep_cell_is_immutable(owner) ? 1u : 0u) : 0u,
+                (void*)child,
+                child_name ? (unsigned long long)cep_id(child_name->domain) : 0ull,
+                child_name ? (unsigned long long)cep_id(child_name->tag) : 0ull,
+                (size_t)context);
+    }
     if (inserted && !inserted->created) {
         cepCell* parentCell = store->owner;
         if (parentCell && !cep_cell_is_floating(parentCell) && !cep_cell_is_veiled(parentCell))
@@ -4714,8 +5090,12 @@ cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
 */
 cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
-    if (cep_cell_is_immutable(cell))
+    if (cep_cell_is_immutable(cell)) {
+        CEP_DEBUG_PRINTF_STDOUT("[cep_cell_append] immutable parent=%p prepend=%d\n",
+                                (void*)cell,
+                                prepend ? 1 : 0);
         return NULL;
+    }
     cepCell* inserted = cep_store_append_child(store, prepend, child);
     if (inserted && !inserted->created) {
         cepCell* parentCell = store->owner;
@@ -4875,7 +5255,17 @@ void* cep_cell_data(const cepCell* cell) {
     if (!data)
         return NULL;
 
-    return cep_data(data);
+    cepOpCount snapshot = cep_cell_effective_snapshot(cell, 0);
+    if (!snapshot) {
+        return cep_data(data);
+    }
+
+    const cepDataNode* node = cep_data_chain_find_snapshot(data, cell, snapshot);
+    if (!node) {
+        return NULL;
+    }
+
+    return cep_data_node_payload(data, node);
 }
 
 
@@ -4887,11 +5277,13 @@ void* cep_cell_data(const cepCell* cell) {
 void* cep_cell_data_find_by_name_past(const cepCell* cell, cepDT* name, cepOpCount snapshot) {
     assert(!cep_cell_is_void(cell) && cep_dt_is_valid(name));
 
-    cepCell* found = cep_cell_find_by_name_past(cell, name, snapshot);
+    cepOpCount effective = cep_cell_effective_snapshot(cell, snapshot);
+
+    cepCell* found = cep_cell_find_by_name_past(cell, name, effective);
     if (!found)
         return NULL;
 
-    if (!snapshot)
+    if (!effective)
         return cep_cell_data(found);
 
     found = cep_link_pull(found);
@@ -4903,7 +5295,7 @@ void* cep_cell_data_find_by_name_past(const cepCell* cell, cepDT* name, cepOpCou
         return NULL;
 
     const cepData* data = found->data;
-    const cepDataNode* node = cep_data_chain_find_snapshot(data, snapshot);
+    const cepDataNode* node = cep_data_chain_find_snapshot(data, found, effective);
     if (!node)
         return NULL;
 
@@ -5189,6 +5581,19 @@ cepCell* cep_cell_last_past(const cepCell* cell, cepOpCount snapshot) {
     }
 
     return NULL;
+}
+
+
+/* Find a child regardless of veil/deletion state. Intended for Layer-0
+   maintenance helpers that need to revive a previously staged dictionary
+   before it becomes publicly visible. */
+cepCell* cep_cell_find_by_name_all(const cepCell* cell, const cepDT* name) {
+    if (!cell || !name || !cep_dt_is_valid(name)) {
+        return NULL;
+    }
+
+    CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+    return store_find_child_by_name(store, name);
 }
 
 
@@ -5501,11 +5906,12 @@ cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, c
     if (!cep_cell_children(start))
         return NULL;
     cepCell* cell = CEP_P(start);
+    cepOpCount effective = cep_cell_effective_snapshot(start, snapshot);
 
     unsigned depth = 0u;
     for (; depth < path->length; ++depth) {
         const cepPast* segment = &path->past[depth];
-        cepOpCount segSnapshot = segment->timestamp ? segment->timestamp : snapshot;
+        cepOpCount segSnapshot = segment->timestamp ? segment->timestamp : effective;
         cepCell* next = cep_cell_find_by_name_past(cell, &segment->dt, segSnapshot);
         if (!next) {
             break;

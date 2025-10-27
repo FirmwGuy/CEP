@@ -143,6 +143,7 @@ static MunitResult test_enzyme_tombstone_masks_ancestor(void) {
     cepImpulse impulse = {
         .signal_path = NULL,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     const cepEnzymeDescriptor* ordered[2] = {0};
@@ -220,6 +221,7 @@ static MunitResult test_enzyme_dependencies(void) {
     cepImpulse impulse = {
         .signal_path = query_path,
         .target_path = NULL,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     const cepEnzymeDescriptor* ordered[4] = {0};
@@ -281,6 +283,7 @@ static MunitResult test_enzyme_dependency_cycle(void) {
     cepImpulse impulse = {
         .signal_path = query_path,
         .target_path = NULL,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     const cepEnzymeDescriptor* ordered[4] = {0};
@@ -335,6 +338,7 @@ static MunitResult test_enzyme_name_tiebreak(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = NULL,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     const cepEnzymeDescriptor* ordered[4] = {0};
@@ -399,6 +403,7 @@ static MunitResult test_enzyme_specificity_priority(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = NULL,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     const cepEnzymeDescriptor* ordered[4] = {0};
@@ -484,6 +489,7 @@ static MunitResult test_enzyme_data_binding_resolves(void) {
     cepImpulse impulse = {
         .signal_path = NULL,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     const cepEnzymeDescriptor* ordered[4] = {0};
@@ -560,6 +566,7 @@ static MunitResult test_enzyme_signal_wildcard_priority(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = NULL,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     const cepEnzymeDescriptor* ordered[4] = {0};
@@ -642,6 +649,7 @@ static MunitResult test_enzyme_signal_prefix_wildcard(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = NULL,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     const cepEnzymeDescriptor* ordered[4] = {0};

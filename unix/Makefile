@@ -75,14 +75,14 @@ DOCS_SOURCE_ROOT_NATIVE := $(call native,$(abspath ..))
 DOCS_MAIN_NATIVE := $(if $(DOCS_MAIN_MD),$(call native,$(DOCS_MAIN_MD)))
 DOCS_DOT_PATH_NATIVE := $(if $(DOCS_DOT_BIN),$(call native,$(DOCS_DOT_PATH)))
 
-.PHONY: all run debug docs clean help
+.PHONY: all run debug valgrind docs clean help
 
 all: $(TARGET)
 
 help:
 	@echo "CEP fallback Makefile (no internet / no Meson)."
 	@echo "Build dir: $(BUILD_DIR)"
-	@echo "Targets: all, run, debug, docs, clean"
+	@echo "Targets: all, run, debug, valgrind, docs, clean"
 
 # Link
 $(TARGET): $(OBJ)
@@ -100,6 +100,12 @@ run: $(TARGET)
 
 debug: $(TARGET)
 	gdb -w --args "$(TARGET)" --log-visible debug
+
+VALGRIND ?= valgrind
+VALGRIND_FLAGS ?= --tool=memcheck --error-exitcode=1 --quiet
+
+valgrind: $(TARGET)
+	$(VALGRIND) $(VALGRIND_FLAGS) "$(TARGET)" --log-visible debug
 
 docs: $(DOCS_HTML_INDEX)
 	@echo "HTML docs ready at $(DOCS_HTML_INDEX)"

@@ -642,8 +642,13 @@ static bool cep_enzyme_dt_matches(const cepDT* pattern, const cepDT* observed) {
         return false;
     }
 
-    return cep_id_matches(pattern->domain, observed->domain) &&
-           cep_id_matches(pattern->tag, observed->tag);
+    bool domain_exact = cep_id(pattern->domain) == cep_id(observed->domain);
+    bool tag_exact = cep_id(pattern->tag) == cep_id(observed->tag);
+
+    bool domain_ok = domain_exact || cep_id_matches(pattern->domain, observed->domain);
+    bool tag_ok = tag_exact || cep_id_matches(pattern->tag, observed->tag);
+
+    return domain_ok && tag_ok;
 }
 
 static bool cep_enzyme_segment_is_wildcard(const cepDT* dt) {
@@ -1275,6 +1280,9 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
 
     const cepPath* signal = impulse->signal_path;
     const cepPath* target_path = impulse->target_path;
+    if (target_path && target_path->length == 0u) {
+        target_path = NULL;
+    }
 
     cepEffectiveBinding* bindings = NULL;
     size_t binding_count = 0u;
@@ -1286,7 +1294,20 @@ size_t cep_enzyme_resolve(const cepEnzymeRegistry* registry, const cepImpulse* i
     if (target_path) {
         const cepHeartbeatTopology* topology = cep_heartbeat_topology();
         const cepCell* root = topology ? topology->root : NULL;
-        cepCell* target_cell = root ? cep_cell_find_by_path(root, target_path) : NULL;
+        cepCell* target_cell = NULL;
+        if (root) {
+            cepOpCount horizon_stamp = cep_runtime_view_horizon_stamp();
+            if (horizon_stamp) {
+                target_cell = cep_cell_find_by_path_past(root, target_path, horizon_stamp);
+            } else {
+                cepBeatNumber horizon = cep_runtime_view_horizon();
+                if (horizon != CEP_BEAT_INVALID) {
+                    target_cell = cep_cell_find_by_path_past(root, target_path, (cepOpCount)horizon);
+                } else {
+                    target_cell = cep_cell_find_by_path(root, target_path);
+                }
+            }
+        }
         if (target_cell) {
             bindings = cep_enzyme_collect_bindings(target_cell, &binding_count, &bindings_masked);
             if (binding_count == SIZE_MAX) {

@@ -18,6 +18,8 @@ This L0 Kernel API gives you a **hierarchical, time‑aware data kernel** (“ce
 * A **Common Error Interface** that centralises diagnostics, routes structured Error Facts through mailboxes, and enforces severity-driven OPS/shutdown policy.
 * A compact **chunked serialization** format with staged reading/commit and optional blob chunking for large payloads. 
 * An optional **namepool** to intern strings when you need textual names bound to IDs. 
+* **Pause / Rollback / Resume controls** that gate non-essential work, rewind the visible beat horizon, and deterministically drain queued impulses from a mailbox-backed backlog.
+
 
 Together, these pieces let you build **local‑first trees, reactive dataflows, digital‑twin graphs, scene graphs with spatial indexing, and distributed state pipelines**—without giving up determinism, history, or zero‑copy performance where it matters.
 
@@ -60,6 +62,12 @@ Layer 0 enforces deterministic mutation using hierarchical locks. The locking 
 
 ### Mailbox Lifecycle
 Mailbox organs now ship with shared helpers that settle message identity, TTL precedence, and retention buckets. `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` documents the layout under `meta/`, the `msgs/` store, and how `cep_mailbox_select_message_id()`, `cep_mailbox_resolve_ttl()`, and `cep_mailbox_plan_retention()` cooperate with the heartbeat. Revisit it before wiring board/news workflows, private inbox policies, or retention enzymes so behaviour stays deterministic across beats and replays.
+
+### Pause, Rollback, and Resume
+Control verbs (`op/pause`, `op/rollback`, `op/resume`) introduce a control plane that can park impulses, publish a rollback horizon, and drain the backlog in ID order once work resumes. `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md` captures the state ladders, full `cepDT` path fidelity, and cleanup guarantees you need before evolving the control code.
+
+### Pause, Rollback, and Resume
+Control verbs (`op/pause`, `op/rollback`, `op/resume`) introduce a control plane that can safely park impulses, roll visibility back to a prior beat, and resume by draining the backlog in ID order. The design doc `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md` covers state ladders, backlog semantics (full `cepDT` path fidelity), and cleanup guarantees so tooling stays aligned with implementation.
 
 ### Common Error Interface (CEI)
 Layer 0’s CEI helper (`docs/L0_KERNEL/topics/CEI.md`) centralises diagnostics. It seeds the default diagnostics mailbox at `/data/mailbox/diag`, assembles structured Error Facts via `cep_cei_emit`, can emit `sig_cei/*` impulses, and enforces severity policy (OPS closure, fatal shutdown). Pair it with the mailbox topic before altering diagnostics routing or severity handling.

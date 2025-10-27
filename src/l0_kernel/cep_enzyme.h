@@ -9,6 +9,7 @@
 
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "cep_cell.h"
 
@@ -83,9 +84,19 @@ typedef struct {
  * @struct cepImpulse
  * @brief Small helper describing the signal and target that triggered work.
  */
+typedef uint8_t cepImpulseQoS;
+
+enum {
+    CEP_IMPULSE_QOS_NONE               = 0u,
+    CEP_IMPULSE_QOS_CONTROL            = 1u << 0,
+    CEP_IMPULSE_QOS_RETAIN_ON_PAUSE    = 1u << 1,
+    CEP_IMPULSE_QOS_DISCARD_ON_ROLLBACK= 1u << 2,
+};
+
 typedef struct {
     const cepPath*          signal_path;    /**< Path that identifies the impulse kind. */
     const cepPath*          target_path;    /**< Path that receives the enzyme output. */
+    cepImpulseQoS           qos;            /**< QoS hints that influence pause/rollback handling. */
 } cepImpulse;
 
 

@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -43,6 +44,104 @@ CEP_DEFINE_STATIC_DT(dt_kind_field,       CEP_ACRO("CEP"), CEP_WORD("kind"));
 CEP_DEFINE_STATIC_DT(dt_label_field,      CEP_ACRO("CEP"), CEP_WORD("label"));
 
 static void cep_organ_registry_require_refresh(void);
+#if defined(CEP_ENABLE_DEBUG)
+static void prr_organ_log(const char* fmt, ...) {
+    (void)fmt;
+}
+#else
+#define prr_organ_log(...) ((void)0)
+#endif
+
+typedef struct {
+    const char* kind;
+    cepDT       dt;
+} cepOrganStoreCacheEntry;
+
+#define CEP_ORGAN_STORE_CACHE_CAP 32u
+static cepOrganStoreCacheEntry CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_CAP];
+static size_t CEP_ORGAN_STORE_CACHE_COUNT = 0u;
+
+static bool cep_organ_store_text_matches(const char* kind, cepID tag) {
+    if (!kind || !*kind || !cep_id_is_reference(tag)) {
+        return false;
+    }
+    size_t text_len = 0u;
+    const char* text = cep_namepool_lookup(tag, &text_len);
+    if (!text) {
+        return false;
+    }
+    static const char prefix[] = "organ/";
+    const size_t prefix_len = sizeof prefix - 1u;
+    const size_t kind_len = strlen(kind);
+    if (text_len != prefix_len + kind_len) {
+        return false;
+    }
+    if (strncmp(text, prefix, prefix_len) != 0) {
+        return false;
+    }
+    return strncmp(text + prefix_len, kind, kind_len) == 0;
+}
+
+static void cep_organ_store_cache_release(cepDT* dt) {
+    if (!dt) {
+        return;
+    }
+    if (cep_dt_is_valid(dt) && cep_id_is_reference(dt->tag)) {
+        (void)cep_namepool_release(dt->tag);
+    }
+    dt->domain = 0u;
+    dt->tag = 0u;
+    dt->glob = 0u;
+}
+
+static cepDT cep_organ_store_cache_record(const char* kind, cepDT dt) {
+    if (!kind || !*kind) {
+        return dt;
+    }
+    for (size_t i = 0u; i < CEP_ORGAN_STORE_CACHE_COUNT; ++i) {
+        cepOrganStoreCacheEntry* entry = &CEP_ORGAN_STORE_CACHE[i];
+        if (entry->kind && strcmp(entry->kind, kind) == 0) {
+            cep_organ_store_cache_release(&entry->dt);
+            entry->dt = dt;
+            return dt;
+        }
+    }
+    if (CEP_ORGAN_STORE_CACHE_COUNT < CEP_ORGAN_STORE_CACHE_CAP) {
+        CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_COUNT].kind = kind;
+        CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_COUNT].dt = dt;
+        CEP_ORGAN_STORE_CACHE_COUNT += 1u;
+    } else {
+        cep_organ_store_cache_release(&CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_COUNT - 1u].dt);
+        CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_COUNT - 1u].kind = kind;
+        CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_COUNT - 1u].dt = dt;
+    }
+    return dt;
+}
+
+static bool cep_organ_store_cache_lookup(const char* kind, cepDT* out) {
+    if (!kind || !*kind || !out) {
+        return false;
+    }
+    for (size_t i = 0u; i < CEP_ORGAN_STORE_CACHE_COUNT; ++i) {
+        const cepOrganStoreCacheEntry* entry = &CEP_ORGAN_STORE_CACHE[i];
+        if (!entry->kind) {
+            continue;
+        }
+        if (strcmp(entry->kind, kind) != 0) {
+            continue;
+        }
+        if (!cep_dt_is_valid(&entry->dt)) {
+            return false;
+        }
+        if (!cep_organ_store_text_matches(kind, entry->dt.tag)) {
+            cep_organ_store_cache_release((cepDT*)&entry->dt);
+            return false;
+        }
+        *out = entry->dt;
+        return true;
+    }
+    return false;
+}
 
 void cep_organ_runtime_reset(void) {
     for (size_t i = 0; i < CEP_ORGAN_REGISTRY.count; ++i) {
@@ -61,6 +160,12 @@ void cep_organ_runtime_reset(void) {
     CEP_ORGAN_REGISTRY.root = NULL;
     CEP_ORGAN_REGISTRY.bootstrapped = false;
     CEP_ORGAN_REGISTRY.dt_dirty = false;
+
+    for (size_t i = 0u; i < CEP_ORGAN_STORE_CACHE_COUNT; ++i) {
+        cep_organ_store_cache_release(&CEP_ORGAN_STORE_CACHE[i].dt);
+        CEP_ORGAN_STORE_CACHE[i].kind = NULL;
+    }
+    CEP_ORGAN_STORE_CACHE_COUNT = 0u;
 }
 
 static void cep_organ_report_issue(const char* stage, const char* detail) {
@@ -416,12 +521,18 @@ static bool cep_organ_publish_entry(const cepOrganEntry* entry) {
 
 static bool cep_organ_validate_store_matches_kind(const cepDT* store, const char* kind) {
     if (!store || !cep_dt_is_valid(store) || !kind || !*kind) {
+        prr_organ_log("[prr:organ_store_validate] invalid_inputs store=%p kind=%s\n",
+                      (const void*)store,
+                      kind ? kind : "<null>");
         return false;
     }
 
     size_t tag_len = 0u;
     const char* tag_text = cep_namepool_lookup(store->tag, &tag_len);
     if (!tag_text || tag_len == 0u) {
+        prr_organ_log("[prr:organ_store_validate] lookup_fail tag_id=%016llx kind=%s\n",
+                      (unsigned long long)cep_id(store->tag),
+                      kind);
         return false;
     }
 
@@ -429,14 +540,32 @@ static bool cep_organ_validate_store_matches_kind(const cepDT* store, const char
     size_t prefix_len = sizeof prefix - 1u;
     size_t kind_len = strlen(kind);
     if (tag_len != prefix_len + kind_len) {
+        prr_organ_log("[prr:organ_store_validate] len_mismatch tag='%.*s' tag_len=%zu kind=%s expected=%zu\n",
+                      (int)tag_len,
+                      tag_text,
+                      tag_len,
+                      kind,
+                      prefix_len + kind_len);
         return false;
     }
 
     if (strncmp(tag_text, prefix, prefix_len) != 0) {
+        prr_organ_log("[prr:organ_store_validate] prefix_mismatch tag='%.*s' kind=%s\n",
+                      (int)tag_len,
+                      tag_text,
+                      kind);
         return false;
     }
 
-    return strncmp(tag_text + prefix_len, kind, kind_len) == 0;
+    if (strncmp(tag_text + prefix_len, kind, kind_len) != 0) {
+        prr_organ_log("[prr:organ_store_validate] suffix_mismatch tag='%.*s' kind=%s\n",
+                      (int)tag_len,
+                      tag_text,
+                      kind);
+        return false;
+    }
+
+    return true;
 }
 
 static const cepOrganDescriptor* cep_organ_descriptor_for_cell(const cepCell* cell) {
@@ -520,6 +649,7 @@ static bool cep_organ_enqueue_signal(const cepDT* signal_dt, const cepCell* root
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     int rc = cep_heartbeat_enqueue_impulse(CEP_BEAT_INVALID, &impulse);
@@ -621,7 +751,32 @@ bool cep_organ_register(const cepOrganDescriptor* descriptor) {
         return false;
     }
 
-    if (!cep_dt_is_valid(&descriptor->store) || !cep_dt_is_valid(&descriptor->validator)) {
+    cepDT store = descriptor->store;
+    cepDT validator = descriptor->validator;
+    size_t store_len = 0u;
+    const char* store_text = cep_namepool_lookup(store.tag, &store_len);
+    prr_organ_log("[prr:organ_register] kind=%s store=%016llx/%016llx text='%.*s'\n",
+                  descriptor->kind,
+                  (unsigned long long)cep_id(store.domain),
+                  (unsigned long long)cep_id(store.tag),
+                  (int)store_len,
+                  store_text ? store_text : "<null>");
+    if (store_text && strncmp(store_text, "org:", 4) == 0) {
+        cepDT corrected_store = cep_organ_store_dt(descriptor->kind);
+#if defined(CEP_ENABLE_DEBUG)
+        size_t corrected_len = 0u;
+        const char* corrected_text = cep_namepool_lookup(corrected_store.tag, &corrected_len);
+        prr_organ_log("[prr:organ_register] correcting_store kind=%s new_store=%016llx/%016llx text='%.*s'\n",
+                      descriptor->kind,
+                      (unsigned long long)cep_id(corrected_store.domain),
+                      (unsigned long long)cep_id(corrected_store.tag),
+                      (int)corrected_len,
+                      corrected_text ? corrected_text : "<null>");
+#endif
+        store = corrected_store;
+    }
+
+    if (!cep_dt_is_valid(&store) || !cep_dt_is_valid(&validator)) {
         cep_organ_report_issue("register:descriptor", "invalid-dt");
         return false;
     }
@@ -631,14 +786,14 @@ bool cep_organ_register(const cepOrganDescriptor* descriptor) {
         return false;
     }
 
-    if (!cep_organ_validate_store_matches_kind(&descriptor->store, descriptor->kind)) {
+    if (!cep_organ_validate_store_matches_kind(&store, descriptor->kind)) {
         cep_organ_report_issue("register:store-mismatch", descriptor->kind);
         return false;
     }
 
-    cepOrganEntry* existing = cep_organ_registry_find_by_store(&descriptor->store);
+    cepOrganEntry* existing = cep_organ_registry_find_by_store(&store);
     if (existing) {
-        if (cep_dt_compare(&existing->desc.validator, &descriptor->validator) != 0) {
+        if (cep_dt_compare(&existing->desc.validator, &validator) != 0) {
             cep_organ_report_issue("register:validator-mismatch", descriptor->kind);
             return false;
         }
@@ -669,8 +824,8 @@ bool cep_organ_register(const cepOrganDescriptor* descriptor) {
 
     entry.desc.kind = entry.kind_storage;
     entry.desc.label = entry.label_storage;
-    entry.desc.store = cep_dt_clean(&descriptor->store);
-    entry.desc.validator = cep_dt_clean(&descriptor->validator);
+    entry.desc.store = cep_dt_clean(&store);
+    entry.desc.validator = cep_dt_clean(&validator);
     entry.desc.constructor = cep_dt_clean(&descriptor->constructor);
     entry.desc.destructor = cep_dt_clean(&descriptor->destructor);
 
@@ -872,6 +1027,11 @@ cepDT cep_organ_store_dt(const char* kind) {
         return invalid;
     }
 
+    cepDT cached = {0};
+    if (cep_organ_store_cache_lookup(kind, &cached)) {
+        return cached;
+    }
+
     char buffer[32];
     int written = snprintf(buffer, sizeof buffer, "organ/%s", kind);
     if (written <= 0 || (size_t)written >= sizeof buffer) {
@@ -880,18 +1040,42 @@ cepDT cep_organ_store_dt(const char* kind) {
 
     cepDT dt = {0};
     dt.domain = cep_namepool_intern_cstr("CEP");
-    dt.tag = cep_namepool_intern_cstr(buffer);
-    if (!dt.domain || !dt.tag) {
-        char detail[128];
+    if (!dt.domain) {
+        char detail[96];
         snprintf(detail,
                  sizeof detail,
-                 "store_dt_intern_failed kind=%s domain=%016llx tag=%016llx",
-                 kind,
-                 (unsigned long long)cep_id(dt.domain),
-                 (unsigned long long)cep_id(dt.tag));
+                 "store_dt_domain_failed kind=%s",
+                 kind);
         cep_organ_report_issue("store_dt", detail);
+        return invalid;
     }
-    return dt;
+
+    cepID tag = 0u;
+    for (unsigned attempt = 0u; attempt < 3u && !tag; ++attempt) {
+        cepID candidate = cep_namepool_intern_cstr(buffer);
+        if (!candidate) {
+            break;
+        }
+        if (cep_organ_store_text_matches(kind, candidate)) {
+            tag = candidate;
+            break;
+        }
+        (void)cep_namepool_release(candidate);
+    }
+
+    if (!tag) {
+        char detail[160];
+        snprintf(detail,
+                 sizeof detail,
+                 "store_dt_intern_failed kind=%s",
+                 kind);
+        cep_organ_report_issue("store_dt", detail);
+        return invalid;
+    }
+
+    dt.tag = tag;
+    dt.glob = 0u;
+    return cep_organ_store_cache_record(kind, dt);
 }
 
 static cepDT cep_organ_make_signal_dt(const char* kind, const char* suffix) {

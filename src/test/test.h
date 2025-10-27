@@ -72,6 +72,15 @@ MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_f
 MunitResult test_cei_signal_ledger(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_cei_op_failure(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_cei_fatal_shutdown(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_prr_pause_resume_backlog(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_prr_pause_rollback_backlog_guard(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_prr_soft_delete_lookup(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_prr_view_horizon_snapshot(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_prr_soft_deleted_dictionary_revives(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_prr_history_autoid_monotonic(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_prr_minimal_rollback(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_prr_control_failure_cei(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_prr_watcher_timeout_cei(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
 

@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 
 static int CEP_CEI_DEBUG_LAST_ERROR = 0;
 
@@ -421,8 +422,12 @@ bool cep_cei_emit(const cepCeiRequest* request) {
     if (!cep_mailbox_select_message_id(mailbox_root, NULL, NULL, &message_id)) {
         CEP_CEI_DEBUG_LAST_ERROR = 2;
         cepCell* meta_debug = cep_cell_find_by_name(mailbox_root, dt_meta_name());
+#if defined(CEP_ENABLE_DEBUG)
         cepCell* runtime_debug = meta_debug ? cep_cell_find_by_name(meta_debug, dt_runtime_name()) : NULL;
-        fprintf(stderr, "cei_emit: select id failed meta=%p runtime=%p\n", (void*)meta_debug, (void*)runtime_debug);
+        CEP_DEBUG_PRINTF("[cei_emit] select id failed meta=%p runtime=%p\n",
+                         (void*)meta_debug,
+                         (void*)runtime_debug);
+#endif
         cep_free(owned_subject_path);
         return false;
     }

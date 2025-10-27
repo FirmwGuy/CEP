@@ -5,9 +5,12 @@
 #include <string.h>
 
 #include "cep_enzyme.h"
+#include "cep_cei.h"
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
 #include "cep_organ.h"
+
+#define CEP_OPS_DEBUG(...) ((void)0)
 
 CEP_DEFINE_STATIC_DT(dt_ops_root_name,      CEP_ACRO("CEP"), CEP_WORD("ops"));
 CEP_DEFINE_STATIC_DT(dt_envelope_name,      CEP_ACRO("CEP"), CEP_WORD("envelope"));
@@ -28,6 +31,7 @@ CEP_DEFINE_STATIC_DT(dt_payload_field,      CEP_ACRO("CEP"), CEP_WORD("payload_i
 CEP_DEFINE_STATIC_DT(dt_status_field_ops,   CEP_ACRO("CEP"), CEP_WORD("status"));
 CEP_DEFINE_STATIC_DT(dt_closed_field,       CEP_ACRO("CEP"), CEP_WORD("closed_beat"));
 CEP_DEFINE_STATIC_DT(dt_summary_field,      CEP_ACRO("CEP"), CEP_WORD("summary_id"));
+CEP_DEFINE_STATIC_DT(dt_history_next_field, CEP_ACRO("CEP"), CEP_WORD("hist_next"));
 CEP_DEFINE_STATIC_DT(dt_want_field,         CEP_ACRO("CEP"), CEP_WORD("want"));
 CEP_DEFINE_STATIC_DT(dt_deadline_field,     CEP_ACRO("CEP"), CEP_WORD("deadline"));
 CEP_DEFINE_STATIC_DT(dt_cont_field,         CEP_ACRO("CEP"), CEP_WORD("cont"));
@@ -35,8 +39,47 @@ CEP_DEFINE_STATIC_DT(dt_payload_watcher,    CEP_ACRO("CEP"), CEP_WORD("payload_i
 CEP_DEFINE_STATIC_DT(dt_origin_field,       CEP_ACRO("CEP"), CEP_WORD("origin"));
 CEP_DEFINE_STATIC_DT(dt_origin_enzyme,      CEP_ACRO("CEP"), CEP_WORD("enzyme"));
 CEP_DEFINE_STATIC_DT(dt_ready_field,        CEP_ACRO("CEP"), CEP_WORD("armed"));
+CEP_DEFINE_STATIC_DT(dt_sev_warn,           CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
 
-cepStore* cep_ops_debug_history_store = NULL;
+static bool cep_ops_read_dt(const cepCell* parent, const cepDT* field, cepDT* out);
+
+static void cep_ops_emit_watcher_timeout(cepCell* watcher_entry, cepOID oid) {
+    if (!watcher_entry || !cep_oid_is_valid(oid)) {
+        return;
+    }
+
+    cepDT want = {0};
+    (void)cep_ops_read_dt(watcher_entry, dt_want_field(), &want);
+
+    const char* want_text = NULL;
+    if (want.tag) {
+        want_text = cep_namepool_lookup(want.tag, NULL);
+    }
+    if (!want_text || !want_text[0]) {
+        want_text = "(unknown)";
+    }
+
+    char note[192];
+    snprintf(note,
+             sizeof note,
+             "watcher timeout on oid=%llu:%llu want=%s",
+             (unsigned long long)oid.domain,
+             (unsigned long long)oid.tag,
+             want_text);
+
+    cepCeiRequest req = {
+        .severity = *dt_sev_warn(),
+        .note = note,
+        .topic = "ops/watchers",
+        .topic_intern = true,
+        .attach_to_op = true,
+        .op = oid,
+        .emit_signal = true,
+        .ttl_forever = true,
+    };
+
+    (void)cep_cei_emit(&req);
+}
 
 static int cep_ops_debug_last_error_code = 0;
 
@@ -95,6 +138,34 @@ static cepCell* cep_ops_root(bool create) {
         cepCell* existing = cep_cell_find_by_name(rt, &name);
         cepDT organ_dt = cep_organ_store_dt("rt_ops");
         if (!existing) {
+            cepCell* veiled = cep_cell_find_by_name_all(rt, &name);
+            if (veiled) {
+                existing = cep_cell_resolve(veiled);
+                if (existing && cep_cell_is_normal(existing) && cep_cell_require_dictionary_store(&existing)) {
+                    if (existing->store) {
+                        if (existing->store->owner != existing) {
+                            existing->store->owner = existing;
+                        }
+                        if (!existing->store->writable) {
+                            existing->store->writable = 1u;
+                        }
+                        if (existing->store->lock) {
+                            existing->store->lock = 0u;
+                        }
+                    }
+                    if (existing->metacell.veiled) {
+                        existing->metacell.veiled = 0u;
+                    }
+                    if (existing->deleted) {
+                        existing->deleted = 0u;
+                    }
+                    if (existing->created == 0u) {
+                        existing->created = cep_cell_timestamp_next();
+                    }
+                    cep_store_set_dt(existing->store, &organ_dt);
+                    return existing;
+                }
+            }
             cepDT name_copy = name;
             cepCell* added = cep_cell_add_dictionary(rt, &name_copy, 0, &organ_dt, CEP_STORAGE_RED_BLACK_T);
             if (!added) {
@@ -116,7 +187,42 @@ static cepCell* cep_ops_root(bool create) {
         }
         return resolved;
     }
-    return cep_cell_find_by_name(rt, &name);
+    cepCell* root_existing = cep_cell_find_by_name(rt, &name);
+    if (!root_existing) {
+        cepCell* veiled = cep_cell_find_by_name_all(rt, &name);
+        if (!veiled) {
+            return NULL;
+        }
+        cepCell* revived = cep_cell_resolve(veiled);
+        if (!revived || !cep_cell_is_normal(revived)) {
+            return NULL;
+        }
+        if (!cep_cell_require_dictionary_store(&revived)) {
+            return NULL;
+        }
+        if (revived->store) {
+            if (revived->store->owner != revived) {
+                revived->store->owner = revived;
+            }
+            if (!revived->store->writable) {
+                revived->store->writable = 1u;
+            }
+            if (revived->store->lock) {
+                revived->store->lock = 0u;
+            }
+        }
+        if (revived->metacell.veiled) {
+            revived->metacell.veiled = 0u;
+        }
+        if (revived->deleted) {
+            revived->deleted = 0u;
+        }
+        if (revived->created == 0u) {
+            revived->created = cep_cell_timestamp_next();
+        }
+        return revived;
+    }
+    return cep_cell_resolve(root_existing);
 }
 
 static cepCell* cep_ops_find(cepOID oid) {
@@ -129,7 +235,49 @@ static cepCell* cep_ops_find(cepOID oid) {
     }
     cepDT lookup = cep_ops_oid_to_dt(oid);
     lookup.glob = 0u;
-    return cep_cell_find_by_name(ops_root, &lookup);
+    cepCell* op = cep_cell_find_by_name(ops_root, &lookup);
+    if (!op) {
+        cepCell* veiled = cep_cell_find_by_name_all(ops_root, &lookup);
+        if (!veiled) {
+            return NULL;
+        }
+        cepCell* revived = cep_cell_resolve(veiled);
+        if (!revived || !cep_cell_is_normal(revived)) {
+            return NULL;
+        }
+        if (!cep_cell_require_dictionary_store(&revived)) {
+            return NULL;
+        }
+        if (revived->store) {
+            if (revived->store->owner != revived) {
+                revived->store->owner = revived;
+            }
+            if (!revived->store->writable) {
+                revived->store->writable = 1u;
+            }
+            if (revived->store->lock) {
+                revived->store->lock = 0u;
+            }
+        }
+        if (revived->metacell.veiled) {
+            revived->metacell.veiled = 0u;
+        }
+        if (revived->deleted) {
+            revived->deleted = 0u;
+        }
+        if (revived->created == 0u) {
+            revived->created = cep_cell_timestamp_next();
+        }
+        return revived;
+    }
+    cepCell* resolved = cep_cell_resolve(op);
+    if (!resolved || !cep_cell_is_normal(resolved)) {
+        return NULL;
+    }
+    if (!cep_cell_require_dictionary_store(&resolved)) {
+        return NULL;
+    }
+    return resolved;
 }
 
 static bool cep_ops_write_value(cepCell* parent,
@@ -143,11 +291,18 @@ static bool cep_ops_write_value(cepCell* parent,
     cepDT lookup = cep_ops_clean_dt(field);
     cepCell* existing = cep_cell_find_by_name(parent, &lookup);
     if (existing) {
-        return cep_cell_update(existing, size, size, (void*)data, false) != NULL;
+        if (cep_cell_update(existing, size, size, (void*)data, false) != NULL) {
+            return true;
+        }
+        return false;
     }
     cepDT name_copy = lookup;
     cepDT type_copy = cep_ops_make_dt(type_tag);
-    return cep_dict_add_value(parent, &name_copy, &type_copy, (void*)data, size, size) != NULL;
+    cepCell* inserted =
+        cep_dict_add_value(parent, &name_copy, &type_copy, (void*)data, size, size);
+    if (!inserted) {
+    }
+    return inserted != NULL;
 }
 
 static bool cep_ops_write_bool(cepCell* parent, const cepDT* field, bool value) {
@@ -215,8 +370,119 @@ static cepCell* cep_ops_history_root(cepCell* op) {
     if (!op) {
         return NULL;
     }
-    cepDT name = cep_ops_clean_dt(dt_history_name());
-    return cep_cell_find_by_name(op, &name);
+    uint64_t persisted_next = 0u;
+    bool has_persisted = cep_ops_read_u64(op, dt_history_next_field(), &persisted_next);
+cepDT name = cep_ops_clean_dt(dt_history_name());
+    cepCell* history = cep_cell_find_by_name(op, &name);
+    if (!history) {
+        history = cep_cell_find_by_name_all(op, &name);
+    }
+    if (!history) {
+        return NULL;
+    }
+
+    cepCell* resolved = cep_cell_resolve(history);
+    if (!resolved) {
+        return NULL;
+    }
+
+    if (!cep_cell_require_store(&resolved, NULL)) {
+        return NULL;
+    }
+
+    cepStore* store = resolved->store;
+    if (!store) {
+        return NULL;
+    }
+
+    if (store->owner != resolved) {
+        store->owner = resolved;
+    }
+    if (!store->writable) {
+        store->writable = 1u;
+    }
+    if (store->lock) {
+        store->lock = 0u;
+        store->lockOwner = NULL;
+    }
+
+    if (cep_cell_is_veiled(resolved)) {
+        resolved->metacell.veiled = 0u;
+    }
+    if (cep_cell_is_immutable(resolved)) {
+        resolved->metacell.immutable = 0u;
+    }
+    if (resolved->created == 0u) {
+        resolved->created = cep_cell_timestamp_next();
+    }
+    if (resolved->deleted) {
+        resolved->deleted = 0u;
+    }
+
+    if (store->created == 0u) {
+        store->created = resolved->created ? resolved->created : cep_cell_timestamp_next();
+    }
+    if (store->deleted) {
+        store->deleted = 0u;
+    }
+
+    uint64_t next_auto = store->autoid ? (uint64_t)store->autoid : 1u;
+    if (next_auto == 0u) {
+        next_auto = 1u;
+    }
+
+    for (cepCell* raw = cep_cell_first_all(resolved); raw; raw = cep_cell_next_all(resolved, raw)) {
+        cepCell* child = cep_cell_resolve(raw);
+        if (!child) {
+            continue;
+        }
+        const cepDT* child_name = cep_cell_get_name(child);
+        if (!child_name || !cep_id_is_numeric(child_name->tag)) {
+            CEP_OPS_DEBUG(
+                    "[ops_history_root] child_skip history=%p child=%p name=%016llx/%016llx\n",
+                    (void*)resolved,
+                    (void*)child,
+                    child_name ? (unsigned long long)cep_id(child_name->domain) : 0ull,
+                    child_name ? (unsigned long long)cep_id(child_name->tag) : 0ull);
+            continue;
+        }
+        CEP_OPS_DEBUG(
+                "[ops_history_root] child history=%p child=%p name=%016llx/%016llx\n",
+                (void*)resolved,
+                (void*)child,
+                (unsigned long long)cep_id(child_name->domain),
+                (unsigned long long)cep_id(child_name->tag));
+        uint64_t payload = cep_id(child_name->tag);
+        if (payload == 0u || payload >= CEP_AUTOID_MAX) {
+            continue;
+        }
+        if (payload >= next_auto) {
+            uint64_t candidate = payload + 1u;
+            if (candidate > CEP_AUTOID_MAX) {
+                candidate = CEP_AUTOID_MAX;
+            }
+            next_auto = candidate;
+        }
+    }
+
+    if (has_persisted && persisted_next > next_auto) {
+        next_auto = persisted_next;
+    }
+
+    if (next_auto > CEP_AUTOID_MAX) {
+        next_auto = CEP_AUTOID_MAX;
+    }
+    if (next_auto > (uint64_t)store->autoid) {
+        store->autoid = (cepID)next_auto;
+    } else if (store->autoid == 0u) {
+        store->autoid = 1u;
+    }
+    if (store->autoid > 0u) {
+        cepDT next_field = cep_ops_clean_dt(dt_history_next_field());
+        (void)cep_ops_write_u64(op, &next_field, (uint64_t)store->autoid);
+    }
+
+    return resolved;
 }
 
 static cepCell* cep_ops_watchers_root(cepCell* op) {
@@ -224,7 +490,53 @@ static cepCell* cep_ops_watchers_root(cepCell* op) {
         return NULL;
     }
     cepDT name = cep_ops_clean_dt(dt_watchers_name());
-    return cep_cell_find_by_name(op, &name);
+    cepCell* watchers = cep_cell_find_by_name(op, &name);
+    if (!watchers) {
+        watchers = cep_cell_find_by_name_all(op, &name);
+    }
+    if (!watchers) {
+        return NULL;
+    }
+
+    cepCell* resolved = cep_cell_resolve(watchers);
+    if (!resolved) {
+        return NULL;
+    }
+
+    if (!cep_cell_require_dictionary_store(&resolved)) {
+        return NULL;
+    }
+
+    if (resolved->store) {
+        if (resolved->store->owner != resolved) {
+            resolved->store->owner = resolved;
+        }
+        if (!resolved->store->writable) {
+            resolved->store->writable = 1u;
+        }
+        if (resolved->store->lock) {
+            resolved->store->lock = 0u;
+            resolved->store->lockOwner = NULL;
+        }
+        if (resolved->store->created == 0u) {
+            resolved->store->created = resolved->created ? resolved->created : cep_cell_timestamp_next();
+        }
+        if (resolved->store->deleted) {
+            resolved->store->deleted = 0u;
+        }
+    }
+
+    if (cep_cell_is_veiled(resolved)) {
+        resolved->metacell.veiled = 0u;
+    }
+    if (resolved->created == 0u) {
+        resolved->created = cep_cell_timestamp_next();
+    }
+    if (resolved->deleted) {
+        resolved->deleted = 0u;
+    }
+
+    return resolved;
 }
 
 static bool cep_ops_has_close(cepCell* op) {
@@ -272,33 +584,60 @@ static bool cep_ops_append_history(cepCell* op,
 
     cepDT entry_name = cep_ops_auto_name(CEP_ACRO("OPH"));
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    if (history && history->store) {
+        CEP_OPS_DEBUG(
+                "[ops_append_history] history=%p store=%p writable=%u lock=%u owner=%p owner_lock=%u\n",
+                (void*)history,
+                (void*)history->store,
+                history->store->writable ? 1u : 0u,
+                history->store->lock ? 1u : 0u,
+                (void*)history->store->owner,
+                (history->store->owner && history->store->owner->store)
+                    ? (history->store->owner->store->lock ? 1u : 0u)
+                    : 0u);
+    }
     cepCell* entry = cep_cell_append_dictionary(history,
                                                 &entry_name,
                                                 &dict_type,
                                                 CEP_STORAGE_RED_BLACK_T);
     if (!entry) {
+        CEP_OPS_DEBUG("[ops_append_history] append_dictionary failed history=%p\n", (void*)history);
         return false;
     }
-
+    if (!cep_cell_require_dictionary_store(&entry)) {
+        CEP_OPS_DEBUG("[ops_append_history] require_dictionary_store failed entry=%p\n", (void*)entry);
+        return false;
+    }
     if (!cep_ops_write_u64(entry, dt_beat_field(), beat)) {
+        CEP_OPS_DEBUG("[ops_append_history] write beat failed entry=%p\n", (void*)entry);
         return false;
     }
     uint64_t unix_ts = 0u;
     if (cep_heartbeat_beat_to_unix((cepBeatNumber)beat, &unix_ts)) {
         if (!cep_ops_write_u64(entry, dt_unix_ts_field(), unix_ts)) {
+            CEP_OPS_DEBUG("[ops_append_history] write unix failed entry=%p\n", (void*)entry);
             return false;
         }
     }
     if (!cep_ops_write_dt(entry, dt_state_field(), state)) {
+        CEP_OPS_DEBUG("[ops_append_history] write state failed entry=%p\n", (void*)entry);
         return false;
     }
 
     if (!cep_ops_write_i64(entry, dt_code_field(), (int64_t)code)) {
+        CEP_OPS_DEBUG("[ops_append_history] write code failed entry=%p\n", (void*)entry);
         return false;
     }
 
     if (note && !cep_ops_write_string(entry, dt_note_field(), note)) {
+        CEP_OPS_DEBUG("[ops_append_history] write note failed entry=%p\n", (void*)entry);
         return false;
+    }
+
+    if (history && history->store && history->store->autoid > 0u) {
+        uint64_t next_auto = (uint64_t)history->store->autoid;
+        cepDT next_field = cep_ops_clean_dt(dt_history_next_field());
+        (void)cep_ops_write_u64(op, &next_field, next_auto);
     }
 
     return true;
@@ -385,6 +724,7 @@ static bool cep_ops_enqueue_signal(cepOID oid, const cepDT* signal_dt) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = target_path,
+        .qos = (CEP_IMPULSE_QOS_CONTROL | CEP_IMPULSE_QOS_RETAIN_ON_PAUSE),
     };
 
     int rc = cep_heartbeat_enqueue_impulse(CEP_BEAT_INVALID, &impulse);
@@ -508,6 +848,7 @@ static bool cep_ops_expire_watchers(cepCell* op, cepOID oid, uint64_t beat) {
             continue;
         }
 
+        cep_ops_emit_watcher_timeout(entry, oid);
         if (!cep_ops_fire_watcher_entry(entry, oid, true)) {
             ok = false;
         }
@@ -674,6 +1015,11 @@ static bool cep_ops_populate_branch(cepCell* op_root,
         cep_ops_debug_last_error_code = 20;
         return false;
     }
+    CEP_OPS_DEBUG(
+            "[ops_populate_branch] history=%p store=%p owner=%p\n",
+            (void*)history,
+            history ? (void*)history->store : NULL,
+            (history && history->store) ? (void*)history->store->owner : NULL);
     cepDT watchers_name = cep_ops_clean_dt(dt_watchers_name());
     cepCell* watchers = cep_cell_add_dictionary(op_root,
                                                 &watchers_name,
@@ -693,11 +1039,6 @@ static bool cep_ops_populate_branch(cepCell* op_root,
                                 NULL)) {
         cep_ops_debug_last_error_code = 22;
         return false;
-    }
-
-    cep_ops_debug_history_store = history ? history->store : NULL;
-    if (history && history->store) {
-        CEP_DEBUG_PRINTF_STDOUT("[history] populated store=%p\n", (void*)history->store);
     }
 
     return true;
@@ -765,16 +1106,23 @@ cepOID cep_op_start(cepDT verb,
 
 bool cep_op_state_set(cepOID oid, cepDT state, int code, const char* note) {
     if (!cep_oid_is_valid(oid) || !cep_dt_is_valid(&state)) {
+        CEP_DEBUG_PRINTF("[op_state_set] invalid inputs\n");
         return false;
     }
 
     cepCell* op = cep_ops_find(oid);
     if (!op) {
         cep_ops_debug_last_error_code = 42;
+        CEP_DEBUG_PRINTF("[op_state_set] op not found oid=%llu:%llu\n",
+                         (unsigned long long)oid.domain,
+                         (unsigned long long)oid.tag);
         return false;
     }
 
     if (cep_ops_has_close(op)) {
+        CEP_DEBUG_PRINTF("[op_state_set] op already closed oid=%llu:%llu\n",
+                         (unsigned long long)oid.domain,
+                         (unsigned long long)oid.tag);
         return false;
     }
 
@@ -785,6 +1133,9 @@ bool cep_op_state_set(cepOID oid, cepDT state, int code, const char* note) {
     cepCell* history = cep_ops_history_root(op);
     if (!history) {
         cep_ops_debug_last_error_code = 41;
+        CEP_DEBUG_PRINTF("[op_state_set] history root missing oid=%llu:%llu\n",
+                         (unsigned long long)oid.domain,
+                         (unsigned long long)oid.tag);
         return false;
     }
 
@@ -793,22 +1144,37 @@ bool cep_op_state_set(cepOID oid, cepDT state, int code, const char* note) {
                      cep_ops_history_tail_matches(history, &cleaned_state, beat);
 
     if (!cep_ops_write_dt(op, dt_state_field(), &cleaned_state)) {
+        CEP_DEBUG_PRINTF("[op_state_set] write state failed oid=%llu:%llu\n",
+                         (unsigned long long)oid.domain,
+                         (unsigned long long)oid.tag);
         return false;
     }
 
     if (!cep_ops_write_i64(op, dt_code_field(), (int64_t)code)) {
+        CEP_DEBUG_PRINTF("[op_state_set] write code failed oid=%llu:%llu\n",
+                         (unsigned long long)oid.domain,
+                         (unsigned long long)oid.tag);
         return false;
     }
 
     if (note && !cep_ops_write_string(op, dt_note_field(), note)) {
+        CEP_DEBUG_PRINTF("[op_state_set] write note failed oid=%llu:%llu\n",
+                         (unsigned long long)oid.domain,
+                         (unsigned long long)oid.tag);
         return false;
     }
 
     if (!duplicate) {
         if (!cep_ops_append_history(op, history, &cleaned_state, code, note)) {
+            CEP_DEBUG_PRINTF("[op_state_set] append history failed oid=%llu:%llu\n",
+                             (unsigned long long)oid.domain,
+                             (unsigned long long)oid.tag);
             return false;
         }
         if (!cep_ops_notify_watchers(op, oid, &cleaned_state, false)) {
+            CEP_DEBUG_PRINTF("[op_state_set] notify watchers failed oid=%llu:%llu\n",
+                             (unsigned long long)oid.domain,
+                             (unsigned long long)oid.tag);
             return false;
         }
     }
@@ -826,6 +1192,7 @@ bool cep_op_await(cepOID oid,
     if (!cep_oid_is_valid(oid) ||
         !cep_dt_is_valid(&want) ||
         !cep_dt_is_valid(&continuation_signal)) {
+        cep_ops_debug_last_error_code = 62;
         return false;
     }
 

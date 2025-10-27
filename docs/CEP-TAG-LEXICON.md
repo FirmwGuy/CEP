@@ -52,6 +52,8 @@ when a new behavior needs a fresh word before it lands in code.
 | `interval_ns` | core | nanosecond interval payload inside spacing analytics entries. |
 | `issued_unix` | core | unix timestamp captured alongside `issued_beat` inside a mailbox envelope. |
 | `unix_ts_ns` | core | per-beat Unix timestamp stored under `/rt/beat/<n>/meta/unix_ts_ns` and mirrored into stage notes, OPS history, and stream journals. |
+| `paused` | core | `val/bool` flag under `/sys/state` indicating the heartbeat agenda is currently gated. |
+| `view_hzn` | core | `val/u64` beat number recording the rollback visibility horizon. |
 | `intent` | core | journal entry describing requested work. |
 | `journal` | core | append-only heartbeat evidence ledger. |
 | `kind` | core | short organ slug persisted under `/sys/organs/<k>/spec/kind`. |
@@ -107,12 +109,18 @@ when a new behavior needs a fresh word before it lands in code.
 | `envelope` | ops | immutable dictionary describing an operation's verb, target, mode, and issued beat. |
 | `enz_add` / `enz_cln` / `enz_del` / `enz_mov` / `enz_upd` | ops | canonical enzyme descriptors registered at bootstrap. |
 | `history` | ops | dictionary logging state transitions (`0001/`, `0002/`, …). |
+| `hist_next` | ops | numeric field on `/rt/ops/<oid>` recording the next monotonic history auto-ID so resume/rollback loops never reuse prior names. |
 | `issued_beat` | ops | beat index recorded in an operation envelope. |
+| `ist:cutover` | ops | rollback operation state marking the live view pivot in progress. |
 | `ist:flush` | ops | shutdown operation state indicating buffered work is being flushed. |
 | `ist:halt` | ops | shutdown operation state indicating the runtime is halting. |
 | `ist:kernel` | ops | boot operation state marking kernel scaffolding completion. |
 | `ist:ok` | ops | terminal state recorded after `cep_op_close()` maps the final status. |
+| `ist:paused` | ops | pause operation state confirming agenda gating is active. |
 | `ist:packs` | ops | boot operation state marking pack readiness. |
+| `ist:plan` | ops | control operation planning state recorded when the dossier opens. |
+| `ist:quiesce` | ops | pause operation state marking non-essential work being parked. |
+| `ist:run` | ops | resume operation state confirming backlog drain has restarted the agenda. |
 | `ist:stop` | ops | shutdown operation state marking teardown start. |
 | `ist:store` | ops | boot operation state marking persistent stores ready. |
 | `note` | ops | optional textual note attached to a history entry. |
@@ -120,6 +128,9 @@ when a new behavior needs a fresh word before it lands in code.
 | `op/cont` | ops | continuation signal emitted when an awaiter fires. |
 | `op/ct` | ops | constructor operation verb routed to organ roots. |
 | `op/dt` | ops | destructor operation verb routed to organ roots. |
+| `op/pause` | ops | pause control operation verb that gates the heartbeat agenda. |
+| `op/resume` | ops | resume control operation verb that re-opens the agenda. |
+| `op/rollback` | ops | rollback control operation verb that re-points the view horizon. |
 | `op/shdn` | ops | shutdown operation verb emitted during teardown. |
 | `op/tmo` | ops | timeout signal emitted when an awaiter expires. |
 | `op/vl` | ops | validator operation verb that runs organ integrity checks. |
@@ -130,6 +141,7 @@ when a new behavior needs a fresh word before it lands in code.
 | `org:rt_beat:*` | ops | beat ledger organ validator/constructor/destructor signals. |
 | `org:journal:*` | ops | journal organ validator/constructor/destructor signals. |
 | `payload_id` | ops | optional `val/bytes` payload stored in envelopes and watcher entries. |
+| `qos` | ops | control-plane QoS flags stored alongside paused impulses. |
 | `role_parnt` / `role_source` / `role_subj` / `role_templ` | ops | role vocabulary consumed by mutation enzymes. |
 | `sig_cell` | ops | signal namespace for kernel cell operations. |
 | `sig_mail/arrive` | ops | mailbox arrival impulse emitted during beat capture. |

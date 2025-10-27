@@ -78,6 +78,7 @@ typedef struct {
 typedef struct {
     cepPath* signal_path;
     cepPath* target_path;
+    cepImpulseQoS qos;
 } cepHeartbeatImpulseRecord;
 
 
@@ -156,6 +157,10 @@ typedef struct {
     cepBeatNumber             last_wallclock_beat;
     uint64_t                  last_wallclock_ns;
     size_t                    spacing_window;
+    bool                      paused;
+    cepBeatNumber             view_horizon;
+    cepOpCount                view_horizon_stamp;
+    cepOpCount                view_horizon_floor_stamp;
 } cepHeartbeatRuntime;
 
 
@@ -182,6 +187,14 @@ bool  cep_heartbeat_step(void);
 bool  cep_heartbeat_emit_shutdown(void);
 void  cep_heartbeat_shutdown(void);
 void  cep_heartbeat_detach_topology(void);
+
+bool          cep_runtime_pause(void);
+bool          cep_runtime_resume(void);
+bool          cep_runtime_rollback(cepBeatNumber to);
+bool          cep_runtime_is_paused(void);
+cepBeatNumber cep_runtime_view_horizon(void);
+cepOpCount    cep_runtime_view_horizon_stamp(void);
+cepOpCount    cep_runtime_view_horizon_floor_stamp(void);
 
 
 cepOpCount   cep_beat_index(void);

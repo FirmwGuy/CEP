@@ -497,6 +497,7 @@ static MunitResult test_heartbeat_binding_propagation(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
@@ -558,6 +559,7 @@ static MunitResult test_heartbeat_binding_tombstone(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
@@ -632,6 +634,7 @@ static MunitResult test_heartbeat_binding_no_propagation(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
 munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
@@ -709,6 +712,7 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
@@ -962,6 +966,7 @@ static MunitResult test_heartbeat_binding_duplicate_mask(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
@@ -1016,6 +1021,7 @@ static MunitResult test_heartbeat_target_requires_binding(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
@@ -1081,6 +1087,7 @@ static MunitResult test_heartbeat_binding_signal_filter(void) {
     cepImpulse impulse = {
         .signal_path = wrong_signal,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
@@ -1193,6 +1200,7 @@ static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
     cepImpulse impulse = {
         .signal_path = NULL,
         .target_path = trimmed_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
@@ -1297,6 +1305,7 @@ static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
     cepImpulse impulse = {
         .signal_path = NULL,
         .target_path = trimmed_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);
@@ -1346,6 +1355,7 @@ static MunitResult test_heartbeat_signal_broadcast(void) {
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = NULL,
+        .qos = CEP_IMPULSE_QOS_NONE,
     };
 
     munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUCCESS);

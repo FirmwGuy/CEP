@@ -11,7 +11,7 @@ Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utili
 - `/env` – handles and stream proxies bound to external resources. Enzymes dereference entries through the proxy helpers in `cep_cell`.
 - `/cas` – content-addressable payload store. Large blobs land here so data cells can reference hashes instead of duplicating bytes.
 - `/lib` – library snapshots for proxy-backed streams.
-- `/data` – durable state, promoted from `/rt/.../stage` at the commit edge of a beat. Optional upper-layer packs can pre-create their own namespaces here (for example, a coherence pack might reserve `/data/coh`).
+- `/data` – durable state, promoted from `/rt/.../stage` at the commit edge of a beat. Optional upper-layer packs can pre-create their own namespaces here (for example, a coherence pack might reserve `/data/coh`). The kernel now seeds `/data/mailbox/impulses` as a control-plane mailbox where paused impulses park until `op/resume` drains them.
 - `/tmp` – linked-list scratch pad for tooling; it is not part of the deterministic contract.
 - `/enzymes` – registry manifest (`cep_enzyme_register`, `cep_enzyme_descriptor`) and their metadata.
 

@@ -32,6 +32,14 @@ CEP_DEFINE_STATIC_DT(dt_ops_status_field, CEP_ACRO("CEP"), CEP_WORD("status"));
 
 static cepCell* cep_l0_ops_root(void);
 
+#if defined(CEP_ENABLE_DEBUG)
+static void prr_l0_organs_log(const char* fmt, ...) {
+    (void)fmt;
+}
+#else
+#define prr_l0_organs_log(...) ((void)0)
+#endif
+
 static const char* const CEP_L0_SCHEMA_RT_BEAT_SUMMARY     = "Heartbeat beat ledger capturing impulses, agenda, and stage evidence per beat.";
 static const char* const CEP_L0_SCHEMA_RT_BEAT_LAYOUT      = "<beat>/impulses|agenda|stage lists preserve capture, compute, commit ordering.";
 static const char* const CEP_L0_SCHEMA_JOURNAL_SUMMARY     = "Append-only runtime journal for organ operations and stream evidence.";
@@ -606,6 +614,23 @@ static bool cep_l0_organ_bind_signal(cepCell* root, const cepDT* signal_dt) {
         return true;
     }
 
+#if defined(CEP_ENABLE_DEBUG)
+    const cepOrganDescriptor* descriptor = NULL;
+    if (root->store) {
+        descriptor = cep_organ_descriptor(&root->store->dt);
+    }
+
+    prr_l0_organs_log("[prr:bind_fail] root=%p store=%016llx/%016llx signal=%016llx/%016llx rc=%d descriptor=%p kind=%s\n",
+                      (void*)root,
+                      (unsigned long long)(root->store ? cep_id(root->store->dt.domain) : 0ull),
+                      (unsigned long long)(root->store ? cep_id(root->store->dt.tag) : 0ull),
+                      (unsigned long long)cep_id(signal_dt->domain),
+                      (unsigned long long)cep_id(signal_dt->tag),
+                      rc,
+                      (const void*)descriptor,
+                      descriptor && descriptor->kind ? descriptor->kind : "<unknown>");
+#endif
+
     bool already_bound = false;
     const cepEnzymeBinding* binding = cep_cell_enzyme_bindings(root);
     for (const cepEnzymeBinding* node = binding; node; node = node->next) {
@@ -657,6 +682,7 @@ static cepCell* cep_l0_organ_resolve_root_from_segments(const cepL0OrganDefiniti
     }
 
     cepCell* current = cep_root();
+    current = current ? cep_cell_resolve(current) : NULL;
     if (!current) {
         return NULL;
     }
@@ -665,13 +691,88 @@ static cepCell* cep_l0_organ_resolve_root_from_segments(const cepL0OrganDefiniti
         cepDT lookup = cep_dt_clean(&def->path_segments[i]);
         cepCell* child = cep_cell_find_by_name(current, &lookup);
         if (!child) {
+            child = cep_cell_find_by_name_all(current, &lookup);
+        }
+        if (!child) {
+#if defined(CEP_ENABLE_DEBUG)
+            size_t child_count = (current && current->store) ? current->store->chdCount : 0u;
+            unsigned storage = (current && current->store) ? current->store->storage : 0u;
+            unsigned indexing = (current && current->store) ? current->store->indexing : 0u;
+            prr_l0_organs_log("[prr:bind_fail] missing segment kind=%s index=%zu parent=%p parent_store=%p chd=%zu storage=%u indexing=%u domain=%016llx tag=%016llx\n",
+                              def->kind ? def->kind : "<null>",
+                              (unsigned long)i,
+                              (void*)current,
+                              current ? (void*)current->store : NULL,
+                              child_count,
+                              storage,
+                              indexing,
+                              (unsigned long long)cep_id(lookup.domain),
+                              (unsigned long long)cep_id(lookup.tag));
+#endif
+#if defined(CEP_ENABLE_DEBUG)
+            if (current && current->store) {
+                for (cepCell* node = cep_cell_first_all(current); node; node = cep_cell_next_all(current, node)) {
+                    cepCell* resolved_child = cep_cell_resolve(node);
+#if defined(CEP_ENABLE_DEBUG)
+                    const cepDT* child_name = resolved_child ? cep_cell_get_name(resolved_child) : NULL;
+                    prr_l0_organs_log("  [prr:bind_fail] child name=%016llx/%016llx resolved=%p\n",
+                                      child_name ? (unsigned long long)cep_id(child_name->domain) : 0ull,
+                                      child_name ? (unsigned long long)cep_id(child_name->tag) : 0ull,
+                                      (void*)resolved_child);
+#endif
+                }
+            }
+#endif
             return NULL;
         }
-        cepCell* resolved = cep_cell_resolve(child);
-        if (!resolved) {
+        cepCell* resolved_child = cep_cell_resolve(child);
+        if (!resolved_child) {
+            prr_l0_organs_log("[prr:bind_fail] unresolved segment kind=%s index=%zu child=%p parent=%p\n",
+                              def->kind ? def->kind : "<null>",
+                              (unsigned long)i,
+                              (void*)child,
+                              (void*)current);
             return NULL;
         }
-        current = resolved;
+        if (cep_cell_is_veiled(resolved_child)) {
+            prr_l0_organs_log("[prr:bind_fail] veiled segment kind=%s index=%zu resolved=%p parent=%p\n",
+                              def->kind ? def->kind : "<null>",
+                              (unsigned long)i,
+                              (void*)resolved_child,
+                              (void*)current);
+            return NULL;
+        }
+        cepStore* parent_store = resolved_child->parent;
+        cepStore* expected_store = current ? current->store : NULL;
+        if (!parent_store || !expected_store || parent_store != expected_store) {
+            prr_l0_organs_log("[prr:bind_fail] parent mismatch kind=%s index=%zu resolved=%p parent_store=%p expected_store=%p\n",
+                              def->kind ? def->kind : "<null>",
+                              (unsigned long)i,
+                              (void*)resolved_child,
+                              (void*)parent_store,
+                              (void*)expected_store);
+            return NULL;
+        }
+        if (parent_store->owner != current) {
+            prr_l0_organs_log("[prr:bind_fail] owner mismatch kind=%s index=%zu resolved=%p parent_store=%p owner=%p expected=%p\n",
+                              def->kind ? def->kind : "<null>",
+                              (unsigned long)i,
+                              (void*)resolved_child,
+                              (void*)parent_store,
+                              (void*)parent_store->owner,
+                              (void*)current);
+            return NULL;
+        }
+        if (!resolved_child->created || resolved_child->deleted) {
+            prr_l0_organs_log("[prr:bind_fail] stale segment kind=%s index=%zu resolved=%p created=%llu deleted=%llu\n",
+                              def->kind ? def->kind : "<null>",
+                              (unsigned long)i,
+                              (void*)resolved_child,
+                              (unsigned long long)resolved_child->created,
+                              (unsigned long long)resolved_child->deleted);
+            return NULL;
+        }
+        current = resolved_child;
     }
     return current;
 }
@@ -1852,10 +1953,12 @@ bool cep_l0_organs_bind_roots(void) {
 
         cepCell* root = cep_l0_organ_resolve_root_from_segments(def);
         if (!root) {
+            prr_l0_organs_log("[prr:bind_fail] resolve root kind=%s\n", def->kind ? def->kind : "<null>");
             return false;
         }
 
         if (!cep_l0_organ_bind_signal(root, &def->validator_name)) {
+            prr_l0_organs_log("[prr:bind_fail] validator kind=%s\n", def->kind ? def->kind : "<null>");
             return false;
         }
 
@@ -1865,6 +1968,7 @@ bool cep_l0_organs_bind_roots(void) {
                 def->constructor_ready = true;
             }
             if (!cep_l0_organ_bind_signal(root, &def->constructor_name)) {
+                prr_l0_organs_log("[prr:bind_fail] constructor kind=%s\n", def->kind ? def->kind : "<null>");
                 return false;
             }
         }
@@ -1875,6 +1979,7 @@ bool cep_l0_organs_bind_roots(void) {
                 def->destructor_ready = true;
             }
             if (!cep_l0_organ_bind_signal(root, &def->destructor_name)) {
+                prr_l0_organs_log("[prr:bind_fail] destructor kind=%s\n", def->kind ? def->kind : "<null>");
                 return false;
             }
         }

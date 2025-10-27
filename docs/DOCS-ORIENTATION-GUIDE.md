@@ -27,7 +27,6 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md` — Binding inheritance, wildcard routing, and tombstones.
   - `docs/L0_KERNEL/topics/CELL-OPERATIONS-ENZYMES.md` — Reference semantics for the standard `sig_cell/op_*` helpers.
   - `docs/L0_KERNEL/topics/ORGANS-AUTHORING.md` — Register organ descriptors, enforce validator bindings, and coordinate ctor/dtor/validation ops.
-
 - **External Integrations**
   - `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md` — Chunk framing, manifest rules, and replay expectations.
   - `docs/L0_KERNEL/topics/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect logging, CAS, and preconditions around I/O.
@@ -45,7 +44,8 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/topics/RAW-TRAVERSAL-HELPERS.md` — Upcoming `*_all` traversal APIs; recheck before touching traversal internals.
 - `docs/L0_KERNEL/design/DESIGN-INDEX.md` — Status board for Layer 0 design papers.
   - `docs/L0_KERNEL/design/L0-DESIGN-GUIDE.md` — Expectations for the new Design document tier that records architectural rationale.
-  - `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` — Rationale behind beat ordering, enzyme dependencies, and OPS timelines.
+- `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` — Rationale behind beat ordering, enzyme dependencies, and OPS timelines.
+- `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md` — Control-plane design for Pause/Rollback/Resume, backlog policy, and heartbeat gating.
 - `docs/L0_KERNEL/design/L0-DESIGN-SERIALIZATION.md` — Design trade-offs for manifests, chunking, and replay safety.
 - `docs/L0_KERNEL/design/L0-DESIGN-CELL-AND-STORE.md` — Why cells stay append-only and how store backends uphold invariants.
 - `docs/L0_KERNEL/design/L0-DESIGN-PROXY-AND-HANDLES.md` — Lifecycle rules for proxy payloads, adapters, and external handles.

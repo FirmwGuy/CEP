@@ -10,6 +10,7 @@ Immutable sealing and digesting sometimes fail because we only walk the "visible
 - `cepCell* cep_cell_next_all(const cepCell* parent, const cepCell* current);`
 - `cepCell* cep_cell_last_all(const cepCell* parent);`
 - `cepCell* cep_cell_prev_all(const cepCell* parent, const cepCell* current);`
+- `cepCell* cep_cell_find_by_name_all(const cepCell* parent, const cepDT* name);`
 
 Each helper returns the raw stored child (resolved from links) without applying snapshot or visibility filters. The functions mirror the signatures and usage style of the existing `cep_cell_first/next/last/prev` helpers so that callers can switch between the "visible" and "raw" views with minimal friction.
 
@@ -18,7 +19,7 @@ Each helper returns the raw stored child (resolved from links) without applying 
 1. **No visibility filtering** – all stored children are yielded regardless of veils, deletion flags, or snapshot semantics. This is implemented by delegating to the internal store traversal routines (`store_*_child_internal`) so that even hash-table and red-black-tree stores expose their internal ordering.
 2. **Link resolution** – callers receive resolved `cepCell*` pointers. The helpers follow links at the top level (the parent), and return children exactly as stored (callers may further resolve links on child entries if needed, matching the current `cep_cell_first/next` behaviour).
 3. **Stable ordering contract** – iteration order matches the underlying store's logical ordering; callers must not assume that order corresponds to snapshot-visible sequencing. Immutable digesting continues to sort children by name before hashing, so differing internal orders across stores do not jeopardize determinism.
-4. **Error handling** – passing a void/NULL parent returns `NULL` (matching existing helpers). If the parent has no store, the helpers yield `NULL`. All functions assert that the parent is a normal cell.
+4. **Error handling** – passing a void/NULL parent returns `NULL` (matching existing helpers). If the parent has no store, the helpers yield `NULL`. All functions assert that the parent is a normal cell. Name lookups return the stored entry (veiled or not) so callers can revive or inspect it before re-exposing it.
 
 ### Intended call sites
 
@@ -43,6 +44,12 @@ This inventory will guide the follow-up tasks that adopt `*_all` after API appro
 - For `cep_cell_last_all`/`cep_cell_prev_all` we add `store_last_child_internal` and `store_prev_child_internal` wrappers so that hash-table and red-black tree stores retain parity with the forward iteration logic.
 - Documentation in the public header points out that these helpers deliberately bypass veil/deletion semantics and should be used sparingly.
 - No behavioural change is introduced until callers switch to the new API.
+
+### Current adoption
+
+- `cep_ops_history_root()` now relies on `cep_cell_find_by_name_all()` to revive the `history` dictionary when a rollback leaves it veiled. The helper re-establishes `store->owner`, writable flags, and auto-id state before any append occurs.
+- `ensure_root_dictionary()` and `cep_namepool_ensure_dictionary()` use the `*_all` family to resurrect previously veiled dictionaries (for example `/sys/state` or `/sys/namepool`) instead of accidentally allocating replacements.
+- Organ binding paths (`cep_l0_organ_resolve_root_from_segments`) switched to `cep_cell_find_by_name_all()` so they never grab RB-tree payload nodes; callers always receive fully resolved, unveiled cells.
 
 ## Global Q&A
 

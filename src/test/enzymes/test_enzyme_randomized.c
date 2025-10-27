@@ -169,6 +169,7 @@ MunitResult test_enzyme_randomized(const MunitParameter params[], void* user_dat
         cepImpulse impulse = {
             .signal_path = signal_path,
             .target_path = NULL,
+        .qos = CEP_IMPULSE_QOS_NONE,
         };
         size_t resolved_count = cep_enzyme_resolve(registry, &impulse, resolved, MAX_RANDOM_ENZYMES);
         munit_assert_size(resolved_count, ==, descriptor_count);

@@ -26,6 +26,7 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/L0_KERNEL/design/DESIGN-INDEX.md` | Status tracker for design docs | Layer 0 subsystems | Live | Lists published and planned design papers. |
 | `docs/L0_KERNEL/design/L0-DESIGN-GUIDE.md` | Structure for new Design documents | Design rationale workflow | Live | Use as the template when adding `L0-DESIGN-*.md` papers. |
 | `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` | Beat + OPS rationale | Heartbeat loop, OPS lifecycle | Live | Documents determinism guarantees and watcher mechanics. |
+| `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md` | Control-plane design | Pause/Rollback/Resume ops, backlog policy | Draft | Explains control dossiers, heartbeat gating, and mailbox-backed backlog behaviour. |
 | `docs/L0_KERNEL/design/L0-DESIGN-SERIALIZATION.md` | Serialization rationale | Manifest, chunking, replay | Live | Records choices behind staging, hashing, and proxy snapshots. |
 | `docs/L0_KERNEL/design/L0-DESIGN-CELL-AND-STORE.md` | Cell/store rationale | Append-only history, storage adapters | Live | Explains invariants that keep history and locks correct. |
 | `docs/L0_KERNEL/design/L0-DESIGN-PROXY-AND-HANDLES.md` | Proxy/handle rationale | External resources, adapters | Live | Captures lifecycle, serialization, and error propagation rules. |

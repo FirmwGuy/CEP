@@ -122,6 +122,7 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 
 * CEP supports **hierarchical locks** for both **store** and **data**. A lock on any ancestor prevents structural/data edits below; checks walk up to the root (`cep_cell_*_locked_hierarchy`) which adds a short parent chain scan per operation  .
 * Use `cep_store_lock` / `cep_data_lock` sparingly, hold them for the **shortest possible critical section**, and avoid long chains of updates while locked (they’ll all pay the lock‑walk) .
+* The Pause control plane (`cep_runtime_pause`) acquires both locks at `/data` before gating impulses. If you already hold a manual lock on the subtree the pause operation will fail, so schedule long-running mutations outside of pause windows.
 
 ---
 
@@ -206,6 +207,7 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 * **Links**: avoid massive backlink sets on hot targets; detaches are O(k) in number of links .
 * **Enzymes**: set `CEP_ENZYME_CAPACITY_HINT`; keep `before[]/after[]` minimal; consistent DT naming; register outside live beats when possible; activation of pending is explicit and rebuilds indexes once  .
 * **Serialization**: `cep_serialization_emit_cell` with tuned `blob_payload_bytes`; reader stages per‑tx and commits atomically; optional payload hashing trades CPU for verification .
+* **Control Ops**: `cep_txn_clear_metadata` now frees transaction metadata buckets/stores; keep pause/rollback/resume diagnostics behind `CEP_ENABLE_DEBUG` so control logging compiles out in release builds.
 
 ---
 

@@ -18,6 +18,8 @@
 #include <string.h>
 #include <limits.h>
 #include <ctype.h>
+#include <stdarg.h>
+#include <inttypes.h>
 
 CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
 CEP_DEFINE_STATIC_DT(dt_text_type, CEP_ACRO("CEP"), CEP_WORD("text"));
@@ -234,6 +236,9 @@ static void cep_namepool_clear_entry(cepNamePoolEntry* entry) {
     if (!entry) {
         return;
     }
+    if (!entry->is_static && entry->bytes) {
+        cep_free((void*)entry->bytes);
+    }
     entry->id = 0;
     entry->page = 0;
     entry->slot = 0;
@@ -286,13 +291,74 @@ static void cep_namepool_remove_bucket(size_t index) {
 }
 
 static cepCell* cep_namepool_ensure_dictionary(cepCell* parent, const cepDT* name) {
-    cepCell* cell = cep_cell_find_by_name(parent, name);
-    if (!cell) {
-        cepDT dict_type = *dt_dictionary_type();
-        cepDT name_copy = cep_dt_clean(name);
-        cell = cep_cell_add_dictionary(parent, &name_copy, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!parent || !name) {
+        return NULL;
     }
-    return cell;
+
+    cepDT lookup = cep_dt_clean(name);
+    lookup.glob = 0u;
+
+    cepCell* stored = cep_cell_find_by_name(parent, &lookup);
+    bool revived = false;
+    if (!stored) {
+        stored = cep_cell_find_by_name_all(parent, &lookup);
+        if (stored) {
+            revived = true;
+        }
+    }
+
+    if (!stored) {
+        cepDT dict_type = *dt_dictionary_type();
+        cepDT name_copy = lookup;
+        stored = cep_cell_add_dictionary(parent, &name_copy, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        if (!stored) {
+            return NULL;
+        }
+    }
+
+    cepCell* resolved = stored;
+    if (!cep_cell_require_dictionary_store(&resolved)) {
+        return NULL;
+    }
+
+    cepStore* store = resolved->store;
+    if (store) {
+        if (store->owner != resolved) {
+            store->owner = resolved;
+        }
+        if (!store->writable) {
+            store->writable = 1u;
+        }
+        if (store->lock) {
+            store->lock = 0u;
+            store->lockOwner = NULL;
+        }
+        if (revived) {
+            cepDT dict_type = *dt_dictionary_type();
+            cep_store_set_dt(store, &dict_type);
+        }
+        if (!store->created) {
+            store->created = resolved->created ? resolved->created : cep_cell_timestamp_next();
+        }
+        if (store->deleted) {
+            store->deleted = 0u;
+        }
+        if (store->autoid == 0u) {
+            store->autoid = 1u;
+        }
+    }
+
+    if (cep_cell_is_veiled(resolved)) {
+        resolved->metacell.veiled = 0u;
+    }
+    if (!resolved->created) {
+        resolved->created = store && store->created ? store->created : cep_cell_timestamp_next();
+    }
+    if (resolved->deleted) {
+        resolved->deleted = 0u;
+    }
+
+    return resolved;
 }
 
 static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, size_t length) {
@@ -330,7 +396,7 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
         copy,
         length,
         length + 1u,
-        (cepDel)cep_free
+        NULL
     );
 
     if (!value_cell || !cep_cell_has_data(value_cell)) {
@@ -338,11 +404,26 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
         return false;
     }
 
-    entry->cell = value_cell;
-    entry->bytes = cep_cell_data(value_cell);
-    entry->length = value_cell->data->size;
+    cepCell* resolved = cep_cell_resolve(value_cell);
+    if (!resolved || !cep_cell_has_data(resolved)) {
+        cep_cell_remove_hard(value_cell, NULL);
+        cep_free(copy);
+        return false;
+    }
+
+    cepData* stored = resolved->data;
+    if (!stored) {
+        cep_cell_remove_hard(resolved, NULL);
+        cep_free(copy);
+        return false;
+    }
+
+    entry->cell = resolved;
+    entry->bytes = copy;
+    entry->length = length;
     entry->refcount = 1u;
     entry->is_static = false;
+
     return entry->bytes != NULL;
 }
 
@@ -515,40 +596,22 @@ bool cep_namepool_bootstrap(void) {
     }
 
     cepDT sys_name = *dt_sys_root_name();
-    cepCell* sys = cep_cell_find_by_name(root, &sys_name);
+    cepCell* sys = cep_namepool_ensure_dictionary(root, &sys_name);
     if (!sys) {
-        cepDT dict_type = *dt_dictionary_type();
-        sys = cep_cell_add_dictionary(root, &sys_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
-        if (!sys) {
-            return false;
-        }
+        return false;
     }
 
     cepDT pool_name = *dt_namepool_root_name();
-    cepCell* pool = cep_cell_find_by_name(sys, &pool_name);
-
+    cepCell* pool = cep_namepool_ensure_dictionary(sys, &pool_name);
     if (!pool) {
-        cepDT dict_type = *dt_dictionary_type();
-        cepDT name_copy = cep_dt_clean(&pool_name);
-        pool = cep_cell_add_dictionary(sys, &name_copy, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
-        if (!pool) {
-            return false;
-        }
-    }
-
-    cepCell* resolved_pool = cep_cell_resolve(pool);
-    if (!resolved_pool) {
-        return false;
-    }
-    if (!cep_cell_require_dictionary_store(&resolved_pool)) {
         return false;
     }
 
-    namepool_root = resolved_pool;
+    namepool_root = pool;
 
-    if (resolved_pool->store) {
+    if (pool->store) {
         cepDT pool_store = cep_organ_store_dt("sys_namepool");
-        cep_store_set_dt(resolved_pool->store, &pool_store);
+        cep_store_set_dt(pool->store, &pool_store);
     }
     (void)cep_lifecycle_scope_mark_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL);
     return true;
@@ -682,11 +745,16 @@ static void cep_namepool_free_pages(void) {
     }
 
     for (size_t i = 0; i < name_page_count; ++i) {
-        if (name_pages[i]) {
-            CEP_DEBUG_PRINTF_STDOUT("[namepool:page_free] index=%zu page=%p\n", i, (void*)name_pages[i]);
-            cep_free(name_pages[i]);
-            name_pages[i] = NULL;
+        cepNamePoolPage* page = name_pages[i];
+        if (!page) {
+            continue;
         }
+        for (size_t slot = 0u; slot < CEP_NAMEPOOL_SLOTS_PER_PAGE; ++slot) {
+            cep_namepool_clear_entry(&page->entries[slot]);
+        }
+        CEP_DEBUG_PRINTF_STDOUT("[namepool:page_free] index=%zu page=%p\n", i, (void*)page);
+        cep_free(page);
+        name_pages[i] = NULL;
     }
     cep_free(name_pages);
     name_pages = NULL;

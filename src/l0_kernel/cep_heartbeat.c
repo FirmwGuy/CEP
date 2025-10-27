@@ -10,6 +10,7 @@
 #include "cep_namepool.h"
 #include "../enzymes/cep_cell_operations.h"
 #include "../enzymes/cep_l0_organs.h"
+#include "cep_mailbox.h"
 #include "cep_ops.h"
 #include "cep_organ.h"
 #include "stream/cep_stream_internal.h"
@@ -23,6 +24,56 @@
 
 
 
+static const cepDT* dt_state_root(void);
+static const cepDT* dt_mailbox_root_name(void);
+static const cepDT* dt_impulse_mailbox_name(void);
+static const cepDT* dt_meta_name(void);
+static const cepDT* dt_kind_name(void);
+static const cepDT* dt_runtime_name(void);
+static const cepDT* dt_msgs_name(void);
+static const cepDT* dt_envelope_name(void);
+static const cepDT* dt_signal_field(void);
+static const cepDT* dt_target_field_control(void);
+static const cepDT* dt_qos_field(void);
+static const cepDT* dt_issued_field(void);
+static const cepDT* dt_dictionary_type(void);
+static const cepDT* dt_domain_field(void);
+static const cepDT* dt_tag_field(void);
+static const cepDT* dt_timestamp_field(void);
+static const cepDT* dt_op_stamp_name(void);
+static const cepDT* dt_signal_op_pause(void);
+static const cepDT* dt_signal_op_resume(void);
+static const cepDT* dt_signal_op_rollback(void);
+static const cepDT* dt_signal_op_shutdown(void);
+static const cepDT* dt_signal_op_cont(void);
+static const cepDT* dt_signal_op_tmo(void);
+static const cepDT* dt_allow_signal_cei(void);
+static const cepDT* dt_paused_field(void);
+static const cepDT* dt_view_horizon_field(void);
+static const cepDT* dt_ops_rt_name(void);
+#if defined(CEP_ENABLE_DEBUG)
+static const cepDT* dt_debug_root_name(void);
+static const cepDT* dt_debug_stage_field(void);
+static const cepDT* dt_debug_note_field(void);
+static const cepDT* dt_debug_phase_field(void);
+static const cepDT* dt_debug_ready_field(void);
+static const cepDT* dt_debug_beat_field(void);
+#endif
+static const cepDT* dt_ist_plan(void);
+static const cepDT* dt_ist_quiesce(void);
+static const cepDT* dt_ist_paused(void);
+static const cepDT* dt_ist_cutover(void);
+static const cepDT* dt_ist_run(void);
+static cepCell* cep_lifecycle_get_dictionary(cepCell* parent, const cepDT* name, bool create);
+static cepCell* cep_control_mailbox(void);
+static cepCell* cep_control_mailbox_msgs(void);
+static bool cep_control_path_write(cepCell* parent, const cepDT* field, const cepPath* path);
+static cepPath* cep_control_path_read(const cepCell* parent, const cepDT* field);
+static char* cep_heartbeat_path_to_string(const cepPath* path);
+static bool cep_heartbeat_record_op_stamp(cepBeatNumber beat, cepOpCount stamp);
+static bool cep_heartbeat_beat_to_op_stamp(cepBeatNumber beat, cepOpCount* stamp_out);
+static bool cep_control_op_is_closed(cepOID oid);
+static bool cep_control_op_closed_ok(cepOID oid);
 
 static cepHeartbeatRuntime CEP_RUNTIME = {
     .current = CEP_BEAT_INVALID,
@@ -32,9 +83,2089 @@ static cepHeartbeatRuntime CEP_RUNTIME = {
     .current_descriptor = NULL,
     .last_wallclock_beat = CEP_BEAT_INVALID,
     .last_wallclock_ns = 0u,
+    .view_horizon = CEP_BEAT_INVALID,
+    .view_horizon_stamp = 0u,
+    .view_horizon_floor_stamp = 0u,
 };
 
 static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
+
+typedef enum {
+    CEP_CTRL_PHASE_IDLE = 0,
+    CEP_CTRL_PHASE_PLAN,
+    CEP_CTRL_PHASE_APPLY,
+    CEP_CTRL_PHASE_STEADY,
+    CEP_CTRL_PHASE_CLOSING,
+} cepControlPhase;
+
+typedef enum {
+    CEP_ROLLBACK_STAGE_IDLE = 0,
+    CEP_ROLLBACK_STAGE_EXAMINE,
+    CEP_ROLLBACK_STAGE_PRUNE,
+    CEP_ROLLBACK_STAGE_CUTOVER,
+    CEP_ROLLBACK_STAGE_STEADY,
+    CEP_ROLLBACK_STAGE_FAILED,
+} cepRollbackStage;
+
+typedef struct {
+    cepOID          oid;
+    bool            started;
+    bool            closed;
+    bool            failed;
+    cepControlPhase phase;
+    cepBeatNumber   last_beat;
+    cepDT           verb_dt;
+    bool            diag_emitted;
+} cepControlOpState;
+
+typedef struct {
+    cepControlOpState pause;
+    cepControlOpState resume;
+    cepControlOpState rollback;
+    bool              gating_active;
+    bool              paused_published;
+    bool              locks_acquired;
+    bool              drain_requested;
+    bool              backlog_dirty;
+    bool              agenda_noted;
+    bool              cleanup_pending;
+    bool              backlog_cleanup_pending;
+    bool              data_cleanup_pending;
+    bool              gc_pending;
+    cepLockToken      store_lock;
+    cepLockToken      data_lock;
+    cepBeatNumber     rollback_target;
+    cepRollbackStage  rollback_stage;
+} cepControlRuntimeState;
+
+static cepControlRuntimeState CEP_CONTROL_STATE;
+
+/* Refresh the aggregated cleanup flag so callers can gate control verbs on the
+   presence of any outstanding backlog, data revival, or GC work. */
+static inline void cep_control_cleanup_update_flag(void) {
+    CEP_CONTROL_STATE.cleanup_pending =
+        CEP_CONTROL_STATE.backlog_cleanup_pending ||
+        CEP_CONTROL_STATE.data_cleanup_pending ||
+        CEP_CONTROL_STATE.gc_pending;
+}
+
+static void cep_control_reset_state(void) {
+    CEP_0(&CEP_CONTROL_STATE);
+    CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_IDLE;
+    cep_control_cleanup_update_flag();
+    CEP_DEBUG_PRINTF("[ctrl] reset control state\n");
+}
+
+static void cep_control_op_clear(cepControlOpState* op) {
+    if (!op) {
+        return;
+    }
+    CEP_0(op);
+    if (op == &CEP_CONTROL_STATE.rollback) {
+        CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_IDLE;
+    }
+    CEP_DEBUG_PRINTF("[ctrl] op_clear op=%p\n", (void*)op);
+}
+
+static bool cep_control_ready_for_next(const cepControlOpState* op);
+#if defined(CEP_ENABLE_DEBUG)
+static void cep_control_debug_log(const cepControlOpState* op,
+                                  const char* stage,
+                                  const char* note);
+static void cep_control_debug_clear(const cepControlOpState* op);
+#else
+static inline void cep_control_debug_log(const cepControlOpState* op,
+                                         const char* stage,
+                                         const char* note) {
+    (void)op;
+    (void)stage;
+    (void)note;
+}
+static inline void cep_control_debug_clear(const cepControlOpState* op) {
+    (void)op;
+}
+#endif
+
+#if defined(CEP_ENABLE_DEBUG)
+static void cep_control_debug_snapshot(const char* stage,
+                                       const cepControlOpState* op,
+                                       int success_hint) {
+    if (!stage) {
+        stage = "<null>";
+    }
+    if (!op) {
+        CEP_DEBUG_PRINTF("[ctrl] stage=%s op=null success_hint=%d\n", stage, success_hint);
+        return;
+    }
+
+    const char* phase = "idle";
+    switch (op->phase) {
+        case CEP_CTRL_PHASE_IDLE:     phase = "idle";     break;
+        case CEP_CTRL_PHASE_PLAN:     phase = "plan";     break;
+        case CEP_CTRL_PHASE_APPLY:    phase = "apply";    break;
+        case CEP_CTRL_PHASE_STEADY:   phase = "steady";   break;
+        case CEP_CTRL_PHASE_CLOSING:  phase = "closing";  break;
+    }
+
+    uint64_t beat = (op->last_beat == CEP_BEAT_INVALID)
+        ? UINT64_MAX
+        : (uint64_t)op->last_beat;
+
+    CEP_DEBUG_PRINTF("[ctrl] stage=%s op=%p success_hint=%d started=%d closed=%d "
+                     "failed=%d phase=%s last_beat=%" PRIu64 " diag=%d\n",
+                     stage,
+                     (void*)op,
+                     success_hint,
+                     op->started ? 1 : 0,
+                     op->closed ? 1 : 0,
+                     op->failed ? 1 : 0,
+                     phase,
+                     beat,
+                     op->diag_emitted ? 1 : 0);
+}
+#else
+static inline void cep_control_debug_snapshot(const char* stage,
+                                              const cepControlOpState* op,
+                                              int success_hint) {
+    (void)stage;
+    (void)op;
+    (void)success_hint;
+}
+#endif
+
+static cepCell* cep_control_state_root(void) {
+    cepCell* sys_root = cep_heartbeat_sys_root();
+    if (!sys_root) {
+        return NULL;
+    }
+    return cep_lifecycle_get_dictionary(sys_root, dt_state_root(), true);
+}
+
+static bool cep_control_state_write_bool(const cepDT* field, bool value) {
+    cepCell* state_root = cep_control_state_root();
+    if (!state_root || !field) {
+return false;
+    }
+
+    cepDT lookup = cep_dt_clean(field);
+    cepCell* existing = cep_cell_find_by_name(state_root, &lookup);
+    const char* type_tag = "val/bool";
+
+    if (existing) {
+return cep_cell_update(existing, sizeof value, sizeof value, (void*)&value, false) != NULL;
+    }
+
+    cepDT name_copy = lookup;
+    cepDT type_copy = cep_ops_make_dt(type_tag);
+return cep_dict_add_value(state_root, &name_copy, &type_copy, (void*)&value, sizeof value, sizeof value) != NULL;
+}
+
+static bool cep_control_state_write_u64(const cepDT* field, uint64_t value) {
+    cepCell* state_root = cep_control_state_root();
+    if (!state_root || !field) {
+return false;
+    }
+
+    cepDT lookup = cep_dt_clean(field);
+    cepCell* existing = cep_cell_find_by_name(state_root, &lookup);
+    const char* type_tag = "val/u64";
+
+    if (existing) {
+return cep_cell_update(existing, sizeof value, sizeof value, (void*)&value, false) != NULL;
+    }
+
+    cepDT name_copy = lookup;
+    cepDT type_copy = cep_ops_make_dt(type_tag);
+return cep_dict_add_value(state_root, &name_copy, &type_copy, (void*)&value, sizeof value, sizeof value) != NULL;
+}
+
+static bool cep_control_set_numeric_name(cepDT* name, size_t index) {
+    if (!name) {
+        return false;
+    }
+    if (index >= CEP_AUTOID_MAX) {
+        return false;
+    }
+    name->domain = CEP_ACRO("CEP");
+    name->glob = 0u;
+    name->tag = cep_id_to_numeric((cepID)(index + 1u));
+    return true;
+}
+
+static cepCell* cep_control_mailbox(void) {
+    cepCell* data_root = cep_heartbeat_data_root();
+    if (!data_root) {
+        return NULL;
+    }
+
+    cepCell* mailboxes = cep_cell_ensure_dictionary_child(data_root,
+                                                          dt_mailbox_root_name(),
+                                                          CEP_STORAGE_RED_BLACK_T);
+    if (!mailboxes) {
+        return NULL;
+    }
+
+    cepCell* impulses = cep_cell_ensure_dictionary_child(mailboxes,
+                                                         dt_impulse_mailbox_name(),
+                                                         CEP_STORAGE_RED_BLACK_T);
+    if (!impulses) {
+        return NULL;
+    }
+
+    cepCell* meta = cep_cell_ensure_dictionary_child(impulses, dt_meta_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!meta) {
+        return NULL;
+    }
+
+    cepCell* kind = cep_cell_find_by_name(meta, dt_kind_name());
+    if (!kind || !cep_cell_has_data(kind)) {
+        if (!cep_cell_put_text(meta, dt_kind_name(), "impulse_backlog")) {
+            return NULL;
+        }
+    }
+
+    cepCell* runtime = cep_cell_ensure_dictionary_child(meta, dt_runtime_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!runtime) {
+        return NULL;
+    }
+    (void)runtime; /* runtime metadata reserved for TTL bookkeeping. */
+
+    cepCell* msgs = cep_cell_ensure_dictionary_child(impulses, dt_msgs_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!msgs) {
+        return NULL;
+    }
+
+    return cep_cell_resolve(impulses);
+}
+
+static cepCell* cep_control_mailbox_msgs(void) {
+    cepCell* mailbox = cep_control_mailbox();
+    if (!mailbox) {
+        CEP_DEBUG_PRINTF("[prr] mailbox_msgs: mailbox missing\n");
+        return NULL;
+    }
+    if (!cep_cell_require_dictionary_store(&mailbox)) {
+        CEP_DEBUG_PRINTF("[prr] mailbox_msgs: mailbox store unavailable mailbox=%p\n", (void*)mailbox);
+        return NULL;
+    }
+
+    cepCell* msgs = cep_cell_find_by_name(mailbox, dt_msgs_name());
+    bool fallback = false;
+    if (!msgs) {
+        msgs = cep_cell_find_by_name_all(mailbox, dt_msgs_name());
+        fallback = true;
+        if (!msgs) {
+            const cepDT* name = cep_cell_get_name(mailbox);
+            CEP_DEBUG_PRINTF("[prr] mailbox_msgs: msgs lookup failed mailbox=%p name=%s deleted=%lu veiled=%u\n",
+                             (void*)mailbox,
+                             name ? "mailbox" : "<unnamed>",
+                             (unsigned long)(mailbox && mailbox->deleted ? mailbox->deleted : 0u),
+                             mailbox ? mailbox->metacell.veiled : 0u);
+            return NULL;
+        }
+    }
+    cepCell* resolved = cep_cell_resolve(msgs);
+    CEP_DEBUG_PRINTF("[prr] mailbox_msgs: resolved=%p store=%p deleted=%lu veiled=%u fallback=%d\n",
+                     (void*)resolved,
+                     resolved ? (void*)resolved->store : NULL,
+                     resolved ? (unsigned long)resolved->deleted : 0ul,
+                     resolved ? resolved->metacell.veiled : 0u,
+                     fallback ? 1 : 0);
+    return resolved;
+}
+
+static bool cep_control_path_write(cepCell* parent, const cepDT* field, const cepPath* path) {
+    if (!parent || !field) {
+        return false;
+    }
+
+    cepCell* resolved = cep_cell_resolve(parent);
+    if (!resolved || !cep_cell_is_normal(resolved)) {
+        return false;
+    }
+
+    if (!cep_cell_require_dictionary_store(&resolved)) {
+        return false;
+    }
+
+    cepCell* branch = cep_cell_ensure_dictionary_child(resolved, field, CEP_STORAGE_RED_BLACK_T);
+    if (!branch) {
+        return false;
+    }
+
+    branch = cep_cell_resolve(branch);
+    if (!branch) {
+        return false;
+    }
+
+    cep_cell_delete_children(branch);
+
+    if (!path || path->length == 0u) {
+        return true;
+    }
+
+    for (unsigned i = 0u; i < path->length; ++i) {
+        cepDT entry_name = {0};
+        if (!cep_control_set_numeric_name(&entry_name, i)) {
+            return false;
+        }
+        cepDT type = *dt_dictionary_type();
+        cepCell* segment = cep_dict_add_dictionary(branch, &entry_name, &type, CEP_STORAGE_RED_BLACK_T);
+        if (!segment) {
+            return false;
+        }
+        const cepPast* part = &path->past[i];
+        uint64_t domain_value = (uint64_t)part->dt.domain;
+        uint64_t tag_value = (uint64_t)part->dt.tag;
+
+        if (!cep_cell_put_uint64(segment, dt_domain_field(), domain_value)) {
+            return false;
+        }
+        if (!cep_cell_put_uint64(segment, dt_tag_field(), tag_value)) {
+            return false;
+        }
+        if (!cep_cell_put_uint64(segment, dt_timestamp_field(), (uint64_t)part->timestamp)) {
+            return false;
+        }
+    }
+
+    CEP_DEBUG_PRINTF("[prr] soft_delete: completed\n");
+    return true;
+}
+
+static cepPath* cep_control_path_read(const cepCell* parent, const cepDT* field) {
+    if (!parent || !field) {
+        return NULL;
+    }
+
+    cepCell* branch = cep_cell_find_by_name(parent, field);
+    if (!branch) {
+        branch = cep_cell_find_by_name_all(parent, field);
+        if (!branch) {
+            CEP_DEBUG_PRINTF("[prr] path_read: missing branch for field\n");
+            return NULL;
+        }
+        CEP_DEBUG_PRINTF("[prr] path_read: fallback branch for field\n");
+    }
+    branch = cep_cell_resolve(branch);
+    if (!branch) {
+        CEP_DEBUG_PRINTF("[prr] path_read: resolve branch failed\n");
+        return NULL;
+    }
+
+    size_t count = 0u;
+    for (cepCell* child = cep_cell_first_all(branch); child; child = cep_cell_next_all(branch, child)) {
+        count += 1u;
+    }
+    CEP_DEBUG_PRINTF("[prr] path_read: child count=%zu\n", count);
+    size_t bytes = sizeof(cepPath) + count * sizeof(cepPast);
+    cepPath* path = (cepPath*)cep_malloc(bytes);
+    if (!path) {
+        return NULL;
+    }
+    path->length = 0u;
+    path->capacity = count;
+
+    const cepDT* domain_dt = dt_domain_field();
+    const cepDT* tag_dt = dt_tag_field();
+    const cepDT* ts_dt = dt_timestamp_field();
+
+    size_t index = 0u;
+    for (cepCell* child = cep_cell_first_all(branch); child; child = cep_cell_next_all(branch, child)) {
+        cepPath* target = path;
+        if (index >= count) {
+            break;
+        }
+        cepCell* resolved_child = cep_cell_resolve(child);
+        if (!resolved_child) {
+            resolved_child = child;
+        }
+        cepPast* segment = &target->past[index];
+        uint64_t domain_id = 0u;
+        uint64_t tag_id = 0u;
+        uint64_t timestamp = 0u;
+
+        cepDT domain_lookup = cep_dt_clean(domain_dt);
+        cepDT tag_lookup = cep_dt_clean(tag_dt);
+        cepDT ts_lookup = cep_dt_clean(ts_dt);
+
+        cepCell* domain_cell = cep_cell_find_by_name_all(resolved_child, &domain_lookup);
+        cepCell* tag_cell = cep_cell_find_by_name_all(resolved_child, &tag_lookup);
+        cepCell* ts_cell = cep_cell_find_by_name_all(resolved_child, &ts_lookup);
+
+        if (domain_cell) {
+            domain_cell = cep_cell_resolve(domain_cell);
+        }
+        if (tag_cell) {
+            tag_cell = cep_cell_resolve(tag_cell);
+        }
+        if (ts_cell) {
+            ts_cell = cep_cell_resolve(ts_cell);
+        }
+
+        const char* domain_text = (domain_cell && domain_cell->data)
+            ? (const char*)cep_data(domain_cell->data)
+            : NULL;
+        const char* tag_text = (tag_cell && tag_cell->data)
+            ? (const char*)cep_data(tag_cell->data)
+            : NULL;
+        const char* ts_text = (ts_cell && ts_cell->data)
+            ? (const char*)cep_data(ts_cell->data)
+            : NULL;
+
+        if (!domain_text || !tag_text) {
+            CEP_DEBUG_PRINTF("[prr] path_read: missing domain/tag data for child\n");
+            cep_free(path);
+            return NULL;
+        }
+
+        domain_id = strtoull(domain_text, NULL, 10);
+        tag_id = strtoull(tag_text, NULL, 10);
+        if (ts_text) {
+            timestamp = strtoull(ts_text, NULL, 10);
+        }
+
+        segment->dt.domain = CEP_ID(domain_id);
+        segment->dt.tag = CEP_ID(tag_id);
+        CEP_DEBUG_PRINTF("[prr] path_read segment idx=%zu domain=%llu tag=%llu\n",
+                         (unsigned long)index,
+                         (unsigned long long)domain_id,
+                         (unsigned long long)tag_id);
+        segment->dt.glob = cep_id_has_glob_char(segment->dt.tag) ? 1u : 0u;
+        segment->timestamp = (cepOpCount)timestamp;
+
+        ++index;
+    }
+
+    path->length = index;
+    path->capacity = index;
+    return path;
+}
+
+static bool cep_control_backlog_store(const cepImpulse* impulse) {
+    if (!impulse) {
+        CEP_DEBUG_PRINTF("[backlog] invalid impulse\n");
+        return false;
+    }
+
+    cepCell* data_root = NULL;
+    bool relock_store = false;
+    bool relock_data = false;
+
+    if (CEP_CONTROL_STATE.locks_acquired) {
+        data_root = cep_heartbeat_data_root();
+        if (data_root) {
+            data_root = cep_cell_resolve(data_root);
+        }
+        if (data_root) {
+            if (CEP_CONTROL_STATE.data_lock.owner) {
+                cep_data_unlock(data_root, &CEP_CONTROL_STATE.data_lock);
+                relock_data = true;
+            }
+            if (CEP_CONTROL_STATE.store_lock.owner) {
+                cep_store_unlock(data_root, &CEP_CONTROL_STATE.store_lock);
+                relock_store = true;
+            }
+        }
+    }
+
+    bool success = false;
+
+    cepCell* mailbox = cep_control_mailbox();
+    if (!mailbox) {
+        CEP_DEBUG_PRINTF("[backlog] control mailbox unavailable\n");
+        goto cleanup;
+    }
+
+    cepMailboxMessageId message_id = {0};
+    if (!cep_mailbox_select_message_id(mailbox, NULL, NULL, &message_id)) {
+        CEP_DEBUG_PRINTF("[backlog] select_message_id failed\n");
+        goto cleanup;
+    }
+
+    cepCell* msgs = cep_control_mailbox_msgs();
+    if (!msgs) {
+        CEP_DEBUG_PRINTF("[backlog] mailbox msgs branch missing\n");
+        goto cleanup;
+    }
+
+    cepDT message_lookup = cep_dt_clean(&message_id.id);
+    cepCell* message_root = cep_cell_find_by_name(msgs, &message_lookup);
+    cepDT dict_type = *dt_dictionary_type();
+
+    if (message_root) {
+        message_root = cep_cell_resolve(message_root);
+        if (!message_root) {
+            CEP_DEBUG_PRINTF("[backlog] resolve existing message failed\n");
+            goto cleanup;
+        }
+        cep_cell_delete_children(message_root);
+    } else {
+        cepDT name_copy = message_lookup;
+        message_root = cep_dict_add_dictionary(msgs, &name_copy, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        if (!message_root) {
+            CEP_DEBUG_PRINTF("[backlog] add message dictionary failed\n");
+            goto cleanup;
+        }
+    }
+
+    cepCell* envelope = cep_cell_ensure_dictionary_child(message_root, dt_envelope_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!envelope) {
+        CEP_DEBUG_PRINTF("[backlog] ensure envelope failed\n");
+        goto cleanup;
+    }
+
+    envelope = cep_cell_resolve(envelope);
+    if (!envelope) {
+        CEP_DEBUG_PRINTF("[backlog] resolve envelope failed\n");
+        goto cleanup;
+    }
+
+    cep_cell_delete_children(envelope);
+
+    if (!cep_control_path_write(envelope, dt_signal_field(), impulse->signal_path)) {
+        CEP_DEBUG_PRINTF("[backlog] write signal path failed\n");
+        goto cleanup;
+    }
+
+    if (!cep_control_path_write(envelope, dt_target_field_control(), impulse->target_path)) {
+        CEP_DEBUG_PRINTF("[backlog] write target path failed\n");
+        goto cleanup;
+    }
+
+    uint64_t qos_value = (uint64_t)impulse->qos;
+    if (!cep_cell_put_uint64(envelope, dt_qos_field(), qos_value)) {
+        CEP_DEBUG_PRINTF("[backlog] write qos failed\n");
+        goto cleanup;
+    }
+
+    cepBeatNumber beat = cep_heartbeat_current();
+    if (beat == CEP_BEAT_INVALID) {
+        beat = 0u;
+    }
+    if (!cep_cell_put_uint64(envelope, dt_issued_field(), (uint64_t)beat)) {
+        CEP_DEBUG_PRINTF("[backlog] write issued beat failed\n");
+        goto cleanup;
+    }
+
+    CEP_CONTROL_STATE.backlog_dirty = true;
+    success = true;
+
+cleanup:
+    {
+        bool relock_ok = true;
+        if (data_root) {
+            if (relock_store) {
+                if (!cep_store_lock(data_root, &CEP_CONTROL_STATE.store_lock)) {
+                    CEP_DEBUG_PRINTF("[backlog] failed to re-lock store\n");
+                    relock_ok = false;
+                }
+            }
+            if (relock_data) {
+                if (!cep_data_lock(data_root, &CEP_CONTROL_STATE.data_lock)) {
+                    CEP_DEBUG_PRINTF("[backlog] failed to re-lock data\n");
+                    relock_ok = false;
+                }
+            }
+        }
+        if (!relock_ok) {
+            success = false;
+        }
+    }
+
+    return success;
+}
+
+static void cep_control_backlog_gc_deleted(cepCell* msgs) {
+    if (!msgs) {
+        return;
+    }
+
+    bool removed = false;
+    for (cepCell* message = cep_cell_first_all(msgs); message; ) {
+        cepCell* next = cep_cell_next_all(msgs, message);
+        cepCell* resolved = cep_cell_resolve(message);
+        if (resolved && cep_cell_is_deleted(resolved)) {
+            cep_cell_remove_hard(resolved, NULL);
+            removed = true;
+        }
+        message = next;
+    }
+
+    if (removed) {
+        CEP_CONTROL_STATE.backlog_dirty = true;
+    }
+    CEP_CONTROL_STATE.backlog_cleanup_pending = false;
+    cep_control_cleanup_update_flag();
+}
+
+static bool cep_control_backlog_drain(void) {
+    cepCell* msgs = cep_control_mailbox_msgs();
+    if (!msgs) {
+        CEP_DEBUG_PRINTF("[prr] backlog_drain: msgs missing\n");
+        return true;
+    }
+
+    size_t pending = cep_cell_children(msgs);
+    CEP_DEBUG_PRINTF("[prr] backlog_drain entry: messages=%zu gating=%d paused=%d cleanup=%d dirty=%d\n",
+                     pending,
+                     CEP_CONTROL_STATE.gating_active ? 1 : 0,
+                     CEP_RUNTIME.paused ? 1 : 0,
+                     CEP_CONTROL_STATE.cleanup_pending ? 1 : 0,
+                     CEP_CONTROL_STATE.backlog_dirty ? 1 : 0);
+
+    if (CEP_CONTROL_STATE.backlog_cleanup_pending) {
+        cep_control_backlog_gc_deleted(msgs);
+    }
+
+    cepCell* next = NULL;
+    for (cepCell* message = cep_cell_first_all(msgs); message; message = next) {
+        next = cep_cell_next_all(msgs, message);
+        CEP_DEBUG_PRINTF("[prr] backlog_drain visit message=%p\n", (void*)message);
+        cepCell* resolved = cep_cell_resolve(message);
+        if (!resolved) {
+            CEP_DEBUG_PRINTF("[prr] backlog_drain resolve message failed gating=%d paused=%d cleanup=%d\n",
+                             CEP_CONTROL_STATE.gating_active ? 1 : 0,
+                             CEP_RUNTIME.paused ? 1 : 0,
+                             CEP_CONTROL_STATE.cleanup_pending ? 1 : 0);
+            return false;
+        }
+        const cepDT* message_name = cep_cell_get_name(resolved);
+        CEP_DEBUG_PRINTF("[prr] backlog_drain resolved message=%p name=%s deleted=%lu veiled=%u\n",
+                         (void*)resolved,
+                         message_name ? "msg" : "<unnamed>",
+                         (unsigned long)resolved->deleted,
+                         resolved->metacell.veiled);
+
+        cepCell* envelope = cep_cell_find_by_name(resolved, dt_envelope_name());
+        if (!envelope) {
+            envelope = cep_cell_find_by_name_all(resolved, dt_envelope_name());
+            if (!envelope) {
+                CEP_DEBUG_PRINTF("[prr] backlog_drain missing envelope for message=%p\n", (void*)resolved);
+                cep_cell_remove_hard(resolved, NULL);
+                continue;
+            }
+        }
+
+        envelope = cep_cell_resolve(envelope);
+        if (!envelope) {
+            CEP_DEBUG_PRINTF("[prr] backlog_drain resolve envelope failed gating=%d paused=%d cleanup=%d\n",
+                             CEP_CONTROL_STATE.gating_active ? 1 : 0,
+                             CEP_RUNTIME.paused ? 1 : 0,
+                             CEP_CONTROL_STATE.cleanup_pending ? 1 : 0);
+            return false;
+        }
+
+        cepPath* signal_path = cep_control_path_read(envelope, dt_signal_field());
+        cepPath* target_path = cep_control_path_read(envelope, dt_target_field_control());
+
+        cepDT qos_lookup = cep_dt_clean(dt_qos_field());
+        void* qos_data = cep_cell_data_find_by_name(envelope, &qos_lookup);
+        uint64_t qos_value = 0u;
+        if (qos_data) {
+            qos_value = strtoull((const char*)qos_data, NULL, 10);
+        }
+
+        char* dbg_signal_path = cep_heartbeat_path_to_string(signal_path);
+        char* dbg_target_path = cep_heartbeat_path_to_string(target_path);
+        CEP_DEBUG_PRINTF("[prr] backlog replay gating=%d paused=%d cleanup=%d signal=%s target=%s qos=%llu\n",
+                         CEP_CONTROL_STATE.gating_active ? 1 : 0,
+                         CEP_RUNTIME.paused ? 1 : 0,
+                         CEP_CONTROL_STATE.cleanup_pending ? 1 : 0,
+                         dbg_signal_path ? dbg_signal_path : "<null>",
+                         dbg_target_path ? dbg_target_path : "<null>",
+                         (unsigned long long)(qos_value & 0xFFu));
+
+        cepImpulse impulse = {
+            .signal_path = signal_path,
+            .target_path = target_path,
+            .qos = (cepImpulseQoS)(qos_value & 0xFFu),
+        };
+
+        if (cep_heartbeat_enqueue_impulse(CEP_BEAT_INVALID, &impulse) != CEP_ENZYME_SUCCESS) {
+            CEP_DEBUG_PRINTF("[prr] backlog_drain enqueue failed gating=%d paused=%d cleanup=%d signal=%p target=%p qos=%u\n",
+                             CEP_CONTROL_STATE.gating_active ? 1 : 0,
+                             CEP_RUNTIME.paused ? 1 : 0,
+                             CEP_CONTROL_STATE.cleanup_pending ? 1 : 0,
+                             (void*)signal_path,
+                             (void*)target_path,
+                             (unsigned)impulse.qos);
+            cep_free(signal_path);
+            cep_free(target_path);
+            return false;
+        }
+
+        if (signal_path) {
+            for (unsigned i = 0; i < signal_path->length; ++i) {
+                signal_path->past[i].dt.glob = 0u;
+            }
+        }
+
+        cep_free(dbg_signal_path);
+        cep_free(dbg_target_path);
+        cep_free(signal_path);
+        cep_free(target_path);
+        cep_cell_remove_hard(resolved, NULL);
+    }
+
+    CEP_CONTROL_STATE.backlog_dirty = false;
+    return true;
+}
+
+static bool cep_control_backlog_prune_discard(void) {
+    cepCell* msgs = cep_control_mailbox_msgs();
+    if (!msgs) {
+        return true;
+    }
+
+    cepCell* next = NULL;
+    bool pruned_any = false;
+
+    for (cepCell* message = cep_cell_first(msgs); message; message = next) {
+        next = cep_cell_next(msgs, message);
+        cepCell* resolved = cep_cell_resolve(message);
+        if (!resolved) {
+            return false;
+        }
+
+        cepCell* envelope = cep_cell_find_by_name(resolved, dt_envelope_name());
+        if (!envelope) {
+            cep_cell_delete(resolved);
+            pruned_any = true;
+            continue;
+        }
+
+        envelope = cep_cell_resolve(envelope);
+        if (!envelope) {
+            return false;
+        }
+
+        cepDT qos_lookup = cep_dt_clean(dt_qos_field());
+        void* qos_data = cep_cell_data_find_by_name(envelope, &qos_lookup);
+        uint64_t qos_value = 0u;
+        if (qos_data) {
+            qos_value = strtoull((const char*)qos_data, NULL, 10);
+        }
+
+        if (((cepImpulseQoS)qos_value) & CEP_IMPULSE_QOS_DISCARD_ON_ROLLBACK) {
+            cep_cell_delete(resolved);
+            pruned_any = true;
+        }
+    }
+
+    if (pruned_any) {
+        CEP_CONTROL_STATE.backlog_dirty = true;
+        CEP_CONTROL_STATE.backlog_cleanup_pending = true;
+        cep_control_cleanup_update_flag();
+    }
+
+    return true;
+}
+
+static bool cep_control_signal_matches(const cepPath* path, const cepDT* dt) {
+    if (!path || path->length == 0u || !dt) {
+        return false;
+    }
+    cepDT wanted = cep_dt_clean(dt);
+    cepDT actual = cep_dt_clean(&path->past[0].dt);
+    return cep_dt_compare(&wanted, &actual) == 0;
+}
+
+/* Restore a soft-deleted cell so post-rollback traversals can treat it as live
+   again. Clears tombstone metadata stamped after the horizon, reinstates store
+   ownership, and flips writability flags so new mutations succeed. */
+static bool cep_control_rehydrate_node(cepCell* cell, cepOpCount floor_stamp) {
+    if (!cell) {
+        return true;
+    }
+
+#if defined(CEP_ENABLE_DEBUG)
+    const cepDT* dbg_name = cep_cell_get_name(cell);
+    uint64_t dbg_domain = dbg_name ? (uint64_t)cep_id(dbg_name->domain) : 0u;
+    uint64_t dbg_tag = dbg_name ? (uint64_t)cep_id(dbg_name->tag) : 0u;
+#endif
+
+    if (cep_cell_is_veiled(cell)) {
+        cell->metacell.veiled = 0u;
+    }
+
+    if (cell->deleted && (!floor_stamp || cell->deleted > floor_stamp)) {
+        cell->deleted = 0u;
+    }
+
+    if (!cell->created && floor_stamp) {
+        cell->created = floor_stamp;
+    }
+
+    if (cep_cell_has_data(cell)) {
+        cepData* data = cell->data;
+        if (data->deleted && (!floor_stamp || data->deleted > floor_stamp)) {
+            CEP_DEBUG_PRINTF("[rehydrate-data] cell=%p nm=%016" PRIx64 "/%016" PRIx64
+                             " data_deleted=%" PRIu64 " floor=%" PRIu64 "\n",
+                             (void*)cell,
+                             dbg_domain,
+                             dbg_tag,
+                             (uint64_t)data->deleted,
+                             (uint64_t)floor_stamp);
+            data->deleted = 0u;
+        }
+        if (!data->created && floor_stamp) {
+            data->created = floor_stamp;
+        }
+        if (!data->writable) {
+            data->writable = 1u;
+        }
+        data->lockOwner = NULL;
+        if (data->lock) {
+            data->lock = 0u;
+        }
+    }
+
+    if (cep_cell_has_store(cell)) {
+        cepStore* store = cell->store;
+        if (store->owner != cell) {
+            store->owner = cell;
+        }
+        if (!store->writable) {
+            store->writable = 1u;
+        }
+        if (store->lock) {
+            store->lock = 0u;
+            store->lockOwner = NULL;
+        } else {
+            store->lockOwner = NULL;
+        }
+        if (store->deleted && (!floor_stamp || store->deleted > floor_stamp)) {
+            CEP_DEBUG_PRINTF("[rehydrate-store] cell=%p nm=%016" PRIx64 "/%016" PRIx64
+                             " store_deleted=%" PRIu64 " floor=%" PRIu64 "\n",
+                             (void*)cell,
+                             dbg_domain,
+                             dbg_tag,
+                             (uint64_t)store->deleted,
+                             (uint64_t)floor_stamp);
+            store->deleted = 0u;
+        }
+        if (!store->created) {
+            cepOpCount stamp = cell->created ? cell->created : floor_stamp;
+            if (!stamp) {
+                stamp = cep_cell_timestamp();
+            }
+            store->created = stamp;
+        }
+        if (store->autoid == 0u) {
+            store->autoid = 1u;
+        }
+    }
+
+    return true;
+}
+
+/* Depth-first walk that revives every descendant under the supplied cell,
+   ensuring hidden dictionary branches become usable during resume. */
+static bool cep_control_rehydrate_branch(cepCell* cell, cepOpCount floor_stamp) {
+    if (!cell) {
+        return true;
+    }
+
+    cepCell* resolved = cep_cell_resolve(cell);
+    if (!resolved) {
+        return false;
+    }
+
+    if (!cep_control_rehydrate_node(resolved, floor_stamp)) {
+        return false;
+    }
+
+    if (!cep_cell_is_normal(resolved) || !resolved->store) {
+        return true;
+    }
+
+    for (cepCell* child = cep_cell_first_all(resolved);
+         child;
+         child = cep_cell_next_all(resolved, child)) {
+        if (!cep_control_rehydrate_branch(child, floor_stamp)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void cep_control_mark_deleted_node(cepCell* cell, cepOpCount stamp) {
+    if (!cell) {
+        return;
+    }
+
+    if (!stamp) {
+        stamp = cep_cell_timestamp();
+    }
+
+    if (!cell->deleted || cell->deleted < stamp) {
+        cell->deleted = stamp;
+    }
+    cep_cell_shadow_mark_target_dead(cell, true);
+
+    if (cep_cell_has_data(cell)) {
+        cepData* data = cell->data;
+        if (!data->deleted || data->deleted < stamp) {
+            data->deleted = stamp;
+        }
+        data->writable = 0u;
+        data->lock = 0u;
+        data->lockOwner = NULL;
+    }
+
+    if (cep_cell_has_store(cell)) {
+        cepStore* store = cell->store;
+        if (!store->deleted || store->deleted < stamp) {
+            store->deleted = stamp;
+        }
+        store->writable = false;
+        store->lock = 0u;
+        store->lockOwner = NULL;
+    }
+}
+
+static bool cep_control_mark_branch_deleted(cepCell* cell, cepOpCount stamp) {
+    if (!cell) {
+        return true;
+    }
+
+    cepCell* resolved = cep_cell_resolve(cell);
+    if (!resolved) {
+        return false;
+    }
+
+    cep_control_mark_deleted_node(resolved, stamp);
+
+    if (!resolved->store) {
+        return true;
+    }
+
+    for (cepCell* child = cep_cell_first_all(resolved);
+         child;
+         child = cep_cell_next_all(resolved, child)) {
+        if (!cep_control_mark_branch_deleted(child, stamp)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* Soft-delete application dictionaries under /data during rollback so the
+   subsequent cleanup pass can revive their prior state deterministically. */
+static bool cep_control_soft_delete_data(void) {
+#if defined(CEP_ENABLE_DEBUG)
+    CEP_DEBUG_PRINTF("[prr-soft-delete] enter\n");
+#endif
+    cepCell* data_root = cep_heartbeat_data_root();
+    if (!data_root) {
+        return true;
+    }
+
+    cepCell* resolved = cep_cell_resolve(data_root);
+    if (!resolved) {
+        return false;
+    }
+    if (!cep_cell_has_store(resolved)) {
+        return true;
+    }
+
+    const cepDT* mailbox_name = dt_mailbox_root_name();
+
+    for (cepCell* child = cep_cell_first(resolved);
+         child;
+         child = cep_cell_next(resolved, child)) {
+        cepCell* node = cep_cell_resolve(child);
+        if (!node) {
+            CEP_DEBUG_PRINTF("[prr] soft_delete: resolve child failed\n");
+            return false;
+        }
+
+        const cepDT* name = cep_cell_get_name(node);
+        if (mailbox_name && name && cep_dt_compare(mailbox_name, name) == 0) {
+            continue; /* Preserve backlog mailbox while paused. */
+        }
+
+#if defined(CEP_ENABLE_DEBUG)
+        const cepDT* cell_name = cep_cell_get_name(node);
+        uint64_t dbg_domain = cell_name ? (uint64_t)cep_id(cell_name->domain) : 0u;
+        uint64_t dbg_tag = cell_name ? (uint64_t)cep_id(cell_name->tag) : 0u;
+#endif
+        cepOpCount horizon_stamp = cep_runtime_view_horizon_stamp();
+        cepOpCount stamp = cep_cell_timestamp();
+        if (horizon_stamp && (!stamp || stamp <= horizon_stamp)) {
+            stamp = horizon_stamp + 1u;
+        }
+        if (!stamp) {
+            stamp = 1u;
+        }
+#if defined(CEP_ENABLE_DEBUG)
+        CEP_DEBUG_PRINTF("[prr-soft-delete] node=%p nm=%016" PRIx64 "/%016" PRIx64
+                         " delete_stamp=%" PRIu64 " horizon=%" PRIu64 "\n",
+                         (void*)node,
+                         dbg_domain,
+                         dbg_tag,
+                         (uint64_t)stamp,
+                         (uint64_t)horizon_stamp);
+#endif
+        if (!cep_control_mark_branch_deleted(node, stamp)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* Rehydrate application dictionaries rooted under /data so their stores regain
+   writable ownership before the heartbeat accepts new work after resume. */
+static bool cep_control_rehydrate_data(cepOpCount floor_stamp) {
+    cepCell* data_root = cep_heartbeat_data_root();
+    if (!data_root) {
+        return true;
+    }
+
+    cepCell* resolved = cep_cell_resolve(data_root);
+    if (!resolved) {
+        return false;
+    }
+
+    if (!cep_control_rehydrate_node(resolved, floor_stamp)) {
+        return false;
+    }
+
+    return cep_control_rehydrate_branch(resolved, floor_stamp);
+}
+
+/* Clear the published view horizon marker in /sys/state once cleanup finishes.
+   Runtime caches keep their last reported values so in-flight observers can
+   still query the previous target beat without racing the GC pass. */
+static bool cep_control_clear_view_horizon(void) {
+    return cep_control_state_write_u64(dt_view_horizon_field(), 0u);
+}
+
+/* Execute a single post-resume cleanup step: revive application dictionaries,
+   release backlog tombstones, and clear the view horizon once everything is
+   stable again. Gated by the cleanup flags tracked in CEP_CONTROL_STATE. */
+static bool cep_control_cleanup_step(void) {
+    bool resume_finished = CEP_CONTROL_STATE.resume.started && CEP_CONTROL_STATE.resume.closed;
+
+    if (!resume_finished) {
+        return true;
+    }
+
+    if (CEP_CONTROL_STATE.data_cleanup_pending) {
+        cepOpCount floor_stamp = cep_runtime_view_horizon_floor_stamp();
+        if (!floor_stamp) {
+            floor_stamp = cep_runtime_view_horizon_stamp();
+        }
+        if (!cep_control_rehydrate_data(floor_stamp)) {
+            return false;
+        }
+        CEP_CONTROL_STATE.data_cleanup_pending = false;
+        cep_control_cleanup_update_flag();
+    }
+
+    if (!CEP_CONTROL_STATE.data_cleanup_pending &&
+        !CEP_CONTROL_STATE.backlog_cleanup_pending &&
+        CEP_CONTROL_STATE.gc_pending &&
+        CEP_CONTROL_STATE.resume.started &&
+        CEP_CONTROL_STATE.resume.closed) {
+        if (!cep_control_clear_view_horizon()) {
+            return false;
+        }
+        CEP_CONTROL_STATE.gc_pending = false;
+        cep_control_cleanup_update_flag();
+#if defined(CEP_ENABLE_DEBUG)
+        cep_control_debug_clear(&CEP_CONTROL_STATE.rollback);
+        cep_control_debug_clear(&CEP_CONTROL_STATE.resume);
+#endif
+    }
+
+    return true;
+}
+
+static bool cep_control_impulse_allowed(const cepImpulse* impulse) {
+    if (!impulse) {
+        return true;
+    }
+    if (impulse->qos & CEP_IMPULSE_QOS_CONTROL) {
+        return true;
+    }
+    if (cep_control_signal_matches(impulse->signal_path, dt_signal_op_pause())) {
+        return true;
+    }
+    if (cep_control_signal_matches(impulse->signal_path, dt_signal_op_resume())) {
+        return true;
+    }
+    if (cep_control_signal_matches(impulse->signal_path, dt_signal_op_rollback())) {
+        return true;
+    }
+    if (cep_control_signal_matches(impulse->signal_path, dt_signal_op_shutdown())) {
+        return true;
+    }
+    if (cep_control_signal_matches(impulse->signal_path, dt_signal_op_cont())) {
+        return true;
+    }
+    if (cep_control_signal_matches(impulse->signal_path, dt_signal_op_tmo())) {
+        return true;
+    }
+    if (cep_control_signal_matches(impulse->signal_path, dt_allow_signal_cei())) {
+        return true;
+    }
+    return false;
+}
+
+static bool cep_control_should_gate(const cepImpulse* impulse) {
+    if (!CEP_CONTROL_STATE.gating_active) {
+        return false;
+    }
+    return !cep_control_impulse_allowed(impulse);
+}
+
+static bool cep_control_apply_locks(void) {
+    if (CEP_CONTROL_STATE.locks_acquired) {
+        return true;
+    }
+
+    cepCell* data_root = cep_heartbeat_data_root();
+    if (!data_root) {
+        return false;
+    }
+
+    data_root = cep_cell_resolve(data_root);
+    if (!data_root || !cep_cell_is_normal(data_root)) {
+        return false;
+    }
+
+    if (!cep_cell_require_dictionary_store(&data_root)) {
+        return false;
+    }
+    if (cep_cell_store_locked_hierarchy(data_root)) {
+        return false;
+    }
+    cepLockToken store_token = {0};
+    cepLockToken data_token = {0};
+
+    if (!cep_store_lock(data_root, &store_token)) {
+        return false;
+    }
+
+    if (cep_cell_has_data(data_root)) {
+        if (cep_cell_data_locked_hierarchy(data_root)) {
+            cep_store_unlock(data_root, &store_token);
+            return false;
+        }
+
+        if (!cep_data_lock(data_root, &data_token)) {
+            cep_store_unlock(data_root, &store_token);
+            return false;
+        }
+    }
+
+    CEP_CONTROL_STATE.store_lock = store_token;
+    CEP_CONTROL_STATE.data_lock = data_token;
+    CEP_CONTROL_STATE.locks_acquired = true;
+    return true;
+}
+
+static void cep_control_release_locks(void) {
+    if (!CEP_CONTROL_STATE.locks_acquired) {
+        return;
+    }
+
+    cepCell* data_root = cep_heartbeat_data_root();
+    if (data_root) {
+        cep_data_unlock(data_root, &CEP_CONTROL_STATE.data_lock);
+        cep_store_unlock(data_root, &CEP_CONTROL_STATE.store_lock);
+    }
+
+    CEP_CONTROL_STATE.locks_acquired = false;
+    CEP_0(&CEP_CONTROL_STATE.store_lock);
+    CEP_0(&CEP_CONTROL_STATE.data_lock);
+}
+
+#if defined(CEP_ENABLE_DEBUG)
+static bool cep_control_debug_prepare_node(cepCell** node) {
+    if (!node || !*node) {
+        CEP_DEBUG_PRINTF("[prr-debug-meta] prepare_node missing pointer\n");
+        return false;
+    }
+
+    cepCell* resolved = cep_cell_resolve(*node);
+    if (!resolved || !cep_cell_is_normal(resolved)) {
+        CEP_DEBUG_PRINTF("[prr-debug-meta] prepare_node resolve failed\n");
+        return false;
+    }
+
+    if (!cep_cell_require_dictionary_store(&resolved)) {
+        CEP_DEBUG_PRINTF("[prr-debug-meta] prepare_node require store failed\n");
+        return false;
+    }
+
+    if (resolved->store) {
+        if (resolved->store->owner != resolved) {
+            resolved->store->owner = resolved;
+        }
+        if (!resolved->store->writable) {
+            resolved->store->writable = 1u;
+        }
+        if (resolved->store->lock) {
+            resolved->store->lock = 0u;
+        }
+    }
+
+    if (resolved->metacell.veiled) {
+        resolved->metacell.veiled = 0u;
+    }
+    if (resolved->deleted) {
+        resolved->deleted = 0u;
+    }
+    if (resolved->created == 0u) {
+        resolved->created = cep_cell_timestamp_next();
+    }
+
+    *node = resolved;
+    return true;
+}
+
+static cepCell* cep_control_debug_resolve_op(cepOID oid) {
+    if (!cep_oid_is_valid(oid)) {
+        return NULL;
+    }
+
+    if (!cep_heartbeat_bootstrap()) {
+        return NULL;
+    }
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (!rt_root) {
+        return NULL;
+    }
+
+    cepCell* ops_node = cep_cell_find_by_name(rt_root, dt_ops_rt_name());
+    if (!ops_node) {
+        ops_node = cep_cell_find_by_name_all(rt_root, dt_ops_rt_name());
+    }
+    if (!ops_node) {
+        CEP_DEBUG_PRINTF("[prr-debug-meta] ops_root missing\n");
+        return NULL;
+    }
+
+    if (!cep_control_debug_prepare_node(&ops_node)) {
+        CEP_DEBUG_PRINTF("[prr-debug-meta] ops_root prepare failed\n");
+        return NULL;
+    }
+
+    cepDT lookup = {
+        .domain = oid.domain,
+        .tag = oid.tag,
+        .glob = 0u,
+    };
+
+    cepCell* dossier = cep_cell_find_by_name(ops_node, &lookup);
+    if (!dossier) {
+        dossier = cep_cell_find_by_name_all(ops_node, &lookup);
+    }
+    if (!dossier) {
+        CEP_DEBUG_PRINTF("[prr-debug-meta] dossier missing domain=%llu tag=%llu\n",
+                         (unsigned long long)oid.domain,
+                         (unsigned long long)oid.tag);
+        return NULL;
+    }
+
+    if (!cep_control_debug_prepare_node(&dossier)) {
+        CEP_DEBUG_PRINTF("[prr-debug-meta] dossier prepare failed domain=%llu tag=%llu\n",
+                         (unsigned long long)oid.domain,
+                         (unsigned long long)oid.tag);
+        return NULL;
+    }
+
+    return dossier;
+}
+
+static void cep_control_debug_log(const cepControlOpState* op,
+                                  const char* stage,
+                                  const char* note) {
+    if (!op || !stage || !cep_oid_is_valid(op->oid)) {
+        return;
+    }
+
+    CEP_DEBUG_PRINTF("[prr-debug-meta] log request oid=%llu:%llu stage=%s\n",
+                     (unsigned long long)op->oid.domain,
+                     (unsigned long long)op->oid.tag,
+                     stage);
+
+    cepCell* dossier = cep_control_debug_resolve_op(op->oid);
+    if (!dossier) {
+        CEP_DEBUG_PRINTF("[prr-debug-meta] resolve failed oid=%llu:%llu\n",
+                         (unsigned long long)op->oid.domain,
+                         (unsigned long long)op->oid.tag);
+        return;
+    }
+
+    cepCell* meta = cep_cell_find_by_name(dossier, dt_meta_name());
+    if (!meta) {
+        cepDT meta_name = *dt_meta_name();
+        cepDT meta_type = *dt_dictionary_type();
+        meta = cep_cell_add_dictionary(dossier, &meta_name, 0u, &meta_type, CEP_STORAGE_RED_BLACK_T);
+        if (!meta) {
+            CEP_DEBUG_PRINTF("[prr-debug-meta] meta create failed\n");
+            return;
+        }
+    }
+    meta = cep_cell_resolve(meta);
+    if (!meta) {
+        meta = cep_cell_find_by_name_all(dossier, dt_meta_name());
+        if (!meta || !cep_control_debug_prepare_node(&meta)) {
+            CEP_DEBUG_PRINTF("[prr-debug-meta] meta resolve failed\n");
+            return;
+        }
+    } else {
+        if (!cep_control_debug_prepare_node(&meta)) {
+            CEP_DEBUG_PRINTF("[prr-debug-meta] meta prepare failed\n");
+            return;
+        }
+    }
+
+    cepCell* debug_root = cep_cell_ensure_dictionary_child(meta, dt_debug_root_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!debug_root) {
+        CEP_DEBUG_PRINTF("[prr-debug-meta] ensure debug root failed\n");
+        return;
+    }
+
+    if (!cep_control_debug_prepare_node(&debug_root)) {
+        return;
+    }
+
+    size_t index = cep_cell_children(debug_root);
+    CEP_DEBUG_PRINTF("[prr-debug-meta] debug_root children=%zu\n", index);
+    cepDT entry_name = {0};
+    if (!cep_control_set_numeric_name(&entry_name, index)) {
+        entry_name = cep_ops_make_dt("debug_entry");
+    }
+
+    cepDT dict_type = *dt_dictionary_type();
+    cepCell* entry = cep_cell_add_dictionary(debug_root,
+                                             &entry_name,
+                                             0u,
+                                             &dict_type,
+                                             CEP_STORAGE_RED_BLACK_T);
+    if (!entry) {
+        CEP_DEBUG_PRINTF("[prr-debug-meta] add_dictionary failed stage=%s\n", stage);
+        return;
+    }
+
+    if (!cep_control_debug_prepare_node(&entry)) {
+        return;
+    }
+
+    CEP_DEBUG_PRINTF("[prr-debug-meta] entry ready stage=%s\n", stage);
+
+    cep_cell_put_text(entry, dt_debug_stage_field(), stage);
+    if (note && note[0] != '\0') {
+        (void)cep_cell_put_text(entry, dt_debug_note_field(), note);
+    }
+
+    cep_cell_put_uint64(entry, dt_debug_phase_field(), (uint64_t)op->phase);
+    cep_cell_put_uint64(entry, dt_debug_ready_field(), cep_control_ready_for_next(op) ? 1u : 0u);
+    cep_cell_put_uint64(entry, dt_debug_beat_field(), (uint64_t)cep_heartbeat_current());
+    CEP_DEBUG_PRINTF("[prr-debug-meta] oid=%llu:%llu stage=%s note=%s\n",
+                     (unsigned long long)op->oid.domain,
+                     (unsigned long long)op->oid.tag,
+                     stage,
+                     note ? note : "<none>");
+}
+
+static void cep_control_debug_clear(const cepControlOpState* op) {
+    if (!op || !cep_oid_is_valid(op->oid)) {
+        return;
+    }
+
+    cepCell* dossier = cep_control_debug_resolve_op(op->oid);
+    if (!dossier) {
+        return;
+    }
+
+    cepCell* meta = cep_cell_find_by_name(dossier, dt_meta_name());
+    if (!meta) {
+        meta = cep_cell_find_by_name_all(dossier, dt_meta_name());
+    }
+    if (!meta) {
+        return;
+    }
+
+    cepCell* resolved = cep_cell_resolve(meta);
+    if (!resolved) {
+        return;
+    }
+
+    cepCell* debug_root = cep_cell_find_by_name(resolved, dt_debug_root_name());
+    if (!debug_root) {
+        return;
+    }
+
+    debug_root = cep_cell_resolve(debug_root);
+    if (!debug_root) {
+        return;
+    }
+
+    cep_cell_remove_hard(debug_root, NULL);
+    CEP_DEBUG_PRINTF("[prr-debug-meta] oid=%llu:%llu cleared debug branch\n",
+                     (unsigned long long)op->oid.domain,
+                     (unsigned long long)op->oid.tag);
+}
+#endif
+
+static bool cep_control_op_is_closed(cepOID oid) {
+    char info[160];
+    if (!cep_op_get(oid, info, sizeof info)) {
+        return false;
+    }
+    return strstr(info, "closed=1") != NULL;
+}
+
+static bool cep_control_op_closed_ok(cepOID oid) {
+    char info[160];
+    if (!cep_op_get(oid, info, sizeof info)) {
+        return false;
+    }
+
+    const char* closed = strstr(info, "closed=1");
+    if (!closed) {
+        return false;
+    }
+
+    unsigned long long status_dom = 0u;
+    unsigned long long status_tag = 0u;
+    (void)sscanf(info, "%*[^ ] status=0x%llx:0x%llx", &status_dom, &status_tag);
+    const char* status_text = NULL;
+    char status_buf[32] = {0};
+    const char* status_type = "unknown";
+    if (status_tag != 0u) {
+        cepID tag_id = (cepID)status_tag;
+        if (cep_id_is_reference(tag_id)) {
+            status_text = cep_namepool_lookup(tag_id, NULL);
+            status_type = "reference";
+        } else if (cep_id_is_word(tag_id)) {
+            cep_word_to_text(tag_id, status_buf);
+            status_text = status_buf;
+            status_type = "word";
+        } else if (cep_id_is_acronym(tag_id)) {
+            cep_acronym_to_text(tag_id, status_buf);
+            status_text = status_buf;
+            status_type = "acronym";
+        } else if (cep_id_is_numeric(tag_id)) {
+            snprintf(status_buf, sizeof status_buf, "#%llu", (unsigned long long)cep_id(tag_id));
+            status_text = status_buf;
+            status_type = "numeric";
+        } else if (cep_id_is_auto(tag_id)) {
+            status_type = "auto";
+        }
+    }
+
+    cepDT ok_status = cep_ops_make_dt("sts:ok");
+    bool match = (status_dom == (unsigned long long)ok_status.domain) &&
+                 (status_tag == (unsigned long long)ok_status.tag);
+
+    CEP_DEBUG_PRINTF("[prr] op_get(%llu:%llu) info=\"%s\" status_text=%s status_type=%s match_ok=%d (sts:ok=0x%llx:0x%llx)\n",
+                     (unsigned long long)oid.domain,
+                     (unsigned long long)oid.tag,
+                     info,
+                     status_text ? status_text : "<null>",
+                     status_type,
+                     match ? 1 : 0,
+                     (unsigned long long)ok_status.domain,
+                     (unsigned long long)ok_status.tag);
+    return match;
+}
+
+static const char* CEP_CONTROL_TARGET = "/sys/state";
+
+static void cep_control_emit_failure_cei(cepControlOpState* op,
+                                         const char* phase,
+                                         const char* reason) {
+    if (!op || !phase || !reason) {
+        return;
+    }
+    if (op->diag_emitted) {
+        int dup_err = cep_ops_debug_last_error();
+        CEP_DEBUG_PRINTF("[prr] control failure (dup) phase=%s reason=%s err=%d\n",
+                         phase,
+                         reason,
+                         dup_err);
+        return;
+    }
+
+    int err = cep_ops_debug_last_error();
+    CEP_DEBUG_PRINTF("[prr] control failure phase=%s reason=%s horizon=%lld err=%d\n",
+                     phase,
+                     reason,
+                     (long long)CEP_RUNTIME.view_horizon,
+                     err);
+
+    if (CEP_RUNTIME.view_horizon != CEP_BEAT_INVALID) {
+op->diag_emitted = true;
+        return;
+    }
+
+    const char* verb_text = "control";
+    if (cep_dt_is_valid(&op->verb_dt)) {
+        const char* text = cep_namepool_lookup(op->verb_dt.tag, NULL);
+        if (text && text[0]) {
+            verb_text = text;
+        }
+    }
+
+    char note[256];
+    snprintf(note,
+             sizeof note,
+             "%s failure during %s: %s (oid=%llu:%llu err=%d)",
+             verb_text,
+             phase,
+             reason,
+             (unsigned long long)op->oid.domain,
+             (unsigned long long)op->oid.tag,
+             err);
+    cepCeiRequest req = {
+        .severity = *CEP_DTAW("CEP", "sev:crit"),
+        .note = note,
+        .topic = "control/prr",
+        .topic_intern = true,
+        .attach_to_op = cep_oid_is_valid(op->oid),
+        .op = op->oid,
+        .emit_signal = true,
+        .ttl_forever = true,
+    };
+
+    (void)cep_cei_emit(&req);
+    op->diag_emitted = true;
+}
+
+/* Emit a guard diagnostics note when a control verb is rejected before the
+   operation starts. Used for cleanup/GC gating to surface cadence issues
+   without relying on an active control dossier. */
+static void cep_control_emit_guard_cei(cepControlOpState* op, const char* reason) {
+    if (!op || !reason) {
+        return;
+    }
+    if (op->diag_emitted) {
+        return;
+    }
+
+    const char* verb_text = "control";
+    if (!cep_dt_is_valid(&op->verb_dt)) {
+        /* Assign a default verb so the diagnostic stays descriptive. */
+        op->verb_dt = cep_ops_make_dt("op/control");
+    } else {
+        const char* text = cep_namepool_lookup(op->verb_dt.tag, NULL);
+        if (text && text[0]) {
+            verb_text = text;
+        }
+    }
+
+    char note[256];
+    snprintf(note,
+             sizeof note,
+             "%s rejected: %s",
+             verb_text,
+             reason);
+
+    cepCeiRequest req = {
+        .severity = *CEP_DTAW("CEP", "sev:crit"),
+        .note = note,
+        .topic = "control/prr",
+        .topic_intern = true,
+        .attach_to_op = cep_oid_is_valid(op->oid),
+        .op = op->oid,
+        .emit_signal = true,
+        .ttl_forever = true,
+    };
+
+    (void)cep_cei_emit(&req);
+    op->diag_emitted = true;
+}
+
+static bool cep_control_start_op(cepControlOpState* op, cepDT verb) {
+    if (!op) {
+        return false;
+    }
+    if (!cep_dt_is_valid(&verb)) {        op->failed = true;
+        op->verb_dt = verb;
+        cep_control_emit_failure_cei(op, "start", "invalid verb dt");
+        return false;
+    }
+    if (op->started && !op->failed) {
+        return true;
+    }
+
+    cepDT mode = cep_ops_make_dt("opm:states");
+    cepOID oid = cep_op_start(verb, CEP_CONTROL_TARGET, mode, NULL, 0u, 0u);
+    if (!cep_oid_is_valid(oid)) {
+        op->failed = true;
+        op->verb_dt = verb;
+        cep_control_emit_failure_cei(op, "start", "op_start failed");
+        return false;
+    }
+    CEP_DEBUG_PRINTF("[prr] control_start verb=%s oid=%llu:%llu\n",
+                     cep_namepool_lookup(verb.tag, NULL),
+                     (unsigned long long)oid.domain,
+                     (unsigned long long)oid.tag);
+
+    cepDT plan_state = *dt_ist_plan();
+    if (!cep_op_state_set(oid, plan_state, 0, NULL)) {
+        op->failed = true;
+        op->verb_dt = verb;
+        cep_control_emit_failure_cei(op, "start", "state_set failed");
+        return false;
+    }
+
+    op->oid = oid;
+    op->started = true;
+    op->closed = false;
+    op->failed = false;
+    op->phase = CEP_CTRL_PHASE_PLAN;
+    op->last_beat = cep_heartbeat_current();
+    if (op->last_beat == CEP_BEAT_INVALID) {
+        op->last_beat = 0u;
+    }
+    op->verb_dt = verb;
+    op->diag_emitted = false;
+    return true;
+}
+
+static bool cep_control_start_pause(void) {
+    cepDT verb = cep_ops_make_dt("op/pause");
+    return cep_control_start_op(&CEP_CONTROL_STATE.pause, verb);
+}
+
+static bool cep_control_start_resume(void) {
+    cepDT verb = cep_ops_make_dt("op/resume");
+    return cep_control_start_op(&CEP_CONTROL_STATE.resume, verb);
+}
+
+static bool cep_control_start_rollback(cepBeatNumber to) {
+    CEP_CONTROL_STATE.rollback_target = to;
+    CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_EXAMINE;
+    cepDT verb = cep_ops_make_dt("op/rollback");
+    if (!cep_control_start_op(&CEP_CONTROL_STATE.rollback, verb)) {
+        CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_IDLE;
+        return false;
+    }
+    return true;
+}
+
+static bool cep_control_ready_for_next(const cepControlOpState* op) {
+    if (!op) {
+        return false;
+    }
+    cepBeatNumber current = cep_heartbeat_current();
+    if (current == CEP_BEAT_INVALID) {
+        current = 0u;
+    }
+    if (op->last_beat == CEP_BEAT_INVALID) {
+        return true;
+    }
+    return current != op->last_beat;
+}
+
+static bool cep_control_close_op(cepControlOpState* op, bool success) {
+    if (!op || !op->started || op->closed) {
+        return true;
+    }
+
+    cepDT status = cep_ops_make_dt(success ? "sts:ok" : "sts:fail");
+    cep_control_debug_snapshot("close_op-entry", op, success ? 1 : 0);
+if (!success) {
+        cep_control_emit_failure_cei(op, "close", "operation closed with failure");
+    }
+    if (!cep_op_close(op->oid, status, NULL, 0u)) {
+        return false;
+    }
+
+    op->closed = true;
+    op->phase = CEP_CTRL_PHASE_CLOSING;
+    op->last_beat = cep_heartbeat_current();
+    if (op->last_beat == CEP_BEAT_INVALID) {
+        op->last_beat = 0u;
+    }
+    if (success) {
+        op->diag_emitted = false;
+    }
+    if (op == &CEP_CONTROL_STATE.rollback) {
+        CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_IDLE;
+    }
+    cep_control_debug_snapshot("close_op-after", op, success ? 1 : 0);
+#if defined(CEP_ENABLE_DEBUG)
+    if (!CEP_CONTROL_STATE.cleanup_pending) {
+        cep_control_debug_clear(op);
+    }
+#endif
+    return true;
+}
+
+static bool cep_control_progress(void) {
+    bool ok = true;
+
+    CEP_DEBUG_PRINTF("[prr] control_progress entry\n");
+    CEP_DEBUG_PRINTF("[prr] rollback flags started=%d closed=%d failed=%d phase=%d\n",
+                     CEP_CONTROL_STATE.rollback.started ? 1 : 0,
+                     CEP_CONTROL_STATE.rollback.closed ? 1 : 0,
+                     CEP_CONTROL_STATE.rollback.failed ? 1 : 0,
+                     CEP_CONTROL_STATE.rollback.phase);
+
+#if defined(CEP_ENABLE_DEBUG)
+    if (CEP_CONTROL_STATE.rollback.started && cep_oid_is_valid(CEP_CONTROL_STATE.rollback.oid)) {
+        char note[80];
+        const char* stage_label = "rollback-progress";
+        if (CEP_CONTROL_STATE.rollback.closed) {
+            stage_label = "rollback-closed";
+        } else {
+            switch (CEP_CONTROL_STATE.rollback_stage) {
+                case CEP_ROLLBACK_STAGE_EXAMINE: stage_label = "rollback-progress-examine"; break;
+                case CEP_ROLLBACK_STAGE_PRUNE:   stage_label = "rollback-progress-prune";   break;
+                case CEP_ROLLBACK_STAGE_CUTOVER: stage_label = "rollback-progress-cutover"; break;
+                case CEP_ROLLBACK_STAGE_STEADY:  stage_label = "rollback-progress-steady";  break;
+                case CEP_ROLLBACK_STAGE_FAILED:  stage_label = "rollback-progress-failed";  break;
+                case CEP_ROLLBACK_STAGE_IDLE:
+                default:
+                    stage_label = "rollback-progress";
+                    break;
+            }
+        }
+        int written = snprintf(note,
+                               sizeof note,
+                               "cleanup=%d gating=%d paused=%d",
+                               CEP_CONTROL_STATE.cleanup_pending ? 1 : 0,
+                               CEP_CONTROL_STATE.gating_active ? 1 : 0,
+                               CEP_RUNTIME.paused ? 1 : 0);
+        const char* payload = (written > 0 && (size_t)written < sizeof note) ? note : NULL;
+        cep_control_debug_log(&CEP_CONTROL_STATE.rollback, stage_label, payload);
+    }
+    if (CEP_CONTROL_STATE.resume.started && cep_oid_is_valid(CEP_CONTROL_STATE.resume.oid)) {
+        char note[80];
+        int written = snprintf(note,
+                               sizeof note,
+                               "cleanup=%d backlog=%d paused=%d",
+                               CEP_CONTROL_STATE.cleanup_pending ? 1 : 0,
+                               CEP_CONTROL_STATE.backlog_cleanup_pending ? 1 : 0,
+                               CEP_RUNTIME.paused ? 1 : 0);
+        const char* payload = (written > 0 && (size_t)written < sizeof note) ? note : NULL;
+        const char* stage = CEP_CONTROL_STATE.resume.closed ? "resume-closed" : "resume-progress";
+        cep_control_debug_log(&CEP_CONTROL_STATE.resume, stage, payload);
+    }
+#endif
+
+    cepBeatNumber current = cep_heartbeat_current();
+    if (current == CEP_BEAT_INVALID) {
+        current = 0u;
+    }
+
+    if (!cep_control_cleanup_step()) {
+        return false;
+    }
+
+    /* Pause */
+    if (CEP_CONTROL_STATE.pause.started && !CEP_CONTROL_STATE.pause.closed) {
+        cepControlOpState* op = &CEP_CONTROL_STATE.pause;
+
+        if (!op->failed && op->phase == CEP_CTRL_PHASE_PLAN && cep_control_ready_for_next(op)) {
+            if (!cep_control_apply_locks()) {
+                op->failed = true;
+                cep_control_emit_failure_cei(op, "quiesce", "lock acquisition failed");
+                ok = false;
+            } else {
+                CEP_CONTROL_STATE.gating_active = true;
+                cepDT quiesce = *dt_ist_quiesce();
+                if (!cep_op_state_set(op->oid, quiesce, 0, NULL)) {
+                    op->failed = true;
+                    cep_control_emit_failure_cei(op, "quiesce", "state transition failed");
+                    ok = false;
+                } else {
+                    op->phase = CEP_CTRL_PHASE_APPLY;
+                    op->last_beat = current;
+                }
+            }
+        }
+
+        if (!op->failed && op->phase == CEP_CTRL_PHASE_APPLY && cep_control_ready_for_next(op)) {
+            CEP_RUNTIME.paused = true;
+            CEP_CONTROL_STATE.paused_published = true;
+            if (!cep_control_state_write_bool(dt_paused_field(), true)) {
+                op->failed = true;
+                cep_control_emit_failure_cei(op, "publish", "paused state write failed");
+                ok = false;
+            } else {
+                cepDT paused = *dt_ist_paused();
+                if (!cep_op_state_set(op->oid, paused, 0, NULL)) {
+                    op->failed = true;
+                    cep_control_emit_failure_cei(op, "publish", "state transition failed");
+                    ok = false;
+                } else {
+                    op->phase = CEP_CTRL_PHASE_STEADY;
+                    op->last_beat = current;
+                }
+            }
+        }
+
+        if (op->phase == CEP_CTRL_PHASE_STEADY || op->failed) {
+            ok = cep_control_close_op(op, !op->failed) && ok;
+        }
+    }
+
+    /* Rollback */
+    if (CEP_CONTROL_STATE.rollback.started && !CEP_CONTROL_STATE.rollback.closed) {
+        cepControlOpState* op = &CEP_CONTROL_STATE.rollback;
+
+        CEP_DEBUG_PRINTF("[prr] rollback phase=%d failed=%d ready=%d\n",
+                         (int)op->phase,
+                         op->failed ? 1 : 0,
+                         cep_control_ready_for_next(op) ? 1 : 0);
+
+        if (!op->failed && op->phase == CEP_CTRL_PHASE_PLAN && cep_control_ready_for_next(op)) {
+            if (CEP_CONTROL_STATE.rollback_stage == CEP_ROLLBACK_STAGE_EXAMINE) {
+#if defined(CEP_ENABLE_DEBUG)
+                cep_control_debug_log(op, "rollback-examine", "advance-to-prune");
+#endif
+                CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_PRUNE;
+                op->last_beat = current;
+            } else if (CEP_CONTROL_STATE.rollback_stage == CEP_ROLLBACK_STAGE_PRUNE) {
+#if defined(CEP_ENABLE_DEBUG)
+                cep_control_debug_log(op, "rollback-prune", "enter");
+#endif
+                if (!cep_control_backlog_prune_discard()) {
+                    op->failed = true;
+                    CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_FAILED;
+                    CEP_DEBUG_PRINTF("[prr] rollback failure: backlog prune\n");
+#if defined(CEP_ENABLE_DEBUG)
+                    cep_control_debug_log(op, "rollback-prune", "backlog prune failed");
+#endif
+                    cep_control_emit_failure_cei(op, "cutover", "backlog prune failed");
+                    ok = false;
+                } else {
+                    CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_CUTOVER;
+                    op->last_beat = current;
+#if defined(CEP_ENABLE_DEBUG)
+                    cep_control_debug_log(op, "rollback-prune", "complete");
+#endif
+                }
+            } else if (CEP_CONTROL_STATE.rollback_stage == CEP_ROLLBACK_STAGE_CUTOVER) {
+                cepBeatNumber target = CEP_CONTROL_STATE.rollback_target;
+                cepOpCount horizon_stamp = 0u;
+                cepOpCount horizon_floor = 0u;
+#if defined(CEP_ENABLE_DEBUG)
+                cep_control_debug_log(op, "rollback-cutover", "enter");
+#endif
+                if (!cep_heartbeat_beat_to_op_stamp(target, &horizon_stamp)) {
+                    op->failed = true;
+                    CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_FAILED;
+                    CEP_DEBUG_PRINTF("[prr] rollback failure: view horizon stamp unavailable target=%llu\n",
+                                     (unsigned long long)target);
+#if defined(CEP_ENABLE_DEBUG)
+                    cep_control_debug_log(op, "rollback-cutover", "view horizon stamp unavailable");
+#endif
+                    cep_control_emit_failure_cei(op, "cutover", "view horizon stamp unavailable");
+                    ok = false;
+                } else {
+                    if (target > 0u) {
+                        if (!cep_heartbeat_beat_to_op_stamp(target - 1u, &horizon_floor)) {
+                            horizon_floor = 0u;
+                        }
+                    } else {
+                        horizon_floor = horizon_stamp;
+                    }
+
+                    if (!cep_control_state_write_u64(dt_view_horizon_field(), (uint64_t)target)) {
+                        op->failed = true;
+                        CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_FAILED;
+                        CEP_DEBUG_PRINTF("[prr] rollback failure: view horizon write\n");
+#if defined(CEP_ENABLE_DEBUG)
+                        cep_control_debug_log(op, "rollback-cutover", "view horizon write failed");
+#endif
+                        cep_control_emit_failure_cei(op, "cutover", "view horizon write failed");
+                        ok = false;
+                    } else {
+                        cepDT cutover = *dt_ist_cutover();
+                        if (!cep_op_state_set(op->oid, cutover, 0, NULL)) {
+                            op->failed = true;
+                            CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_FAILED;
+                            CEP_DEBUG_PRINTF("[prr] rollback failure: state set cutover\n");
+                            cep_control_emit_failure_cei(op, "cutover", "state transition failed");
+                            ok = false;
+                        } else {
+                            CEP_RUNTIME.view_horizon = target;
+                            CEP_RUNTIME.view_horizon_stamp = horizon_stamp;
+                            CEP_RUNTIME.view_horizon_floor_stamp = horizon_floor;
+                            CEP_DEBUG_PRINTF("[prr] horizon set target=%llu stamp=%llu floor=%llu\n",
+                                             (unsigned long long)target,
+                                             (unsigned long long)horizon_stamp,
+                                             (unsigned long long)horizon_floor);
+#if defined(CEP_ENABLE_DEBUG)
+                            char note_buf[96];
+                            snprintf(note_buf,
+                                     sizeof note_buf,
+                                     "target=%llu stamp=%llu floor=%llu",
+                                     (unsigned long long)target,
+                                     (unsigned long long)horizon_stamp,
+                                     (unsigned long long)horizon_floor);
+                            cep_control_debug_log(op, "rollback-cutover", note_buf);
+#endif
+                            if (!cep_control_soft_delete_data()) {
+                                op->failed = true;
+                                CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_FAILED;
+                                CEP_DEBUG_PRINTF("[prr] rollback failure: soft delete\n");
+#if defined(CEP_ENABLE_DEBUG)
+                                cep_control_debug_log(op, "rollback-cutover", "soft delete failed");
+#endif
+                                cep_control_emit_failure_cei(op, "cutover", "soft delete failed");
+                                ok = false;
+                            } else {
+                                CEP_CONTROL_STATE.data_cleanup_pending = true;
+                                CEP_CONTROL_STATE.gc_pending = true;
+                                cep_control_cleanup_update_flag();
+                                CEP_CONTROL_STATE.rollback_stage = CEP_ROLLBACK_STAGE_STEADY;
+                                op->phase = CEP_CTRL_PHASE_APPLY;
+                                op->last_beat = current;
+#if defined(CEP_ENABLE_DEBUG)
+                                cep_control_debug_log(op, "rollback-cutover", "complete");
+#endif
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!op->failed && op->phase == CEP_CTRL_PHASE_APPLY && cep_control_ready_for_next(op)) {
+#if defined(CEP_ENABLE_DEBUG)
+            cep_control_debug_log(op, "rollback-apply", "ready");
+#endif
+            cepDT ok_state = cep_ops_make_dt("ist:ok");
+            if (cep_control_op_closed_ok(op->oid)) {
+                CEP_DEBUG_PRINTF("[prr] rollback op %llu:%llu already closed (sts:ok)\n",
+                                 (unsigned long long)op->oid.domain,
+                                 (unsigned long long)op->oid.tag);
+#if defined(CEP_ENABLE_DEBUG)
+                cep_control_debug_log(op, "rollback-apply", "dossier already closed");
+#endif
+                op->phase = CEP_CTRL_PHASE_STEADY;
+                op->closed = true;
+                op->last_beat = current;
+            } else if (cep_control_op_is_closed(op->oid)) {
+                CEP_DEBUG_PRINTF("[prr] rollback op %llu:%llu already closed (non-ok)\n",
+                                 (unsigned long long)op->oid.domain,
+                                 (unsigned long long)op->oid.tag);
+#if defined(CEP_ENABLE_DEBUG)
+                cep_control_debug_log(op, "rollback-apply", "dossier closed (non-ok)");
+#endif
+                op->phase = CEP_CTRL_PHASE_STEADY;
+                op->closed = true;
+                op->failed = true;
+                op->last_beat = current;
+            } else if (!cep_op_state_set(op->oid, ok_state, 0, NULL)) {
+                op->failed = true;
+                CEP_DEBUG_PRINTF("[prr] rollback failure: state set ok\n");
+#if defined(CEP_ENABLE_DEBUG)
+                cep_control_debug_log(op, "rollback-apply", "state transition failed");
+#endif
+                cep_control_emit_failure_cei(op, "cutover", "state transition failed");
+                ok = false;
+            } else {
+#if defined(CEP_ENABLE_DEBUG)
+                cep_control_debug_log(op, "rollback-apply", "state set ok");
+#endif
+                op->phase = CEP_CTRL_PHASE_STEADY;
+                op->last_beat = current;
+            }
+        }
+
+        if (op->phase == CEP_CTRL_PHASE_STEADY || op->failed) {
+            if (!op->closed) {
+#if defined(CEP_ENABLE_DEBUG)
+                if (!op->failed && CEP_CONTROL_STATE.cleanup_pending) {
+                    cep_control_debug_log(op, "rollback-wait-cleanup", "cleanup pending");
+                } else {
+                    cep_control_debug_log(op, "rollback-close", op->failed ? "closing after failure" : "closing ok");
+                }
+#endif
+                if (op->failed || !CEP_CONTROL_STATE.cleanup_pending) {
+                    ok = cep_control_close_op(op, !op->failed) && ok;
+                }
+            }
+        }
+    }
+
+    /* Resume */
+    if (CEP_CONTROL_STATE.resume.started && !CEP_CONTROL_STATE.resume.closed) {
+        cepControlOpState* op = &CEP_CONTROL_STATE.resume;
+
+        if (!op->failed && op->phase == CEP_CTRL_PHASE_PLAN && cep_control_ready_for_next(op)) {
+            cep_control_debug_snapshot("resume-plan-before", op, -1);
+            CEP_CONTROL_STATE.gating_active = false;
+            cep_control_release_locks();
+            CEP_RUNTIME.paused = false;
+            CEP_CONTROL_STATE.paused_published = false;
+            cepBeatNumber prior_horizon = CEP_RUNTIME.view_horizon;
+            cepOpCount prior_stamp = CEP_RUNTIME.view_horizon_stamp;
+            cepOpCount prior_floor = CEP_RUNTIME.view_horizon_floor_stamp;
+            if (!cep_control_state_write_bool(dt_paused_field(), false)) {
+                op->failed = true;
+                cep_control_emit_failure_cei(op, "resume", "paused state write failed");
+                ok = false;
+            } else {
+                cepDT run_state = *dt_ist_run();
+                if (!cep_op_state_set(op->oid, run_state, 0, NULL)) {
+                    CEP_RUNTIME.view_horizon = prior_horizon;
+                    CEP_RUNTIME.view_horizon_stamp = prior_stamp;
+                    CEP_RUNTIME.view_horizon_floor_stamp = prior_floor;
+                    op->failed = true;
+                    cep_control_emit_failure_cei(op, "resume", "state transition failed");
+                    ok = false;
+                } else {
+                    CEP_RUNTIME.view_horizon = prior_horizon;
+                    CEP_RUNTIME.view_horizon_stamp = prior_stamp;
+                    CEP_RUNTIME.view_horizon_floor_stamp = prior_floor;
+                    op->phase = CEP_CTRL_PHASE_APPLY;
+                    op->last_beat = current;
+                    cep_control_debug_snapshot("resume-plan-after", op, -1);
+                }
+            }
+        }
+
+        if (!op->failed && op->phase == CEP_CTRL_PHASE_APPLY && cep_control_ready_for_next(op)) {
+            cep_control_debug_snapshot("resume-apply-before", op, -1);
+            if (!cep_control_backlog_drain()) {
+                op->failed = true;
+                cep_control_emit_failure_cei(op, "resume", "backlog drain failed");
+                ok = false;
+            } else {
+                op->phase = CEP_CTRL_PHASE_STEADY;
+                op->last_beat = current;
+                cep_control_debug_snapshot("resume-apply-after", op, -1);
+            }
+        }
+
+        if (op->phase == CEP_CTRL_PHASE_STEADY || op->failed) {
+            cep_control_debug_snapshot("resume-close-trigger", op, -1);
+            ok = cep_control_close_op(op, !op->failed) && ok;
+        }
+    }
+
+    if (!ok) {
+        CEP_DEBUG_PRINTF(
+            "[prr] control_progress failure pause(s=%d f=%d) resume(s=%d f=%d) rollback(s=%d f=%d) gating=%d\n",
+            CEP_CONTROL_STATE.pause.started,
+            CEP_CONTROL_STATE.pause.failed,
+            CEP_CONTROL_STATE.resume.started,
+            CEP_CONTROL_STATE.resume.failed,
+            CEP_CONTROL_STATE.rollback.started,
+            CEP_CONTROL_STATE.rollback.failed,
+            CEP_CONTROL_STATE.gating_active);
+    }
+
+    return ok;
+}
 
 CEP_DEFINE_STATIC_DT(dt_scope_kernel,   CEP_ACRO("CEP"), CEP_WORD("kernel"));
 CEP_DEFINE_STATIC_DT(dt_scope_namepool, CEP_ACRO("CEP"), CEP_WORD("namepool"));
@@ -62,11 +2193,47 @@ CEP_DEFINE_STATIC_DT(dt_boot_oid_field, CEP_ACRO("CEP"), CEP_WORD("boot_oid"));
 CEP_DEFINE_STATIC_DT(dt_shdn_oid_field, CEP_ACRO("CEP"), CEP_WORD("shdn_oid"));
 CEP_DEFINE_STATIC_DT(dt_ist_kernel,     CEP_ACRO("CEP"), CEP_WORD("ist:kernel"));
 CEP_DEFINE_STATIC_DT(dt_ist_store,      CEP_ACRO("CEP"), CEP_WORD("ist:store"));
+CEP_DEFINE_STATIC_DT(dt_ist_plan,       CEP_ACRO("CEP"), CEP_WORD("ist:plan"));
+CEP_DEFINE_STATIC_DT(dt_ist_quiesce,    CEP_ACRO("CEP"), CEP_WORD("ist:quiesce"));
+CEP_DEFINE_STATIC_DT(dt_ist_paused,     CEP_ACRO("CEP"), CEP_WORD("ist:paused"));
+CEP_DEFINE_STATIC_DT(dt_ist_cutover,    CEP_ACRO("CEP"), CEP_WORD("ist:cutover"));
+CEP_DEFINE_STATIC_DT(dt_ist_run,        CEP_ACRO("CEP"), CEP_WORD("ist:run"));
 CEP_DEFINE_STATIC_DT(dt_meta_name,      CEP_ACRO("CEP"), CEP_WORD("meta"));
 CEP_DEFINE_STATIC_DT(dt_unix_ts_name, CEP_ACRO("CEP"), CEP_WORD("unix_ts_ns"));
 CEP_DEFINE_STATIC_DT(dt_analytics_root_name, CEP_ACRO("CEP"), CEP_WORD("analytics"));
 CEP_DEFINE_STATIC_DT(dt_spacing_name,   CEP_ACRO("CEP"), CEP_WORD("spacing"));
 CEP_DEFINE_STATIC_DT(dt_interval_ns_name, CEP_ACRO("CEP"), CEP_WORD("interval_ns"));
+CEP_DEFINE_STATIC_DT(dt_op_stamp_name, CEP_ACRO("CEP"), CEP_WORD("op_stamp"));
+CEP_DEFINE_STATIC_DT(dt_paused_field,   CEP_ACRO("CEP"), CEP_WORD("paused"));
+CEP_DEFINE_STATIC_DT(dt_view_horizon_field, CEP_ACRO("CEP"), CEP_WORD("view_hzn"));
+CEP_DEFINE_STATIC_DT(dt_mailbox_root_name, CEP_ACRO("CEP"), CEP_WORD("mailbox"));
+CEP_DEFINE_STATIC_DT(dt_impulse_mailbox_name, CEP_ACRO("CEP"), CEP_WORD("impulses"));
+CEP_DEFINE_STATIC_DT(dt_msgs_name, CEP_ACRO("CEP"), CEP_WORD("msgs"));
+CEP_DEFINE_STATIC_DT(dt_kind_name, CEP_ACRO("CEP"), CEP_WORD("kind"));
+CEP_DEFINE_STATIC_DT(dt_runtime_name, CEP_ACRO("CEP"), CEP_WORD("runtime"));
+CEP_DEFINE_STATIC_DT(dt_envelope_name, CEP_ACRO("CEP"), CEP_WORD("envelope"));
+CEP_DEFINE_STATIC_DT(dt_qos_field, CEP_ACRO("CEP"), CEP_WORD("qos"));
+CEP_DEFINE_STATIC_DT(dt_signal_field, CEP_ACRO("CEP"), CEP_WORD("signal"));
+CEP_DEFINE_STATIC_DT(dt_target_field_control, CEP_ACRO("CEP"), CEP_WORD("target"));
+CEP_DEFINE_STATIC_DT(dt_timestamp_field, CEP_ACRO("CEP"), CEP_WORD("timestamp"));
+CEP_DEFINE_STATIC_DT(dt_domain_field, CEP_ACRO("CEP"), CEP_WORD("domain"));
+CEP_DEFINE_STATIC_DT(dt_tag_field, CEP_ACRO("CEP"), CEP_WORD("tag"));
+CEP_DEFINE_STATIC_DT(dt_allow_signal_cei, CEP_ACRO("CEP"), CEP_WORD("sig_cei"));
+CEP_DEFINE_STATIC_DT(dt_signal_op_pause, CEP_ACRO("CEP"), CEP_WORD("op/pause"));
+CEP_DEFINE_STATIC_DT(dt_signal_op_resume, CEP_ACRO("CEP"), CEP_WORD("op/resume"));
+CEP_DEFINE_STATIC_DT(dt_signal_op_rollback, CEP_ACRO("CEP"), CEP_WORD("op/rollback"));
+CEP_DEFINE_STATIC_DT(dt_signal_op_shutdown, CEP_ACRO("CEP"), CEP_WORD("op/shdn"));
+CEP_DEFINE_STATIC_DT(dt_signal_op_cont, CEP_ACRO("CEP"), CEP_WORD("op/cont"));
+CEP_DEFINE_STATIC_DT(dt_signal_op_tmo, CEP_ACRO("CEP"), CEP_WORD("op/tmo"));
+CEP_DEFINE_STATIC_DT(dt_issued_field, CEP_ACRO("CEP"), CEP_WORD("issued_beat"));
+#if defined(CEP_ENABLE_DEBUG)
+CEP_DEFINE_STATIC_DT(dt_debug_root_name,   CEP_ACRO("CEP"), CEP_WORD("debug"));
+CEP_DEFINE_STATIC_DT(dt_debug_stage_field, CEP_ACRO("CEP"), CEP_WORD("dbg_stage"));
+CEP_DEFINE_STATIC_DT(dt_debug_note_field,  CEP_ACRO("CEP"), CEP_WORD("dbg_note"));
+CEP_DEFINE_STATIC_DT(dt_debug_phase_field, CEP_ACRO("CEP"), CEP_WORD("dbg_phase"));
+CEP_DEFINE_STATIC_DT(dt_debug_ready_field, CEP_ACRO("CEP"), CEP_WORD("dbg_ready"));
+CEP_DEFINE_STATIC_DT(dt_debug_beat_field,  CEP_ACRO("CEP"), CEP_WORD("dbg_beat"));
+#endif
 
 typedef struct {
     const char* kind;
@@ -133,9 +2300,8 @@ static bool cep_heartbeat_register_l0_organs(void) {
         if (init->has_destructor) {
             descriptor.destructor = cep_heartbeat_make_signal_dt(init->kind, "dt");
         }
-
-        if (!cep_organ_register(&descriptor)) {
-            return false;
+if (!cep_organ_register(&descriptor)) {
+return false;
         }
     }
 
@@ -337,7 +2503,7 @@ static bool cep_heartbeat_id_to_string(cepID id, char* buffer, size_t capacity, 
         len = cep_acronym_to_text(id, buffer);
     } else if (cep_id_is_numeric(id)) {
         uint64_t value = (uint64_t)cep_id(id);
-        int written = snprintf(buffer, capacity, "%" PRIu64, (unsigned long long)value);
+        int written = snprintf(buffer, capacity, "%" PRIu64, (uint64_t)value);
         if (written < 0) {
             return false;
         }
@@ -454,7 +2620,7 @@ static char* cep_heartbeat_path_to_string(const cepPath* path) {
         pos += tag_len;
 
         if (segment->timestamp) {
-            int written = snprintf(text + pos, capacity - pos, "@%" PRIu64, (unsigned long long)segment->timestamp);
+            int written = snprintf(text + pos, capacity - pos, "@%" PRIu64, (uint64_t)segment->timestamp);
             if (written < 0) {
                 cep_free(text);
                 return NULL;
@@ -1145,9 +3311,14 @@ static void cep_runtime_reset_state(bool destroy_registry) {
     CEP_RUNTIME.last_wallclock_beat = CEP_BEAT_INVALID;
     CEP_RUNTIME.last_wallclock_ns = 0u;
     CEP_RUNTIME.spacing_window = CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT;
+    CEP_RUNTIME.paused = false;
+    CEP_RUNTIME.view_horizon = CEP_BEAT_INVALID;
+    CEP_RUNTIME.view_horizon_stamp = 0u;
+    CEP_RUNTIME.view_horizon_floor_stamp = 0u;
 
     cep_lifecycle_reset_state();
     cep_organ_runtime_reset();
+    cep_control_reset_state();
 }
 
 
@@ -1162,25 +3333,108 @@ void cep_heartbeat_detach_topology(void) {
 
 
 static cepCell* ensure_root_dictionary(cepCell* root, const cepDT* name, const cepDT* store_dt) {
-    cepCell* cell = cep_cell_find_by_name(root, name);
-    if (!cell) {
+    if (!root || !name) {
+        return NULL;
+    }
+
+    cepCell* candidate = cep_cell_find_by_name(root, name);
+    if (!candidate) {
+        candidate = cep_cell_find_by_name_all(root, name);
+    }
+
+    if (!candidate) {
         cepDT dict_type = store_dt ? cep_dt_clean(store_dt) : *dt_dictionary_type();
         cepDT name_copy = cep_dt_clean(name);
-        cell = cep_cell_add_dictionary(root, &name_copy, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
-    } else {
-        cepCell* resolved = cep_cell_resolve(cell);
-        if (!resolved) {
+        candidate = cep_cell_add_dictionary(root, &name_copy, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        if (!candidate) {
             return NULL;
         }
-        if (!cep_cell_require_dictionary_store(&resolved)) {
-            return NULL;
-        }
-        if (store_dt && resolved->store) {
+    }
+
+    cepCell* resolved = candidate;
+    if (!cep_cell_require_dictionary_store(&resolved)) {
+        return NULL;
+    }
+
+    if (store_dt && resolved->store) {
+        if (cep_dt_compare(&resolved->store->dt, store_dt) != 0) {
             cep_store_set_dt(resolved->store, store_dt);
         }
-        cell = resolved;
     }
-    return cell;
+
+    if (resolved->store) {
+        if (resolved->store->owner != resolved) {
+            resolved->store->owner = resolved;
+        }
+        if (!resolved->store->writable) {
+            resolved->store->writable = 1u;
+        }
+        if (resolved->store->lock) {
+            resolved->store->lock = 0u;
+            resolved->store->lockOwner = NULL;
+        }
+    }
+
+    bool needs_unveil = cep_cell_is_veiled(resolved);
+    bool needs_cell_created = (resolved->created == 0u);
+    bool needs_store_created = resolved->store && resolved->store->created == 0u;
+
+    if (resolved->deleted) {
+        resolved->deleted = 0u;
+    }
+    if (resolved->store && resolved->store->deleted) {
+        resolved->store->deleted = 0u;
+    }
+
+    if (!resolved->data) {
+        cepDT payload_type = cep_ops_make_dt("val/dt");
+        cepDT stored_dt = resolved->store ? resolved->store->dt : *dt_dictionary_type();
+        cepDT stored_copy = cep_dt_clean(&stored_dt);
+        cepData* revived_data = cep_data_new(&payload_type,
+                                             CEP_DATATYPE_VALUE,
+                                             true,
+                                             NULL,
+                                             &stored_copy,
+                                             sizeof stored_copy,
+                                             sizeof stored_copy);
+        if (revived_data) {
+            resolved->data = revived_data;
+            revived_data->lockOwner = NULL;
+            if (!revived_data->writable) {
+                revived_data->writable = 1u;
+            }
+        }
+    }
+
+    if (cep_cell_is_immutable(resolved)) {
+        resolved->metacell.immutable = 0u;
+    }
+
+    if (needs_unveil) {
+        resolved->metacell.veiled = 0u;
+    }
+
+    cepOpCount stamp = 0u;
+    if (needs_cell_created || needs_store_created) {
+        stamp = cep_cell_timestamp_next();
+    }
+    if (needs_cell_created) {
+        if (!stamp) {
+            stamp = cep_cell_timestamp_next();
+        }
+        resolved->created = stamp;
+        if (resolved->data) {
+            resolved->data->created = stamp;
+        }
+    }
+    if (resolved->store && needs_store_created) {
+        if (!stamp) {
+            stamp = cep_cell_timestamp_next();
+        }
+        resolved->store->created = stamp;
+    }
+
+    return resolved;
 }
 
 
@@ -1363,6 +3617,14 @@ static cepCell* cep_lifecycle_get_dictionary(cepCell* parent, const cepDT* name,
 
     cepCell* existing = cep_cell_find_by_name(parent, &lookup);
     if (!create) {
+        if (!existing) {
+            existing = cep_cell_find_by_name_all(parent, &lookup);
+            if (existing) {
+                existing = cep_cell_resolve(existing);
+            }
+        } else {
+            existing = cep_cell_resolve(existing);
+        }
         return existing;
     }
 
@@ -1385,7 +3647,16 @@ static cepCell* cep_lifecycle_get_dictionary(cepCell* parent, const cepDT* name,
     }
 
     cepDT name_copy = lookup;
-    return cep_cell_add_dictionary(parent, &name_copy, 0, &organ_dt, CEP_STORAGE_RED_BLACK_T);
+    cepCell* added = cep_cell_add_dictionary(parent, &name_copy, 0, &organ_dt, CEP_STORAGE_RED_BLACK_T);
+    if (!added) {
+        return NULL;
+    }
+
+    cepCell* resolved_added = added;
+    if (!cep_cell_require_dictionary_store(&resolved_added)) {
+        return NULL;
+    }
+    return resolved_added;
 }
 
 static bool cep_boot_ops_enabled(void) {
@@ -1603,13 +3874,12 @@ static bool cep_boot_ops_record_state(cepOID oid, const cepDT* state_dt, bool* f
     }
 
     if (!cep_op_state_set(oid, *state_dt, 0, NULL)) {
-        fprintf(stderr,
-                "[boot_ops] state_set failed oid=%llu:%llu state=%llu:%llu\n",
-                (unsigned long long)oid.domain,
-                (unsigned long long)oid.tag,
-                (unsigned long long)state_dt->domain,
-                (unsigned long long)state_dt->tag);
-        fflush(stderr);
+        CEP_DEBUG_PRINTF(
+            "[boot_ops] state_set failed oid=%llu:%llu state=%llu:%llu\n",
+            (unsigned long long)oid.domain,
+            (unsigned long long)oid.tag,
+            (unsigned long long)state_dt->domain,
+            (unsigned long long)state_dt->tag);
         if (failure_flag) {
             *failure_flag = true;
         }
@@ -1701,7 +3971,7 @@ static bool cep_boot_ops_close_boot(bool success) {
                            NULL,
                            0u);
     if (!ok) {
-        fprintf(stderr, "[boot_ops] op_close boot failed success=%d\n", success ? 1 : 0);
+        CEP_DEBUG_PRINTF("[boot_ops] op_close boot failed success=%d\n", success ? 1 : 0);
         fflush(stderr);
         CEP_LIFECYCLE_OPS_STATE.boot_failed = true;
         return false;
@@ -1731,7 +4001,7 @@ static bool cep_boot_ops_close_shutdown(bool success) {
                            NULL,
                            0u);
     if (!ok) {
-        fprintf(stderr, "[boot_ops] op_close shutdown failed success=%d\n", success ? 1 : 0);
+        CEP_DEBUG_PRINTF("[boot_ops] op_close shutdown failed success=%d\n", success ? 1 : 0);
         fflush(stderr);
         CEP_LIFECYCLE_OPS_STATE.shdn_failed = true;
         return false;
@@ -1779,6 +4049,7 @@ static void cep_heartbeat_clear_store(cepCell* cell) {
             is_cas = true;
         }
         if (is_cas) {
+#if defined(CEP_ENABLE_DEBUG)
             if (cell->store->storage == CEP_STORAGE_LINKED_LIST) {
                 const cepListView* list = (const cepListView*)cell->store;
                 CEP_DEBUG_PRINTF_STDOUT("[cas_clear_before] store=%p chd=%zu head=%p tail=%p\n",
@@ -1792,9 +4063,11 @@ static void cep_heartbeat_clear_store(cepCell* cell) {
                        cell->store->storage,
                        cell->store->chdCount);
             }
+#endif
         }
         cep_store_delete_children_hard(cell->store);
         if (is_cas) {
+#if defined(CEP_ENABLE_DEBUG)
             if (cell->store->storage == CEP_STORAGE_LINKED_LIST) {
                 const cepListView* list = (const cepListView*)cell->store;
                 CEP_DEBUG_PRINTF_STDOUT("[cas_clear_after] store=%p chd=%zu head=%p tail=%p\n",
@@ -1808,6 +4081,7 @@ static void cep_heartbeat_clear_store(cepCell* cell) {
                        cell->store->storage,
                        cell->store->chdCount);
             }
+#endif
         }
     }
 }
@@ -1869,7 +4143,8 @@ bool cep_heartbeat_bootstrap(void) {
 
     cepCell* state_root = cep_lifecycle_get_dictionary(sys, dt_state_root(), true);
     if (!state_root) {
-        goto fail;
+        CEP_DEBUG_PRINTF("[bootstrap] state_root revive failed\n");
+        CEP_BOOT_FAIL("state_root");
     }
 
     cepDT organs_store = cep_organ_store_dt("sys_organs");
@@ -1961,7 +4236,7 @@ bool cep_heartbeat_bootstrap(void) {
 
     cepDT tmp_store = cep_organ_store_dt("tmp");
     const cepDT* tmp_name = dt_tmp_root_name();
-    fprintf(stderr, "[bootstrap tmp] tmp_name=%p domain=%016llx tag=%016llx store=%016llx/%016llx\n",
+    CEP_DEBUG_PRINTF("[bootstrap tmp] tmp_name=%p domain=%016llx tag=%016llx store=%016llx/%016llx\n",
             (void*)tmp_name,
             tmp_name ? (unsigned long long)cep_id(tmp_name->domain) : 0ull,
             tmp_name ? (unsigned long long)cep_id(tmp_name->tag) : 0ull,
@@ -2025,7 +4300,7 @@ fail:
     CEP_RUNTIME.bootstrapping = false;
     if (!success && fail_reason) {
         CEP_DEBUG_PRINTF_STDOUT("[bootstrap] fail: %s\n", fail_reason);
-        fprintf(stderr, "[bootstrap] fail: %s\n", fail_reason);
+        CEP_DEBUG_PRINTF("[bootstrap] fail: %s\n", fail_reason);
         fflush(stderr);
         fail_reason = NULL;
     }
@@ -2105,6 +4380,9 @@ bool cep_heartbeat_startup(void) {
     if (!cep_boot_ops_progress()) {
         return false;
     }
+    if (!cep_control_progress()) {
+        return false;
+    }
     return true;
 }
 
@@ -2135,6 +4413,9 @@ bool cep_heartbeat_restart(void) {
     if (!cep_boot_ops_progress()) {
         return false;
     }
+    if (!cep_control_progress()) {
+        return false;
+    }
     return true;
 }
 
@@ -2160,6 +4441,9 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
     if (!cep_boot_ops_progress()) {
         return false;
     }
+    if (!cep_control_progress()) {
+        return false;
+    }
     return true;
 }
 
@@ -2175,6 +4459,9 @@ bool cep_heartbeat_resolve_agenda(void) {
     }
 
     if (!cep_boot_ops_progress()) {
+        return false;
+    }
+    if (!cep_control_progress()) {
         return false;
     }
 
@@ -2213,7 +4500,7 @@ bool cep_heartbeat_stage_commit(void) {
     cep_beat_begin_commit();
 
     if (!cep_stream_commit_pending()) {
-        fprintf(stderr, "[stage_commit] stream commit failed\n");
+        CEP_DEBUG_PRINTF("[stage_commit] stream commit failed\n");
         fflush(stderr);
         return false;
     }
@@ -2224,9 +4511,9 @@ bool cep_heartbeat_stage_commit(void) {
         cepBeatNumber current = (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current;
         cepBeatNumber next = (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current + 1u;
         int written = snprintf(NULL, 0, "commit: promoted %zu impulse%s -> beat %" PRIu64,
-                                promoted, plural, (unsigned long long)next);
+                                promoted, plural, (uint64_t)next);
         if (written < 0) {
-            fprintf(stderr, "[stage_commit] snprintf size failed\n");
+            CEP_DEBUG_PRINTF("[stage_commit] snprintf size failed\n");
             fflush(stderr);
             return false;
         }
@@ -2234,27 +4521,42 @@ bool cep_heartbeat_stage_commit(void) {
         size_t size = (size_t)written + 1u;
         char* message = cep_malloc(size);
         if (!message) {
-            fprintf(stderr, "[stage_commit] message alloc failed\n");
+            CEP_DEBUG_PRINTF("[stage_commit] message alloc failed\n");
             fflush(stderr);
             return false;
         }
 
         snprintf(message, size, "commit: promoted %zu impulse%s -> beat %" PRIu64,
-                 promoted, plural, (unsigned long long)next);
+                 promoted, plural, (uint64_t)next);
 
         bool recorded = cep_heartbeat_record_stage_entry(current, message);
         cep_free(message);
         if (!recorded) {
-            fprintf(stderr, "[stage_commit] record stage entry failed\n");
+            CEP_DEBUG_PRINTF("[stage_commit] record stage entry failed\n");
             fflush(stderr);
             return false;
         }
     }
 
     if (!cep_ops_stage_commit()) {
-        fprintf(stderr, "[stage_commit] ops stage commit failed err=%d\n", cep_ops_debug_last_error());
+        CEP_DEBUG_PRINTF("[stage_commit] ops stage commit failed err=%d\n", cep_ops_debug_last_error());
         fflush(stderr);
         return false;
+    }
+
+    if (!cep_control_progress()) {
+        CEP_DEBUG_PRINTF("[stage_commit] control progress failed\n");
+        fflush(stderr);
+        return false;
+    }
+
+    if (CEP_RUNTIME.current != CEP_BEAT_INVALID) {
+        cepOpCount stamp = cep_cell_timestamp();
+        if (!cep_heartbeat_record_op_stamp(CEP_RUNTIME.current, stamp)) {
+            CEP_DEBUG_PRINTF("[stage_commit] record op stamp failed\n");
+            fflush(stderr);
+            return false;
+        }
     }
 
     cep_heartbeat_impulse_queue_swap(&CEP_RUNTIME.impulses_current, &CEP_RUNTIME.impulses_next);
@@ -2310,6 +4612,7 @@ void cep_beat_note_deferred_activation(size_t count) {
 void cep_beat_begin_capture(void) {
     CEP_RUNTIME.phase = CEP_BEAT_CAPTURE;
     CEP_RUNTIME.deferred_activations = 0u;
+    CEP_CONTROL_STATE.agenda_noted = false;
 }
 
 
@@ -2339,21 +4642,21 @@ bool cep_heartbeat_step(void) {
 
     bool ok = cep_heartbeat_resolve_agenda();
     if (!ok) {
-        fprintf(stderr, "[heartbeat_step] resolve agenda failed\n");
+        CEP_DEBUG_PRINTF("[heartbeat_step] resolve agenda failed\n");
         fflush(stderr);
         return false;
     }
 
     ok = cep_heartbeat_execute_agenda();
     if (!ok) {
-        fprintf(stderr, "[heartbeat_step] execute agenda failed\n");
+        CEP_DEBUG_PRINTF("[heartbeat_step] execute agenda failed\n");
         fflush(stderr);
         return false;
     }
 
     ok = cep_heartbeat_stage_commit();
     if (!ok) {
-        fprintf(stderr, "[heartbeat_step] stage commit failed\n");
+        CEP_DEBUG_PRINTF("[heartbeat_step] stage commit failed\n");
         fflush(stderr);
         return false;
     }
@@ -2421,7 +4724,7 @@ bool cep_heartbeat_process_impulses(void) {
 
     if (registry_size > 0u) {
         if (!cep_heartbeat_scratch_ensure_ordered(scratch, registry_size)) {
-            fprintf(stderr, "[process_impulses] ensure ordered failed registry_size=%zu\n", registry_size);
+            CEP_DEBUG_PRINTF("[process_impulses] ensure ordered failed registry_size=%zu\n", registry_size);
             fflush(stderr);
             return false;
         }
@@ -2429,6 +4732,11 @@ bool cep_heartbeat_process_impulses(void) {
 
     cepHeartbeatImpulseQueue* queue = &CEP_RUNTIME.impulses_current;
     size_t impulse_count = queue->count;
+
+    if (CEP_CONTROL_STATE.gating_active && !CEP_CONTROL_STATE.agenda_noted) {
+        (void)cep_heartbeat_stage_note("paused agenda (control-only)");
+        CEP_CONTROL_STATE.agenda_noted = true;
+    }
 
     if (impulse_count == 0u) {
         cep_heartbeat_scratch_next_generation(scratch);
@@ -2442,7 +4750,7 @@ bool cep_heartbeat_process_impulses(void) {
     }
     size_t reserve = cep_next_pow_of_two(desired_slots);
     if (!cep_heartbeat_dispatch_cache_reserve(scratch, reserve)) {
-        fprintf(stderr, "[process_impulses] dispatch reserve failed reserve=%zu\n", reserve);
+        CEP_DEBUG_PRINTF("[process_impulses] dispatch reserve failed reserve=%zu\n", reserve);
         fflush(stderr);
         return false;
     }
@@ -2456,13 +4764,36 @@ bool cep_heartbeat_process_impulses(void) {
         cepImpulse impulse = {
             .signal_path = record->signal_path,
             .target_path = record->target_path,
+            .qos = record->qos,
         };
+
+        if (cep_control_should_gate(&impulse)) {
+            if (!cep_control_backlog_store(&impulse)) {
+                CEP_DEBUG_PRINTF("[process_impulses] backlog store failed\n");
+                fflush(stderr);
+                ok = false;
+            }
+            char* signal_text = cep_heartbeat_path_to_string(impulse.signal_path);
+            char* target_text = cep_heartbeat_path_to_string(impulse.target_path);
+            if (signal_text && target_text) {
+                char message[256];
+                snprintf(message, sizeof message, "pause: parked signal=%s target=%s qos=%u",
+                         signal_text,
+                         target_text,
+                         (unsigned)impulse.qos);
+                (void)cep_heartbeat_stage_note(message);
+            }
+            cep_free(signal_text);
+            cep_free(target_text);
+            cep_heartbeat_impulse_record_clear(record);
+            continue;
+        }
 
         bool fresh = false;
         uint64_t hash = cep_heartbeat_impulse_hash(record);
         cepHeartbeatDispatchCacheEntry* entry = cep_heartbeat_dispatch_cache_acquire(scratch, record, hash, &fresh);
         if (!entry) {
-            fprintf(stderr, "[process_impulses] dispatch entry acquire failed\n");
+            CEP_DEBUG_PRINTF("[process_impulses] dispatch entry acquire failed\n");
             fflush(stderr);
             ok = false;
             break;
@@ -2472,6 +4803,14 @@ bool cep_heartbeat_process_impulses(void) {
             size_t resolved = 0u;
             if (registry && registry_size > 0u) {
                 resolved = cep_enzyme_resolve(registry, &impulse, scratch->ordered, scratch->ordered_capacity);
+                char* dbg_signal = cep_heartbeat_path_to_string(impulse.signal_path);
+                CEP_DEBUG_PRINTF("[prr] process_impulses resolved=%zu signal=%s qos=%u gating=%d paused=%d\n",
+                                 resolved,
+                                 dbg_signal ? dbg_signal : "<null>",
+                                 (unsigned)impulse.qos,
+                                 CEP_CONTROL_STATE.gating_active ? 1 : 0,
+                                 CEP_RUNTIME.paused ? 1 : 0);
+                cep_free(dbg_signal);
             }
 
             if (resolved > 0u) {
@@ -2489,7 +4828,7 @@ bool cep_heartbeat_process_impulses(void) {
                 }
 
                 if (!cep_heartbeat_dispatch_entry_reserve_memo(entry, resolved)) {
-                    fprintf(stderr, "[process_impulses] memo reserve failed resolved=%zu\n", resolved);
+                    CEP_DEBUG_PRINTF("[process_impulses] memo reserve failed resolved=%zu\n", resolved);
                     fflush(stderr);
                     ok = false;
                     break;
@@ -2505,7 +4844,7 @@ bool cep_heartbeat_process_impulses(void) {
         } else if (entry->descriptor_count > entry->memo_count) {
             size_t previous = entry->memo_count;
             if (!cep_heartbeat_dispatch_entry_reserve_memo(entry, entry->descriptor_count)) {
-                fprintf(stderr, "[process_impulses] memo reserve expansion failed count=%zu\n", entry->descriptor_count);
+                CEP_DEBUG_PRINTF("[process_impulses] memo reserve expansion failed count=%zu\n", entry->descriptor_count);
                 fflush(stderr);
                 ok = false;
                 break;
@@ -2521,7 +4860,7 @@ bool cep_heartbeat_process_impulses(void) {
         if (entry->descriptor_count == 0u && cep_heartbeat_policy_use_dirs()) {
             ok = cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, NULL, CEP_ENZYME_SUCCESS, &impulse);
             if (!ok) {
-                fprintf(stderr, "[process_impulses] record agenda entry failed (no-match)\n");
+                CEP_DEBUG_PRINTF("[process_impulses] record agenda entry failed (no-match)\n");
                 fflush(stderr);
             }
         }
@@ -2555,7 +4894,7 @@ bool cep_heartbeat_process_impulses(void) {
                     if (cep_heartbeat_policy_use_dirs()) {
                         int rc_log = memo ? memo->last_rc : CEP_ENZYME_SUCCESS;
                     if (!cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, descriptor, rc_log, &impulse)) {
-                        fprintf(stderr, "[process_impulses] record agenda entry failed (skip)\n");
+                        CEP_DEBUG_PRINTF("[process_impulses] record agenda entry failed (skip)\n");
                         fflush(stderr);
                         ok = false;
                         break;
@@ -2586,18 +4925,18 @@ bool cep_heartbeat_process_impulses(void) {
 
                 if (cep_heartbeat_policy_use_dirs()) {
                     if (!cep_heartbeat_record_agenda_entry(CEP_RUNTIME.current, descriptor, rc, &impulse)) {
-                        fprintf(stderr, "[process_impulses] record agenda entry failed rc=%d\n", rc);
-                        fflush(stderr);
+                        CEP_DEBUG_PRINTF("[process_impulses] record agenda entry failed rc=%d\n", rc);
                         ok = false;
                         break;
                     }
                 }
                 if (rc == CEP_ENZYME_FATAL) {
+#if defined(CEP_ENABLE_DEBUG)
                     char fatal_label[64];
                     const char* fatal_name = cep_heartbeat_descriptor_label(descriptor, fatal_label, sizeof fatal_label);
-                    fprintf(stderr, "[process_impulses] descriptor fatal rc label=%s\n",
-                            fatal_name ? fatal_name : "<null>");
-                    fflush(stderr);
+                    CEP_DEBUG_PRINTF("[process_impulses] descriptor fatal rc label=%s\n",
+                                     fatal_name ? fatal_name : "<null>");
+#endif
                     ok = false;
                     break;
                 }
@@ -2736,6 +5075,9 @@ bool cep_heartbeat_beat_to_unix(cepBeatNumber beat, uint64_t* unix_timestamp_ns)
     }
 
     cepCell* beat_cell = cep_cell_find_by_name(resolved_root, &beat_name);
+    if (!beat_cell) {
+        beat_cell = cep_cell_find_by_name_all(resolved_root, &beat_name);
+    }
     if (!beat_cell || cep_cell_is_void(beat_cell)) {
         return false;
     }
@@ -2746,6 +5088,9 @@ bool cep_heartbeat_beat_to_unix(cepBeatNumber beat, uint64_t* unix_timestamp_ns)
     }
 
     cepCell* meta = cep_cell_find_by_name(beat_cell, dt_meta_name());
+    if (!meta) {
+        meta = cep_cell_find_by_name_all(beat_cell, dt_meta_name());
+    }
     if (!meta || cep_cell_is_void(meta)) {
         return false;
     }
@@ -2777,6 +5122,158 @@ bool cep_heartbeat_beat_to_unix(cepBeatNumber beat, uint64_t* unix_timestamp_ns)
     }
 
     *unix_timestamp_ns = parsed;
+    return true;
+}
+
+static bool cep_heartbeat_record_op_stamp(cepBeatNumber beat, cepOpCount stamp) {
+    if (beat == CEP_BEAT_INVALID) {
+        return false;
+    }
+
+    if (!cep_heartbeat_bootstrap()) {
+        return false;
+    }
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (!rt_root) {
+        return false;
+    }
+
+    cepCell* beat_root = ensure_root_dictionary(rt_root, dt_beat_root_name(), NULL);
+    if (!beat_root) {
+        return false;
+    }
+
+    cepDT beat_name;
+    if (!cep_heartbeat_set_numeric_name(&beat_name, beat)) {
+        return false;
+    }
+
+    cepCell* beat_cell = cep_heartbeat_ensure_dictionary_child(beat_root, &beat_name, NULL);
+    if (!beat_cell) {
+        return false;
+    }
+
+    cepCell* meta = cep_heartbeat_ensure_meta_child(beat_cell);
+    if (!meta) {
+        return false;
+    }
+
+    cepCell* runtime = cep_cell_ensure_dictionary_child(meta, dt_runtime_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!runtime) {
+        return false;
+    }
+
+    cepDT stamp_field = cep_dt_clean(dt_op_stamp_name());
+    cepCell* existing = cep_cell_find_by_name(runtime, &stamp_field);
+    if (existing) {
+        existing = cep_cell_resolve(existing);
+        if (existing && cep_cell_has_data(existing)) {
+            const char* stored_text = (const char*)cep_cell_data(existing);
+            if (stored_text) {
+                char* endptr = NULL;
+                uint64_t parsed = strtoull(stored_text, &endptr, 10);
+                if (endptr && *endptr == '\0' && parsed == (uint64_t)stamp) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return cep_cell_put_uint64(runtime, dt_op_stamp_name(), (uint64_t)stamp);
+}
+
+static bool cep_heartbeat_beat_to_op_stamp(cepBeatNumber beat, cepOpCount* stamp_out) {
+    if (!stamp_out || beat == CEP_BEAT_INVALID) {
+        return false;
+    }
+
+    if (!cep_cell_system_initialized()) {
+        return false;
+    }
+
+    if (!cep_heartbeat_bootstrap()) {
+        return false;
+    }
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (!rt_root || cep_cell_is_void(rt_root)) {
+        return false;
+    }
+
+    cepCell* beat_root = cep_cell_find_by_name(rt_root, dt_beat_root_name());
+    if (!beat_root || cep_cell_is_void(beat_root)) {
+        return false;
+    }
+
+    cepCell* resolved_root = cep_cell_resolve(beat_root);
+    if (!resolved_root || cep_cell_is_void(resolved_root) || !resolved_root->store) {
+        return false;
+    }
+
+    cepDT beat_name;
+    if (!cep_heartbeat_set_numeric_name(&beat_name, beat)) {
+        return false;
+    }
+
+    cepCell* beat_cell = cep_cell_find_by_name(resolved_root, &beat_name);
+    if (!beat_cell || cep_cell_is_void(beat_cell)) {
+        return false;
+    }
+
+    beat_cell = cep_cell_resolve(beat_cell);
+    if (!beat_cell || cep_cell_is_void(beat_cell)) {
+        return false;
+    }
+
+    cepCell* meta = cep_cell_find_by_name(beat_cell, dt_meta_name());
+    if (!meta || cep_cell_is_void(meta)) {
+        return false;
+    }
+
+    meta = cep_cell_resolve(meta);
+    if (!meta || cep_cell_is_void(meta)) {
+        return false;
+    }
+
+    cepCell* runtime = cep_cell_find_by_name(meta, dt_runtime_name());
+    if (!runtime) {
+        runtime = cep_cell_find_by_name_all(meta, dt_runtime_name());
+    }
+    if (!runtime || cep_cell_is_void(runtime)) {
+        return false;
+    }
+
+    runtime = cep_cell_resolve(runtime);
+    if (!runtime || cep_cell_is_void(runtime)) {
+        return false;
+    }
+
+    cepCell* stamp_cell = cep_cell_find_by_name(runtime, dt_op_stamp_name());
+    if (!stamp_cell) {
+        stamp_cell = cep_cell_find_by_name_all(runtime, dt_op_stamp_name());
+    }
+    if (!stamp_cell || cep_cell_is_void(stamp_cell)) {
+        return false;
+    }
+
+    stamp_cell = cep_cell_resolve(stamp_cell);
+    if (!stamp_cell || !cep_cell_has_data(stamp_cell)) {
+        return false;
+    }
+
+    const char* stored_text = (const char*)cep_cell_data(stamp_cell);
+    if (!stored_text) {
+        return false;
+    }
+
+    char* endptr = NULL;
+    uint64_t parsed = strtoull(stored_text, &endptr, 10);
+    if (!endptr || *endptr != '\0') {
+        return false;
+    }
+
+    *stamp_out = (cepOpCount)parsed;
     return true;
 }
 
@@ -2881,6 +5378,7 @@ int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path,
     cepImpulse impulse = {
         .signal_path = signal_path,
         .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_RETAIN_ON_PAUSE,
     };
 
     return cep_heartbeat_enqueue_impulse(beat, &impulse);
@@ -2891,15 +5389,42 @@ int cep_heartbeat_enqueue_signal(cepBeatNumber beat, const cepPath* signal_path,
     keeping the internal impulse queue layout consistent with the signal helper. */
 int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse) {
     if (!cep_heartbeat_bootstrap()) {
-        fprintf(stderr, "[enqueue_impulse] bootstrap failed\n");
+        CEP_DEBUG_PRINTF("[enqueue_impulse] bootstrap failed\n");
         fflush(stderr);
         return CEP_ENZYME_FATAL;
     }
 
     if (!impulse || (!impulse->signal_path && !impulse->target_path)) {
-        fprintf(stderr, "[enqueue_impulse] invalid impulse\n");
+        CEP_DEBUG_PRINTF("[enqueue_impulse] invalid impulse\n");
         fflush(stderr);
         return CEP_ENZYME_FATAL;
+    }
+
+    cepImpulse normalized = *impulse;
+    if ((normalized.qos & (CEP_IMPULSE_QOS_CONTROL | CEP_IMPULSE_QOS_RETAIN_ON_PAUSE | CEP_IMPULSE_QOS_DISCARD_ON_ROLLBACK)) == 0u) {
+        normalized.qos |= CEP_IMPULSE_QOS_RETAIN_ON_PAUSE;
+    }
+    impulse = &normalized;
+
+    if (cep_control_should_gate(impulse)) {
+        if (!cep_control_backlog_store(impulse)) {
+            CEP_DEBUG_PRINTF("[enqueue_impulse] backlog store failed\n");
+            fflush(stderr);
+            return CEP_ENZYME_FATAL;
+        }
+        char* signal_text = cep_heartbeat_path_to_string(impulse->signal_path);
+        char* target_text = cep_heartbeat_path_to_string(impulse->target_path);
+        if (signal_text && target_text) {
+            char message[256];
+            snprintf(message, sizeof message, "pause: parked signal=%s target=%s qos=%u",
+                     signal_text,
+                     target_text,
+                     (unsigned)impulse->qos);
+            (void)cep_heartbeat_stage_note(message);
+        }
+        cep_free(signal_text);
+        cep_free(target_text);
+        return CEP_ENZYME_SUCCESS;
     }
 
     cepBeatNumber record_beat = beat;
@@ -2912,21 +5437,21 @@ int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse)
 
     if (cep_heartbeat_policy_use_dirs() && record_beat != CEP_BEAT_INVALID) {
         if (!cep_heartbeat_ensure_beat_node(record_beat)) {
-            fprintf(stderr, "[enqueue_impulse] ensure beat node failed beat=%llu\n", (unsigned long long)record_beat);
+            CEP_DEBUG_PRINTF("[enqueue_impulse] ensure beat node failed beat=%llu\n", (unsigned long long)record_beat);
             fflush(stderr);
             return CEP_ENZYME_FATAL;
         }
     }
 
     if (!cep_heartbeat_impulse_queue_append(&CEP_RUNTIME.impulses_next, impulse)) {
-        fprintf(stderr, "[enqueue_impulse] queue append failed\n");
+        CEP_DEBUG_PRINTF("[enqueue_impulse] queue append failed\n");
         fflush(stderr);
         return CEP_ENZYME_FATAL;
     }
 
     if (cep_heartbeat_policy_use_dirs() && record_beat != CEP_BEAT_INVALID) {
         if (!cep_heartbeat_record_impulse_entry(record_beat, impulse)) {
-            fprintf(stderr, "[enqueue_impulse] record impulse entry failed\n");
+            CEP_DEBUG_PRINTF("[enqueue_impulse] record impulse entry failed\n");
             fflush(stderr);
             return CEP_ENZYME_FATAL;
         }
@@ -2997,6 +5522,168 @@ cepCell* cep_heartbeat_cas_root(void) {
 /** Return the temporary workspace subtree used for scratch cells. */
 cepCell* cep_heartbeat_tmp_root(void) {
     return CEP_RUNTIME.topology.tmp;
+}
+
+bool cep_runtime_pause(void) {
+    if (!cep_heartbeat_bootstrap()) {
+        return false;
+    }
+
+    if (CEP_CONTROL_STATE.pause.started && CEP_CONTROL_STATE.pause.closed && CEP_RUNTIME.paused) {
+        return true;
+    }
+
+    if (CEP_CONTROL_STATE.pause.started && CEP_CONTROL_STATE.pause.closed) {
+        cep_control_op_clear(&CEP_CONTROL_STATE.pause);
+    }
+
+    if (CEP_CONTROL_STATE.pause.started && !CEP_CONTROL_STATE.pause.failed) {
+        return true;
+    }
+
+    if (CEP_CONTROL_STATE.resume.started && !CEP_CONTROL_STATE.resume.closed) {
+        return false;
+    }
+
+    return cep_control_start_pause();
+}
+
+bool cep_runtime_resume(void) {
+    bool result = false;
+
+    if (!cep_heartbeat_bootstrap()) {
+        goto exit;
+    }
+cep_control_debug_snapshot("runtime_resume-enter", &CEP_CONTROL_STATE.resume, 0);
+
+    if (CEP_CONTROL_STATE.cleanup_pending &&
+        !CEP_CONTROL_STATE.resume.started &&
+        !CEP_RUNTIME.paused &&
+        !CEP_CONTROL_STATE.gating_active) {
+        if (!cep_dt_is_valid(&CEP_CONTROL_STATE.resume.verb_dt)) {
+            CEP_CONTROL_STATE.resume.verb_dt = cep_ops_make_dt("op/resume");
+        }
+        cep_control_emit_guard_cei(&CEP_CONTROL_STATE.resume, "cleanup pending");
+        result = false;
+        goto exit;
+    }
+
+    if (CEP_CONTROL_STATE.resume.started && CEP_CONTROL_STATE.resume.closed && !CEP_RUNTIME.paused && !CEP_CONTROL_STATE.gating_active) {
+        result = true;
+        goto exit;
+    }
+
+    if (CEP_CONTROL_STATE.resume.started && CEP_CONTROL_STATE.resume.closed) {
+        cep_control_op_clear(&CEP_CONTROL_STATE.resume);
+    }
+
+    if (!CEP_RUNTIME.paused && !CEP_CONTROL_STATE.gating_active) {
+        result = true;
+        goto exit;
+    }
+
+    if (CEP_CONTROL_STATE.resume.started && !CEP_CONTROL_STATE.resume.failed) {
+        result = true;
+        goto exit;
+    }
+
+    if (!CEP_CONTROL_STATE.pause.started || !CEP_CONTROL_STATE.pause.closed) {
+        result = false;
+        goto exit;
+    }
+
+    result = cep_control_start_resume();
+
+exit:
+cep_control_debug_snapshot("runtime_resume-exit", &CEP_CONTROL_STATE.resume, result ? 1 : 0);
+    return result;
+}
+
+bool cep_runtime_rollback(cepBeatNumber to) {
+    bool result = false;
+
+    if (!cep_heartbeat_bootstrap()) {
+        goto exit;
+    }
+cep_control_debug_snapshot("runtime_rollback-enter", &CEP_CONTROL_STATE.rollback, 0);
+
+    if (CEP_CONTROL_STATE.rollback.started && CEP_CONTROL_STATE.rollback.closed) {
+        cep_control_op_clear(&CEP_CONTROL_STATE.rollback);
+    }
+
+    if (CEP_CONTROL_STATE.cleanup_pending) {
+        if (!cep_dt_is_valid(&CEP_CONTROL_STATE.rollback.verb_dt)) {
+            CEP_CONTROL_STATE.rollback.verb_dt = cep_ops_make_dt("op/rollback");
+        }
+        cep_control_emit_guard_cei(&CEP_CONTROL_STATE.rollback, "cleanup pending");
+        if (CEP_CONTROL_STATE.rollback.started && cep_oid_is_valid(CEP_CONTROL_STATE.rollback.oid)) {
+            char info[160];
+            if (cep_op_get(CEP_CONTROL_STATE.rollback.oid, info, sizeof info)) {
+                CEP_DEBUG_PRINTF("[prr] rollback guard cleanup_pending oid=%llu:%llu info=\"%s\"\n",
+                                 (unsigned long long)CEP_CONTROL_STATE.rollback.oid.domain,
+                                 (unsigned long long)CEP_CONTROL_STATE.rollback.oid.tag,
+                                 info);
+            }
+        }
+        result = false;
+        goto exit;
+    }
+
+    if (!CEP_RUNTIME.paused && !CEP_CONTROL_STATE.gating_active) {
+result = false;
+        goto exit;
+    }
+
+    if (CEP_CONTROL_STATE.rollback.started && !CEP_CONTROL_STATE.rollback.failed) {
+        CEP_CONTROL_STATE.rollback_target = to;
+        result = true;
+        goto exit;
+    }
+
+    if (CEP_CONTROL_STATE.resume.started && !CEP_CONTROL_STATE.resume.closed) {
+result = false;
+        goto exit;
+    }
+
+    result = cep_control_start_rollback(to);
+    CEP_DEBUG_PRINTF("[prr] start_rollback result=%d started=%d closed=%d\n",
+                     result ? 1 : 0,
+                     CEP_CONTROL_STATE.rollback.started ? 1 : 0,
+                     CEP_CONTROL_STATE.rollback.closed ? 1 : 0);
+
+exit:
+cep_control_debug_snapshot("runtime_rollback-exit", &CEP_CONTROL_STATE.rollback, result ? 1 : 0);
+    return result;
+}
+
+bool cep_runtime_is_paused(void) {
+    return CEP_RUNTIME.paused || CEP_CONTROL_STATE.gating_active;
+}
+
+cepBeatNumber cep_runtime_view_horizon(void) {
+    return CEP_RUNTIME.view_horizon;
+}
+
+cepOpCount cep_runtime_view_horizon_stamp(void) {
+    cepOpCount stamp = CEP_RUNTIME.view_horizon_stamp;
+    if (stamp) {
+        return stamp;
+    }
+
+    cepBeatNumber horizon = CEP_RUNTIME.view_horizon;
+    if (horizon == CEP_BEAT_INVALID) {
+        return 0u;
+    }
+
+    if (cep_heartbeat_beat_to_op_stamp(horizon, &stamp)) {
+        return stamp;
+    }
+
+    return 0u;
+}
+
+cepOpCount cep_runtime_view_horizon_floor_stamp(void) {
+    return CEP_RUNTIME.view_horizon_floor_stamp;
 }
 
 

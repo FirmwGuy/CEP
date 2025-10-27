@@ -1343,6 +1343,7 @@ cepCell* cep_cell_next_all(const cepCell* cell, cepCell* child);
 cepCell* cep_cell_last_all(const cepCell* cell);
 cepCell* cep_cell_prev_all(const cepCell* cell, cepCell* child);
 
+cepCell* cep_cell_find_by_name_all(const cepCell* cell, const cepDT* name);
 cepCell* cep_cell_find_by_name_past(const cepCell* cell, const cepDT* name, cepOpCount snapshot);
 #define  cep_cell_find_by_name(cell, name)                  cep_cell_find_by_name_past((cell), (name), 0)
 cepCell* cep_cell_find_by_key(const cepCell* cell, cepCell* key, cepCompare compare, void* context);

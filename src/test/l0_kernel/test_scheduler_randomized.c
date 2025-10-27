@@ -160,6 +160,7 @@ static void exercise_random_registry(SchedulerFixture* fix) {
         cepImpulse impulse = {
             .signal_path = query,
             .target_path = NULL,
+        .qos = CEP_IMPULSE_QOS_NONE,
         };
 
         const cepEnzymeDescriptor* resolved[MAX_RANDOM_ENZYMES] = {0};

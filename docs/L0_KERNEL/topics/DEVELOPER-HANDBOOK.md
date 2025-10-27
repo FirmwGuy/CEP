@@ -46,6 +46,7 @@ Use it whenever you are onboarding a teammate or jumping back into kernel code a
 
 - Toolchain: gcc + Meson/Ninja on MSYS2 UCRT64 and Manjaro works out of the box; fallback Makefile uses `gcc + make`.
 - CFLAGS are tuned for this codebase: assertions are used heavily; do not strip them while developing.
+- During instrumentation, prefer staging breadcrumbs inside a temporary `meta/debug` child (for example, on the active OPS dossier) instead of dumping to stderr; scrub the branch once the fix ships so the tree stays clean.
 
 ### Kernel Concepts (L0)
 - cepID: 64-bit value encoded with naming bits. Supports multiple naming modes: word (lowercase), acronym (upper), reference, numeric. Helpers convert to/from compact encodings.
@@ -193,6 +194,7 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
 
 ### Coding Conventions
 - Assertions everywhere: validate pointers, modes, and index ranges. Fail fast in debug.
+- Instrumentation should stay sparse and meaningful: log state only when it changes, immediately after the mutation, so traces capture transitions rather than steady-state noise.
 - Avoid hidden side effects: functions that mutate also document store/indexing prerequisites (e.g., insertion-only vs. dictionary vs. sorted modes).
 - Clear lifetimes: if you allocate, you free. For DATA, always set destructor or adopt ownership.
 - Use `cep_cell_transfer` to move contents between cells without deep copy; only use deep clone when needed.
