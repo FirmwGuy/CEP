@@ -136,6 +136,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_serialization_randomized.c',
     'src/test/l0_kernel/test_streams_randomized.c',
     'src/test/l0_kernel/test_prr.c',
+    'src/test/poc/l0_integration_poc.c',
     )
   test_dependencies = []
   if zip_dep.found()
@@ -152,6 +153,12 @@ if get_option('tests').enabled()
   test('cep_unit_tests', exe,
     args: ['--no-fork', '--param', 'timeout', '120'],
     timeout: 180,
+  )
+
+  test('integration_poc', exe,
+    args: ['--no-fork', '--single', '/CEP/integration_poc/l0/integration'],
+    timeout: 240,
+    suite: ['integration_poc'],
   )
 
 endif

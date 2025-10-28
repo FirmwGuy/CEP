@@ -182,6 +182,25 @@ when a new behavior needs a fresh word before it lands in code.
 | `oct_root` / `oct_space` | test | octree storage fixtures in randomized tests. |
 | `pq_buffer` / `pq_root` | test | packed-queue storage fixtures. |
 | `ser_child` / `ser_dict` / `ser_root` | test | serialization fixtures validating tree walkers. |
+| `poc` | test | integration POC root covering the end-to-end heartbeat timeline scenario. |
+| `poc_catalog` | test | dictionary store standing in for the catalog branch during integration testing. |
+| `poc_event` | test | log entry payload tag used by the integration log/history assertions. |
+| `poc_item` | test | catalog value payload type exercised by the integration scenario. |
+| `poc_link` | test | scratch dictionary used to validate link/backlink semantics in the integration test. |
+| `poc_log` | test | list store tag backing the integration log branch. |
+| `poc_stream_root` | test | stream/proxy dictionary hosting the journalled stdio adapter in the integration test. |
+| `poc_replay` | test | replay root populated when verifying serialization round-trips. |
+| `poc_replay_store` | test | dictionary store tag assigned to the replay subtree. |
+| `poc_txn` | test | veiled transaction branch staged during the integration heartbeat timeline. |
+| `space` | test | octree dictionary mounted under `/data/poc` to exercise spatial store plumbing during integration. |
+| `space_entry` | test | deterministic point payload inserted into the spatial store to validate octree comparisons. |
+| `item_[a-e]` | test | catalog payload value tags that track deterministic append-only history mutations in the integration scenario. |
+| `rand_entry_*` | test | seeded log entries appended during randomized mutation passes to ensure logging remains deterministic. |
+| `prr_pause` | test | backlog dictionary that records retained impulses while pause/rollback is exercised. |
+| `enz:poc_idx` / `enz:poc_agg` | test | ordered enzyme pair asserting catalog reindex sequencing. |
+| `enz:poc_rand` | test | deterministic random enzyme descriptor feeding seeded impulse bursts. |
+| `sig:poc/reindex` / `sig:poc/prr` / `sig:poc/rand/*` | test | signal namespace driven by the integration heartbeat timeline. |
+| `org:poc:*` | test | integration organ descriptor signals (`org:poc:val`, `org:poc:ctor`, `org:poc:dtor`). |
 | `org:fixture:*` | test | OVH (Organ Validation Harness) fixture signals exercising constructor/destructor/validator dossiers. |
 | `sig_apply` `sig_beta` `sig_broad` `sig_cycle` `sig_dedup` `sig_dup` `sig_empty` `sig_expect` `sig_gamma` `sig_hb` `sig_img` `sig_mask` `sig_match` `sig_nop` `sig_rand` `sig_root` `sig_rty` `sig_skip` `sig_thumb` `sig_tree` | test | assorted signal tags exercised by scheduler and heartbeat tests. |
 | `sys_child` / `sys_root` | test | synthetic system fixtures in randomized tests. |

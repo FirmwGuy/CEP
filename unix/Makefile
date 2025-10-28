@@ -51,8 +51,7 @@ endif
 
 # Collect test sources. The fallback bundle skips libzip/L2 fixtures; the Meson
 # build still exercises everything.
-TEST_SRC := $(wildcard $(SRCDIR)/test/*.c) \
-            $(wildcard $(SRCDIR)/test/*/*.c)
+TEST_SRC := $(shell find $(SRCDIR)/test -type f -name '*.c' 2>/dev/null)
 
 ifeq ($(USE_LIBZIP),0)
   TEST_SRC := $(filter-out $(SRCDIR)/test/l0_kernel/test_stream_zip.c,$(TEST_SRC))
@@ -75,7 +74,7 @@ DOCS_SOURCE_ROOT_NATIVE := $(call native,$(abspath ..))
 DOCS_MAIN_NATIVE := $(if $(DOCS_MAIN_MD),$(call native,$(DOCS_MAIN_MD)))
 DOCS_DOT_PATH_NATIVE := $(if $(DOCS_DOT_BIN),$(call native,$(DOCS_DOT_PATH)))
 
-.PHONY: all run debug valgrind docs clean help
+.PHONY: all run integration debug valgrind docs clean help
 
 all: $(TARGET)
 
@@ -97,6 +96,9 @@ $(OBJ_DIR)/%.o: %.c
 # Convenience targets
 run: $(TARGET)
 	"$(TARGET)" --log-visible debug
+
+integration: $(TARGET)
+	"$(TARGET)" --no-fork --single /CEP/integration_poc/l0/integration
 
 debug: $(TARGET)
 	gdb -w --args "$(TARGET)" --log-visible debug

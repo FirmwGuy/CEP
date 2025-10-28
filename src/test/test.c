@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+extern MunitSuite integration_poc_suite;
+
 static bool ovh_trace_initialized;
 static bool ovh_trace_enabled_flag;
 
@@ -366,15 +368,23 @@ MunitTest tests[] = {
 };
 
 
-const MunitSuite testSuite = {
-    "/CEP",
-    tests,
-    lock_suites,
-    1,                        // Iterations.
-    MUNIT_SUITE_OPTION_NONE
-};
-
-
 int main(int argC, char* argV[MUNIT_ARRAY_PARAM(argC + 1)]) {
-    return munit_suite_main(&testSuite, NULL, argC, argV);
+    MunitSuite sub_suites[3];
+    size_t suite_index = 0u;
+
+    for (size_t i = 0u; lock_suites[i].tests != NULL && suite_index < cep_lengthof(sub_suites) - 1u; ++i) {
+        sub_suites[suite_index++] = lock_suites[i];
+    }
+    sub_suites[suite_index++] = integration_poc_suite;
+    sub_suites[suite_index] = (MunitSuite){0};
+
+    MunitSuite root = {
+        "/CEP",
+        tests,
+        sub_suites,
+        1,
+        MUNIT_SUITE_OPTION_NONE
+    };
+
+    return munit_suite_main(&root, NULL, argC, argV);
 }

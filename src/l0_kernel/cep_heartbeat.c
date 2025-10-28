@@ -1042,12 +1042,12 @@ static bool cep_control_mark_branch_deleted(cepCell* cell, cepOpCount stamp) {
         return true;
     }
 
-    for (cepCell* child = cep_cell_first_all(resolved);
-         child;
-         child = cep_cell_next_all(resolved, child)) {
+    for (cepCell* child = cep_cell_first_all(resolved); child; ) {
+        cepCell* next = cep_cell_next_all(resolved, child);
         if (!cep_control_mark_branch_deleted(child, stamp)) {
             return false;
         }
+        child = next;
     }
 
     return true;

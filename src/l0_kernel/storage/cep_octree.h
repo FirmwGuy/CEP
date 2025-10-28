@@ -487,6 +487,15 @@ static inline cepCell* octree_next(cepCell* cell) {
     // Find the next sibling node or parent with cells
     cepOctreeNode* onode = list->onode;
     while (onode) {
+        if (!onode->parent) {
+#if defined(CEP_ENABLE_DEBUG)
+            CEP_DEBUG_PRINTF("[octree_next] dangling parent onode=%p list=%p cell=%p\n",
+                             (void*)onode,
+                             (void*)list,
+                             (void*)cell);
+#endif
+            break;
+        }
         for (unsigned n = onode->index + 1;  n < 8;  n++) {
             if (onode->parent->children[n]) {
                 cepOctreeNode* next = onode->parent->children[n];

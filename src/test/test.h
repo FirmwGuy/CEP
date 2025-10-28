@@ -83,6 +83,7 @@ MunitResult test_prr_control_failure_cei(const MunitParameter params[], void* us
 MunitResult test_prr_watcher_timeout_cei(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
+extern MunitSuite integration_poc_suite;
 
 static inline void test_runtime_shutdown(void) {
     cep_stream_clear_pending();
