@@ -1145,6 +1145,33 @@ static inline void cep_cell_set_data(cepCell* cell, cepData* data) {
 }
 static inline void cep_cell_set_store(cepCell* cell, cepStore* store) {
     assert(!cep_cell_has_store(cell) && cep_store_valid(store));
+
+    if (cep_cell_is_shadowed(cell)) {
+        switch (cell->metacell.shadowing) {
+          case CEP_SHADOW_SINGLE: {
+            cepCell* single = cell->linked;
+            if (single) {
+                store->linked = single;
+                cell->linked = NULL;
+            }
+            break;
+          }
+
+          case CEP_SHADOW_MULTIPLE: {
+            cepShadow* shadow = cell->shadow;
+            if (shadow) {
+                store->shadow = shadow;
+                cell->shadow = NULL;
+            }
+            break;
+          }
+
+          case CEP_SHADOW_NONE:
+          default:
+            break;
+        }
+    }
+
     store->owner = cell;
     cell->store = store;
     cep_cell_shadow_mark_target_dead(cell, cep_cell_is_deleted(cell));
