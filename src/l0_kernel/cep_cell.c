@@ -1318,6 +1318,12 @@ static inline cepShadow* cep_shadow_multi_bucket(cepCell* target)
     return slot? *slot: NULL;
 }
 
+static void cep_shadow_free(cepShadow* shadow)
+{
+    if (shadow)
+        cep_free(shadow);
+}
+
 static cepShadow* cep_shadow_reserve(cepShadow* shadow, unsigned needed)
 {
     unsigned capacity = shadow? shadow->capacity: 0U;
@@ -4883,9 +4889,51 @@ static void cep_cell_release_contents(cepCell* cell) {
         cepStore* store = cell->store;
         if (store) {
             // ToDo: clean shadow.
-            const cepDT* cell_name = cep_cell_get_name(cell);
             cepCell* owner_cell = (cepCell*)store->owner;
             const cepDT* owner_name = owner_cell ? cep_cell_get_name(owner_cell) : NULL;
+            cepShadow* storeShadow = NULL;
+
+            if (cep_cell_is_shadowed(cell)) {
+                switch (cell->metacell.shadowing) {
+                  case CEP_SHADOW_SINGLE: {
+                    if (!cell->linked && store->linked)
+                        cell->linked = store->linked;
+                    break;
+                  }
+
+                  case CEP_SHADOW_MULTIPLE: {
+                    cepShadow* bucket = store->shadow ? store->shadow : cell->shadow;
+                    if (bucket && bucket->count) {
+                        cepShadow* clone = cep_shadow_reserve(NULL, bucket->count);
+                        clone->count = bucket->count;
+                        memcpy(clone->cell, bucket->cell, bucket->count * sizeof clone->cell[0]);
+                        if (cell->shadow && cell->shadow != bucket)
+                            cep_shadow_free(cell->shadow);
+                        cell->shadow = clone;
+                        storeShadow = bucket;
+                    }
+                    break;
+                  }
+
+                  case CEP_SHADOW_NONE:
+                    break;
+                }
+            }
+
+            if (!cell->linked && store->linked)
+                cell->linked = store->linked;
+
+            store->linked = NULL;
+            store->shadow = NULL;
+            cell->store = NULL;
+
+            if (cep_cell_is_shadowed(cell))
+                cep_shadow_break_all(cell);
+
+            if (storeShadow)
+                cep_shadow_free(storeShadow);
+
+            const cepDT* cell_name = cep_cell_get_name(cell);
             void* caller = __builtin_return_address(0);
             Dl_info caller_info = {0};
             const char* caller_name = NULL;
@@ -4916,6 +4964,7 @@ static void cep_cell_release_contents(cepCell* cell) {
                     caller_name ? caller_name : "<unknown>",
                     caller_image ? caller_image : "<unknown>",
                     (size_t)caller_offset);
+            store->owner = NULL;
             cep_store_del(store);
             cell->store = NULL;
         }
