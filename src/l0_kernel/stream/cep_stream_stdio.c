@@ -6,11 +6,17 @@
 
 #include "cep_stream_stdio.h"
 #include "cep_stream_internal.h"
+#include "cep_cei.h"
+#include "cep_heartbeat.h"
 
 #include <errno.h>
+#include <inttypes.h>
+#include <stdarg.h>
 
 CEP_DEFINE_STATIC_DT(dt_stdio_resource_type, CEP_ACRO("CEP"), CEP_WORD("stdio_res"));
 CEP_DEFINE_STATIC_DT(dt_stdio_stream_type,   CEP_ACRO("CEP"), CEP_WORD("stdio_str"));
+CEP_DEFINE_STATIC_DT(dt_sev_stdio_crit,      CEP_ACRO("CEP"), CEP_WORD("sev:crit"));
+CEP_DEFINE_STATIC_DT(dt_sev_stdio_usage,     CEP_ACRO("CEP"), CEP_WORD("sev:usage"));
 
 typedef struct {
     FILE*     file;
@@ -27,6 +33,58 @@ static bool cep_stdio_stream_read(const cepLibraryBinding* binding, cepCell* str
 static bool cep_stdio_stream_write(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, const void* src, size_t size, size_t* out_written);
 static bool cep_stdio_stream_map(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, size_t size, unsigned access, cepStreamView* view);
 static bool cep_stdio_stream_unmap(const cepLibraryBinding* binding, cepCell* stream, cepStreamView* view, bool commit);
+
+/* Streams bootstrap before CEI mailboxes exist; skip diagnostics until the
+   kernel lifecycle scope is live so early resource failures do not crash
+   bootstrap. */
+static bool cep_stdio_can_emit_cei(void) {
+    return cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
+}
+
+/* Emit a diagnostics note describing an stdio stream failure. Critical I/O
+   faults request perpetual retention while usage mistakes (such as invalid
+   arguments) remain advisory. */
+static void cep_stdio_emit_failure(bool io_fault,
+                                   cepCell* subject,
+                                   const char* topic,
+                                   const char* detail_fmt,
+                                   ...) {
+    if (!topic || !detail_fmt) {
+        return;
+    }
+    if (!cep_stdio_can_emit_cei()) {
+        return;
+    }
+
+    char note[256];
+    va_list args;
+    va_start(args, detail_fmt);
+    vsnprintf(note, sizeof note, detail_fmt, args);
+    va_end(args);
+
+    cepCell* canonical = subject ? cep_link_pull(subject) : NULL;
+    if (!canonical) {
+        canonical = subject;
+    }
+    if (canonical && !cep_cell_is_normal(canonical)) {
+        canonical = NULL;
+    }
+    if (canonical && (!cep_cell_parent(canonical) || cep_cell_is_root(canonical))) {
+        canonical = NULL;
+    }
+
+    const cepDT* severity = io_fault ? dt_sev_stdio_crit() : dt_sev_stdio_usage();
+    cepCeiRequest req = {
+        .severity = *severity,
+        .note = note,
+        .topic = topic,
+        .topic_intern = true,
+        .subject = canonical,
+        .emit_signal = true,
+        .ttl_forever = io_fault,
+    };
+    (void)cep_cei_emit(&req);
+}
 
 static const cepLibraryOps cep_stdio_ops = {
     .handle_retain = cep_stdio_handle_retain,
@@ -153,12 +211,23 @@ static cepStdioResource* cep_stdio_resource_from_binding(const cepLibraryBinding
 
 
 static bool cep_stdio_stream_read(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, void* dst, size_t size, size_t* out_read) {
-    if (!dst && size)
+    if (!dst && size) {
+        cep_stdio_emit_failure(false,
+                               stream,
+                               "stream.stdio.read.args",
+                               "null destination for size=%zu",
+                               size);
         return false;
+    }
 
     cepStdioResource* res = cep_stdio_resource_from_binding(binding, stream);
-    if (!res || !res->file)
+    if (!res || !res->file) {
+        cep_stdio_emit_failure(false,
+                               stream,
+                               "stream.stdio.read.resource",
+                               "stdio resource missing file handle");
         return false;
+    }
 
     if (!size) {
         if (out_read)
@@ -166,15 +235,42 @@ static bool cep_stdio_stream_read(const cepLibraryBinding* binding, cepCell* str
         return true;
     }
 
-    if (!cep_stdio_seek(res->file, offset))
+    if (!cep_stdio_seek(res->file, offset)) {
+        int err = errno;
+        cep_stdio_emit_failure(true,
+                               stream,
+                               "stream.stdio.read.seek",
+                               "seek failed offset=%" PRIu64 " err=%d",
+                               offset,
+                               err);
         return false;
+    }
 
     size_t read = fread(dst, 1, size, res->file);
     if (out_read)
         *out_read = read;
 
-    if (read != size && ferror(res->file))
+    if (read != size) {
+        if (ferror(res->file)) {
+            int err = errno;
+            cep_stdio_emit_failure(true,
+                                   stream,
+                                   "stream.stdio.read.io",
+                                   "I/O error after %zu/%zu bytes err=%d",
+                                   read,
+                                   size,
+                                   err);
+            clearerr(res->file);
+            return false;
+        }
+        cep_stdio_emit_failure(false,
+                               stream,
+                               "stream.stdio.read.short",
+                               "short read %zu/%zu bytes",
+                               read,
+                               size);
         return false;
+    }
 
     cep_stream_journal(stream,
                        read == size? CEP_STREAM_JOURNAL_READ: (CEP_STREAM_JOURNAL_READ | CEP_STREAM_JOURNAL_ERROR),
@@ -183,17 +279,28 @@ static bool cep_stdio_stream_read(const cepLibraryBinding* binding, cepCell* str
                        read,
                        (read && dst)? cep_hash_bytes(dst, read): 0);
 
-    return read == size;
+    return true;
 }
 
 
 static bool cep_stdio_stream_write(const cepLibraryBinding* binding, cepCell* stream, uint64_t offset, const void* src, size_t size, size_t* out_written) {
-    if (!src && size)
+    if (!src && size) {
+        cep_stdio_emit_failure(false,
+                               stream,
+                               "stream.stdio.write.args",
+                               "null source for size=%zu",
+                               size);
         return false;
+    }
 
     cepStdioResource* res = cep_stdio_resource_from_binding(binding, stream);
-    if (!res || !res->file)
+    if (!res || !res->file) {
+        cep_stdio_emit_failure(false,
+                               stream,
+                               "stream.stdio.write.resource",
+                               "stdio resource missing file handle");
         return false;
+    }
 
     if (!size) {
         if (out_written)
@@ -201,18 +308,52 @@ static bool cep_stdio_stream_write(const cepLibraryBinding* binding, cepCell* st
         return true;
     }
 
-    if (!cep_stdio_seek(res->file, offset))
+    if (!cep_stdio_seek(res->file, offset)) {
+        int err = errno;
+        cep_stdio_emit_failure(true,
+                               stream,
+                               "stream.stdio.write.seek",
+                               "seek failed offset=%" PRIu64 " err=%d",
+                               offset,
+                               err);
         return false;
+    }
 
     size_t written = fwrite(src, 1, size, res->file);
     if (out_written)
         *out_written = written;
 
-    if (written != size)
+    if (written != size) {
+        if (ferror(res->file)) {
+            int err = errno;
+            cep_stdio_emit_failure(true,
+                                   stream,
+                                   "stream.stdio.write.io",
+                                   "I/O error after %zu/%zu bytes err=%d",
+                                   written,
+                                   size,
+                                   err);
+            clearerr(res->file);
+            return false;
+        }
+        cep_stdio_emit_failure(false,
+                               stream,
+                               "stream.stdio.write.short",
+                               "short write %zu/%zu bytes",
+                               written,
+                               size);
         return false;
+    }
 
-    if (fflush(res->file) != 0)
+    if (fflush(res->file) != 0) {
+        int err = errno;
+        cep_stdio_emit_failure(true,
+                               stream,
+                               "stream.stdio.write.flush",
+                               "fflush failed err=%d",
+                               err);
         return false;
+    }
 
     cep_stream_journal(stream,
                        CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_COMMIT,
@@ -243,4 +384,3 @@ static bool cep_stdio_stream_unmap(const cepLibraryBinding* binding, cepCell* st
     (void)commit;
     return false;
 }
-

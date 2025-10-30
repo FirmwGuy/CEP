@@ -1146,23 +1146,24 @@ static inline void cep_cell_set_data(cepCell* cell, cepData* data) {
 static inline void cep_cell_set_store(cepCell* cell, cepStore* store) {
     assert(!cep_cell_has_store(cell) && cep_store_valid(store));
 
+    store->linked = NULL;
+    store->shadow = NULL;
+
+    cepCell* promotedSingle = NULL;
+    cepShadow* promotedShadow = NULL;
+
     if (cep_cell_is_shadowed(cell)) {
         switch (cell->metacell.shadowing) {
           case CEP_SHADOW_SINGLE: {
-            cepCell* single = cell->linked;
-            if (single) {
-                store->linked = single;
-                cell->linked = NULL;
+            cepCell* link = cell->linked;
+            if (link && cep_cell_is_link(link)) {
+                promotedSingle = link;
             }
             break;
           }
 
           case CEP_SHADOW_MULTIPLE: {
-            cepShadow* shadow = cell->shadow;
-            if (shadow) {
-                store->shadow = shadow;
-                cell->shadow = NULL;
-            }
+            promotedShadow = cell->shadow;
             break;
           }
 
@@ -1172,7 +1173,12 @@ static inline void cep_cell_set_store(cepCell* cell, cepStore* store) {
         }
     }
 
+    store->linked = promotedSingle;
+    store->shadow = promotedShadow;
     store->owner = cell;
+
+    cell->linked = NULL;
+    cell->shadow = NULL;
     cell->store = store;
     cep_cell_shadow_mark_target_dead(cell, cep_cell_is_deleted(cell));
 }
@@ -1301,8 +1307,17 @@ static inline bool cep_cell_is_floating(cepCell* cell)    {assert(cell);  return
 cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child);
 cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child);
 
-#define cep_cell_add_child(cell, type, name, context, data, store)             \
-    ({cepCell child__={0}; cep_cell_initialize(&child__, type, name, data, store); cep_cell_add(cell, context, &child__);})
+#define cep_cell_add_child(cell, type, name, context, data, store)                        \
+    ({                                                                                    \
+        cepCell child__ = {0};                                                            \
+        cep_cell_initialize(&child__, type, name, data, store);                           \
+        cepCell* inserted__ = cep_cell_add(cell, context, &child__);                      \
+        if (!inserted__) {                                                                \
+            cep_cell_finalize_hard(&child__);                                             \
+            CEP_0(&child__);                                                              \
+        }                                                                                 \
+        inserted__;                                                                       \
+    })
 
 #define cep_cell_add_empty(cell, name, context)                                                         cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), NULL, NULL)
 #define cep_cell_add_value(cell, name, context, dt, value, size, capacity)                              cep_cell_add_child(cell, CEP_TYPE_NORMAL, name, (uintptr_t)(context), cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, size, capacity), NULL)

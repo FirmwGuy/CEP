@@ -6,15 +6,21 @@
 
 #include "cep_stream_zip.h"
 #include "cep_stream_internal.h"
+#include "cep_cei.h"
+#include "cep_heartbeat.h"
 
 #ifdef CEP_HAS_LIBZIP
 
 #include <zip.h>
 
-CEP_DEFINE_STATIC_DT(dt_zip_entry_type,  CEP_ACRO("CEP"), CEP_WORD("zip_entry"));
-CEP_DEFINE_STATIC_DT(dt_zip_stream_type, CEP_ACRO("CEP"), CEP_WORD("zip_stream"));
+CEP_DEFINE_STATIC_DT(dt_zip_entry_type,   CEP_ACRO("CEP"), CEP_WORD("zip_entry"));
+CEP_DEFINE_STATIC_DT(dt_zip_stream_type,  CEP_ACRO("CEP"), CEP_WORD("zip_stream"));
+CEP_DEFINE_STATIC_DT(dt_zip_sev_crit,     CEP_ACRO("CEP"), CEP_WORD("sev:crit"));
+CEP_DEFINE_STATIC_DT(dt_zip_sev_usage,    CEP_ACRO("CEP"), CEP_WORD("sev:usage"));
 
 #include <errno.h>
+#include <inttypes.h>
+#include <stdarg.h>
 #include <string.h>
 
 static char* cep_zip_strdup(const char* s) {
@@ -39,6 +45,65 @@ typedef struct {
     zip_uint64_t   index;
     char*          name;
 } cepZipEntry;
+
+/* Guard CEI emissions until the runtime has finished bootstrap, otherwise zip
+   resource probes during startup would produce fatal diagnostics prematurely. */
+static bool cep_zip_can_emit_cei(void) {
+    return cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
+}
+
+/* Emit a CEI fact describing a libzip-backed stream failure. Critical I/O
+   faults stay pinned in the mailbox, while usage mistakes are recorded as
+   advisory entries so tooling can alert without forcing shutdown. */
+static void cep_zip_emit_failure(bool io_fault,
+                                 cepCell* subject,
+                                 const char* topic,
+                                 const char* detail_fmt,
+                                 ...) {
+    if (!topic || !detail_fmt) {
+        return;
+    }
+    if (!cep_zip_can_emit_cei()) {
+        return;
+    }
+
+    char note[256];
+    va_list args;
+    va_start(args, detail_fmt);
+    vsnprintf(note, sizeof note, detail_fmt, args);
+    va_end(args);
+
+    cepCell* canonical = subject ? cep_link_pull(subject) : NULL;
+    if (!canonical) {
+        canonical = subject;
+    }
+    if (canonical && !cep_cell_is_normal(canonical)) {
+        canonical = NULL;
+    }
+    if (canonical && (!cep_cell_parent(canonical) || cep_cell_is_root(canonical))) {
+        canonical = NULL;
+    }
+
+    const cepDT* severity = io_fault ? dt_zip_sev_crit() : dt_zip_sev_usage();
+    cepCeiRequest req = {
+        .severity = *severity,
+        .note = note,
+        .topic = topic,
+        .topic_intern = true,
+        .subject = canonical,
+        .emit_signal = true,
+        .ttl_forever = io_fault,
+    };
+    (void)cep_cei_emit(&req);
+}
+
+static const char* cep_zip_error_desc(zip_t* archive) {
+    if (!archive) {
+        return "zip:unknown";
+    }
+    const char* text = zip_strerror(archive);
+    return text ? text : "zip:unknown";
+}
 
 static void cep_zip_entry_destructor(void* data) {
     cepZipEntry* entry = data;
@@ -198,41 +263,72 @@ static cepZipEntry* cep_zip_entry(cepCell* resource) {
 
 static bool cep_zip_stream_read(const cepLibraryBinding* binding, cepCell* resource, uint64_t offset, void* dst, size_t size, size_t* out_read) {
     (void)binding;
-    if (!dst && size)
+    if (!dst && size) {
+        cep_zip_emit_failure(false,
+                             resource,
+                             "stream.zip.read.args",
+                             "null destination for size=%zu",
+                             size);
         return false;
+    }
 
     cepZipEntry* entry = cep_zip_entry(resource);
     cepZipArchive* archive = entry ? entry->archive : NULL;
-    if (!archive || !archive->archive)
+    if (!archive || !archive->archive) {
+        cep_zip_emit_failure(false,
+                             resource,
+                             "stream.zip.read.resource",
+                             "zip entry missing archive handle");
         return false;
+    }
 
     zip_file_t* file = zip_fopen_index(archive->archive, entry->index, ZIP_FL_ENC_UTF_8);
-    if (!file)
+    if (!file) {
+        cep_zip_emit_failure(true,
+                             resource,
+                             "stream.zip.read.open",
+                             "zip_fopen_index failed: %s",
+                             cep_zip_error_desc(archive->archive));
         return false;
+    }
 
     uint64_t skipped = 0;
     char buffer[4096];
     while (skipped < offset) {
         uint64_t remain = offset - skipped;
-        size_t chunk = remain < sizeof buffer ? (size_t) remain : sizeof buffer;
+        size_t chunk = remain < sizeof buffer ? (size_t)remain : sizeof buffer;
         zip_int64_t r = zip_fread(file, buffer, chunk);
         if (r <= 0) {
+            if (r < 0) {
+                cep_zip_emit_failure(true,
+                                     resource,
+                                     "stream.zip.read.seek",
+                                     "zip_fread error while skipping: %s",
+                                     cep_zip_error_desc(archive->archive));
+            } else {
+                cep_zip_emit_failure(false,
+                                     resource,
+                                     "stream.zip.read.seek",
+                                     "offset %" PRIu64 " beyond end of entry",
+                                     offset);
+            }
             zip_fclose(file);
             return false;
         }
-        skipped += (uint64_t) r;
-        if ((uint64_t) r < chunk)
+        skipped += (uint64_t)r;
+        if ((uint64_t)r < chunk)
             break;
     }
 
     size_t total = 0;
+    zip_int64_t last_read = 0;
     while (total < size) {
         size_t chunk = size - total;
-        zip_int64_t r = zip_fread(file, (char*) dst + total, chunk);
-        if (r <= 0)
+        last_read = zip_fread(file, (char*)dst + total, chunk);
+        if (last_read <= 0)
             break;
-        total += (size_t) r;
-        if ((size_t) r < chunk)
+        total += (size_t)last_read;
+        if ((size_t)last_read < chunk)
             break;
     }
 
@@ -240,7 +336,27 @@ static bool cep_zip_stream_read(const cepLibraryBinding* binding, cepCell* resou
     if (out_read)
         *out_read = total;
 
-    return total == size;
+    if (total != size) {
+        if (last_read < 0) {
+            cep_zip_emit_failure(true,
+                                 resource,
+                                 "stream.zip.read.io",
+                                 "zip_fread error after %zu/%zu bytes: %s",
+                                 total,
+                                 size,
+                                 cep_zip_error_desc(archive->archive));
+        } else {
+            cep_zip_emit_failure(false,
+                                 resource,
+                                 "stream.zip.read.short",
+                                 "short read %zu/%zu bytes",
+                                 total,
+                                 size);
+        }
+        return false;
+    }
+
+    return true;
 }
 
 static uint64_t cep_hash_bytes_update(uint64_t hash, const uint8_t* data, size_t size) {
@@ -283,20 +399,42 @@ static bool cep_zip_stream_expected_hash(const cepLibraryBinding* binding, cepCe
 
 static bool cep_zip_stream_write(const cepLibraryBinding* binding, cepCell* resource, uint64_t offset, const void* src, size_t size, size_t* out_written) {
     (void)binding;
-    if (offset != 0)
+    if (offset != 0) {
+        cep_zip_emit_failure(false,
+                             resource,
+                             "stream.zip.write.offset",
+                             "non-zero offset %" PRIu64 " not supported",
+                             offset);
         return false;
+    }
 
     cepZipEntry* entry = cep_zip_entry(resource);
     cepZipArchive* archive = entry ? entry->archive : NULL;
-    if (!archive || !archive->archive)
+    if (!archive || !archive->archive) {
+        cep_zip_emit_failure(false,
+                             resource,
+                             "stream.zip.write.resource",
+                             "zip entry missing archive handle");
         return false;
+    }
 
     zip_source_t* source = zip_source_buffer(archive->archive, src, size, 0);
-    if (!source)
+    if (!source) {
+        cep_zip_emit_failure(true,
+                             resource,
+                             "stream.zip.write.source",
+                             "zip_source_buffer failed: %s",
+                             cep_zip_error_desc(archive->archive));
         return false;
+    }
 
     if (zip_file_replace(archive->archive, entry->index, source, ZIP_FL_ENC_UTF_8) != 0) {
         zip_source_free(source);
+        cep_zip_emit_failure(true,
+                             resource,
+                             "stream.zip.write.replace",
+                             "zip_file_replace failed: %s",
+                             cep_zip_error_desc(archive->archive));
         return false;
     }
 

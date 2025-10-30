@@ -6,8 +6,12 @@
 
 #include "cep_serialization.h"
 #include "cep_cell.h"
+#include "cep_cei.h"
 #include "cep_heartbeat.h"
+#include "cep_namepool.h"
 
+#include <inttypes.h>
+#include <stdarg.h>
 #include <string.h>
 
 CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
@@ -40,6 +44,64 @@ static inline uint32_t cep_serial_from_be32(uint32_t value) {
 
 static inline uint64_t cep_serial_from_be64(uint64_t value) {
     return __builtin_bswap64(value);
+}
+
+CEP_DEFINE_STATIC_DT(dt_sev_crit, CEP_ACRO("CEP"), CEP_WORD("sev:crit"));
+
+/* Serialization failures should not emit CEI until the diagnostics mailbox is
+   available. This guard keeps early bootstrap from tripping fatal reports. */
+static bool cep_serialization_can_emit_cei(void) {
+    return cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
+}
+
+/* Format and emit a CEI fact describing a serialization failure. The helper
+   resolves a canonical subject when possible so dashboards can inspect the
+   offending cell without wading through transient link wrappers. */
+static void cep_serialization_emit_failure(const char* topic,
+                                           const cepCell* subject,
+                                           const char* detail_fmt,
+                                           ...) {
+    if (!topic || !detail_fmt) {
+        return;
+    }
+    if (!cep_serialization_can_emit_cei()) {
+        return;
+    }
+
+    char note[256];
+    va_list args;
+    va_start(args, detail_fmt);
+    vsnprintf(note, sizeof note, detail_fmt, args);
+    va_end(args);
+
+    cepCell* canonical = NULL;
+    if (subject) {
+        canonical = cep_link_pull((cepCell*)subject);
+        if (!canonical) {
+            canonical = (cepCell*)subject;
+        }
+        if (canonical && !cep_cell_is_normal(canonical)) {
+            canonical = NULL;
+        }
+        if (canonical && !cep_cell_parent(canonical)) {
+            canonical = NULL;
+        }
+        if (canonical && cep_cell_is_root(canonical)) {
+            canonical = NULL;
+        }
+    }
+
+    cepCeiRequest req = {
+        .severity = *dt_sev_crit(),
+        .note = note,
+        .topic = topic,
+        .topic_intern = true,
+        .subject = canonical,
+        .emit_signal = true,
+        .ttl_forever = true,
+    };
+
+    (void)cep_cei_emit(&req);
 }
 
 typedef struct {
@@ -271,8 +333,14 @@ static inline bool cep_serialization_emitter_emit(cepSerializationEmitter* emitt
     if (payload_size && !payload)
         return false;
 
-    if (payload_size > UINT64_MAX - CEP_SERIALIZATION_CHUNK_OVERHEAD)
+    if (payload_size > UINT64_MAX - CEP_SERIALIZATION_CHUNK_OVERHEAD) {
+        cep_serialization_emit_failure("serialization.chunk.frame",
+                                       NULL,
+                                       "payload size overflow (class=%u size=%zu)",
+                                       (unsigned)chunk_class,
+                                       payload_size);
         return false;
+    }
 
     if (emitter->sequence == UINT16_MAX) {
         emitter->transaction++;
@@ -296,6 +364,14 @@ static inline bool cep_serialization_emitter_emit(cepSerializationEmitter* emitt
 
     bool ok = emitter->write(emitter->context, buffer, total);
     cep_free(buffer);
+    if (!ok) {
+        cep_serialization_emit_failure("serialization.chunk.write",
+                                       NULL,
+                                       "writer callback failed (class=%u tx=%u seq=%u)",
+                                       (unsigned)chunk_class,
+                                       emitter->transaction,
+                                       emitter->sequence);
+    }
     return ok;
 }
 
@@ -305,12 +381,21 @@ static bool cep_serialization_emit_manifest(cepSerializationEmitter* emitter,
     assert(emitter && cell && path);
 
     cepCell* canonical = cep_link_pull((cepCell*)cell);
-    if (!canonical)
+    if (!canonical) {
+        cep_serialization_emit_failure("serialization.manifest.resolve",
+                                       cell,
+                                       "failed to resolve canonical cell for manifest");
         return false;
+    }
 
     uint16_t segments = (uint16_t)path->length;
-    if ((unsigned)path->length > UINT16_MAX)
+    if ((unsigned)path->length > UINT16_MAX) {
+        cep_serialization_emit_failure("serialization.manifest.bounds",
+                                       cell,
+                                       "path length %u exceeds UINT16_MAX",
+                                       (unsigned)path->length);
         return false;
+    }
 
     size_t payload_size = sizeof(uint16_t) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t)
                         + (size_t)segments * ((sizeof(uint64_t) * 2u) + sizeof(uint8_t));
@@ -352,6 +437,11 @@ static bool cep_serialization_emit_manifest(cepSerializationEmitter* emitter,
 
     bool ok = cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_STRUCTURE, payload, payload_size);
     cep_free(payload);
+    if (!ok) {
+        cep_serialization_emit_failure("serialization.manifest.emit",
+                                       cell,
+                                       "failed to emit manifest chunk");
+    }
     return ok;
 }
 
@@ -360,21 +450,38 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     assert(emitter && cell);
 
     cepCell* canonical = cep_link_pull((cepCell*)cell);
-    if (!canonical)
+    if (!canonical) {
+        cep_serialization_emit_failure("serialization.data.resolve",
+                                       cell,
+                                       "failed to resolve canonical cell for data chunk");
         return false;
+    }
 
     if (cep_cell_is_proxy(canonical)) {
         cepProxySnapshot snapshot;
-        if (!cep_proxy_snapshot(canonical, &snapshot))
+        if (!cep_proxy_snapshot(canonical, &snapshot)) {
+            cep_serialization_emit_failure("serialization.data.proxy_snapshot",
+                                           canonical,
+                                           "proxy snapshot capture failed");
             return false;
+        }
 
         size_t payload_size = sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint64_t);
         if (snapshot.size) {
             if (!snapshot.payload) {
+                cep_serialization_emit_failure("serialization.data.proxy_payload",
+                                               canonical,
+                                               "proxy snapshot missing payload bytes (size=%zu)",
+                                               snapshot.size);
                 cep_proxy_release_snapshot(canonical, &snapshot);
                 return false;
             }
             if (payload_size > SIZE_MAX - snapshot.size) {
+                cep_serialization_emit_failure("serialization.data.proxy_payload",
+                                               canonical,
+                                               "proxy payload size overflow (base=%zu extra=%zu)",
+                                               payload_size,
+                                               snapshot.size);
                 cep_proxy_release_snapshot(canonical, &snapshot);
                 return false;
             }
@@ -403,18 +510,32 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
         bool ok = cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_LIBRARY, payload, payload_size);
         cep_free(payload);
         cep_proxy_release_snapshot(canonical, &snapshot);
+        if (!ok) {
+            cep_serialization_emit_failure("serialization.data.proxy_emit",
+                                           canonical,
+                                           "failed to emit proxy chunk");
+        }
         return ok;
     }
 
-    if (!cep_cell_is_normal(canonical))
+    if (!cep_cell_is_normal(canonical)) {
+        cep_serialization_emit_failure("serialization.data.type",
+                                       canonical,
+                                       "non-normal cell cannot emit data");
         return false;
+    }
 
     cepData* data = canonical->data;
     if (!data)
         return true;
 
-    if (data->datatype != CEP_DATATYPE_VALUE && data->datatype != CEP_DATATYPE_DATA)
+    if (data->datatype != CEP_DATATYPE_VALUE && data->datatype != CEP_DATATYPE_DATA) {
+        cep_serialization_emit_failure("serialization.data.type",
+                                       canonical,
+                                       "unsupported datatype=%u for serialization",
+                                       (unsigned)data->datatype);
         return false;
+    }
 
     size_t blob_limit = emitter->blob_limit ? emitter->blob_limit : CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD;
     if (blob_limit < 16u)
@@ -422,8 +543,13 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
 
     size_t total_size = data->size;
     const uint8_t* bytes = (const uint8_t*)cep_data_payload(data);
-    if (total_size && !bytes)
+    if (total_size && !bytes) {
+        cep_serialization_emit_failure("serialization.data.buffer",
+                                       canonical,
+                                       "payload bytes missing for size=%zu",
+                                       total_size);
         return false;
+    }
 
     bool chunked = total_size > blob_limit;
 
@@ -434,8 +560,13 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     if (!chunked)
         header_payload += inline_size;
 
-    if (header_payload > SIZE_MAX - CEP_SERIALIZATION_CHUNK_OVERHEAD)
+    if (header_payload > SIZE_MAX - CEP_SERIALIZATION_CHUNK_OVERHEAD) {
+        cep_serialization_emit_failure("serialization.data.header",
+                                       canonical,
+                                       "header payload overflow (size=%zu)",
+                                       header_payload);
         return false;
+    }
 
     uint8_t* payload = cep_malloc(header_payload);
     uint8_t* p = payload;
@@ -477,6 +608,9 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     }
 
     if (!cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_STRUCTURE, payload, header_payload)) {
+        cep_serialization_emit_failure("serialization.data.header_emit",
+                                       canonical,
+                                       "failed to emit data header chunk");
         cep_free(payload);
         return false;
     }
@@ -508,6 +642,10 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
         memcpy(bp, bytes + offset, slice);
 
         if (!cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_BLOB, blob, blob_payload)) {
+            cep_serialization_emit_failure("serialization.data.blob_emit",
+                                           canonical,
+                                           "blob chunk emit failed at offset=%" PRIu64,
+                                           offset);
             cep_free(blob);
             return false;
         }
@@ -562,20 +700,31 @@ bool cep_serialization_emit_cell(const cepCell* cell,
         local.byte_order = CEP_SERIAL_ENDIAN_BIG;
 
     size_t header_size = cep_serialization_header_chunk_size(&local);
-    if (!header_size)
+    if (!header_size) {
+        cep_serialization_emit_failure("serialization.header.size",
+                                       cell,
+                                       "header chunk size calculation failed");
         return false;
+    }
 
     uint8_t* header_chunk = cep_malloc(header_size);
     size_t written = 0;
     if (!cep_serialization_header_write(&local, header_chunk, header_size, &written)) {
         cep_free(header_chunk);
+        cep_serialization_emit_failure("serialization.header.write",
+                                       cell,
+                                       "failed to encode header chunk");
         return false;
     }
 
     bool ok = write(context, header_chunk, written);
     cep_free(header_chunk);
-    if (!ok)
+    if (!ok) {
+        cep_serialization_emit_failure("serialization.header.flush",
+                                       cell,
+                                       "writer rejected header chunk");
         return false;
+    }
 
     cepSerializationEmitter emitter = {
         .write = write,
@@ -587,17 +736,30 @@ bool cep_serialization_emit_cell(const cepCell* cell,
     cepPath* path = NULL;
     bool success = false;
 
-    if (!cep_cell_path(cell, &path))
+    if (!cep_cell_path(cell, &path)) {
+        cep_serialization_emit_failure("serialization.path.resolve",
+                                       cell,
+                                       "failed to build cell path for serialization");
         goto cleanup;
+    }
 
-    if (!cep_serialization_emit_manifest(&emitter, cell, path))
+    if (!cep_serialization_emit_manifest(&emitter, cell, path)) {
+        cep_serialization_emit_failure("serialization.manifest.emit",
+                                       cell,
+                                       "manifest emission failed");
         goto cleanup;
+    }
 
-    if (!cep_serialization_emit_data(&emitter, cell))
+    if (!cep_serialization_emit_data(&emitter, cell)) {
         goto cleanup;
+    }
 
-    if (!cep_serialization_emitter_emit(&emitter, CEP_CHUNK_CLASS_CONTROL, NULL, 0u))
+    if (!cep_serialization_emitter_emit(&emitter, CEP_CHUNK_CLASS_CONTROL, NULL, 0u)) {
+        cep_serialization_emit_failure("serialization.control.emit",
+                                       cell,
+                                       "failed to emit control terminator chunk");
         goto cleanup;
+    }
 
     success = true;
 
@@ -1230,6 +1392,25 @@ static void cep_serialization_reader_fail(cepSerializationReader* reader) {
     cep_serialization_reader_clear_transactions(reader);
 }
 
+static bool cep_serialization_reader_fail_with_note(cepSerializationReader* reader,
+                                                    const char* topic,
+                                                    const char* detail_fmt,
+                                                    ...) {
+    if (topic && detail_fmt) {
+        char note[256];
+        va_list args;
+        va_start(args, detail_fmt);
+        vsnprintf(note, sizeof note, detail_fmt, args);
+        va_end(args);
+        cep_serialization_emit_failure(topic,
+                                       reader ? reader->root : NULL,
+                                       "%s",
+                                       note);
+    }
+    cep_serialization_reader_fail(reader);
+    return false;
+}
+
 /** Feed a serialisation chunk into the reader state machine, staging work until
     commit is requested. */
 bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8_t* chunk, size_t chunk_size) {
@@ -1240,7 +1421,11 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
     memcpy(&payload_be, chunk, sizeof payload_be);
     size_t payload_size = (size_t)cep_serial_from_be64(payload_be);
     if (payload_size + CEP_SERIALIZATION_CHUNK_OVERHEAD != chunk_size)
-        return false;
+        return cep_serialization_reader_fail_with_note(reader,
+                                                       "serialization.replay.chunk",
+                                                       "chunk size mismatch (payload=%zu chunk=%zu)",
+                                                       payload_size,
+                                                       chunk_size);
 
     uint64_t id_be = 0;
     memcpy(&id_be, chunk + sizeof(uint64_t), sizeof(uint64_t));
@@ -1252,10 +1437,10 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
     const uint8_t* payload = chunk + CEP_SERIALIZATION_CHUNK_OVERHEAD;
 
     if (chunk_class == CEP_CHUNK_CLASS_CONTROL && transaction == 0u && sequence == 0u) {
-        if (!cep_serialization_header_read(chunk, chunk_size, &reader->header)) {
-            cep_serialization_reader_fail(reader);
-            return false;
-        }
+        if (!cep_serialization_header_read(chunk, chunk_size, &reader->header))
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.header",
+                                                           "failed to parse control header");
         cep_serialization_reader_clear_stages(reader);
         cep_serialization_reader_clear_transactions(reader);
         reader->header_seen = true;
@@ -1268,22 +1453,32 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
         return false;
 
     if (!reader->header_seen)
-        return false;
+        return cep_serialization_reader_fail_with_note(reader,
+                                                       "serialization.replay.order",
+                                                       "received data chunk before header");
 
     if (!sequence) {
-        cep_serialization_reader_fail(reader);
-        return false;
+        return cep_serialization_reader_fail_with_note(reader,
+                                                       "serialization.replay.sequence",
+                                                       "chunk sequence zero (class=%u tx=%u)",
+                                                       (unsigned)chunk_class,
+                                                       transaction);
     }
 
     cepSerializationTxState* tx = cep_serialization_reader_get_tx(reader, transaction);
-    if (!tx) {
-        cep_serialization_reader_fail(reader);
-        return false;
-    }
+    if (!tx)
+        return cep_serialization_reader_fail_with_note(reader,
+                                                       "serialization.replay.transaction",
+                                                       "failed to allocate state for tx=%u",
+                                                       transaction);
 
     if ((uint16_t)(tx->last_sequence + 1u) != sequence) {
-        cep_serialization_reader_fail(reader);
-        return false;
+        return cep_serialization_reader_fail_with_note(reader,
+                                                       "serialization.replay.sequence",
+                                                       "out-of-order chunk (last=%u seq=%u tx=%u)",
+                                                       tx->last_sequence,
+                                                       sequence,
+                                                       transaction);
     }
     tx->last_sequence = sequence;
 
@@ -1291,14 +1486,19 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
       case CEP_CHUNK_CLASS_STRUCTURE: {
         if (!tx->pending_stage || tx->pending_stage->data.header_received) {
             if (!cep_serialization_reader_record_manifest(reader, tx, transaction, payload, payload_size)) {
-                cep_serialization_reader_fail(reader);
-                return false;
+                return cep_serialization_reader_fail_with_note(reader,
+                                                               "serialization.replay.manifest",
+                                                               "manifest parse failed (tx=%u seq=%u)",
+                                                               transaction,
+                                                               sequence);
             }
         } else {
             size_t header_bytes = (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u) + sizeof(uint8_t);
             if (payload_size < header_bytes) {
-                cep_serialization_reader_fail(reader);
-                return false;
+                return cep_serialization_reader_fail_with_note(reader,
+                                                               "serialization.replay.data_header",
+                                                               "inline data header too small (payload=%zu)",
+                                                               payload_size);
             }
             size_t inline_size = payload_size - header_bytes;
             const uint8_t* inline_bytes = payload + header_bytes;
@@ -1307,8 +1507,11 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
                                                              payload_size,
                                                              inline_bytes,
                                                              inline_size)) {
-                cep_serialization_reader_fail(reader);
-                return false;
+                return cep_serialization_reader_fail_with_note(reader,
+                                                               "serialization.replay.data_header",
+                                                               "failed to record data header (tx=%u seq=%u)",
+                                                               transaction,
+                                                               sequence);
             }
             if (tx->pending_stage->data.complete)
                 tx->pending_stage = NULL;
@@ -1317,12 +1520,18 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
       }
       case CEP_CHUNK_CLASS_BLOB: {
         if (!tx->pending_stage || !tx->pending_stage->data.header_received) {
-            cep_serialization_reader_fail(reader);
-            return false;
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.data_blob",
+                                                           "blob arrived without header (tx=%u seq=%u)",
+                                                           transaction,
+                                                           sequence);
         }
         if (!cep_serialization_reader_record_data_chunk(&tx->pending_stage->data, payload, payload_size)) {
-            cep_serialization_reader_fail(reader);
-            return false;
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.data_blob",
+                                                           "failed to record blob chunk (tx=%u seq=%u)",
+                                                           transaction,
+                                                           sequence);
         }
         if (tx->pending_stage->data.complete)
             tx->pending_stage = NULL;
@@ -1334,18 +1543,26 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
       }
       case CEP_CHUNK_CLASS_LIBRARY: {
         if (!tx->pending_stage || !tx->pending_stage->proxy.needed || tx->pending_stage->proxy.complete) {
-            cep_serialization_reader_fail(reader);
-            return false;
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.proxy",
+                                                           "unexpected proxy chunk (tx=%u seq=%u)",
+                                                           transaction,
+                                                           sequence);
         }
         if (tx->pending_stage->data.needed && !tx->pending_stage->data.complete) {
-            cep_serialization_reader_fail(reader);
-            return false;
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.proxy",
+                                                           "proxy chunk arrived before data complete (tx=%u seq=%u)",
+                                                           transaction,
+                                                           sequence);
         }
 
         size_t header_bytes = sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint64_t);
         if (payload_size < header_bytes) {
-            cep_serialization_reader_fail(reader);
-            return false;
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.proxy",
+                                                           "proxy header smaller than minimum (payload=%zu)",
+                                                           payload_size);
         }
 
         uint32_t flags = cep_serial_read_be32_buf(payload);
@@ -1353,12 +1570,17 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
 
         size_t remaining = payload_size - header_bytes;
         if (size > SIZE_MAX) {
-            cep_serialization_reader_fail(reader);
-            return false;
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.proxy",
+                                                           "proxy size overflow (size=%" PRIu64 ")",
+                                                           size);
         }
         if ((uint64_t)remaining != size) {
-            cep_serialization_reader_fail(reader);
-            return false;
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.proxy",
+                                                           "proxy payload mismatch (expected=%" PRIu64 " got=%zu)",
+                                                           size,
+                                                           remaining);
         }
 
         cepSerializationStage* stage = tx->pending_stage;
@@ -1373,8 +1595,10 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
         if (stage->proxy.size) {
             stage->proxy.buffer = cep_malloc(stage->proxy.size);
             if (!stage->proxy.buffer) {
-                cep_serialization_reader_fail(reader);
-                return false;
+                return cep_serialization_reader_fail_with_note(reader,
+                                                               "serialization.replay.proxy",
+                                                               "proxy buffer allocation failed (size=%zu)",
+                                                               stage->proxy.size);
             }
             memcpy(stage->proxy.buffer, payload + header_bytes, stage->proxy.size);
         }
@@ -1384,8 +1608,12 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
         break;
       }
       default:
-        cep_serialization_reader_fail(reader);
-        return false;
+        return cep_serialization_reader_fail_with_note(reader,
+                                                       "serialization.replay.chunk",
+                                                       "unknown chunk class=%u tx=%u seq=%u",
+                                                       (unsigned)chunk_class,
+                                                       transaction,
+                                                       sequence);
     }
 
     return true;
@@ -1403,10 +1631,12 @@ bool cep_serialization_reader_commit(cepSerializationReader* reader) {
 
     for (size_t i = 0; i < reader->stage_count; ++i) {
         cepSerializationStage* stage = &reader->stages[i];
-        if (!cep_serialization_reader_apply_stage(reader, stage)) {
-            cep_serialization_reader_fail(reader);
-            return false;
-        }
+        if (!cep_serialization_reader_apply_stage(reader, stage))
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.commit",
+                                                           "apply stage failed (index=%zu tx=%u)",
+                                                           i,
+                                                           stage->transaction);
         cep_serialization_stage_dispose(stage);
     }
 

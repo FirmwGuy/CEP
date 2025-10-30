@@ -32,13 +32,17 @@ CEP_DEFINE_STATIC_DT(dt_ops_status_field, CEP_ACRO("CEP"), CEP_WORD("status"));
 
 static cepCell* cep_l0_ops_root(void);
 
-#if defined(CEP_ENABLE_DEBUG)
 static void prr_l0_organs_log(const char* fmt, ...) {
-    (void)fmt;
+    if (!fmt) {
+        return;
+    }
+    char buffer[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof buffer, fmt, args);
+    va_end(args);
+    CEP_DEBUG_PRINTF_STDOUT("%s", buffer);
 }
-#else
-#define prr_l0_organs_log(...) ((void)0)
-#endif
 
 static const char* const CEP_L0_SCHEMA_RT_BEAT_SUMMARY     = "Heartbeat beat ledger capturing impulses, agenda, and stage evidence per beat.";
 static const char* const CEP_L0_SCHEMA_RT_BEAT_LAYOUT      = "<beat>/impulses|agenda|stage lists preserve capture, compute, commit ordering.";

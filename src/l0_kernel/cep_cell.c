@@ -5,8 +5,10 @@
 
 
 #include "cep_cell.h"
+#include "cep_cei.h"
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
+#include "cep_ops.h"
 
 #include <stdarg.h>
 #include <dlfcn.h>
@@ -36,6 +38,56 @@ struct _cepProxy {
     const cepProxyOps*  ops;
     void*               context;
 };
+
+static const char* cep_debug_id_desc(cepID id, char* buf, size_t cap);
+static void cep_cell_release_contents(cepCell* cell);
+
+CEP_DEFINE_STATIC_DT(dt_cei_sev_usage_local, CEP_ACRO("CEP"), CEP_WORD("sev:usage"));
+
+static void cep_cell_emit_store_readonly_guard(cepStore* store) {
+    if (!store || store->writable)
+        return;
+
+    cepCell* owner = store->owner;
+    if (!owner)
+        return;
+
+    char owner_dom_buf[64];
+    char owner_tag_buf[64];
+    const cepDT* owner_name = cep_cell_get_name(owner);
+    const char* owner_dom = cep_debug_id_desc(owner_name ? owner_name->domain : 0u,
+                                              owner_dom_buf,
+                                              sizeof owner_dom_buf);
+    const char* owner_tag = cep_debug_id_desc(owner_name ? owner_name->tag : 0u,
+                                              owner_tag_buf,
+                                              sizeof owner_tag_buf);
+
+    char note[160];
+    snprintf(note,
+             sizeof note,
+             "append blocked: store %s/%s is read-only",
+             owner_dom,
+             owner_tag);
+
+    cepCeiRequest req = {
+        .severity = *dt_cei_sev_usage_local(),
+        .note = note,
+        .topic = "cell.store.readonly",
+        .topic_intern = true,
+        .subject = owner,
+        .emit_signal = true,
+        .ttl_forever = true,
+    };
+
+    cepDT owner_dt = cep_dt_clean(&owner->metacell.dt);
+    cepOID oid = { owner_dt.domain, owner_dt.tag };
+    if (cep_oid_is_valid(oid)) {
+        req.attach_to_op = true;
+        req.op = oid;
+    }
+
+    (void)cep_cei_emit(&req);
+}
 
 static const char* cep_debug_id_desc(cepID id, char* buf, size_t cap) {
     if (!buf || !cap) {
@@ -1304,45 +1356,68 @@ static void cep_store_history_clear(cepStore* store)
 
 #define CEP_SHADOW_INITIAL_CAPACITY   4U
 
-static inline cepCell** cep_shadow_single_slot(cepCell* target) {
-    return target->store? &target->store->linked: &target->linked;
+static inline bool cep_shadow_entry_is_link(const cepCell* entry, const cepCell* target) {
+    if (!entry || !target)
+        return false;
+    uintptr_t entry_region  = ((uintptr_t)entry)  >> 48;
+    uintptr_t target_region = ((uintptr_t)target) >> 48;
+    if (entry_region != target_region)
+        return false;
+    return cep_cell_is_link(entry);
 }
 
-static inline cepShadow** cep_shadow_multi_slot(cepCell* target) {
-    return target->store? &target->store->shadow: &target->shadow;
+static inline cepCell** cep_shadow_single_slot(cepCell* target) {
+    if (!target)
+        return NULL;
+    if (target->store && target->store->owner == target)
+        return &target->store->linked;
+    return &target->linked;
+}
+
+static inline cepShadow** cep_shadow_list_slot(cepCell* target) {
+    if (!target)
+        return NULL;
+    if (target->store && target->store->owner == target)
+        return &target->store->shadow;
+    return &target->shadow;
 }
 
 static inline cepShadow* cep_shadow_multi_bucket(cepCell* target)
 {
-    cepShadow** slot = cep_shadow_multi_slot(target);
-    return slot? *slot: NULL;
+    cepShadow** slot = cep_shadow_list_slot(target);
+    return slot ? *slot : NULL;
 }
 
 static void cep_shadow_free(cepShadow* shadow)
 {
-    if (shadow)
-        cep_free(shadow);
+    if (!shadow)
+        return;
+    cep_free(shadow);
 }
 
 static cepShadow* cep_shadow_reserve(cepShadow* shadow, unsigned needed)
 {
-    unsigned capacity = shadow? shadow->capacity: 0U;
+    unsigned capacity = shadow ? shadow->capacity : 0U;
     if (capacity >= needed)
         return shadow;
 
-    unsigned newCapacity = capacity? capacity: CEP_SHADOW_INITIAL_CAPACITY;
+    unsigned newCapacity = capacity ? capacity : CEP_SHADOW_INITIAL_CAPACITY;
     while (newCapacity < needed)
         newCapacity *= 2U;
 
-    size_t size = sizeof(cepShadow) + (size_t)newCapacity * sizeof(shadow->cell[0]);
-    if (!shadow) {
-        shadow = cep_malloc0(size);
+    size_t bytes = sizeof *shadow + (size_t)newCapacity * sizeof shadow->cell[0];
+    if (shadow) {
+        shadow = cep_realloc(shadow, bytes);
+        if (!shadow)
+            return NULL;
+        if (newCapacity > capacity) {
+            memset(shadow->cell + capacity, 0, (newCapacity - capacity) * sizeof shadow->cell[0]);
+        }
     } else {
-        unsigned oldCapacity = shadow->capacity;
-        CEP_REALLOC(shadow, size);
-        memset(&shadow->cell[oldCapacity], 0, (newCapacity - oldCapacity) * sizeof(shadow->cell[0]));
+        shadow = cep_malloc0(bytes);
+        if (!shadow)
+            return NULL;
     }
-
     shadow->capacity = newCapacity;
     return shadow;
 }
@@ -1361,10 +1436,53 @@ static void cep_shadow_attach(cepCell* target, cepCell* link)
     assert(cep_cell_is_link(link));
 
     cepCell** singleSlot   = cep_shadow_single_slot(target);
-    cepShadow** multiSlot  = cep_shadow_multi_slot(target);
+    cepShadow** listSlot   = cep_shadow_list_slot(target);
 
-    cepShadow* bucket = multiSlot ? *multiSlot : NULL;
+    cepShadow* bucket = (target->metacell.shadowing == CEP_SHADOW_MULTIPLE && listSlot) ? *listSlot : NULL;
     cepCell* existingSingle = singleSlot ? *singleSlot : NULL;
+
+    if (existingSingle && !cep_shadow_entry_is_link(existingSingle, target)) {
+        if (singleSlot)
+            *singleSlot = NULL;
+        existingSingle = NULL;
+    }
+    if (target->metacell.shadowing != CEP_SHADOW_MULTIPLE) {
+        if (listSlot)
+            *listSlot = NULL;
+        bucket = NULL;
+    }
+    if (bucket && bucket->count) {
+        unsigned write = 0U;
+        for (unsigned read = 0U; read < bucket->count; ++read) {
+            cepCell* entry = bucket->cell[read];
+            if (cep_shadow_entry_is_link(entry, target)) {
+                bucket->cell[write++] = entry;
+                continue;
+            }
+#ifdef CEP_ENABLE_DEBUG
+            CEP_DEBUG_PRINTF("[shadow_attach:scrub] target=%p index=%u entry=%p\n",
+                             (void*)target,
+                             read,
+                             (void*)entry);
+#endif
+        }
+        if (write < bucket->count) {
+            for (unsigned i = write; i < bucket->count; ++i)
+                bucket->cell[i] = NULL;
+            bucket->count = write;
+        }
+        if (!bucket->count) {
+            if (listSlot)
+                *listSlot = NULL;
+            bucket = NULL;
+        }
+    }
+
+    if (bucket && bucket->count) {
+        for (unsigned i = 0; i < bucket->count; ++i) {
+            CEP_ASSERT(cep_shadow_entry_is_link(bucket->cell[i], target));
+        }
+    }
 
     if (target->metacell.shadowing == CEP_SHADOW_NONE) {
         if (bucket && bucket->count) {
@@ -1372,8 +1490,8 @@ static void cep_shadow_attach(cepCell* target, cepCell* link)
         } else if (existingSingle) {
             target->metacell.shadowing = CEP_SHADOW_SINGLE;
         } else if (bucket) {
-            *multiSlot = NULL;
-            cep_free(bucket);
+            *listSlot = NULL;
+            cep_shadow_free(bucket);
             bucket = NULL;
         }
     }
@@ -1382,8 +1500,8 @@ static void cep_shadow_attach(cepCell* target, cepCell* link)
         target->metacell.shadowing = CEP_SHADOW_NONE;
     } else if (target->metacell.shadowing == CEP_SHADOW_MULTIPLE && (!bucket || !bucket->count)) {
         if (bucket) {
-            cep_free(bucket);
-            *multiSlot = NULL;
+            cep_shadow_free(bucket);
+            *listSlot = NULL;
             bucket = NULL;
         }
         if (existingSingle) {
@@ -1397,15 +1515,17 @@ static void cep_shadow_attach(cepCell* target, cepCell* link)
       case CEP_SHADOW_NONE: {
         if (existingSingle && existingSingle == link)
             break;
-        if (existingSingle && existingSingle != link) {
+        if (existingSingle && existingSingle != link && cep_shadow_entry_is_link(existingSingle, target)) {
             cepShadow* shadow = cep_shadow_reserve(NULL, 2U);
+            if (!shadow)
+                return;
             shadow->count = 0U;
             shadow->cell[shadow->count++] = existingSingle;
             shadow->cell[shadow->count++] = link;
             if (singleSlot)
                 *singleSlot = NULL;
-            if (multiSlot)
-                *multiSlot = shadow;
+            if (listSlot)
+                *listSlot = shadow;
             target->metacell.shadowing = CEP_SHADOW_MULTIPLE;
             break;
         }
@@ -1417,6 +1537,8 @@ static void cep_shadow_attach(cepCell* target, cepCell* link)
 
       case CEP_SHADOW_SINGLE: {
         cepCell* existing = existingSingle;
+        if (!cep_shadow_entry_is_link(existing, target))
+            existing = NULL;
         if (!existing) {
             if (singleSlot)
                 *singleSlot = link;
@@ -1426,15 +1548,18 @@ static void cep_shadow_attach(cepCell* target, cepCell* link)
             break;
 
         cepShadow* shadow = cep_shadow_reserve(NULL, 2U);
+        if (!shadow)
+            return;
         shadow->count = 0U;
         shadow->cell[shadow->count++] = existing;
         shadow->cell[shadow->count++] = link;
 
         if (singleSlot)
             *singleSlot = NULL;
-        if (multiSlot)
-            *multiSlot  = shadow;
+        if (listSlot)
+            *listSlot  = shadow;
         target->metacell.shadowing = CEP_SHADOW_MULTIPLE;
+        bucket = shadow;
         break;
       }
 
@@ -1442,22 +1567,27 @@ static void cep_shadow_attach(cepCell* target, cepCell* link)
         cepShadow* shadow = bucket;
         if (!shadow) {
             shadow = cep_shadow_reserve(NULL, 2U);
+            if (!shadow)
+                return;
             shadow->count = 0U;
-            if (existingSingle)
+            if (cep_shadow_entry_is_link(existingSingle, target))
                 shadow->cell[shadow->count++] = existingSingle;
         }
 
         for (unsigned i = 0; i < shadow->count; i++)
             if (shadow->cell[i] == link) {
-                if (!bucket && multiSlot)
-                    *multiSlot = shadow;
+                if (!bucket && listSlot)
+                    *listSlot = shadow;
                 goto shadow_done;
             }
 
         shadow = cep_shadow_reserve(shadow, shadow->count + 1U);
+        if (!shadow)
+            return;
         shadow->cell[shadow->count++] = link;
-        if (multiSlot)
-            *multiSlot = shadow;
+        if (listSlot)
+            *listSlot = shadow;
+        bucket = shadow;
         break;
       }
     }
@@ -1472,7 +1602,7 @@ static void cep_shadow_detach(cepCell* target, const cepCell* link)
         return;
 
     cepCell** singleSlot   = cep_shadow_single_slot(target);
-    cepShadow** multiSlot  = cep_shadow_multi_slot(target);
+    cepShadow** listSlot   = cep_shadow_list_slot(target);
 
     switch (target->metacell.shadowing) {
       case CEP_SHADOW_NONE:
@@ -1488,7 +1618,7 @@ static void cep_shadow_detach(cepCell* target, const cepCell* link)
       }
 
       case CEP_SHADOW_MULTIPLE: {
-        cepShadow* shadow = *multiSlot;
+        cepShadow* shadow = listSlot ? *listSlot : NULL;
         assert(shadow && shadow->count);
 
         unsigned index = shadow->count;
@@ -1511,16 +1641,21 @@ static void cep_shadow_detach(cepCell* target, const cepCell* link)
 
         if (!shadow->count) {
             target->metacell.shadowing = CEP_SHADOW_NONE;
-            *singleSlot = NULL;
-            *multiSlot  = NULL;
-            cep_free(shadow);
+            if (singleSlot)
+                *singleSlot = NULL;
+            if (listSlot)
+                *listSlot  = NULL;
+            cep_shadow_free(shadow);
         } else if (shadow->count == 1U) {
             target->metacell.shadowing = CEP_SHADOW_SINGLE;
-            *singleSlot = shadow->cell[0];
-            *multiSlot  = NULL;
-            cep_free(shadow);
+            if (singleSlot)
+                *singleSlot = shadow->cell[0];
+            if (listSlot)
+                *listSlot  = NULL;
+            cep_shadow_free(shadow);
         } else {
-            *multiSlot = shadow;
+            if (listSlot)
+                *listSlot = shadow;
         }
         break;
       }
@@ -1542,10 +1677,8 @@ void cep_cell_shadow_mark_target_dead(cepCell* target, bool dead) {
       case CEP_SHADOW_SINGLE: {
         cepCell** slot = cep_shadow_single_slot(target);
         cepCell* link = slot ? *slot : NULL;
-        if (link) {
-            assert(cep_cell_is_link(link));
+        if (cep_shadow_entry_is_link(link, target))
             link->metacell.targetDead = dead;
-        }
         break;
       }
 
@@ -1555,10 +1688,8 @@ void cep_cell_shadow_mark_target_dead(cepCell* target, bool dead) {
             break;
         for (unsigned i = 0; i < shadow->count; ++i) {
             cepCell* link = shadow->cell[i];
-            if (link) {
-                assert(cep_cell_is_link(link));
+            if (cep_shadow_entry_is_link(link, target))
                 link->metacell.targetDead = dead;
-            }
         }
         break;
       }
@@ -1574,28 +1705,59 @@ static void cep_shadow_break_all(cepCell* target)
     if (!target)
         return;
 
-    while (cep_cell_is_shadowed(target)) {
-        switch (target->metacell.shadowing) {
-          case CEP_SHADOW_SINGLE: {
-            cepCell** slot = cep_shadow_single_slot(target);
-            cepCell* link = slot? *slot: NULL;
-            assert(link);
-            cep_link_set(link, NULL);
-            break;
-          }
-
-          case CEP_SHADOW_MULTIPLE: {
-            cepShadow* shadow = cep_shadow_multi_bucket(target);
-            assert(shadow && shadow->count);
-            cepCell* link = shadow->cell[shadow->count - 1];
-            assert(link);
-            cep_link_set(link, NULL);
-            break;
-          }
-
-          case CEP_SHADOW_NONE:
-            return;
+    while (true) {
+        cepShadow** multiSlot = cep_shadow_list_slot(target);
+        cepShadow* bucket = (target->metacell.shadowing == CEP_SHADOW_MULTIPLE && multiSlot) ? *multiSlot : NULL;
+        if (bucket) {
+            unsigned write = 0U;
+            for (unsigned read = 0U; read < bucket->count; ++read) {
+                cepCell* entry = bucket->cell[read];
+                if (cep_shadow_entry_is_link(entry, target)) {
+                    bucket->cell[write++] = entry;
+                    continue;
+                }
+            }
+            if (write < bucket->count) {
+                for (unsigned i = write; i < bucket->count; ++i)
+                    bucket->cell[i] = NULL;
+                bucket->count = write;
+            }
+            while (bucket->count && !bucket->cell[bucket->count - 1])
+                bucket->count--;
         }
+
+        if (bucket && bucket->count) {
+            cepCell* link = bucket->cell[bucket->count - 1];
+            if (!cep_shadow_entry_is_link(link, target)) {
+                bucket->cell[bucket->count - 1] = NULL;
+                continue;
+            }
+            cep_link_set(link, NULL);
+            continue;
+        }
+
+        if (bucket && multiSlot) {
+            *multiSlot = NULL;
+            cep_free(bucket);
+            bucket = NULL;
+        }
+
+        cepCell** singleSlot = cep_shadow_single_slot(target);
+        cepCell* single = singleSlot ? *singleSlot : NULL;
+        if (single) {
+            if (!cep_shadow_entry_is_link(single, target)) {
+                if (singleSlot)
+                    *singleSlot = NULL;
+                continue;
+            }
+            cep_link_set(single, NULL);
+            continue;
+        }
+
+        target->metacell.shadowing = CEP_SHADOW_NONE;
+        if (singleSlot)
+            *singleSlot = NULL;
+        return;
     }
 }
 
@@ -1664,8 +1826,19 @@ void cep_link_set(cepCell* link, cepCell* target)
     if (current == resolved)
         return;
 
-    if (current)
+    if (current) {
+#ifdef CEP_ENABLE_DEBUG
+        const cepDT* curr_name = cep_cell_get_name(current);
+        CEP_DEBUG_PRINTF("[link_set:detach] link=%p current=%p name=%016llx/%016llx shadow=%u store=%p\n",
+                         (void*)link,
+                         (void*)current,
+                         curr_name ? (unsigned long long)cep_id(curr_name->domain) : 0ull,
+                         curr_name ? (unsigned long long)cep_id(curr_name->tag) : 0ull,
+                         (unsigned)current->metacell.shadowing,
+                         (void*)current->store);
+#endif
         cep_shadow_detach(current, link);
+    }
 
     if (resolved) {
         link->metacell.targetDead = cep_cell_is_deleted(resolved);
@@ -2940,7 +3113,12 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
         return NULL;
     }
 
-    if (!store->writable || cep_store_hierarchy_locked(store->owner)) {
+    if (!store->writable) {
+        cep_cell_emit_store_readonly_guard(store);
+        return NULL;
+    }
+
+    if (cep_store_hierarchy_locked(store->owner)) {
         return NULL;
     }
 
@@ -4896,21 +5074,25 @@ static void cep_cell_release_contents(cepCell* cell) {
             if (cep_cell_is_shadowed(cell)) {
                 switch (cell->metacell.shadowing) {
                   case CEP_SHADOW_SINGLE: {
-                    if (!cell->linked && store->linked)
-                        cell->linked = store->linked;
+                    cepCell* link = store->linked;
+                    if (link && cep_shadow_entry_is_link(link, cell)) {
+                        cell->linked = link;
+                    } else {
+                        cell->linked = NULL;
+                    }
                     break;
                   }
 
                   case CEP_SHADOW_MULTIPLE: {
-                    cepShadow* bucket = store->shadow ? store->shadow : cell->shadow;
+                    cepShadow* bucket = store->shadow;
                     if (bucket && bucket->count) {
                         cepShadow* clone = cep_shadow_reserve(NULL, bucket->count);
+                        if (!clone)
+                            return;
                         clone->count = bucket->count;
                         memcpy(clone->cell, bucket->cell, bucket->count * sizeof clone->cell[0]);
-                        if (cell->shadow && cell->shadow != bucket)
-                            cep_shadow_free(cell->shadow);
-                        cell->shadow = clone;
                         storeShadow = bucket;
+                        cell->shadow = clone;
                     }
                     break;
                   }
@@ -4920,20 +5102,11 @@ static void cep_cell_release_contents(cepCell* cell) {
                 }
             }
 
-            if (!cell->linked && store->linked)
-                cell->linked = store->linked;
-
             store->linked = NULL;
             store->shadow = NULL;
-            cell->store = NULL;
-
-            if (cep_cell_is_shadowed(cell))
-                cep_shadow_break_all(cell);
-
-            if (storeShadow)
-                cep_shadow_free(storeShadow);
 
             const cepDT* cell_name = cep_cell_get_name(cell);
+#ifdef CEP_ENABLE_DEBUG
             void* caller = __builtin_return_address(0);
             Dl_info caller_info = {0};
             const char* caller_name = NULL;
@@ -4950,20 +5123,36 @@ static void cep_cell_release_contents(cepCell* cell) {
                     caller_offset = (uintptr_t)((const char*)caller - (const char*)caller_info.dli_fbase);
                 }
             }
-            fprintf(stderr,
-                    "[cell_release] cell=%p name=%016llx/%016llx store=%p owner=%p owner_name=%016llx/%016llx "
-                    "caller=%p caller_sym=%s image=%s offset=0x%zx\n",
-                    (void*)cell,
-                    cell_name ? (unsigned long long)cep_id(cell_name->domain) : 0ull,
-                    cell_name ? (unsigned long long)cep_id(cell_name->tag) : 0ull,
-                    (void*)store,
-                    (void*)owner_cell,
-                    owner_name ? (unsigned long long)cep_id(owner_name->domain) : 0ull,
-                    owner_name ? (unsigned long long)cep_id(owner_name->tag) : 0ull,
-                    caller,
-                    caller_name ? caller_name : "<unknown>",
-                    caller_image ? caller_image : "<unknown>",
-                    (size_t)caller_offset);
+            CEP_DEBUG_PRINTF("[cell_release] cell=%p name=%016llx/%016llx store=%p owner=%p owner_name=%016llx/%016llx "
+                             "caller=%p caller_sym=%s image=%s offset=0x%zx\n",
+                             (void*)cell,
+                             cell_name ? (unsigned long long)cep_id(cell_name->domain) : 0ull,
+                             cell_name ? (unsigned long long)cep_id(cell_name->tag) : 0ull,
+                             (void*)store,
+                             (void*)owner_cell,
+                             owner_name ? (unsigned long long)cep_id(owner_name->domain) : 0ull,
+                             owner_name ? (unsigned long long)cep_id(owner_name->tag) : 0ull,
+                             caller,
+                             caller_name ? caller_name : "<unknown>",
+                             caller_image ? caller_image : "<unknown>",
+                             (size_t)caller_offset);
+#else
+            (void)cell_name;
+            (void)owner_cell;
+            (void)owner_name;
+#endif
+
+            cepStore* store_ref = cell->store;
+            cell->store = NULL;
+
+            if (cep_cell_is_shadowed(cell))
+                cep_shadow_break_all(cell);
+
+            cell->store = store_ref;
+
+            if (storeShadow)
+                cep_shadow_free(storeShadow);
+
             store->owner = NULL;
             cep_store_del(store);
             cell->store = NULL;
@@ -5008,6 +5197,7 @@ void cep_cell_finalize(cepCell* cell) {
     if (shadowed)
         return;
 
+#ifdef CEP_ENABLE_DEBUG
     void* caller = __builtin_return_address(0);
     Dl_info caller_info = {0};
     const char* caller_name = NULL;
@@ -5025,15 +5215,15 @@ void cep_cell_finalize(cepCell* cell) {
         }
     }
     const cepDT* cell_name = cep_cell_get_name(cell);
-    fprintf(stderr,
-            "[cell_finalize] cell=%p name=%016llx/%016llx caller=%p caller_sym=%s image=%s offset=0x%zx\n",
-            (void*)cell,
-            cell_name ? (unsigned long long)cep_id(cell_name->domain) : 0ull,
-            cell_name ? (unsigned long long)cep_id(cell_name->tag) : 0ull,
-            caller,
-            caller_name ? caller_name : "<unknown>",
-            caller_image ? caller_image : "<unknown>",
-            (size_t)caller_offset);
+    CEP_DEBUG_PRINTF("[cell_finalize] cell=%p name=%016llx/%016llx caller=%p caller_sym=%s image=%s offset=0x%zx\n",
+                     (void*)cell,
+                     cell_name ? (unsigned long long)cep_id(cell_name->domain) : 0ull,
+                     cell_name ? (unsigned long long)cep_id(cell_name->tag) : 0ull,
+                     caller,
+                     caller_name ? caller_name : "<unknown>",
+                     caller_image ? caller_image : "<unknown>",
+                     (size_t)caller_offset);
+#endif
 
     cep_cell_release_contents(cell);
 }
@@ -5048,6 +5238,7 @@ void cep_cell_finalize_hard(cepCell* cell) {
     if (cep_cell_is_shadowed(cell))
         cep_shadow_break_all(cell);
 
+#ifdef CEP_ENABLE_DEBUG
     void* caller = __builtin_return_address(0);
     Dl_info caller_info = {0};
     const char* caller_name = NULL;
@@ -5065,15 +5256,15 @@ void cep_cell_finalize_hard(cepCell* cell) {
         }
     }
     const cepDT* cell_name = cep_cell_get_name(cell);
-    fprintf(stderr,
-            "[cell_finalize_hard] cell=%p name=%016llx/%016llx caller=%p caller_sym=%s image=%s offset=0x%zx\n",
-            (void*)cell,
-            cell_name ? (unsigned long long)cep_id(cell_name->domain) : 0ull,
-            cell_name ? (unsigned long long)cep_id(cell_name->tag) : 0ull,
-            caller,
-            caller_name ? caller_name : "<unknown>",
-            caller_image ? caller_image : "<unknown>",
-            (size_t)caller_offset);
+    CEP_DEBUG_PRINTF("[cell_finalize_hard] cell=%p name=%016llx/%016llx caller=%p caller_sym=%s image=%s offset=0x%zx\n",
+                     (void*)cell,
+                     cell_name ? (unsigned long long)cep_id(cell_name->domain) : 0ull,
+                     cell_name ? (unsigned long long)cep_id(cell_name->tag) : 0ull,
+                     caller,
+                     caller_name ? caller_name : "<unknown>",
+                     caller_image ? caller_image : "<unknown>",
+                     (size_t)caller_offset);
+#endif
 
     cep_cell_release_contents(cell);
 }
@@ -5107,22 +5298,27 @@ cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
         const cepDT* child_name = child ? cep_cell_get_name(child) : NULL;
         cepCell* owner = store ? (cepCell*)store->owner : NULL;
         const cepDT* owner_name = owner ? cep_cell_get_name(owner) : NULL;
-        fprintf(stderr,
-                "[cell_add] failed parent=%p store=%p store_writable=%u store_lock=%u "
-                "owner=%p owner_name=%016llx/%016llx owner_immutable=%u "
-                "child=%p child_name=%016llx/%016llx context=%zu\n",
-                (void*)cell,
-                (void*)store,
-                store ? (store->writable ? 1u : 0u) : 0u,
-                store ? store->lock : 0u,
-                (void*)owner,
-                owner_name ? (unsigned long long)cep_id(owner_name->domain) : 0ull,
-                owner_name ? (unsigned long long)cep_id(owner_name->tag) : 0ull,
-                owner ? (cep_cell_is_immutable(owner) ? 1u : 0u) : 0u,
-                (void*)child,
-                child_name ? (unsigned long long)cep_id(child_name->domain) : 0ull,
-                child_name ? (unsigned long long)cep_id(child_name->tag) : 0ull,
-                (size_t)context);
+#ifdef CEP_ENABLE_DEBUG
+        CEP_DEBUG_PRINTF("[cell_add] failed parent=%p store=%p store_writable=%u store_lock=%u "
+                         "owner=%p owner_name=%016llx/%016llx owner_immutable=%u "
+                         "child=%p child_name=%016llx/%016llx context=%zu\n",
+                         (void*)cell,
+                         (void*)store,
+                         store ? (store->writable ? 1u : 0u) : 0u,
+                         store ? store->lock : 0u,
+                         (void*)owner,
+                         owner_name ? (unsigned long long)cep_id(owner_name->domain) : 0ull,
+                         owner_name ? (unsigned long long)cep_id(owner_name->tag) : 0ull,
+                         owner ? (cep_cell_is_immutable(owner) ? 1u : 0u) : 0u,
+                         (void*)child,
+                         child_name ? (unsigned long long)cep_id(child_name->domain) : 0ull,
+                         child_name ? (unsigned long long)cep_id(child_name->tag) : 0ull,
+                         (size_t)context);
+#else
+        (void)child_name;
+        (void)owner;
+        (void)owner_name;
+#endif
     }
     if (inserted && !inserted->created) {
         cepCell* parentCell = store->owner;

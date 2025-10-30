@@ -154,6 +154,14 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/cei/cell_append_guard",
+        test_cell_append_guard_cei,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
         "/cei/signal_ledger",
         test_cei_signal_ledger,
         NULL,

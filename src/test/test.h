@@ -70,6 +70,7 @@ MunitResult test_organ_constructor_destructor_cycles(const MunitParameter params
 
 MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_cei_signal_ledger(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_cell_append_guard_cei(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_cei_op_failure(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_cei_fatal_shutdown(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_pause_resume_backlog(const MunitParameter params[], void* user_data_or_fixture);

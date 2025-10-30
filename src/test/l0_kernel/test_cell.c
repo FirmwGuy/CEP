@@ -308,6 +308,63 @@ static void test_cell_links_shadow_dead_flag(void) {
     cep_cell_delete_hard(list);
 }
 
+/* Validates that destroying a store-backed target while links still reference
+   it migrates shadow bookkeeping inline so detaching the backlinks no longer
+   reads freed store memory. Reproduces the ASan failure path by creating a
+   dictionary target with children, linking to it, and hard-deleting the target
+   while the link remains in place. */
+static void test_cell_shadow_store_teardown(void) {
+    cepCell* parent = cep_cell_add_dictionary(cep_root(),
+                                              CEP_DTAW("CEP", "shd_parent"),
+                                              0,
+                                              CEP_DTAW("CEP", "shd_type"),
+                                              CEP_STORAGE_RED_BLACK_T);
+    assert_not_null(parent);
+
+    cepCell* target = cep_cell_add_dictionary(parent,
+                                              CEP_DTAW("CEP", "shd_target"),
+                                              0,
+                                              CEP_DTAW("CEP", "shd_type"),
+                                              CEP_STORAGE_RED_BLACK_T);
+    assert_not_null(target);
+
+    uint32_t payload = 42u;
+    cepCell* child = cep_cell_add_value(target,
+                                        CEP_DTAW("CEP", "shd_payload"),
+                                        0,
+                                        CEP_DTAW("CEP", "shd_payload"),
+                                        &payload,
+                                        sizeof payload,
+                                        sizeof payload);
+    assert_not_null(child);
+    (void)child;
+
+    cepCell* link = cep_cell_add_link(parent,
+                                      CEP_DTAW("CEP", "shd_link"),
+                                      0,
+                                      target);
+    assert_not_null(link);
+    assert_true(cep_cell_is_link(link));
+    assert_ptr_equal(cep_cell_resolve(link), target);
+
+    cep_cell_delete_hard(target);
+
+    cepCell* replacement = cep_cell_add_dictionary(parent,
+                                                  CEP_DTAW("CEP", "shd_repl"),
+                                                  0,
+                                                  CEP_DTAW("CEP", "shd_type"),
+                                                  CEP_STORAGE_RED_BLACK_T);
+    assert_not_null(replacement);
+
+    cep_link_set(link, replacement);
+    assert_ptr_equal(cep_cell_resolve(link), replacement);
+    assert_int(link->metacell.targetDead, ==, 0);
+
+    cep_cell_remove_hard(link, NULL);
+    cep_cell_delete_hard(replacement);
+    cep_cell_delete_hard(parent);
+}
+
 
 
 /*
@@ -986,6 +1043,7 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
 
     test_cell_links_shadowing();
     test_cell_links_shadow_dead_flag();
+    test_cell_shadow_store_teardown();
 
     test_cell_txn_commit();
     test_cell_txn_abort();

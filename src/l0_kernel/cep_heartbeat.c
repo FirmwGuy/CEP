@@ -1056,9 +1056,7 @@ static bool cep_control_mark_branch_deleted(cepCell* cell, cepOpCount stamp) {
 /* Soft-delete application dictionaries under /data during rollback so the
    subsequent cleanup pass can revive their prior state deterministically. */
 static bool cep_control_soft_delete_data(void) {
-#if defined(CEP_ENABLE_DEBUG)
     CEP_DEBUG_PRINTF("[prr-soft-delete] enter\n");
-#endif
     cepCell* data_root = cep_heartbeat_data_root();
     if (!data_root) {
         return true;
@@ -1088,10 +1086,12 @@ static bool cep_control_soft_delete_data(void) {
             continue; /* Preserve backlog mailbox while paused. */
         }
 
+        uint64_t dbg_domain = 0u;
+        uint64_t dbg_tag = 0u;
 #if defined(CEP_ENABLE_DEBUG)
         const cepDT* cell_name = cep_cell_get_name(node);
-        uint64_t dbg_domain = cell_name ? (uint64_t)cep_id(cell_name->domain) : 0u;
-        uint64_t dbg_tag = cell_name ? (uint64_t)cep_id(cell_name->tag) : 0u;
+        dbg_domain = cell_name ? (uint64_t)cep_id(cell_name->domain) : 0u;
+        dbg_tag = cell_name ? (uint64_t)cep_id(cell_name->tag) : 0u;
 #endif
         cepOpCount horizon_stamp = cep_runtime_view_horizon_stamp();
         cepOpCount stamp = cep_cell_timestamp();
@@ -1101,7 +1101,6 @@ static bool cep_control_soft_delete_data(void) {
         if (!stamp) {
             stamp = 1u;
         }
-#if defined(CEP_ENABLE_DEBUG)
         CEP_DEBUG_PRINTF("[prr-soft-delete] node=%p nm=%016" PRIx64 "/%016" PRIx64
                          " delete_stamp=%" PRIu64 " horizon=%" PRIu64 "\n",
                          (void*)node,
@@ -1109,7 +1108,8 @@ static bool cep_control_soft_delete_data(void) {
                          dbg_tag,
                          (uint64_t)stamp,
                          (uint64_t)horizon_stamp);
-#endif
+        (void)dbg_domain;
+        (void)dbg_tag;
         if (!cep_control_mark_branch_deleted(node, stamp)) {
             return false;
         }
@@ -1583,6 +1583,10 @@ static bool cep_control_op_closed_ok(cepOID oid) {
 
 static const char* CEP_CONTROL_TARGET = "/sys/state";
 
+/* Emit a CEI fact when the control heartbeat fails during a specific phase.
+   The helper records the active verb, attaches the owning operation, and
+   assigns a critical severity so shutdown follows the same path as other
+   integrity failures. */
 static void cep_control_emit_failure_cei(cepControlOpState* op,
                                          const char* phase,
                                          const char* reason) {
@@ -1606,7 +1610,9 @@ static void cep_control_emit_failure_cei(cepControlOpState* op,
                      err);
 
     if (CEP_RUNTIME.view_horizon != CEP_BEAT_INVALID) {
-op->diag_emitted = true;
+        /* Avoid duplicating CEI facts while the control loop already owns a
+           valid horizon; the debug log above still records the failure. */
+        op->diag_emitted = true;
         return;
     }
 

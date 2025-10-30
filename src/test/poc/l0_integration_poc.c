@@ -78,19 +78,12 @@ static int integration_organ_ctor_calls;
 static int integration_organ_validator_calls;
 static int integration_organ_destructor_calls;
 static int integration_random_enzyme_count;
-#if defined(CEP_ENABLE_DEBUG)
 static void integration_debug_mark(const char* label, cepBeatNumber beat) {
     if (!label) {
         label = "";
     }
     CEP_DEBUG_PRINTF_STDOUT("[integration_poc] beat=%llu %s", (unsigned long long)beat, label);
 }
-#else
-static void integration_debug_mark(const char* label, cepBeatNumber beat) {
-    (void)label;
-    (void)beat;
-}
-#endif
 
 static bool integration_organ_dts_ready;
 static const char* integration_organ_kind = "integration_poc";
@@ -446,11 +439,9 @@ static void integration_random_plan_setup(IntegrationRandomPlan* plan,
                      CEP_ENZYME_SUCCESS);
     plan->bound = true;
 
-#if defined(CEP_ENABLE_DEBUG)
     CEP_DEBUG_PRINTF_STDOUT("[integration_poc] rand_seed=0x%08x planned=%u",
                             plan->seed,
                             plan->planned);
-#endif
 }
 
 static void integration_random_plan_queue(IntegrationRandomPlan* plan) {
@@ -825,7 +816,6 @@ static void integration_stream_ctx_verify(IntegrationStreamContext* ctx) {
         if (!candidate) {
             continue;
         }
-#if defined(CEP_ENABLE_DEBUG)
         CEP_DEBUG_PRINTF_STDOUT(
             "[integration_poc] stream_outcome len=%llu payload=%016llx expected=%016llx result=%016llx flags=%u",
             (unsigned long long)candidate->length,
@@ -833,7 +823,6 @@ static void integration_stream_ctx_verify(IntegrationStreamContext* ctx) {
             (unsigned long long)candidate->expected_hash,
             (unsigned long long)candidate->resulting_hash,
             (unsigned)candidate->flags);
-#endif
         if (candidate->resulting_hash != 0u) {
             matched_result = true;
         }
@@ -2072,13 +2061,11 @@ static void integration_exercise_organ_lifecycle(IntegrationFixture* fix) {
     integration_organ_validator_calls = 0;
     integration_organ_destructor_calls = 0;
 
-#if defined(CEP_ENABLE_DEBUG)
     CEP_DEBUG_PRINTF_STDOUT(
         "[integration_poc] organ kind=%s store=%016llx/%016llx",
         integration_organ_kind,
         (unsigned long long)cep_id(integration_organ_store_dt.domain),
         (unsigned long long)cep_id(integration_organ_store_dt.tag));
-#endif
 
     munit_assert_true(cep_organ_request_constructor(organ_root));
     unsigned attempts = 0u;
@@ -2148,9 +2135,7 @@ static void integration_randomized_mutations(IntegrationFixture* fix) {
     munit_assert_not_null(log_branch);
 
     uint32_t seed = UINT32_C(0xC0FFEE21);
-#if defined(CEP_ENABLE_DEBUG)
     CEP_DEBUG_PRINTF_STDOUT("[integration_poc] mutation_seed=0x%08x", seed);
-#endif
     uint32_t state = seed;
 
     static const char* const catalog_targets[] = {

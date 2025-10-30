@@ -15,6 +15,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct {
@@ -44,13 +46,17 @@ CEP_DEFINE_STATIC_DT(dt_kind_field,       CEP_ACRO("CEP"), CEP_WORD("kind"));
 CEP_DEFINE_STATIC_DT(dt_label_field,      CEP_ACRO("CEP"), CEP_WORD("label"));
 
 static void cep_organ_registry_require_refresh(void);
-#if defined(CEP_ENABLE_DEBUG)
 static void prr_organ_log(const char* fmt, ...) {
-    (void)fmt;
+    if (!fmt) {
+        return;
+    }
+    char buffer[256];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof buffer, fmt, args);
+    va_end(args);
+    CEP_DEBUG_PRINTF_STDOUT("%s", buffer);
 }
-#else
-#define prr_organ_log(...) ((void)0)
-#endif
 
 typedef struct {
     const char* kind;
@@ -763,7 +769,6 @@ bool cep_organ_register(const cepOrganDescriptor* descriptor) {
                   store_text ? store_text : "<null>");
     if (store_text && strncmp(store_text, "org:", 4) == 0) {
         cepDT corrected_store = cep_organ_store_dt(descriptor->kind);
-#if defined(CEP_ENABLE_DEBUG)
         size_t corrected_len = 0u;
         const char* corrected_text = cep_namepool_lookup(corrected_store.tag, &corrected_len);
         prr_organ_log("[prr:organ_register] correcting_store kind=%s new_store=%016llx/%016llx text='%.*s'\n",
@@ -772,7 +777,6 @@ bool cep_organ_register(const cepOrganDescriptor* descriptor) {
                       (unsigned long long)cep_id(corrected_store.tag),
                       (int)corrected_len,
                       corrected_text ? corrected_text : "<null>");
-#endif
         store = corrected_store;
     }
 

@@ -9,6 +9,7 @@
  */
 
 #include "cep_namepool.h"
+#include "cep_cei.h"
 #include "cep_heartbeat.h"
 #include "cep_organ.h"
 
@@ -25,6 +26,7 @@ CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary")
 CEP_DEFINE_STATIC_DT(dt_text_type, CEP_ACRO("CEP"), CEP_WORD("text"));
 CEP_DEFINE_STATIC_DT(dt_sys_root_name, CEP_ACRO("CEP"), CEP_WORD("sys"));
 CEP_DEFINE_STATIC_DT(dt_namepool_root_name, CEP_ACRO("CEP"), CEP_WORD("namepool"));
+CEP_DEFINE_STATIC_DT(dt_sev_namepool_crit, CEP_ACRO("CEP"), CEP_WORD("sev:crit"));
 
 #define CEP_NAMEPOOL_MAX_LENGTH          256u
 #define CEP_NAMEPOOL_SLOT_BITS           12u
@@ -64,6 +66,47 @@ static size_t               name_bucket_count = 0u;
 static size_t               name_bucket_threshold = 0u;
 
 static cepCell*             namepool_root     = NULL;
+
+/* Namepool bootstrap runs before the diagnostics mailbox exists; guard CEI
+   emissions until the kernel scope is ready so bootstrap callers do not trip
+   fatal diagnostics while the runtime wiring is incomplete. */
+static bool cep_namepool_can_emit_cei(void) {
+    return cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_KERNEL);
+}
+
+/* Emit a diagnostics fact describing a namepool failure. The helper selects the
+   diagnostics mailbox, formats the note, and attaches the namepool root when
+   available so dashboards can pivot straight to the failing subject. */
+static void cep_namepool_emit_failure(const char* topic, const char* detail_fmt, ...) {
+    if (!topic || !detail_fmt) {
+        return;
+    }
+    if (!cep_namepool_can_emit_cei()) {
+        return;
+    }
+
+    char note[256];
+    va_list args;
+    va_start(args, detail_fmt);
+    vsnprintf(note, sizeof note, detail_fmt, args);
+    va_end(args);
+
+    cepCell* subject = namepool_root ? cep_link_pull(namepool_root) : NULL;
+    if (!subject) {
+        subject = namepool_root;
+    }
+
+    cepCeiRequest req = {
+        .severity = *dt_sev_namepool_crit(),
+        .note = note,
+        .topic = topic,
+        .topic_intern = true,
+        .subject = subject,
+        .emit_signal = true,
+        .ttl_forever = true,
+    };
+    (void)cep_cei_emit(&req);
+}
 
 static cepID cep_namepool_try_compact(const char* text, size_t length) {
     if (!text || length == 0u) {
@@ -157,6 +200,9 @@ static bool cep_namepool_reserve_pages(size_t capacity) {
 
     cepNamePoolPage** pages = name_pages ? cep_realloc(name_pages, new_cap * sizeof(*pages)) : cep_malloc(new_cap * sizeof(*pages));
     if (!pages) {
+        cep_namepool_emit_failure("namepool.pages.alloc",
+                                  "failed to grow page array to %zu entries",
+                                  new_cap);
         return false;
     }
 
@@ -180,6 +226,9 @@ static bool cep_namepool_allocate_page(size_t index) {
 
     cepNamePoolPage* page = cep_malloc0(sizeof(*page));
     if (!page) {
+        cep_namepool_emit_failure("namepool.page.alloc",
+                                  "failed to allocate page index=%zu",
+                                  index);
         return false;
     }
 
@@ -202,6 +251,9 @@ static bool cep_namepool_reserve_buckets(size_t capacity) {
 
     cepNamePoolBucket* buckets = cep_malloc0(new_cap * sizeof(*buckets));
     if (!buckets) {
+        cep_namepool_emit_failure("namepool.buckets.alloc",
+                                  "failed to grow bucket table to %zu entries",
+                                  new_cap);
         return false;
     }
 
@@ -363,6 +415,10 @@ static cepCell* cep_namepool_ensure_dictionary(cepCell* parent, const cepDT* nam
 
 static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, size_t length) {
     if (!namepool_root) {
+        cep_namepool_emit_failure("namepool.store.uninitialised",
+                                  "attempted to store entry before bootstrap (page=%u slot=%u)",
+                                  (unsigned)entry->page,
+                                  (unsigned)entry->slot);
         return false;
     }
 
@@ -372,6 +428,9 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
     };
     cepCell* page_cell = cep_namepool_ensure_dictionary(namepool_root, &page_name);
     if (!page_cell) {
+        cep_namepool_emit_failure("namepool.store.page",
+                                  "failed to ensure page cell page=%u",
+                                  (unsigned)entry->page);
         return false;
     }
 
@@ -382,6 +441,9 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
 
     char* copy = cep_malloc(length + 1u);
     if (!copy) {
+        cep_namepool_emit_failure("namepool.store.alloc",
+                                  "failed to duplicate name (len=%zu)",
+                                  length);
         return false;
     }
     memcpy(copy, text, length);
@@ -401,6 +463,10 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
 
     if (!value_cell || !cep_cell_has_data(value_cell)) {
         cep_free(copy);
+        cep_namepool_emit_failure("namepool.store.slot",
+                                  "failed to add slot cell page=%u slot=%u",
+                                  (unsigned)entry->page,
+                                  (unsigned)entry->slot);
         return false;
     }
 
@@ -408,6 +474,10 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
     if (!resolved || !cep_cell_has_data(resolved)) {
         cep_cell_remove_hard(value_cell, NULL);
         cep_free(copy);
+        cep_namepool_emit_failure("namepool.store.resolve",
+                                  "failed to resolve slot cell page=%u slot=%u",
+                                  (unsigned)entry->page,
+                                  (unsigned)entry->slot);
         return false;
     }
 
@@ -415,6 +485,10 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
     if (!stored) {
         cep_cell_remove_hard(resolved, NULL);
         cep_free(copy);
+        cep_namepool_emit_failure("namepool.store.payload",
+                                  "resolved slot missing payload page=%u slot=%u",
+                                  (unsigned)entry->page,
+                                  (unsigned)entry->slot);
         return false;
     }
 
@@ -453,6 +527,9 @@ static cepNamePoolEntry* cep_namepool_new_entry(uint64_t hash, const char* text,
 
 SLOT_FOUND:
     if (!name_pages[page_index]) {
+        cep_namepool_emit_failure("namepool.page.missing",
+                                  "page %zu missing after allocation",
+                                  page_index);
         return NULL;
     }
 
@@ -472,6 +549,9 @@ SLOT_FOUND:
     } else {
         if (!cep_namepool_store_entry(entry, text, length)) {
             memset(entry, 0, sizeof(*entry));
+            cep_namepool_emit_failure("namepool.entry.store",
+                                      "failed to store entry (len=%zu)",
+                                      length);
             return NULL;
         }
     }
@@ -493,6 +573,9 @@ static cepID cep_namepool_intern_common(const char* text, size_t length, bool is
     }
 
     if (!cep_namepool_bootstrap()) {
+        cep_namepool_emit_failure("namepool.bootstrap.fail",
+                                  "bootstrap failed while interning len=%zu",
+                                  length);
         CEP_DEBUG_PRINTF_STDOUT("[namepool] bootstrap failed while interning '%.*s'\n",
                                 (int)length,
                                 text ? text : "");
@@ -501,6 +584,9 @@ static cepID cep_namepool_intern_common(const char* text, size_t length, bool is
 
     if (name_bucket_cap == 0u) {
         if (!cep_namepool_reserve_buckets(CEP_NAMEPOOL_INITIAL_BUCKETS)) {
+            cep_namepool_emit_failure("namepool.buckets.init",
+                                      "initial bucket reserve failed len=%zu",
+                                      length);
             CEP_DEBUG_PRINTF_STDOUT("[namepool] reserve buckets failed initial for '%.*s'\n",
                                     (int)length,
                                     text ? text : "");
@@ -513,6 +599,10 @@ static cepID cep_namepool_intern_common(const char* text, size_t length, bool is
 
     if (name_bucket_count >= name_bucket_threshold) {
         if (!cep_namepool_reserve_buckets(name_bucket_cap ? (name_bucket_cap << 1u) : CEP_NAMEPOOL_INITIAL_BUCKETS)) {
+            cep_namepool_emit_failure("namepool.buckets.grow",
+                                      "bucket growth failed current=%zu threshold=%zu",
+                                      name_bucket_cap,
+                                      name_bucket_threshold);
             CEP_DEBUG_PRINTF_STDOUT("[namepool] grow buckets failed for '%.*s'\n",
                                     (int)length,
                                     text ? text : "");
@@ -592,18 +682,24 @@ bool cep_namepool_bootstrap(void) {
 
     cepCell* root = cep_root();
     if (!root) {
+        cep_namepool_emit_failure("namepool.bootstrap.root",
+                                  "cep_root unavailable during bootstrap");
         return false;
     }
 
     cepDT sys_name = *dt_sys_root_name();
     cepCell* sys = cep_namepool_ensure_dictionary(root, &sys_name);
     if (!sys) {
+        cep_namepool_emit_failure("namepool.bootstrap.sys",
+                                  "failed to create /sys for namepool");
         return false;
     }
 
     cepDT pool_name = *dt_namepool_root_name();
     cepCell* pool = cep_namepool_ensure_dictionary(sys, &pool_name);
     if (!pool) {
+        cep_namepool_emit_failure("namepool.bootstrap.pool",
+                                  "failed to ensure /sys/namepool");
         return false;
     }
 

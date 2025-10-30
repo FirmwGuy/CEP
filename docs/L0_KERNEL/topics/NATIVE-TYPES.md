@@ -79,6 +79,10 @@ Older drafts enumerated built‑in binary types (BOOLEAN, INT32, FLOAT64, UTF8, 
 - hash:SHA256 — 32 bytes of digest. Any tool that knows `hash:SHA256` can validate the size; L0 treats it as just 32 bytes.
 - text:UTF8 — arbitrary length bytes. Rendering or normalization lives in enzymes; L0 uses bytewise compare and hash.
 
+### 2.8 Namepool Diagnostics Guardrails
+
+Namepool growth now emits `sev:crit` CEI facts whenever page or bucket allocation fails, but those emissions are gated until the kernel lifecycle scope is marked ready. The bootstrap sequence (`cep_namepool_bootstrap`) runs before the diagnostics mailbox exists, so helpers call `cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_KERNEL)` before logging failures. Leave that guard in place whenever touching namepool internals so bootstrap callers do not trip fatal diagnostics while the runtime is still wiring up `/data/mailbox/diag`.
+
 ---
 
 ## Global Q&A

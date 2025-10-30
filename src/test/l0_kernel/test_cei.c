@@ -4,6 +4,8 @@
 #include "test.h"
 
 #include "cep_cei.h"
+#include "cep_cell.h"
+#include "cep_ops.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -215,6 +217,91 @@ MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_f
     munit_assert_true(cep_cell_is_link(subject_link));
     cepCell* resolved_subject = cep_link_pull(subject_link);
     munit_assert_ptr_equal(resolved_subject, subject);
+
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+/* Guard that append-only violations on immutable parents emit sev:usage CEI
+   facts that link to the owning OPS dossier and close the operation with
+   sts:fail. */
+MunitResult test_cell_append_guard_cei(const MunitParameter params[], void* fixture) {
+    (void)fixture;
+    test_boot_cycle_prepare(params);
+    cei_runtime_start(true);
+
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    munit_assert_not_null(rt_root);
+    cepCell* ops_root = cep_cell_ensure_dictionary_child(rt_root,
+                                                         CEP_DTAW("CEP", "ops"),
+                                                         CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(ops_root);
+
+    cepDT verb = cep_ops_make_dt("op/cei");
+    cepDT mode = cep_ops_make_dt("opm:states");
+    cepOID oid = cep_op_start(verb, "/tmp/cei-append", mode, NULL, 0u, 0u);
+    munit_assert_true(cep_oid_is_valid(oid));
+
+    cepCell* op_cell = cei_lookup_op_cell(oid);
+    munit_assert_not_null(op_cell);
+    op_cell = cep_cell_resolve(op_cell);
+    munit_assert_not_null(op_cell);
+    bool op_store_writable = true;
+    if (op_cell->store) {
+        op_store_writable = op_cell->store->writable != 0u;
+        op_cell->store->writable = 0u;
+    }
+
+    cepCell* msgs = cei_msgs_root();
+    munit_assert_not_null(msgs);
+    munit_assert_not_null(msgs->store);
+    size_t before_msgs = msgs->store->chdCount;
+
+    uint32_t payload = 7u;
+    cepCell* inserted = cep_cell_add_value(op_cell,
+                                           CEP_DTAW("CEP", "cei_violate"),
+                                           0,
+                                           CEP_DTAW("CEP", "value"),
+                                           &payload,
+                                           sizeof payload,
+                                           sizeof payload);
+    munit_assert_null(inserted);
+
+    size_t after_msgs = msgs->store->chdCount;
+    munit_assert_size(after_msgs, ==, before_msgs + 1u);
+
+    cepCell* message = cei_latest_message();
+    cepCell* err = cep_cell_find_by_name(message, CEP_DTAW("CEP", "err"));
+    munit_assert_not_null(err);
+    err = cep_cell_resolve(err);
+    munit_assert_not_null(err);
+
+    cepCell* sev_cell = cep_cell_find_by_name(err, CEP_DTAW("CEP", "sev"));
+    munit_assert_not_null(sev_cell);
+    cepDT sev_value = cei_read_dt_cell(sev_cell);
+    cei_assert_dt_matches(&sev_value, CEP_DTAW("CEP", "sev:usage"));
+
+    cepCell* topic_cell = cep_cell_find_by_name(err, CEP_DTAW("CEP", "topic"));
+    munit_assert_not_null(topic_cell);
+    munit_assert_string_equal(cei_leaf_text(topic_cell), "cell.store.readonly");
+
+    cepCell* role_cell = cep_cell_find_by_name(err, CEP_DTAW("CEP", "role_subj"));
+    munit_assert_not_null(role_cell);
+    cepCell* linked = cep_link_pull(role_cell);
+    munit_assert_ptr_equal(linked, op_cell);
+
+    cepCell* close_branch = cep_cell_find_by_name(op_cell, CEP_DTAW("CEP", "close"));
+    munit_assert_not_null(close_branch);
+    close_branch = cep_cell_resolve(close_branch);
+    munit_assert_not_null(close_branch);
+    cepCell* status_cell = cep_cell_find_by_name(close_branch, CEP_DTAW("CEP", "status"));
+    munit_assert_not_null(status_cell);
+    cepDT status_value = cei_read_dt_cell(status_cell);
+    cei_assert_dt_matches(&status_value, CEP_DTAW("CEP", "sts:fail"));
+
+    if (op_cell->store) {
+        op_cell->store->writable = op_store_writable ? 1u : 0u;
+    }
 
     test_runtime_shutdown();
     return MUNIT_OK;
