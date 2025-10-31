@@ -29,7 +29,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/topics/CELL-OPERATIONS-ENZYMES.md` — Reference semantics for the standard `sig_cell/op_*` helpers.
   - `docs/L0_KERNEL/topics/ORGANS-AUTHORING.md` — Register organ descriptors, enforce validator bindings, and coordinate ctor/dtor/validation ops.
 - `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` — How episodes, RO budgets, and cooperative cancellation work now that E³ replaces Rendezvous.
-- `E3.md` — Episodic Enzyme Engine notes (executor queue, RO budgets, cooperative cancellation roadmap).
+- `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` — Episodic engine design rationale, executor backends, and migration guidance from Rendezvous.
 - **External Integrations**
   - `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md` — Chunk framing, manifest rules, and replay expectations.
   - `docs/L0_KERNEL/topics/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect logging, CAS, and preconditions around I/O.
@@ -48,6 +48,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - `docs/L0_KERNEL/design/DESIGN-INDEX.md` — Status board for Layer 0 design papers.
   - `docs/L0_KERNEL/design/L0-DESIGN-GUIDE.md` — Expectations for the new Design document tier that records architectural rationale.
 - `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` — Rationale behind beat ordering, enzyme dependencies, and OPS timelines.
+- `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` — Why the episodic engine replaces Rendezvous, how watcher/lease invariants fit, and what executor backends guarantee.
 - `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md` — Control-plane design for Pause/Rollback/Resume, backlog policy, and heartbeat gating.
 - `docs/L0_KERNEL/design/L0-DESIGN-SERIALIZATION.md` — Design trade-offs for manifests, chunking, and replay safety.
 - `docs/L0_KERNEL/design/L0-DESIGN-CELL-AND-STORE.md` — Why cells stay append-only and how store backends uphold invariants.
@@ -61,7 +62,6 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/LICENSING.md` — Licensing split across core, tests, and third-party components.
   - `docs/CEP-FOR-PL-SQL-DEVS.md` — Translation layer for database-centric contributors.
   - `docs/Doxyfile.in` — Doxygen template; helpful when altering documentation tooling.
-  - `docs/FEDERATION-DESIGN-SPIKE.md` — Planning checklist for the upcoming federated CEP design spike.
 
 ## Global Q&A
 - **What do I skim every time I start coding?** Revisit the Core Architecture block, then dip into Data & Storage or Runtime sections that match the subsystem you plan to touch.

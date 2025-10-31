@@ -97,7 +97,7 @@ Stories, Legends, and Myths are typed artifacts that point back into the fact gr
 
 The Kernel's proxies, links, and serialization provide the hooks; crypto lives above it.
 
-### 2.8 Scale and Federation (Planned Extensions)
+### 2.8 Scale (Planned Extensions)
 
 Scale horizontally by partitions (shards) with local heartbeats. Exchange deltas via serialization; model cross-shard imports as Cells. Avoid global barriers; use occasional sync pulses to bring summaries into alignment when needed.
 

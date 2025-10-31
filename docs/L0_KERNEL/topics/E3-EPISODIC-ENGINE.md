@@ -11,10 +11,26 @@ Imagine taking a long-running job, slicing it into safe, deterministic beats, an
 - **Continuation enzyme.** A dedicated `ep/cont` enzyme bridges OPS watchers back into execution: it requeues the owning episode when the signal targets the dossier itself, or resumes the waiting episode when the signal resolves an awaited operation. Timeout signals (`op/tmo`) automatically cancel the waiting episode and close it with `sts:cnl`.
 - **Read-only guard.** Mutation helpers now early-out when invoked from a RO profile. They call `cep_ep_require_rw()` to emit a single `sev:usage` CEI fact (`topic=ep:pro/ro`) and skip journaling while returning `false`/`NULL`. This keeps “RO thread” episodes observational-only.
 - **RW leases.** `cep_ep_request_lease()` normalises cell paths and records store/data locks per episode so RW slices can mutate safely. Locks bubble through the hierarchy: the owning episode may continue writing while other contexts observe the lock and bail out. Descendant coverage is opt-in (`include_descendants=true`), and `cep_ep_release_lease()` unwinds remaining locks automatically when the dossier closes or the episode is removed.
+- **Coroutine helpers.** `cep_ep_suspend_rw()` lets cooperative coroutines yield without leaving RW guards or leases pinned; pair it with `cep_ep_resume_rw()` to rebind the TLS context and reacquire any dropped locks before touching kernel APIs again.
 - **Budgets & CEI integration.** `cep_ep_account_io()` and the executor’s CPU timer maintain slice budgets. When an episode overruns its configured IO/CPU ceiling, the helpers emit `ep:bud/io` or `ep:bud/cpu` CEI facts and mark the context cancelled. Enzymes should call `cep_ep_check_cancel()` at yield points to respect the signal.
 - **Cancellation APIs.** `cep_ep_cancel_ticket()` lets supervisors cancel queued or running episodes; `cep_ep_request_cancel()` gives the episode body a cooperative “bail out” lever. Both route through the TLS context so watchers see a deterministic `sts:cxl`.
 - **Stream staging wrappers.** `cep_ep_stream_write()` and friends mirror the regular stream APIs but enforce the RO guard and budget accounting. Episodes can stage payloads safely, then rely on the heartbeat commit edge to publish deltas.
 - **Build selection.** Meson’s `-Dexecutor_backend=` option selects the backend (`stub`, `threaded`). The stub backend ships today; it still surfaces budgets, CEI integration, and cancellation even without a thread pool. WebAssembly/emscripten builds automatically fall back to the stub path.
+
+### Lifecycle Walkthrough
+1. **Plan (`cep_ep_start`).** Callers provide the triggering signal, target path, callback, policy, and optional beat budget. The helper records `ist:plan`, persists the metadata dictionary (`profile`, budgets, signal/target text), and binds the continuation enzymes.
+2. **Run (`cep_ep_run_slice_impl`).** The executor sets up a TLS context, invokes the slice, and tracks CPU/IO usage. The slice inspects `cep_ep_check_cancel()` to honour cooperative cancellation and can stage stream writes guarded by the policy.
+3. **Yield (`cep_ep_yield`).** Voluntary pauses mark `ist:yield`, arm a watcher on the dossier, and hand control back to the heartbeat. The continuation enzyme resubmits the episode on the next beat so work resumes deterministically.
+4. **Await (`cep_ep_await`).** External dependencies register a watcher on another `op/*`. When that operation advances (or times out), the continuation enzyme either reschedules the episode (`ep/cont`) or cancels it (`op/tmo`).
+5. **Close (`cep_ep_close` / `cep_ep_cancel`).** Episodes finish by recording the terminal status (`sts:ok`, `sts:cnl`, `sts:fail`). Any outstanding leases are released automatically, watcher bindings are removed, and the dossier becomes immutable for observability.
+
+### Operational Checklist
+- Bootstrap: ensure `cep_namepool_bootstrap()` and the heartbeat directories exist before launching episodes. `cep_ep_start()` expects the `/rt/ops` hierarchy to be visible.
+- Budget tuning: configure `cepEpExecutionPolicy` per episode; leave fields zero to inherit defaults. Monitor `ep:bud/*` CEI facts to learn when a workload needs more headroom.
+- RW mode: obtain leases before mutating (`cep_ep_request_lease`) and release them when finished (`cep_ep_release_lease`). Leases may be renewed or extended to descendants, but they should remain short-lived to avoid starving other work.
+- Coroutine schedulers: wrap cooperative yields with `cep_ep_suspend_rw()` / `cep_ep_resume_rw()` so TLS guardrails and leases follow the coroutine cleanly.
+- Watchers: use `cep_op_await()` for cross-operation dependencies. Keep TTLs short and attach payloads when the continuation needs context (for example, the dependent episode ID).
+- Debugging: inspect `/rt/ops/<eid>/history` to confirm state transitions, `/rt/ops/<eid>/watchers` for outstanding awaits, and the diagnostics mailbox for guard or budget violations.
 
 ## Q&A
 **Q: Why not keep Rendezvous?**  
@@ -25,6 +41,9 @@ They can queue intents (e.g., stage a transaction) for commit on the next beat, 
 
 **Q: How do RW leases interact with descendants?**  
 Call `cep_ep_request_lease()` with `include_descendants=true` when you need the whole subtree. The kernel normalises the supplied `cep_cell_path`, bears store/data locks on the lease root, and lets the owning episode mutate descendants while other contexts see the lock and return `false`. Remember to release the lease (or close the episode) so the lock vanishes before the next owner arrives.
+
+**Q: How do coroutines yield from an RW episode safely?**  
+Call `cep_ep_suspend_rw()` before yielding to a cooperative scheduler and `cep_ep_resume_rw()` when execution returns. Suspended slices drop TLS guardrails (and, if requested, leases); the resume helper reacquires any released locks and cancels the episode if reclaiming them fails.
 
 **Q: How do I trigger cancellation from tooling?**  
 Grab the episode’s OID (or the executor ticket) and call `cep_ep_cancel()` or `cep_ep_cancel_ticket()`. The slice notices via `cep_ep_check_cancel()` and cleans up before returning; the OPS dossier records `ist:cxl`/`sts:cxl`.

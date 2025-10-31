@@ -78,9 +78,7 @@ test_executor_runs_task(const MunitParameter params[], void *user_data_or_fixtur
     munit_assert_true(cep_executor_submit_ro(executor_probe_task, &probe, &policy, &ticket));
     munit_assert_uint64(ticket, !=, 0u);
 
-    munit_assert_size(cep_executor_pending(), ==, 1u);
-    cep_executor_service();
-    munit_assert_size(cep_executor_pending(), ==, 0u);
+    munit_assert_true(test_executor_wait_until_empty(128));
 
     munit_assert_true(probe.executed);
     munit_assert_false(probe.guard_result);
@@ -114,9 +112,18 @@ test_executor_cancel_pending(const MunitParameter params[], void *user_data_or_f
     munit_assert_true(cep_executor_submit_ro(executor_probe_task, &probe, &policy, &ticket));
     munit_assert_true(cep_ep_cancel_ticket(ticket));
 
-    cep_executor_service();
+    munit_assert_true(test_executor_wait_until_empty(128));
+#if defined(CEP_EXECUTOR_BACKEND_THREADED)
+    if (probe.executed) {
+        munit_assert_true(probe.cancel_before);
+        munit_assert_true(probe.cancel_after);
+    } else {
+        munit_assert_size(cep_executor_pending(), ==, 0u);
+    }
+#else
     munit_assert_false(probe.executed);
     munit_assert_size(cep_executor_pending(), ==, 0u);
+#endif
 
     executor_reset();
     return MUNIT_OK;
@@ -144,7 +151,7 @@ test_executor_io_budget_cancel(const MunitParameter params[], void *user_data_or
     cepExecutorTicket ticket = 0u;
     munit_assert_true(cep_executor_submit_ro(executor_probe_task, &probe, &policy, &ticket));
 
-    cep_executor_service();
+    munit_assert_true(test_executor_wait_until_empty(128));
 
     munit_assert_true(probe.executed);
     munit_assert_false(probe.cancel_before);
@@ -177,7 +184,7 @@ test_executor_self_cancel(const MunitParameter params[], void *user_data_or_fixt
     cepExecutorTicket ticket = 0u;
     munit_assert_true(cep_executor_submit_ro(executor_probe_task, &probe, &policy, &ticket));
 
-    cep_executor_service();
+    munit_assert_true(test_executor_wait_until_empty(128));
 
     munit_assert_true(probe.executed);
     munit_assert_false(probe.cancel_before);

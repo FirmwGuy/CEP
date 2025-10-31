@@ -11,6 +11,7 @@
 #include "munit.h"
 
 #include <string.h>
+#include <stdatomic.h>
 
 #include "cep_cell.h"
 #include "cep_heartbeat.h"
@@ -91,9 +92,14 @@ MunitResult test_episode_yield_resume(const MunitParameter params[], void* user_
 MunitResult test_episode_await_resume(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_episode_await_timeout(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_episode_lease_enforcement(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_episode_rw_suspend_resume(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
 extern MunitSuite integration_poc_suite;
+
+bool        test_executor_wait_until_empty(unsigned spins);
+bool        test_executor_wait_for_calls(atomic_uint* counter, unsigned target, unsigned spins);
+void        test_executor_relax(void);
 
 static inline void test_runtime_shutdown(void) {
     cep_stream_clear_pending();

@@ -15,7 +15,7 @@
 
 typedef enum cepEpProfile {
     CEP_EP_PROFILE_RO = 0,
-   CEP_EP_PROFILE_RW = 1,
+    CEP_EP_PROFILE_RW = 1,
 } cepEpProfile;
 
 typedef uint64_t cepExecutorTicket;

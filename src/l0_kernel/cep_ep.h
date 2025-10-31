@@ -40,6 +40,14 @@ bool cep_ep_request_lease(cepEID eid,
                           bool include_descendants);
 bool cep_ep_release_lease(cepEID eid, const cepPath* root);
 
+enum {
+    CEP_EP_SUSPEND_NONE = 0u,
+    CEP_EP_SUSPEND_DROP_LEASES = 1u << 0,
+};
+
+bool cep_ep_suspend_rw(cepEID eid, uint32_t flags);
+bool cep_ep_resume_rw(cepEID eid);
+
 bool cep_ep_stream_write(cepCell* cell, uint64_t offset, const void* src, size_t size, size_t* out_written);
 bool cep_ep_stream_commit_pending(void);
 void cep_ep_stream_clear_pending(void);

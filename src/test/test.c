@@ -10,11 +10,13 @@
 
 #include "test.h"
 #include "cep_ops.h"
+#include "cep_executor.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
 
 extern MunitSuite integration_poc_suite;
 
@@ -52,6 +54,44 @@ bool test_ovh_heartbeat_step(const char* label) {
         test_ovh_tracef("%s heartbeat_step failed ops_error=%d", label, cep_ops_debug_last_error());
     }
     return ok;
+}
+
+void test_executor_relax(void)
+{
+#if defined(CEP_EXECUTOR_BACKEND_THREADED)
+    struct timespec ts = {
+        .tv_sec = 0,
+        .tv_nsec = 1 * 1000 * 1000,
+    };
+    nanosleep(&ts, NULL);
+#else
+    cep_executor_service();
+#endif
+}
+
+bool test_executor_wait_until_empty(unsigned spins)
+{
+    for (unsigned i = 0; i < spins; ++i) {
+        if (cep_executor_pending() == 0u) {
+            return true;
+        }
+        test_executor_relax();
+    }
+    return cep_executor_pending() == 0u;
+}
+
+bool test_executor_wait_for_calls(atomic_uint* counter, unsigned target, unsigned spins)
+{
+    if (!counter) {
+        return false;
+    }
+    for (unsigned i = 0; i < spins; ++i) {
+        if (atomic_load(counter) >= target) {
+            return true;
+        }
+        test_executor_relax();
+    }
+    return atomic_load(counter) >= target;
 }
 
 
@@ -438,6 +478,14 @@ MunitTest tests[] = {
     {
         "/episode/lease_enforcement",
         test_episode_lease_enforcement,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/episode/rw_suspend_resume",
+        test_episode_rw_suspend_resume,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,

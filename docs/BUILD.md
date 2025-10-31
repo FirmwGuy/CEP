@@ -36,7 +36,7 @@ The Meson project defines these switches (see `meson_options.txt`):
 | `server` | feature | `disabled` | Build the standalone CEP server (requires `src/server/main.c`). |
 | `both_libs` | boolean | `false` | Produce both static and shared `libcep`. |
 | `zip` | feature | `auto` | Toggle the libzip-backed stream adapter (`enabled`, `disabled`, `auto`). |
-| `executor_backend` | combo (`stub`, `threaded`) | `stub` | Select the episodic executor backend. `threaded` is future work; wasm/emscripten builds automatically fall back to `stub`. |
+| `executor_backend` | combo (`stub`, `threaded`) | `stub` | Select the episodic executor backend. The threaded backend spins a worker pool on POSIX/Windows platforms; wasm/emscripten builds automatically fall back to `stub`. |
 
 Set options during `meson setup` or after the fact with `meson configure`:
 
@@ -105,7 +105,8 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
   - Force on/off with `-Dzip=enabled|disabled`. The default `auto` builds when `libzip` is detected.
 
 - Episodic executor backend
-  - Cooperative stub backend ships today. Pass `-Dexecutor_backend=threaded` to opt into the forthcoming threaded backend; on wasm/emscripten builds Meson automatically falls back to the stub path.
+  - `-Dexecutor_backend=stub` keeps the cooperative queue bound to the heartbeat (deterministic, single-threaded).
+  - `-Dexecutor_backend=threaded` launches a worker pool sized to the available CPUs and preserves TLS budgeting/cancellation semantics. The option requires pthreads (or the Win32 thread primitives surfaced via `cep_sync.c`). wasm/emscripten builds auto-downgrade to `stub` even when the option is forced.
 
 ## Offline Fallback (No Meson/Ninja)
 

@@ -147,15 +147,15 @@ typedef struct {
 typedef struct {
     cepCell* stream;
     size_t   offset;
-    bool     guard_result;
+    atomic_bool guard_result;
 } IntegrationEpisodeProbe;
 
 typedef struct {
     cepCell* target;
     cepPath* path;
-    bool     first_denied;
-    bool     second_allowed;
-    bool     third_denied;
+    atomic_bool first_denied;
+    atomic_bool second_allowed;
+    atomic_bool third_denied;
 } IntegrationLeaseProbe;
 
 typedef struct {
@@ -798,11 +798,12 @@ static void integration_episode_guard_task(void* ctx) {
     munit_assert_not_null(probe->stream);
 
     size_t written = 0u;
-    probe->guard_result = cep_ep_stream_write(probe->stream,
-                                              probe->offset,
-                                              "ro-denied",
-                                              strlen("ro-denied"),
-                                              &written);
+    bool result = cep_ep_stream_write(probe->stream,
+                                      probe->offset,
+                                      "ro-denied",
+                                      strlen("ro-denied"),
+                                      &written);
+    atomic_store_explicit(&probe->guard_result, result, memory_order_relaxed);
     munit_assert_size(written, ==, 0u);
 }
 
@@ -825,8 +826,8 @@ static void integration_episode_executor_checks(IntegrationStreamContext* ctx) {
     IntegrationEpisodeProbe probe = {
         .stream = ctx->stream_node,
         .offset = baseline_len,
-        .guard_result = true,
     };
+    atomic_init(&probe.guard_result, true);
 
     cepExecutorTicket ticket = 0u;
     munit_assert_true(cep_executor_submit_ro(integration_episode_guard_task,
@@ -834,13 +835,13 @@ static void integration_episode_executor_checks(IntegrationStreamContext* ctx) {
                                              &policy,
                                              &ticket));
     munit_assert_uint64(ticket, !=, 0u);
-    cep_executor_service();
-    if (probe.guard_result) {
+    munit_assert_true(test_executor_wait_until_empty(128));
+    if (atomic_load_explicit(&probe.guard_result, memory_order_relaxed)) {
         munit_assert_true(cep_heartbeat_stage_commit());
         munit_assert_true(cep_heartbeat_step());
-        cep_executor_service();
+        test_executor_relax();
     }
-    munit_assert_false(probe.guard_result);
+    munit_assert_false(atomic_load_explicit(&probe.guard_result, memory_order_relaxed));
 
     const char* slices[] = {
         ":episode-0",
@@ -905,17 +906,17 @@ integration_episode_lease_task(cepEID eid, void* ctx)
     cepDT field = cep_ops_make_dt("lease-field");
 
     bool ok = cep_cell_put_text(probe->target, &field, "no-lease");
-    probe->first_denied = !ok;
+    atomic_store_explicit(&probe->first_denied, !ok, memory_order_relaxed);
 
     (void)cep_ep_request_lease(eid, probe->path, true, false, true);
 
     ok = cep_cell_put_text(probe->target, &field, "with-lease");
-    probe->second_allowed = ok;
+    atomic_store_explicit(&probe->second_allowed, ok, memory_order_relaxed);
 
     (void)cep_ep_release_lease(eid, probe->path);
 
     ok = cep_cell_put_text(probe->target, &field, "post-release");
-    probe->third_denied = !ok;
+    atomic_store_explicit(&probe->third_denied, !ok, memory_order_relaxed);
 
     cepDT status = cep_ops_make_dt("sts:ok");
     (void)cep_ep_close(eid, status, NULL, 0u);
@@ -947,10 +948,10 @@ integration_episode_lease_flow(IntegrationFixture* fix)
     IntegrationLeaseProbe probe = {
         .target = lease_target,
         .path = lease_path,
-        .first_denied = false,
-        .second_allowed = false,
-        .third_denied = false,
     };
+    atomic_init(&probe.first_denied, false);
+    atomic_init(&probe.second_allowed, false);
+    atomic_init(&probe.third_denied, false);
 
     IntegrationPathBuf signal_buf = {0};
     IntegrationPathBuf target_buf = {0};
@@ -974,9 +975,10 @@ integration_episode_lease_flow(IntegrationFixture* fix)
                                    &policy,
                                    0u));
 
-    munit_assert_true(probe.first_denied);
-    munit_assert_true(probe.second_allowed);
-    munit_assert_true(probe.third_denied);
+    munit_assert_true(test_executor_wait_until_empty(128));
+    munit_assert_true(atomic_load_explicit(&probe.first_denied, memory_order_relaxed));
+    munit_assert_true(atomic_load_explicit(&probe.second_allowed, memory_order_relaxed));
+    munit_assert_true(atomic_load_explicit(&probe.third_denied, memory_order_relaxed));
 
     cep_free(lease_path);
 }

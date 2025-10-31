@@ -27,6 +27,7 @@ typedef struct cepEpEpisode {
     cepEpCallback           callback;
     void*                   user_ctx;
     cepEpExecutionPolicy    policy;
+    cepEpExecutionContext   context;
     uint64_t                max_beats;
     uint64_t                beats_used;
     cepExecutorTicket       ticket;
@@ -39,6 +40,9 @@ typedef struct cepEpEpisode {
     char                    pending_note[128];
     struct cepEpLease*      leases;
     bool                    lease_violation_reported;
+    bool                    context_initialized;
+    bool                    context_tls_bound;
+    bool                    context_suspended;
     struct cepEpEpisode*    next;
 } cepEpEpisode;
 
@@ -50,6 +54,10 @@ typedef struct cepEpLease {
     bool                 include_descendants;
     cepLockToken         store_token;
     cepLockToken         data_token;
+    bool                 needs_store_reacquire;
+    bool                 needs_data_reacquire;
+    bool                 reacquired_store;
+    bool                 reacquired_data;
     struct cepEpLease*   next;
 } cepEpLease;
 
@@ -345,10 +353,18 @@ cep_ep_release_all_leases(cepEpEpisode* episode)
         cepEpLease* next = lease->next;
         if (lease->lock_store) {
             cep_store_unlock(lease->cell, &lease->store_token);
+            memset(&lease->store_token, 0, sizeof lease->store_token);
+            lease->lock_store = false;
         }
         if (lease->lock_data) {
             cep_data_unlock(lease->cell, &lease->data_token);
+            memset(&lease->data_token, 0, sizeof lease->data_token);
+            lease->lock_data = false;
         }
+        lease->needs_store_reacquire = false;
+        lease->needs_data_reacquire = false;
+        lease->reacquired_store = false;
+        lease->reacquired_data = false;
         if (lease->path) {
             cep_free(lease->path);
         }
@@ -833,33 +849,45 @@ cep_ep_schedule_run(cepEpEpisode* episode, const char* note)
 }
 
 static void
-cep_ep_set_tls_context(cepEpEpisode* episode, cepEpExecutionContext* context)
+cep_ep_bind_tls_context(cepEpEpisode* episode, bool fresh_slice)
 {
-    context->profile = episode->policy.profile;
-    context->cpu_budget_ns = episode->policy.cpu_budget_ns;
-    context->io_budget_bytes = episode->policy.io_budget_bytes;
-    context->user_data = episode;
-    context->cpu_consumed_ns = 0u;
-    context->io_consumed_bytes = 0u;
-    context->allow_without_lease = false;
-    atomic_store(&context->cancel_requested, false);
-    context->ticket = episode->ticket;
-    cep_executor_context_set(context);
+    if (!episode) {
+        return;
+    }
+
+    cepEpExecutionContext* ctx = &episode->context;
+    if (fresh_slice || !episode->context_initialized) {
+        ctx->profile = episode->policy.profile;
+        ctx->cpu_budget_ns = episode->policy.cpu_budget_ns;
+        ctx->io_budget_bytes = episode->policy.io_budget_bytes;
+        ctx->user_data = episode;
+        ctx->cpu_consumed_ns = 0u;
+        ctx->io_consumed_bytes = 0u;
+        atomic_store(&ctx->cancel_requested, false);
+    }
+    ctx->allow_without_lease = false;
+    ctx->ticket = episode->ticket;
+    cep_executor_context_set(ctx);
+    episode->context_initialized = true;
+    episode->context_tls_bound = true;
+    episode->context_suspended = false;
 }
 
 static void
-cep_ep_clear_tls_context(void)
+cep_ep_unbind_tls_context(cepEpEpisode* episode)
 {
+    if (!episode || !episode->context_tls_bound) {
+        return;
+    }
     cep_executor_context_clear();
+    episode->context_tls_bound = false;
 }
 
 static void
 cep_ep_execute_cooperative(cepEpEpisode* episode)
 {
-    cepEpExecutionContext context = {0};
-    cep_ep_set_tls_context(episode, &context);
+    cep_ep_bind_tls_context(episode, true);
     cep_ep_run_slice_impl(episode);
-    cep_ep_clear_tls_context();
 }
 
 static void
@@ -888,6 +916,7 @@ cep_ep_run_slice_impl(cepEpEpisode* episode)
         episode->ticket = 0u;
     }
 
+    cep_ep_unbind_tls_context(episode);
     cep_ep_finalize_slice(episode);
 }
 
@@ -899,6 +928,7 @@ cep_ep_finalize_slice(cepEpEpisode* episode)
     }
 
     episode->in_slice = false;
+    episode->context_suspended = false;
 
     switch (episode->pending_state) {
     case CEP_EP_PENDING_RUNNING:
@@ -1428,6 +1458,122 @@ cep_ep_release_lease(cepEID eid, const cepPath* root)
     return false;
 }
 
+/* Suspend an active RW slice so cooperative coroutine schedulers can yield
+   without leaving the thread in a privileged state. The helper clears the TLS
+   execution context and optionally releases outstanding leases when the caller
+   provides `CEP_EP_SUSPEND_DROP_LEASES`. */
+bool
+cep_ep_suspend_rw(cepEID eid, uint32_t flags)
+{
+    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    if (!episode || episode->closed || episode->policy.profile != CEP_EP_PROFILE_RW) {
+        return false;
+    }
+    if (flags & ~CEP_EP_SUSPEND_DROP_LEASES) {
+        return false;
+    }
+
+    cepEpExecutionContext* ctx = cep_executor_context_get();
+    if (!ctx || ctx != &episode->context) {
+        return false;
+    }
+    if (episode->context_suspended) {
+        return false;
+    }
+
+    cep_ep_unbind_tls_context(episode);
+    episode->context_suspended = true;
+
+    if (flags & CEP_EP_SUSPEND_DROP_LEASES) {
+        for (cepEpLease* lease = episode->leases; lease; lease = lease->next) {
+            if (lease->lock_store) {
+                cep_store_unlock(lease->cell, &lease->store_token);
+                memset(&lease->store_token, 0, sizeof lease->store_token);
+                lease->lock_store = false;
+                lease->needs_store_reacquire = true;
+            }
+            if (lease->lock_data) {
+                cep_data_unlock(lease->cell, &lease->data_token);
+                memset(&lease->data_token, 0, sizeof lease->data_token);
+                lease->lock_data = false;
+                lease->needs_data_reacquire = true;
+            }
+            lease->reacquired_store = false;
+            lease->reacquired_data = false;
+        }
+    }
+
+    return true;
+}
+
+/* Resume a coroutine-friendly RW slice by rebinding TLS state and reacquiring
+   any leases that were dropped during suspension. Failures trigger an
+   immediate cancellation with `sts:cnl` so callers cannot continue with stale
+   guard state. */
+bool
+cep_ep_resume_rw(cepEID eid)
+{
+    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    if (!episode || episode->closed || episode->policy.profile != CEP_EP_PROFILE_RW) {
+        return false;
+    }
+    if (!episode->context_suspended || episode->context_tls_bound) {
+        return false;
+    }
+
+    cep_ep_bind_tls_context(episode, false);
+
+    for (cepEpLease* lease = episode->leases; lease; lease = lease->next) {
+        if (lease->needs_store_reacquire) {
+            if (!cep_store_lock(lease->cell, &lease->store_token)) {
+                goto reacquire_fail;
+            }
+            lease->lock_store = true;
+            lease->needs_store_reacquire = false;
+            lease->reacquired_store = true;
+        }
+        if (lease->needs_data_reacquire) {
+            if (!cep_data_lock(lease->cell, &lease->data_token)) {
+                goto reacquire_fail;
+            }
+            lease->lock_data = true;
+            lease->needs_data_reacquire = false;
+            lease->reacquired_data = true;
+        }
+    }
+
+    for (cepEpLease* lease = episode->leases; lease; lease = lease->next) {
+        lease->reacquired_store = false;
+        lease->reacquired_data = false;
+    }
+
+    episode->context_suspended = false;
+    return true;
+
+reacquire_fail:
+    for (cepEpLease* lease = episode->leases; lease; lease = lease->next) {
+        if (lease->reacquired_store) {
+            cep_store_unlock(lease->cell, &lease->store_token);
+            memset(&lease->store_token, 0, sizeof lease->store_token);
+            lease->lock_store = false;
+            lease->needs_store_reacquire = true;
+            lease->reacquired_store = false;
+        }
+        if (lease->reacquired_data) {
+            cep_data_unlock(lease->cell, &lease->data_token);
+            memset(&lease->data_token, 0, sizeof lease->data_token);
+            lease->lock_data = false;
+            lease->needs_data_reacquire = true;
+            lease->reacquired_data = false;
+        }
+    }
+
+    cep_ep_unbind_tls_context(episode);
+    episode->context_suspended = true;
+    (void)cep_ep_cancel(eid, -3, "lease reacquire failed");
+    return false;
+}
+
 /* Close an episode with the provided terminal status. The helper defers actual
    teardown until the currently running slice unwinds so invariants around
    context cleanup remain intact. */
@@ -1484,9 +1630,9 @@ cep_ep_cancel(cepEID eid, int code, const char* note)
     }
 
     (void)cep_ep_mark_state(eid, "ist:cxl", code, note);
+    episode->pending_state = CEP_EP_PENDING_CANCELLED;
     cepDT cancel_status = cep_ops_make_dt("sts:cnl");
     (void)cep_ep_close(eid, cancel_status, NULL, 0u);
-    episode->pending_state = CEP_EP_PENDING_CANCELLED;
     return true;
 }
 
