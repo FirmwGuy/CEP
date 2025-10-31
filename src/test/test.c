@@ -435,6 +435,14 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
+    {
+        "/episode/lease_enforcement",
+        test_episode_lease_enforcement,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
 
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL}  // EOL
 };

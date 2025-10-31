@@ -151,6 +151,14 @@ typedef struct {
 } IntegrationEpisodeProbe;
 
 typedef struct {
+    cepCell* target;
+    cepPath* path;
+    bool     first_denied;
+    bool     second_allowed;
+    bool     third_denied;
+} IntegrationLeaseProbe;
+
+typedef struct {
     cepTxn txn;
     cepDT  txn_name;
     cepDT  staged_name;
@@ -890,6 +898,89 @@ static void integration_episode_executor_checks(IntegrationStreamContext* ctx) {
     cep_executor_shutdown();
 }
 
+static void
+integration_episode_lease_task(cepEID eid, void* ctx)
+{
+    IntegrationLeaseProbe* probe = ctx;
+    cepDT field = cep_ops_make_dt("lease-field");
+
+    bool ok = cep_cell_put_text(probe->target, &field, "no-lease");
+    probe->first_denied = !ok;
+
+    (void)cep_ep_request_lease(eid, probe->path, true, false, true);
+
+    ok = cep_cell_put_text(probe->target, &field, "with-lease");
+    probe->second_allowed = ok;
+
+    (void)cep_ep_release_lease(eid, probe->path);
+
+    ok = cep_cell_put_text(probe->target, &field, "post-release");
+    probe->third_denied = !ok;
+
+    cepDT status = cep_ops_make_dt("sts:ok");
+    (void)cep_ep_close(eid, status, NULL, 0u);
+}
+
+static void
+integration_episode_lease_flow(IntegrationFixture* fix)
+{
+    munit_assert_not_null(fix);
+
+    cepCell* data_root = cep_cell_ensure_dictionary_child(cep_root(),
+                                                          CEP_DTAW("CEP", "data"),
+                                                          CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(data_root);
+    data_root = cep_cell_resolve(data_root);
+    munit_assert_not_null(data_root);
+
+    cepCell* lease_target = cep_cell_ensure_dictionary_child(data_root,
+                                                             CEP_DTAW("CEP", "int_lease"),
+                                                             CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(lease_target);
+    lease_target = cep_cell_resolve(lease_target);
+    munit_assert_not_null(lease_target);
+
+    cepPath* lease_path = NULL;
+    munit_assert_true(cep_cell_path(lease_target, &lease_path));
+    munit_assert_not_null(lease_path);
+
+    IntegrationLeaseProbe probe = {
+        .target = lease_target,
+        .path = lease_path,
+        .first_denied = false,
+        .second_allowed = false,
+        .third_denied = false,
+    };
+
+    IntegrationPathBuf signal_buf = {0};
+    IntegrationPathBuf target_buf = {0};
+    const cepPath* signal_path = integration_make_path(&signal_buf,
+                                                       (const cepDT[]){ integration_named_dt("sig:integration/lease") }, 1u);
+    const cepPath* target_path = integration_make_path(&target_buf,
+                                                       (const cepDT[]){ integration_named_dt("rt:integration/lease") }, 1u);
+
+    cepEpExecutionPolicy policy = {
+        .profile = CEP_EP_PROFILE_RW,
+        .cpu_budget_ns = CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS,
+        .io_budget_bytes = CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES,
+    };
+
+    cepEID eid = cep_oid_invalid();
+    munit_assert_true(cep_ep_start(&eid,
+                                   signal_path,
+                                   target_path,
+                                   integration_episode_lease_task,
+                                   &probe,
+                                   &policy,
+                                   0u));
+
+    munit_assert_true(probe.first_denied);
+    munit_assert_true(probe.second_allowed);
+    munit_assert_true(probe.third_denied);
+
+    cep_free(lease_path);
+}
+
 static void integration_stream_ctx_verify(IntegrationStreamContext* ctx) {
     munit_assert_not_null(ctx);
     munit_assert_not_null(ctx->stream_node);
@@ -1235,6 +1326,7 @@ static void integration_execute_interleaved_timeline(IntegrationFixture* fix) {
 
     integration_ops_ctx_verify(&ops_ctx);
     integration_episode_executor_checks(&stream_ctx);
+    integration_episode_lease_flow(fix);
     integration_stream_ctx_verify(&stream_ctx);
     integration_txn_ctx_commit(&txn_ctx, fix);
     integration_serialize_and_replay(fix);

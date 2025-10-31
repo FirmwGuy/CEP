@@ -10,6 +10,7 @@ Imagine taking a long-running job, slicing it into safe, deterministic beats, an
 - **Public API helpers.** `cep_ep_start()` creates the `op/ep` dossier, snapshots the signal/target metadata, and schedules the first slice. Slice bodies call `cep_ep_yield()` to arm an `ist:yield` watcher, `cep_ep_await()` to bind an external `op/*` state, and `cep_ep_close()` / `cep_ep_cancel()` to finish with `sts:ok` or `sts:cnl`. The helpers keep dossier histories, watcher payloads, and CEI notes consistent.
 - **Continuation enzyme.** A dedicated `ep/cont` enzyme bridges OPS watchers back into execution: it requeues the owning episode when the signal targets the dossier itself, or resumes the waiting episode when the signal resolves an awaited operation. Timeout signals (`op/tmo`) automatically cancel the waiting episode and close it with `sts:cnl`.
 - **Read-only guard.** Mutation helpers now early-out when invoked from a RO profile. They call `cep_ep_require_rw()` to emit a single `sev:usage` CEI fact (`topic=ep:pro/ro`) and skip journaling while returning `false`/`NULL`. This keeps “RO thread” episodes observational-only.
+- **RW leases.** `cep_ep_request_lease()` normalises cell paths and records store/data locks per episode so RW slices can mutate safely. Locks bubble through the hierarchy: the owning episode may continue writing while other contexts observe the lock and bail out. Descendant coverage is opt-in (`include_descendants=true`), and `cep_ep_release_lease()` unwinds remaining locks automatically when the dossier closes or the episode is removed.
 - **Budgets & CEI integration.** `cep_ep_account_io()` and the executor’s CPU timer maintain slice budgets. When an episode overruns its configured IO/CPU ceiling, the helpers emit `ep:bud/io` or `ep:bud/cpu` CEI facts and mark the context cancelled. Enzymes should call `cep_ep_check_cancel()` at yield points to respect the signal.
 - **Cancellation APIs.** `cep_ep_cancel_ticket()` lets supervisors cancel queued or running episodes; `cep_ep_request_cancel()` gives the episode body a cooperative “bail out” lever. Both route through the TLS context so watchers see a deterministic `sts:cxl`.
 - **Stream staging wrappers.** `cep_ep_stream_write()` and friends mirror the regular stream APIs but enforce the RO guard and budget accounting. Episodes can stage payloads safely, then rely on the heartbeat commit edge to publish deltas.
@@ -21,6 +22,9 @@ Rendezvous relied on bespoke registries and opaque wait handles. E³ folds long-
 
 **Q: Can read-only episodes mutate state at the end?**  
 They can queue intents (e.g., stage a transaction) for commit on the next beat, but mutation helpers stay guarded. Use a dedicated RW episode (with leases) for mutators; RO slices exist to analyse state, stream data, or schedule follow-on work.
+
+**Q: How do RW leases interact with descendants?**  
+Call `cep_ep_request_lease()` with `include_descendants=true` when you need the whole subtree. The kernel normalises the supplied `cep_cell_path`, bears store/data locks on the lease root, and lets the owning episode mutate descendants while other contexts see the lock and return `false`. Remember to release the lease (or close the episode) so the lock vanishes before the next owner arrives.
 
 **Q: How do I trigger cancellation from tooling?**  
 Grab the episode’s OID (or the executor ticket) and call `cep_ep_cancel()` or `cep_ep_cancel_ticket()`. The slice notices via `cep_ep_check_cancel()` and cleans up before returning; the OPS dossier records `ist:cxl`/`sts:cxl`.

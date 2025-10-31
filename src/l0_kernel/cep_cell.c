@@ -2128,24 +2128,29 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
     }
 
     if (!cep_ep_require_rw()) {
+        CEP_DEBUG_PRINTF("[cep_cell_put_text] require_rw failed\n");
         return false;
     }
 
     cepCell* owner = cep_cell_resolve(parent);
     if (!owner || !cep_cell_is_normal(owner)) {
+        CEP_DEBUG_PRINTF("[cep_cell_put_text] owner resolve failed\n");
         return false;
     }
 
     if (cep_cell_is_immutable(owner)) {
+        CEP_DEBUG_PRINTF("[cep_cell_put_text] owner immutable\n");
         return false;
     }
 
     if (!cep_cell_require_dictionary_store(&owner)) {
+        CEP_DEBUG_PRINTF("[cep_cell_put_text] require_dictionary_store failed\n");
         return false;
     }
 
     cepStore* store = owner->store;
     if (!store) {
+        CEP_DEBUG_PRINTF("[cep_cell_put_text] store missing\n");
         return false;
     }
 
@@ -2161,6 +2166,9 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
     cepDT lookup = cep_dt_clean(field);
     cepCell* existing = cep_cell_find_by_name(owner, &lookup);
     if (existing) {
+        CEP_DEBUG_PRINTF("[cep_cell_put_text] removing existing field=%016llx/%016llx\n",
+                         (unsigned long long)cep_id(lookup.domain),
+                         (unsigned long long)cep_id(lookup.tag));
         cep_cell_remove_hard(existing, NULL);
     }
 
@@ -5883,6 +5891,21 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
             segment->dt.glob = store->dt.glob;
             segment->timestamp = 0u;
         }
+    }
+
+    if (tempPath->length) {
+        unsigned write = 0u;
+        for (unsigned i = 0; i < tempPath->length; ++i) {
+            cepPast segment = tempPath->past[i];
+            if (segment.dt.domain == 0u && segment.dt.tag == 0u) {
+                continue;
+            }
+            if (write != i) {
+                tempPath->past[write] = segment;
+            }
+            write += 1u;
+        }
+        tempPath->length = write;
     }
 
     return true;

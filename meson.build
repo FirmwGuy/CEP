@@ -67,6 +67,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_organ.c',
   'src/l0_kernel/cep_ep.c',
   'src/l0_kernel/cep_executor.c',
+  'src/l0_kernel/cep_sync.c',
   'src/enzymes/cep_l0_organs.c',
   'src/enzymes/cep_cell_operations.c',
   'src/l0_kernel/stream/cep_stream_stdio.c',
@@ -104,6 +105,8 @@ endif
 
 if executor_backend == 'threaded'
   add_project_arguments('-DCEP_EXECUTOR_BACKEND_THREADED=1', language: 'c')
+  threads_dep = dependency('threads')
+  lib_dependencies += [threads_dep]
 else
   add_project_arguments('-DCEP_EXECUTOR_BACKEND_STUB=1', language: 'c')
 endif

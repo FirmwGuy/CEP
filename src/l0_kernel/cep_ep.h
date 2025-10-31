@@ -33,6 +33,12 @@ bool cep_ep_await(cepEID eid,
                   const char* note);
 bool cep_ep_close(cepEID eid, cepDT status, const void* summary, size_t summary_len);
 bool cep_ep_cancel(cepEID eid, int code, const char* note);
+bool cep_ep_request_lease(cepEID eid,
+                          const cepPath* root,
+                          bool lock_store,
+                          bool lock_data,
+                          bool include_descendants);
+bool cep_ep_release_lease(cepEID eid, const cepPath* root);
 
 bool cep_ep_stream_write(cepCell* cell, uint64_t offset, const void* src, size_t size, size_t* out_written);
 bool cep_ep_stream_commit_pending(void);
@@ -46,6 +52,10 @@ void cep_ep_account_io(size_t bytes);
 
 bool cep_ep_handle_continuation(const cepDT* continuation, cepOID target_oid);
 void cep_ep_runtime_reset(void);
+
+bool cep_ep_episode_has_active_lease(const void* episode_ptr);
+bool cep_ep_episode_record_violation(void* episode_ptr);
+void cep_ep_episode_clear_violation(void* episode_ptr);
 
 #ifdef __cplusplus
 }

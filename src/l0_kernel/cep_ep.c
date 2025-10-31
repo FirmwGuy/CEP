@@ -5,6 +5,7 @@
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
 #include "cep_ops.h"
+#include "cep_molecule.h"
 #include "stream/cep_stream_internal.h"
 
 #include <inttypes.h>
@@ -36,8 +37,21 @@ typedef struct cepEpEpisode {
     cepOID                  awaited_oid;
     bool                    pending_note_set;
     char                    pending_note[128];
+    struct cepEpLease*      leases;
+    bool                    lease_violation_reported;
     struct cepEpEpisode*    next;
 } cepEpEpisode;
+
+typedef struct cepEpLease {
+    cepCell*             cell;
+    cepPath*             path;
+    bool                 lock_store;
+    bool                 lock_data;
+    bool                 include_descendants;
+    cepLockToken         store_token;
+    cepLockToken         data_token;
+    struct cepEpLease*   next;
+} cepEpLease;
 
 typedef struct cepEpAwaitBinding {
     cepOID                      awaited_oid;
@@ -72,12 +86,16 @@ static bool          cep_ep_register_enzyme(const char* signal_tag,
                                             cepDT* out_name);
 static bool          cep_ep_bind_operation(cepOID oid);
 static char*         cep_ep_path_to_string(const cepPath* path);
+static bool          cep_ep_path_clone(const cepPath* path, cepPath** out_clone);
+static bool          cep_ep_paths_equal(const cepPath* lhs, const cepPath* rhs);
 static cepCell*      cep_ep_find_op_cell(cepOID oid);
 static bool          cep_ep_write_metadata(cepOID oid,
                                            const cepEpExecutionPolicy* policy,
                                            uint64_t max_beats,
                                            const cepPath* signal_path,
                                            const cepPath* target_path);
+static cepEpLease*   cep_ep_lease_lookup(cepEpEpisode* episode, const cepPath* path);
+static void          cep_ep_release_all_leases(cepEpEpisode* episode);
 static bool          cep_ep_schedule_run(cepEpEpisode* episode, const char* note);
 static void          cep_ep_run_slice_impl(cepEpEpisode* episode);
 static void          cep_ep_run_slice_task(void* ctx);
@@ -92,6 +110,7 @@ static int           cep_ep_continuation_enzyme(const cepPath* signal_path, cons
 typedef struct {
     cepEpExecutionContext* ctx;
     cepEpProfile           previous_profile;
+    bool                   previous_allow_without_lease;
     bool                   active;
 } cepEpRwScope;
 
@@ -102,7 +121,9 @@ cep_ep_rw_scope_begin(void)
     scope.ctx = cep_executor_context_get();
     if (scope.ctx) {
         scope.previous_profile = scope.ctx->profile;
+        scope.previous_allow_without_lease = scope.ctx->allow_without_lease;
         scope.ctx->profile = CEP_EP_PROFILE_RW;
+        scope.ctx->allow_without_lease = true;
         scope.active = true;
     }
     return scope;
@@ -115,6 +136,79 @@ cep_ep_rw_scope_end(cepEpRwScope* scope)
         return;
     }
     scope->ctx->profile = scope->previous_profile;
+    scope->ctx->allow_without_lease = scope->previous_allow_without_lease;
+}
+
+static bool
+cep_ep_lease_covers_cell(const cepEpLease* lease, const cepCell* cell)
+{
+    if (!lease || !cell || !lease->cell) {
+        return false;
+    }
+    if (lease->cell == cell) {
+        return true;
+    }
+    if (!lease->include_descendants) {
+        return false;
+    }
+    const cepCell* current = cell;
+    while (current) {
+        if (current == lease->cell) {
+            return true;
+        }
+        current = cep_cell_parent(current);
+    }
+    return false;
+}
+
+bool
+cep_ep_store_lock_allows(const cepCell* owner, const cepCell* lock_owner)
+{
+    cepEpExecutionContext* ctx = cep_executor_context_get();
+    if (!ctx || ctx->profile != CEP_EP_PROFILE_RW) {
+        return false;
+    }
+    cepEpEpisode* episode = (cepEpEpisode*)ctx->user_data;
+    if (!episode) {
+        return false;
+    }
+    for (const cepEpLease* lease = episode->leases; lease; lease = lease->next) {
+        if (!lease->lock_store) {
+            continue;
+        }
+        if (lock_owner && lease->cell != lock_owner) {
+            continue;
+        }
+        if (cep_ep_lease_covers_cell(lease, owner)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool
+cep_ep_data_lock_allows(const cepCell* owner, const cepCell* lock_owner)
+{
+    cepEpExecutionContext* ctx = cep_executor_context_get();
+    if (!ctx || ctx->profile != CEP_EP_PROFILE_RW) {
+        return false;
+    }
+    cepEpEpisode* episode = (cepEpEpisode*)ctx->user_data;
+    if (!episode) {
+        return false;
+    }
+    for (const cepEpLease* lease = episode->leases; lease; lease = lease->next) {
+        if (!lease->lock_data) {
+            continue;
+        }
+        if (lock_owner && lease->cell != lock_owner) {
+            continue;
+        }
+        if (cep_ep_lease_covers_cell(lease, owner)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static const cepPath*
@@ -240,6 +334,31 @@ out:
     return ok;
 }
 
+static void
+cep_ep_release_all_leases(cepEpEpisode* episode)
+{
+    if (!episode) {
+        return;
+    }
+    cepEpLease* lease = episode->leases;
+    while (lease) {
+        cepEpLease* next = lease->next;
+        if (lease->lock_store) {
+            cep_store_unlock(lease->cell, &lease->store_token);
+        }
+        if (lease->lock_data) {
+            cep_data_unlock(lease->cell, &lease->data_token);
+        }
+        if (lease->path) {
+            cep_free(lease->path);
+        }
+        cep_free(lease);
+        lease = next;
+    }
+    episode->leases = NULL;
+    episode->lease_violation_reported = false;
+}
+
 static cepEpEpisode*
 cep_ep_episode_lookup(cepEID eid)
 {
@@ -281,6 +400,7 @@ cep_ep_episode_remove(cepEpEpisode* episode)
         head = &(*head)->next;
     }
 
+    cep_ep_release_all_leases(episode);
     cep_free(episode);
 }
 
@@ -336,6 +456,20 @@ cep_ep_binding_remove_episode(cepEpEpisode* episode)
             head = &(*head)->next;
         }
     }
+}
+
+static cepEpLease*
+cep_ep_lease_lookup(cepEpEpisode* episode, const cepPath* path)
+{
+    if (!episode || !path) {
+        return NULL;
+    }
+    for (cepEpLease* lease = episode->leases; lease; lease = lease->next) {
+        if (lease->path && cep_ep_paths_equal(lease->path, path)) {
+            return lease;
+        }
+    }
+    return NULL;
 }
 
 static cepCell*
@@ -549,6 +683,46 @@ cep_ep_path_to_string(const cepPath* path)
     return text;
 }
 
+static bool
+cep_ep_path_clone(const cepPath* path, cepPath** out_clone)
+{
+    if (!path || !out_clone) {
+        return false;
+    }
+    size_t bytes = sizeof(cepPath) + (size_t)path->length * sizeof(cepPast);
+    cepPath* clone = cep_malloc(bytes);
+    if (!clone) {
+        return false;
+    }
+    clone->length = path->length;
+    clone->capacity = path->length;
+    memcpy(clone->past, path->past, (size_t)path->length * sizeof(cepPast));
+    *out_clone = clone;
+    return true;
+}
+
+static bool
+cep_ep_paths_equal(const cepPath* lhs, const cepPath* rhs)
+{
+    if (lhs == rhs) {
+        return true;
+    }
+    if (!lhs || !rhs || lhs->length != rhs->length) {
+        return false;
+    }
+    for (unsigned i = 0; i < lhs->length; ++i) {
+        const cepPast* lp = &lhs->past[i];
+        const cepPast* rp = &rhs->past[i];
+        if (lp->timestamp != rp->timestamp) {
+            return false;
+        }
+        if (cep_dt_compare(&lp->dt, &rp->dt) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static cepEpExecutionPolicy
 cep_ep_effective_policy(const cepEpExecutionPolicy* policy)
 {
@@ -667,6 +841,7 @@ cep_ep_set_tls_context(cepEpEpisode* episode, cepEpExecutionContext* context)
     context->user_data = episode;
     context->cpu_consumed_ns = 0u;
     context->io_consumed_bytes = 0u;
+    context->allow_without_lease = false;
     atomic_store(&context->cancel_requested, false);
     context->ticket = episode->ticket;
     cep_executor_context_set(context);
@@ -979,6 +1154,10 @@ cep_ep_yield(cepEID eid, const char* note)
 
     cepEpExecutionContext* ctx = cep_executor_context_get();
     if (!ctx || ctx->user_data != episode) {
+        CEP_DEBUG_PRINTF("[cep_ep_yield] ctx mismatch episode=%p ctx=%p ctx_user=%p\n",
+                         (void*)episode,
+                         (void*)ctx,
+                         ctx ? ctx->user_data : NULL);
         return false;
     }
 
@@ -1061,6 +1240,194 @@ cep_ep_await(cepEID eid,
     return true;
 }
 
+bool
+cep_ep_request_lease(cepEID eid,
+                     const cepPath* root,
+                     bool lock_store,
+                     bool lock_data,
+                     bool include_descendants)
+{
+#define CEP_EP_LEASE_FAIL(code)                                    \
+    do {                                                           \
+        CEP_DEBUG_PRINTF("[cep_ep_request_lease] %s\n", code);     \
+        return false;                                              \
+    } while (0)
+
+    if (!cep_oid_is_valid(eid) || !root || root->length == 0u) {
+        CEP_EP_LEASE_FAIL("invalid-input");
+    }
+    if (!lock_store && !lock_data) {
+        CEP_EP_LEASE_FAIL("no-locks");
+    }
+
+    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    if (!episode || episode->closed || episode->policy.profile != CEP_EP_PROFILE_RW) {
+        CEP_EP_LEASE_FAIL("episode-state");
+    }
+
+    cepEpExecutionContext* ctx = cep_executor_context_get();
+    if (!ctx || ctx->user_data != episode) {
+        CEP_EP_LEASE_FAIL("ctx-mismatch");
+    }
+
+    cepEpLease* existing = cep_ep_lease_lookup(episode, root);
+    if (existing) {
+        bool need_store = lock_store && !existing->lock_store;
+        bool need_data = lock_data && !existing->lock_data;
+
+        if (need_store) {
+            if (!cep_store_lock(existing->cell, &existing->store_token)) {
+                CEP_EP_LEASE_FAIL("upgrade-store");
+            }
+            existing->lock_store = true;
+        }
+
+        if (need_data) {
+            if (!cep_data_lock(existing->cell, &existing->data_token)) {
+                if (need_store) {
+                    cep_store_unlock(existing->cell, &existing->store_token);
+                    existing->lock_store = false;
+                }
+                CEP_EP_LEASE_FAIL("upgrade-data");
+            }
+            existing->lock_data = true;
+        }
+
+        if (include_descendants && !existing->include_descendants) {
+            existing->include_descendants = true;
+        }
+
+        episode->lease_violation_reported = false;
+        return true;
+    }
+
+    cepPath* cloned = NULL;
+    if (!cep_ep_path_clone(root, &cloned)) {
+        CEP_EP_LEASE_FAIL("clone-path");
+    }
+
+    const cepPath* lookup_path = root;
+
+    cepCell* target = NULL;
+    if (lookup_path && lookup_path->length) {
+        target = cep_cell_find_by_path(cep_root(), lookup_path);
+    }
+    if (!target) {
+        cepCell* current = cep_root();
+        if (current) {
+            for (unsigned i = 0; i < root->length; ++i) {
+                const cepPast* segment = &root->past[i];
+                if (segment->dt.domain == current->metacell.domain &&
+                    segment->dt.tag == current->metacell.tag &&
+                    segment->dt.glob == current->metacell.glob) {
+                    continue;
+                }
+                cepCell* next = cep_cell_find_by_name(current, &segment->dt);
+                if (!next) {
+                    current = NULL;
+                    break;
+                }
+                current = next;
+            }
+        }
+        target = current;
+    }
+    if (!target) {
+        char* debug_path = cep_ep_path_to_string(root);
+        CEP_DEBUG_PRINTF("[cep_ep_request_lease] resolve failed path=%s\n",
+                         debug_path ? debug_path : "<null>");
+        if (debug_path) {
+            cep_free(debug_path);
+        }
+        cep_free(cloned);
+        return false;
+    }
+    target = cep_cell_resolve(target);
+    if (!target) {
+        cep_free(cloned);
+        CEP_EP_LEASE_FAIL("resolve-target");
+    }
+
+    cepEpLease* lease = cep_malloc0(sizeof *lease);
+    lease->cell = target;
+    lease->path = cloned;
+    lease->include_descendants = include_descendants;
+
+    if (lock_store) {
+        if (!cep_store_lock(target, &lease->store_token)) {
+            cep_free(cloned);
+            cep_free(lease);
+            CEP_EP_LEASE_FAIL("lock-store");
+        }
+        lease->lock_store = true;
+    }
+
+    if (lock_data) {
+        if (!cep_data_lock(target, &lease->data_token)) {
+            if (lease->lock_store) {
+                cep_store_unlock(target, &lease->store_token);
+            }
+            cep_free(cloned);
+            cep_free(lease);
+            CEP_EP_LEASE_FAIL("lock-data");
+        }
+        lease->lock_data = true;
+    }
+
+    lease->next = episode->leases;
+    episode->leases = lease;
+    episode->lease_violation_reported = false;
+
+#undef CEP_EP_LEASE_FAIL
+    return true;
+}
+
+bool
+cep_ep_release_lease(cepEID eid, const cepPath* root)
+{
+    if (!cep_oid_is_valid(eid) || !root) {
+        return false;
+    }
+
+    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    if (!episode) {
+        return false;
+    }
+
+    cepEpExecutionContext* ctx = cep_executor_context_get();
+    if (!ctx || ctx->user_data != episode) {
+        return false;
+    }
+
+    cepEpLease* prev = NULL;
+    cepEpLease* lease = episode->leases;
+    while (lease) {
+        if (lease->path && cep_ep_paths_equal(lease->path, root)) {
+            if (lease->lock_store) {
+                cep_store_unlock(lease->cell, &lease->store_token);
+            }
+            if (lease->lock_data) {
+                cep_data_unlock(lease->cell, &lease->data_token);
+            }
+            if (prev) {
+                prev->next = lease->next;
+            } else {
+                episode->leases = lease->next;
+            }
+            if (lease->path) {
+                cep_free(lease->path);
+            }
+            cep_free(lease);
+            episode->lease_violation_reported = false;
+            return true;
+        }
+        prev = lease;
+        lease = lease->next;
+    }
+
+    return false;
+}
+
 /* Close an episode with the provided terminal status. The helper defers actual
    teardown until the currently running slice unwinds so invariants around
    context cleanup remain intact. */
@@ -1068,19 +1435,22 @@ bool
 cep_ep_close(cepEID eid, cepDT status, const void* summary, size_t summary_len)
 {
     cepEpRwScope scope = cep_ep_rw_scope_begin();
-    bool ok = false;
+   bool ok = false;
 
     if (!cep_dt_is_valid(&status)) {
+        CEP_DEBUG_PRINTF("[cep_ep_close] invalid status\n");
         goto out;
     }
 
     cepEpEpisode* episode = cep_ep_episode_lookup(eid);
     if (!episode) {
+        CEP_DEBUG_PRINTF("[cep_ep_close] episode missing\n");
         goto out;
     }
 
     cepDT clean_status = cep_dt_clean(&status);
     if (!cep_op_close(eid, clean_status, summary, summary_len)) {
+        CEP_DEBUG_PRINTF("[cep_ep_close] op_close failed err=%d\n", cep_ops_debug_last_error());
         goto out;
     }
 
@@ -1179,6 +1549,40 @@ cep_ep_runtime_reset(void)
     memset(&cep_ep_signal_op_tmo, 0, sizeof cep_ep_signal_op_tmo);
 
     cep_executor_shutdown();
+}
+
+bool
+cep_ep_episode_has_active_lease(const void* episode_ptr)
+{
+    const cepEpEpisode* episode = (const cepEpEpisode*)episode_ptr;
+    if (!episode) {
+        return true;
+    }
+    return episode->leases != NULL;
+}
+
+bool
+cep_ep_episode_record_violation(void* episode_ptr)
+{
+    cepEpEpisode* episode = (cepEpEpisode*)episode_ptr;
+    if (!episode) {
+        return false;
+    }
+    if (episode->lease_violation_reported) {
+        return false;
+    }
+    episode->lease_violation_reported = true;
+    return true;
+}
+
+void
+cep_ep_episode_clear_violation(void* episode_ptr)
+{
+    cepEpEpisode* episode = (cepEpEpisode*)episode_ptr;
+    if (!episode) {
+        return;
+    }
+    episode->lease_violation_reported = false;
 }
 
 static void

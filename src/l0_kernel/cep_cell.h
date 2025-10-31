@@ -30,6 +30,8 @@ typedef int (*cepCompare)(const cepCell* restrict, const cepCell* restrict, void
 typedef uint64_t  cepOpCount;         // CEP per-cell operation id number.
 
 bool cep_ep_require_rw(void);
+bool cep_ep_store_lock_allows(const cepCell* owner, const cepCell* lock_owner);
+bool cep_ep_data_lock_allows(const cepCell* owner, const cepCell* lock_owner);
 
 
 /*
@@ -1192,8 +1194,11 @@ static inline bool cep_cell_store_locked_hierarchy(const cepCell* cell) {
         if (!cep_cell_is_normal(current))
             continue;
         const cepStore* store = current->store;
-        if (store && store->lock)
-            return true;
+        if (store && store->lock) {
+            if (!cep_ep_store_lock_allows(current, store->lockOwner)) {
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -1203,8 +1208,11 @@ static inline bool cep_cell_data_locked_hierarchy(const cepCell* cell) {
         if (!cep_cell_is_normal(current))
             continue;
         const cepData* data = current->data;
-        if (data && data->lock)
-            return true;
+        if (data && data->lock) {
+            if (!cep_ep_data_lock_allows(current, data->lockOwner)) {
+                return true;
+            }
+        }
     }
     return false;
 }

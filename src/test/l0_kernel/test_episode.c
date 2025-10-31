@@ -373,6 +373,14 @@ typedef struct {
     unsigned calls;
 } EpisodeTimeoutProbe;
 
+typedef struct {
+    cepCell* target;
+    cepPath* lease_path;
+    bool     first_mutation_denied;
+    bool     second_mutation_allowed;
+    bool     third_mutation_denied;
+} EpisodeLeaseProbe;
+
 static void
 episode_timeout_slice(cepEID eid, void* ctx)
 {
@@ -382,6 +390,29 @@ episode_timeout_slice(cepEID eid, void* ctx)
         cepDT want = cep_ops_make_dt("ist:ok");
         munit_assert_true(cep_ep_await(eid, probe->awaited, want, 1u, "await-timeout"));
     }
+}
+
+static void
+episode_lease_slice(cepEID eid, void* ctx)
+{
+    EpisodeLeaseProbe* probe = ctx;
+    cepDT field = cep_ops_make_dt("lease-field");
+
+    bool ok = cep_cell_put_text(probe->target, &field, "no-lease");
+    probe->first_mutation_denied = !ok;
+
+    munit_assert_true(cep_ep_request_lease(eid, probe->lease_path, true, false, true));
+
+    ok = cep_cell_put_text(probe->target, &field, "with-lease");
+    probe->second_mutation_allowed = ok;
+
+    munit_assert_true(cep_ep_release_lease(eid, probe->lease_path));
+
+    ok = cep_cell_put_text(probe->target, &field, "post-release");
+    probe->third_mutation_denied = !ok;
+
+    cepDT status = cep_ops_make_dt("sts:ok");
+    munit_assert_true(cep_ep_close(eid, status, NULL, 0u));
 }
 
 MunitResult
@@ -453,6 +484,71 @@ test_episode_await_timeout(const MunitParameter params[], void* user_data_or_fix
     cepDT ist_cxl = cep_ops_make_dt("ist:cxl");
     munit_assert_int(cep_dt_compare(final_state, &ist_cxl), ==, 0);
 
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult
+test_episode_lease_enforcement(const MunitParameter params[], void* user_data_or_fixture)
+{
+    (void)params;
+    (void)user_data_or_fixture;
+
+    episode_runtime_start();
+
+    cepCell* data_root = cep_cell_ensure_dictionary_child(cep_root(),
+                                                          CEP_DTAW("CEP", "data"),
+                                                          CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(data_root);
+    data_root = cep_cell_resolve(data_root);
+    munit_assert_not_null(data_root);
+
+    cepCell* lease_target = cep_cell_ensure_dictionary_child(data_root,
+                                                             CEP_DTAW("CEP", "ep_lease"),
+                                                             CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(lease_target);
+    lease_target = cep_cell_resolve(lease_target);
+    munit_assert_not_null(lease_target);
+
+    cepPath* lease_path = NULL;
+    munit_assert_true(cep_cell_path(lease_target, &lease_path));
+    munit_assert_not_null(lease_path);
+
+    EpisodeLeaseProbe probe = {
+        .target = lease_target,
+        .lease_path = lease_path,
+        .first_mutation_denied = false,
+        .second_mutation_allowed = false,
+        .third_mutation_denied = false,
+    };
+
+    EpisodePathBuf signal_buf = {0};
+    EpisodePathBuf target_buf = {0};
+    const cepPath* signal_path = episode_make_path(&signal_buf, "sig:episode/lease");
+    const cepPath* target_path = episode_make_path(&target_buf, "rt:episode/lease");
+
+    cepEpExecutionPolicy policy = {
+        .profile = CEP_EP_PROFILE_RW,
+        .cpu_budget_ns = CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS,
+        .io_budget_bytes = CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES,
+    };
+
+    cepEID eid = cep_oid_invalid();
+    bool started = cep_ep_start(&eid,
+                                signal_path,
+                                target_path,
+                                episode_lease_slice,
+                                &probe,
+                                &policy,
+                                0u);
+    munit_assert_true(started);
+    munit_assert_true(cep_oid_is_valid(eid));
+
+    munit_assert_true(probe.first_mutation_denied);
+    munit_assert_true(probe.second_mutation_allowed);
+    munit_assert_true(probe.third_mutation_denied);
+
+    cep_free(lease_path);
     test_runtime_shutdown();
     return MUNIT_OK;
 }

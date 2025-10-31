@@ -33,6 +33,7 @@ typedef struct cepEpExecutionContext {
     void        *user_data;
     uint64_t     cpu_consumed_ns;
     size_t       io_consumed_bytes;
+    bool         allow_without_lease;
     atomic_bool  cancel_requested;
     cepExecutorTicket ticket;
 } cepEpExecutionContext;
