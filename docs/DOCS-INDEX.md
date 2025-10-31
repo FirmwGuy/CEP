@@ -52,6 +52,9 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/L0_KERNEL/topics/RAW-TRAVERSAL-HELPERS.md` | Planned traversal helper APIs | Traversal roadmap | Planned | Pending implementation; reference before adding traversal helpers. |
 | `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md` | Serialization format and reader/writer APIs | Serialization core | Live | Verify manifest and chunk descriptions against code. |
 | `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md` | Boot/shutdown operation timelines | Lifecycle operations | Live | Should be reread before editing lifecycle helpers. |
+| `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` | Episodic Enzyme Engine overview (episodes, budgets, cancellation) | Heartbeat executor, OPS dossiers | Live | Describes queue semantics, RO guardrails, and CEI integration now that E³ replaces Rendezvous. |
+| `E3.md` | Episodic Enzyme Engine roadmap (executor queue, RO guard, budgets) | Heartbeat executor, CEI guardrails | Mixed | Executor skeleton and RO budgets implemented; cancellation/resume and OPS dossier wiring still underway. |
+| `docs/FEDERATION-DESIGN-SPIKE.md` | Planning notes for the post-E³ federation spike | Federation architecture | Planned | Captures scope, deliverables, and follow-up actions before the formal design doc is written. |
 
 ### Planned Document Type: Design Papers
 Design documents live under `docs/L0_KERNEL/design/` and cover the architectural rationale behind concrete implementations. See `docs/L0_KERNEL/design/L0-DESIGN-GUIDE.md` for structure and expectations.

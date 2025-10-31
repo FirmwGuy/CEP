@@ -7,6 +7,7 @@
 #include "cep_heartbeat.h"
 #include "cep_cei.h"
 #include "cep_heartbeat_internal.h"
+#include "cep_executor.h"
 #include "cep_namepool.h"
 #include "../enzymes/cep_cell_operations.h"
 #include "../enzymes/cep_l0_organs.h"
@@ -4555,6 +4556,8 @@ bool cep_heartbeat_stage_commit(void) {
         fflush(stderr);
         return false;
     }
+
+    cep_executor_service();
 
     if (CEP_RUNTIME.current != CEP_BEAT_INVALID) {
         cepOpCount stamp = cep_cell_timestamp();

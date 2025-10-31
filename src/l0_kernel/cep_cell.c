@@ -7,6 +7,7 @@
 #include "cep_cell.h"
 #include "cep_cei.h"
 #include "cep_heartbeat.h"
+#include "cep_executor.h"
 #include "cep_namepool.h"
 #include "cep_ops.h"
 
@@ -2126,6 +2127,10 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
         return false;
     }
 
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
+
     cepCell* owner = cep_cell_resolve(parent);
     if (!owner || !cep_cell_is_normal(owner)) {
         return false;
@@ -2231,6 +2236,10 @@ bool cep_cell_put_dt(cepCell* parent, const cepDT* field, const cepDT* value) {
 }
 
 void cep_cell_clear_children(cepCell* cell) {
+    if (!cep_ep_require_rw()) {
+        return;
+    }
+
     if (!cep_cell_require_store(&cell, NULL)) {
         return;
     }
@@ -2247,6 +2256,10 @@ void cep_cell_clear_children(cepCell* cell) {
 
 bool cep_cell_copy_children(const cepCell* source, cepCell* dest, bool deep_clone) {
     if (!dest) {
+        return false;
+    }
+
+    if (!cep_ep_require_rw()) {
         return false;
     }
 
@@ -2286,6 +2299,10 @@ bool cep_cell_copy_children(const cepCell* source, cepCell* dest, bool deep_clon
     stores read-only so existing mutation guards short-circuit quickly. */
 bool cep_cell_set_immutable(cepCell* cell) {
     if (!cell) {
+        return false;
+    }
+
+    if (!cep_ep_require_rw()) {
         return false;
     }
 
@@ -2368,6 +2385,10 @@ static bool cep_branch_seal_immutable_impl(cepCell* node) {
     it becomes visible; otherwise it only marks the root. */
 bool cep_branch_seal_immutable(cepCell* root, cepSealOptions opt) {
     if (!root) {
+        return false;
+    }
+
+    if (!cep_ep_require_rw()) {
         return false;
     }
 
@@ -2954,6 +2975,10 @@ void cep_store_del(cepStore* store) {
 void cep_store_delete_children_hard(cepStore* store) {
     assert(cep_store_valid(store));
 
+    if (!cep_ep_require_rw()) {
+        return;
+    }
+
     bool had_children = store->chdCount;
 
     if (store->storage == CEP_STORAGE_LINKED_LIST) {
@@ -3107,6 +3132,10 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
             (void*)child,
             child ? child->metacell.type : 0u);
         assert(cep_store_valid(store) && !cep_cell_is_void(child));
+    }
+
+    if (!cep_ep_require_rw()) {
+        return NULL;
     }
 
     if (cep_store_owner_is_immutable(store)) {
@@ -3277,6 +3306,14 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 */
 cepCell* cep_store_append_child(cepStore* store, bool prepend, cepCell* child) {
     assert(cep_store_valid(store) && !cep_cell_is_void(child));
+
+    if (!cep_ep_require_rw()) {
+        if (child && cep_cell_is_floating(child)) {
+            cep_cell_finalize_hard(child);
+            CEP_0(child);
+        }
+        return NULL;
+    }
 
     if (!store->writable || cep_store_hierarchy_locked(store->owner))
         return NULL;
@@ -4146,6 +4183,10 @@ static bool cep_txn_update_state(cepCell* root, const char* state) {
     if (!bucket || !state)
         return false;
 
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
+
     if (cep_cell_is_void(bucket))
         return false;
 
@@ -4641,6 +4682,10 @@ static bool cep_cell_structural_equal(const cepCell* existing, const cepCell* in
 static inline void store_to_dictionary(cepStore* store) {
     assert(cep_store_valid(store));
 
+    if (!cep_ep_require_rw()) {
+        return;
+    }
+
     if (store->indexing == CEP_INDEX_BY_NAME)
         return;
 
@@ -4689,6 +4734,10 @@ static inline void store_to_dictionary(cepStore* store) {
 */
 static inline void store_sort(cepStore* store, cepCompare compare, void* context) {
     assert(cep_store_valid(store) && compare);
+
+    if (!cep_ep_require_rw()) {
+        return;
+    }
 
     if (store->indexing == CEP_INDEX_BY_FUNCTION)
         return;
@@ -4745,6 +4794,10 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
 static inline bool store_take_cell(cepStore* store, cepCell* target) {
     assert(cep_store_valid(store) && target);
 
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
+
     if (cep_store_owner_is_immutable(store) || cep_cell_is_immutable(target))
         return false;
 
@@ -4791,6 +4844,10 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
 */
 static inline bool store_pop_child(cepStore* store, cepCell* target) {
     assert(cep_store_valid(store) && target);
+
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
 
     if (cep_store_owner_is_immutable(store) || cep_cell_is_immutable(target))
         return false;
@@ -4839,6 +4896,10 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
 */
 static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* target) {
     assert(cep_store_valid(store) && store->chdCount);
+
+    if (!cep_ep_require_rw()) {
+        return;
+    }
 
     if (cep_store_hierarchy_locked(store->owner))
         return;
@@ -4940,6 +5001,10 @@ void cep_cell_initialize(cepCell* cell, unsigned type, cepDT* name, cepData* dat
 void cep_cell_transfer(cepCell* src, cepCell* dst)
 {
     assert(!cep_cell_is_void(src) && dst);
+
+    if (!cep_ep_require_rw()) {
+        return;
+    }
 
     bool wasLink = cep_cell_is_link(src);
     bool hadShadow = (!wasLink) && cep_cell_is_shadowed(src);
@@ -5291,6 +5356,13 @@ void cep_cell_finalize_hard(cepCell* cell) {
 */
 cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+    if (!cep_ep_require_rw()) {
+        if (child && cep_cell_is_floating(child)) {
+            cep_cell_finalize_hard(child);
+            CEP_0(child);
+        }
+        return NULL;
+    }
     if (cep_cell_is_immutable(cell))
         return NULL;
     cepCell* inserted = cep_store_add_child(store, context, child);
@@ -5335,6 +5407,13 @@ cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
 */
 cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
+    if (!cep_ep_require_rw()) {
+        if (child && cep_cell_is_floating(child)) {
+            cep_cell_finalize_hard(child);
+            CEP_0(child);
+        }
+        return NULL;
+    }
     if (cep_cell_is_immutable(cell)) {
         CEP_DEBUG_PRINTF_STDOUT("[cep_cell_append] immutable parent=%p prepend=%d\n",
                                 (void*)cell,
@@ -5358,6 +5437,10 @@ cepCell* cep_cell_append(cepCell* cell, bool prepend, cepCell* child) {
     allocation fails. */
 int cep_cell_add_parents(cepCell* derived, cepCell* const* parents, size_t count) {
     if (!derived || (count && !parents)) {
+        return -1;
+    }
+
+    if (!cep_ep_require_rw()) {
         return -1;
     }
 
@@ -5453,6 +5536,9 @@ uint64_t cep_cell_content_hash(cepCell* cell) {
         return 0u;
     }
 
+    if (!cep_ep_require_rw())
+        return 0u;
+
     cepData* data = cell->data;
     if (!data || (data->datatype != CEP_DATATYPE_VALUE && data->datatype != CEP_DATATYPE_DATA)) {
         return 0u;
@@ -5474,6 +5560,10 @@ int cep_cell_set_content_hash(cepCell* cell, uint64_t hash) {
 
     cell = cep_link_pull(cell);
     if (!cell || !cep_cell_is_normal(cell) || !cep_cell_has_data(cell)) {
+        return -1;
+    }
+
+    if (!cep_ep_require_rw()) {
         return -1;
     }
 
@@ -5658,6 +5748,9 @@ void* cep_cell_update_hard(cepCell* cell, size_t size, size_t capacity, void* va
     cell = cep_link_pull(cell);
 
     if (cep_cell_is_immutable(cell))
+        return NULL;
+
+    if (!cep_ep_require_rw())
         return NULL;
 
     cepData* data = cell->data;
@@ -6039,6 +6132,10 @@ bool cep_txn_begin(cepCell* parent, const cepDT* name, const cepDT* type, cepTxn
     if (!parent || !name || !cep_dt_is_valid(name) || !txn)
         return false;
 
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
+
     CEP_0(txn);
 
     cepCell* resolved = cep_link_pull(parent);
@@ -6084,12 +6181,20 @@ bool cep_txn_mark_ready(cepTxn* txn) {
     if (!txn || !txn->root)
         return false;
 
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
+
     return cep_txn_update_state(txn->root, "ready");
 }
 
 bool cep_txn_commit(cepTxn* txn) {
     if (!txn || !txn->root)
         return false;
+
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
 
     cepCell* root = cep_link_pull(txn->root);
     if (!root)
@@ -6125,6 +6230,10 @@ bool cep_txn_commit(cepTxn* txn) {
 void cep_txn_abort(cepTxn* txn) {
     if (!txn || !txn->root)
         return;
+
+    if (!cep_ep_require_rw()) {
+        return;
+    }
 
     cepCell* root = cep_link_pull(txn->root);
     if (!root)
@@ -6758,6 +6867,9 @@ bool cep_cell_deep_traverse_all(cepCell* cell, cepTraverse func, cepTraverse end
 */
 void cep_cell_to_dictionary(cepCell* cell) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store);
+    if (!cep_ep_require_rw()) {
+        return;
+    }
     store_to_dictionary(store);
 }
 
@@ -6769,6 +6881,9 @@ void cep_cell_to_dictionary(cepCell* cell) {
 */
 void cep_cell_sort(cepCell* cell, cepCompare compare, void* context) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store);
+    if (!cep_ep_require_rw()) {
+        return;
+    }
     store_sort(store, compare, context);
 }
 
@@ -6785,6 +6900,9 @@ bool cep_cell_child_take(cepCell* cell, cepCell* target) {
         return false;
 
     CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
 
     if (!store->writable || !store->chdCount || cep_store_hierarchy_locked(store->owner))
         return false;
@@ -6819,6 +6937,9 @@ bool cep_cell_child_pop(cepCell* cell, cepCell* target) {
         return false;
 
     CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
 
     if (!store->writable || !store->chdCount || cep_store_hierarchy_locked(store->owner))
         return false;
@@ -6849,6 +6970,9 @@ bool cep_cell_child_pop(cepCell* cell, cepCell* target) {
 */
 bool cep_cell_child_take_hard(cepCell* cell, cepCell* target) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
     return store_take_cell(store, target);
 }
 
@@ -6859,6 +6983,9 @@ bool cep_cell_child_take_hard(cepCell* cell, cepCell* target) {
 */
 bool cep_cell_child_pop_hard(cepCell* cell, cepCell* target) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, false);
+    if (!cep_ep_require_rw()) {
+        return false;
+    }
     return store_pop_child(store, target);
 }
 
@@ -6869,6 +6996,9 @@ bool cep_cell_child_pop_hard(cepCell* cell, cepCell* target) {
 */
 void cep_cell_remove_hard(cepCell* cell, cepCell* target) {
     assert(cell && !cep_cell_is_root(cell));
+    if (!cep_ep_require_rw()) {
+        return;
+    }
     cepStore* store = cell->parent;
     if (!store || cep_store_owner_is_immutable(store) || cep_cell_is_immutable(cell))
         return;

@@ -5,3 +5,4 @@ option('tests', type: 'feature', value: 'enabled', description: 'Build unit test
 option('server', type: 'feature', value: 'disabled', description: 'Build standalone CEP server')
 option('both_libs', type: 'boolean', value: false, description: 'Build both static and shared libraries')
 option('zip', type: 'feature', value: 'auto', description: 'Enable libzip-backed stream adapter')
+option('executor_backend', type: 'combo', choices: ['stub', 'threaded'], value: 'stub', description: 'Select executor backend implementation')

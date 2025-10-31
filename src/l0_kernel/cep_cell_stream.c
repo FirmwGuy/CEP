@@ -11,6 +11,8 @@
  */
 
 #include "cep_cell.h"
+#include "cep_ep.h"
+#include "cep_executor.h"
 #include "cep_heartbeat.h"
 #include "stream/cep_stream_internal.h"
 
@@ -303,6 +305,12 @@ bool cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size
 
     cell = cep_link_pull(cell);
 
+    if (!cep_ep_require_rw()) {
+        if (out_written)
+            *out_written = 0;
+        return false;
+    }
+
     cepData* data = cell->data;
     if (!data || !data->writable)
         return false;
@@ -379,6 +387,10 @@ bool cep_cell_stream_write(cepCell* cell, uint64_t offset, const void* src, size
     if (out_written)
         *out_written = actual;
 
+    if (ok && actual) {
+        cep_ep_account_io(actual);
+    }
+
     cep_stream_journal(cell,
                        ok? (CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_COMMIT)
                           : (CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_ERROR),
@@ -401,6 +413,10 @@ bool cep_cell_stream_map(cepCell* cell, uint64_t offset, size_t size, unsigned a
 
     cepData* data = cell->data;
     if (!data)
+        return false;
+
+    bool want_write = (access & CEP_STREAM_ACCESS_WRITE) != 0;
+    if (want_write && !cep_ep_require_rw())
         return false;
 
     if ((access & CEP_STREAM_ACCESS_WRITE) && cep_cell_data_locked_hierarchy(cell))
@@ -480,6 +496,9 @@ bool cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit) {
     bool commit_allowed = commit && !locked;
     bool forced_abort = commit && locked;
 
+    if (commit && (view->access & CEP_STREAM_ACCESS_WRITE) && !cep_ep_require_rw())
+        return false;
+
     bool ok = false;
 
     switch (data->datatype) {
@@ -511,6 +530,9 @@ bool cep_cell_stream_unmap(cepCell* cell, cepStreamView* view, bool commit) {
             data->modified = cep_cell_timestamp_next();
 
             uint64_t hash = length? cep_hash_bytes(base + voffset, length): 0;
+            if (length) {
+                cep_ep_account_io(length);
+            }
             cep_stream_journal(cell,
                                CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_COMMIT,
                                voffset,

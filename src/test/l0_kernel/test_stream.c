@@ -13,6 +13,8 @@
 
 
 #include "test.h"
+#include "cep_ep.h"
+#include "cep_executor.h"
 #include "stream/cep_stream_stdio.h"
 #include "stream/cep_stream_internal.h"
 
@@ -68,6 +70,72 @@ MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_
     assert_true(cep_cell_stream_read(&stream, strlen(greeting), tail, strlen(noun), &read));
     tail[read] = '\0';
     assert_string_equal(tail, "world");
+
+    cep_cell_finalize_hard(&stream);
+    cep_cell_finalize_hard(&resource);
+    cep_cell_finalize_hard(&library);
+    cep_cell_system_shutdown();
+
+    return MUNIT_OK;
+}
+
+MunitResult test_ep_stream_access(const MunitParameter params[], void* user_data_or_fixture) {
+    test_boot_cycle_prepare(params);
+    (void)user_data_or_fixture;
+
+    cep_cell_system_initiate();
+
+    cepCell library;
+    CEP_0(&library);
+    cep_stdio_library_init(&library, CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("stdio_lib")));
+
+    FILE* file = tmpfile();
+    assert_not_null(file);
+
+    cepCell resource;
+    CEP_0(&resource);
+    cep_stdio_resource_init(&resource,
+                            CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("stdio_res")),
+                            file,
+                            true);
+
+    cepCell stream;
+    CEP_0(&stream);
+    cep_stdio_stream_init(&stream,
+                          CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("stdio_str")),
+                          &library,
+                          &resource);
+
+    cepEpExecutionContext ctx;
+    memset(&ctx, 0, sizeof ctx);
+    ctx.profile = CEP_EP_PROFILE_RO;
+    atomic_init(&ctx.cancel_requested, false);
+    cep_executor_context_set(&ctx);
+
+    const char* msg = "episode";
+    size_t written = 0;
+    bool ok = cep_ep_stream_write(&stream, 0, msg, strlen(msg), &written);
+    assert_false(ok);
+    assert_size(written, ==, 0u);
+
+    cep_executor_context_clear();
+
+    ctx.profile = CEP_EP_PROFILE_RW;
+    atomic_store(&ctx.cancel_requested, false);
+    cep_executor_context_set(&ctx);
+
+    ok = cep_ep_stream_write(&stream, 0, msg, strlen(msg), &written);
+    assert_true(ok);
+    assert_size(written, ==, strlen(msg));
+
+    cep_executor_context_clear();
+    assert_true(cep_ep_stream_commit_pending());
+
+    char buffer[16] = {0};
+    size_t read = 0;
+    assert_true(cep_cell_stream_read(&stream, 0, buffer, strlen(msg), &read));
+    buffer[read] = '\0';
+    assert_string_equal(buffer, msg);
 
     cep_cell_finalize_hard(&stream);
     cep_cell_finalize_hard(&resource);

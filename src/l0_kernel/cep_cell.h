@@ -9,8 +9,6 @@
 
 
 #include "cep_molecule.h"
-
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,6 +28,8 @@ typedef struct _cepProxy      cepProxy;
 typedef int (*cepCompare)(const cepCell* restrict, const cepCell* restrict, void*);
 
 typedef uint64_t  cepOpCount;         // CEP per-cell operation id number.
+
+bool cep_ep_require_rw(void);
 
 
 /*
@@ -1442,6 +1442,10 @@ static inline void cep_cell_delete_data(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->data)
         return;
 
+    if (!cep_ep_require_rw()) {
+        return;
+    }
+
     if (cep_cell_is_immutable(cell))
         return;
 
@@ -1460,6 +1464,10 @@ static inline void cep_cell_delete_data_hard(cepCell* cell) {
     if (!cep_cell_has_data(cell))
         return;
 
+    if (!cep_ep_require_rw()) {
+        return;
+    }
+
     if (cep_cell_is_immutable(cell))
         return;
 
@@ -1476,6 +1484,10 @@ static inline void cep_cell_delete_data_hard(cepCell* cell) {
 static inline void cep_cell_delete_store(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->store)
         return;
+
+    if (!cep_ep_require_rw()) {
+        return;
+    }
 
     if (cep_cell_is_immutable(cell))
         return;
@@ -1494,6 +1506,10 @@ static inline void cep_cell_delete_store(cepCell* cell) {
 static inline void cep_cell_delete_store_hard(cepCell* cell) {
     if (!cep_cell_has_store(cell))
         return;
+
+    if (!cep_ep_require_rw()) {
+        return;
+    }
 
     if (cep_cell_is_immutable(cell))
         return;
@@ -1514,6 +1530,10 @@ static inline void cep_cell_delete_children(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || !cep_cell_is_normal(cell) || !cell->store)
         return;
 
+    if (!cep_ep_require_rw()) {
+        return;
+    }
+
     if (cep_cell_store_locked_hierarchy(cell))
         return;
 
@@ -1525,6 +1545,9 @@ static inline void cep_cell_delete_children(cepCell* cell) {
 
 static inline void cep_cell_delete_children_hard(cepCell* cell) {
     assert(cep_cell_has_store(cell));
+    if (!cep_ep_require_rw()) {
+        return;
+    }
     cep_cell_delete_children(cell);
     cep_store_delete_children_hard(cell->store);
 }
@@ -1532,6 +1555,10 @@ static inline void cep_cell_delete_children_hard(cepCell* cell) {
 static inline void cep_cell_delete(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || cep_cell_is_root(cell))
         return;
+
+    if (!cep_ep_require_rw()) {
+        return;
+    }
 
     if (!cep_cell_is_normal(cell))
         return;
@@ -1560,6 +1587,10 @@ static inline void cep_cell_delete_hard(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || cep_cell_is_root(cell))
         return;
 
+    if (!cep_ep_require_rw()) {
+        return;
+    }
+
     cep_cell_delete(cell);
     cep_cell_remove_hard(cell, NULL);
 }
@@ -1568,12 +1599,20 @@ static inline void cep_cell_dispose(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || cep_cell_is_root(cell))
         return;
 
+    if (!cep_ep_require_rw()) {
+        return;
+    }
+
     cep_cell_delete(cell);
 }
 
 static inline void cep_cell_dispose_hard(cepCell* cell) {
     if (!cell || cep_cell_is_void(cell) || cep_cell_is_root(cell))
         return;
+
+    if (!cep_ep_require_rw()) {
+        return;
+    }
 
     cep_cell_dispose(cell);
 

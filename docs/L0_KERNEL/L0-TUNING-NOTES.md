@@ -150,6 +150,23 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 
 ---
 
+## 8) Episodic executor queue & budgets
+
+**What to know**
+
+* `cep_executor_submit_ro` drives a cooperative ready queue processed during `cep_heartbeat_stage_commit()`. Queue capacity is static (`CEP_EXECUTOR_QUEUE_CAPACITY`, default 64). Tasks inherit a `cepEpExecutionContext` that tracks per-slice CPU/IO budgets and cancellation state.
+* Read-only contexts (`profile = CEP_EP_PROFILE_RO`) are enforced via `cep_ep_require_rw()`. Violations emit `sev:usage` CEI facts (`ep:profile/ro`) and return early so no journal mutations occur inside the guard path.
+* IO-heavy helpers (stream writes, serialization) now call `cep_ep_account_io(bytes)` to record consumption. When contexts exceed their IO budget they emit `ep:budget/io` CEI facts and mark themselves cancelled so cooperating enzymes can respect the limit.
+
+**Tuning tips**
+
+* Increase `CEP_EXECUTOR_QUEUE_CAPACITY` only when bursts regularly exceed 64 tasks; larger queues increase the scan window each beat.
+* Supply a `cepEpExecutionPolicy` when submitting work to tighten CPU/IO budgets per task. Combine short CPU slices with periodic `cep_ep_check_cancel()` calls inside enzymes so long-running work yields fairly.
+* Stream adapters or custom serialization should call `cep_ep_account_io()` immediately after writing bytes to keep IO budgets accurate.
+* The Meson option `-Dexecutor_backend=threaded` is reserved for future threaded backends. On wasm/emscripten targets the build automatically falls back to the cooperative stub backend.
+
+----
+
 ## 9) Serialization: chunk sizes, staging & hashes
 
 **Emit side**

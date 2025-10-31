@@ -12,6 +12,7 @@
 
 #include <inttypes.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));

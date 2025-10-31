@@ -354,6 +354,14 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/stream/episode_guard",
+        test_ep_stream_access,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
         "/stream/stdio",
         test_stream_stdio,
         NULL,
@@ -371,6 +379,38 @@ MunitTest tests[] = {
         boot_cycle_params
     },
 #endif
+    {
+        "/executor/queue",
+        test_executor_runs_task,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/executor/cancel",
+        test_executor_cancel_pending,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/executor/io_budget",
+        test_executor_io_budget_cancel,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/executor/self_cancel",
+        test_executor_self_cancel,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
 
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL}  // EOL
 };

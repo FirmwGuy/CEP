@@ -65,6 +65,8 @@ l0_srcs = files(
   'src/l0_kernel/cep_mailbox.c',
   'src/l0_kernel/cep_ops.c',
   'src/l0_kernel/cep_organ.c',
+  'src/l0_kernel/cep_ep.c',
+  'src/l0_kernel/cep_executor.c',
   'src/enzymes/cep_l0_organs.c',
   'src/enzymes/cep_cell_operations.c',
   'src/l0_kernel/stream/cep_stream_stdio.c',
@@ -78,6 +80,7 @@ l0_srcs = files(
 )
 
 lib_dependencies = []
+host_sys = host_machine.system()
 
 if zip_dep.found()
   l0_srcs += files('src/l0_kernel/stream/cep_stream_zip.c')
@@ -86,7 +89,6 @@ if zip_dep.found()
 endif
 
 exe_cargs = []
-host_sys = host_machine.system()
 if host_sys == 'windows'
   # Workaround: define only for test builds on Windows due to munit atomics bug.
   exe_cargs += ['-D__STDC_NO_ATOMICS__']
@@ -94,6 +96,17 @@ endif
 
 # Build the core library (static by default; both if requested)
 both_libs = get_option('both_libs')
+executor_backend = get_option('executor_backend')
+if (host_sys == 'emscripten' or host_sys.startswith('wasm')) and executor_backend == 'threaded'
+  warning('Threaded executor backend unavailable on ' + host_sys + '; falling back to stub backend')
+  executor_backend = 'stub'
+endif
+
+if executor_backend == 'threaded'
+  add_project_arguments('-DCEP_EXECUTOR_BACKEND_THREADED=1', language: 'c')
+else
+  add_project_arguments('-DCEP_EXECUTOR_BACKEND_STUB=1', language: 'c')
+endif
 lib_kw = {
   'include_directories': inc,
   'install': true,
@@ -126,6 +139,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_mailbox.c',
     'src/test/l0_kernel/test_cei.c',
     'src/test/l0_kernel/test_stream.c',
+    'src/test/l0_kernel/test_executor.c',
     'src/test/l0_kernel/test_serialization.c',
     'src/test/l0_kernel/test_locking.c',
     'src/test/l0_kernel/test_cells_randomized.c',

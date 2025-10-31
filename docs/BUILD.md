@@ -36,6 +36,7 @@ The Meson project defines these switches (see `meson_options.txt`):
 | `server` | feature | `disabled` | Build the standalone CEP server (requires `src/server/main.c`). |
 | `both_libs` | boolean | `false` | Produce both static and shared `libcep`. |
 | `zip` | feature | `auto` | Toggle the libzip-backed stream adapter (`enabled`, `disabled`, `auto`). |
+| `executor_backend` | combo (`stub`, `threaded`) | `stub` | Select the episodic executor backend. `threaded` is future work; wasm/emscripten builds automatically fall back to `stub`. |
 
 Set options during `meson setup` or after the fact with `meson configure`:
 
@@ -103,6 +104,9 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
 - Libzip adapter
   - Force on/off with `-Dzip=enabled|disabled`. The default `auto` builds when `libzip` is detected.
 
+- Episodic executor backend
+  - Cooperative stub backend ships today. Pass `-Dexecutor_backend=threaded` to opt into the forthcoming threaded backend; on wasm/emscripten builds Meson automatically falls back to the stub path.
+
 ## Offline Fallback (No Meson/Ninja)
 
 - Use the emergency Makefile under `unix/Makefile`.
@@ -144,4 +148,3 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
     - Fail fast / show stderr: `./build/cep_tests.exe --fatal-failures --show-stderr`
     - Set a deterministic seed: `./build/cep_tests.exe --seed 0x1234abcd`
     - Debug/instrument on Linux: `./build/cep_tests --no-fork` keeps execution in a single process so your debugger or probes do not lose track when munit would otherwise fork.
-

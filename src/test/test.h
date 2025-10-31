@@ -58,6 +58,7 @@ MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_
 #ifdef CEP_HAS_LIBZIP
 MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fixture);
 #endif
+MunitResult test_ep_stream_access(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_mailbox_board(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_mailbox_private(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* user_data_or_fixture);
@@ -82,6 +83,10 @@ MunitResult test_prr_history_autoid_monotonic(const MunitParameter params[], voi
 MunitResult test_prr_minimal_rollback(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_control_failure_cei(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_watcher_timeout_cei(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_executor_runs_task(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_executor_cancel_pending(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_executor_io_budget_cancel(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_executor_self_cancel(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
 extern MunitSuite integration_poc_suite;

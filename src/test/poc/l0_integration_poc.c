@@ -15,6 +15,7 @@
 #include "cep_ops.h"
 #include "cep_organ.h"
 #include "cep_serialization.h"
+#include "cep_ep.h"
 #include "stream/cep_stream_internal.h"
 #include "stream/cep_stream_stdio.h"
 
@@ -142,6 +143,12 @@ typedef struct {
     FILE*    backing;
     bool     prepared;
 } IntegrationStreamContext;
+
+typedef struct {
+    cepCell* stream;
+    size_t   offset;
+    bool     guard_result;
+} IntegrationEpisodeProbe;
 
 typedef struct {
     cepTxn txn;
@@ -777,13 +784,119 @@ static void integration_stream_ctx_prepare(IntegrationStreamContext* ctx,
     ctx->prepared = true;
 }
 
+static void integration_episode_guard_task(void* ctx) {
+    IntegrationEpisodeProbe* probe = ctx;
+    munit_assert_not_null(probe);
+    munit_assert_not_null(probe->stream);
+
+    size_t written = 0u;
+    probe->guard_result = cep_ep_stream_write(probe->stream,
+                                              probe->offset,
+                                              "ro-denied",
+                                              strlen("ro-denied"),
+                                              &written);
+    munit_assert_size(written, ==, 0u);
+}
+
+static void integration_episode_executor_checks(IntegrationStreamContext* ctx) {
+    if (!ctx || !ctx->prepared) {
+        return;
+    }
+
+    const char* baseline = "phase-one:payload";
+    size_t baseline_len = strlen(baseline);
+
+    munit_assert_true(cep_executor_init());
+
+    cepEpExecutionPolicy policy = {
+        .profile = CEP_EP_PROFILE_RO,
+        .cpu_budget_ns = CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS,
+        .io_budget_bytes = CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES,
+    };
+
+    IntegrationEpisodeProbe probe = {
+        .stream = ctx->stream_node,
+        .offset = baseline_len,
+        .guard_result = true,
+    };
+
+    cepExecutorTicket ticket = 0u;
+    munit_assert_true(cep_executor_submit_ro(integration_episode_guard_task,
+                                             &probe,
+                                             &policy,
+                                             &ticket));
+    munit_assert_uint64(ticket, !=, 0u);
+    cep_executor_service();
+    if (probe.guard_result) {
+        munit_assert_true(cep_heartbeat_stage_commit());
+        munit_assert_true(cep_heartbeat_step());
+        cep_executor_service();
+    }
+    munit_assert_false(probe.guard_result);
+
+    const char* slices[] = {
+        ":episode-0",
+        ":episode-1",
+        ":episode-2",
+    };
+
+    cepEpExecutionContext rw_ctx = {
+        .profile = CEP_EP_PROFILE_RW,
+        .cpu_budget_ns = CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS,
+        .io_budget_bytes = CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES,
+        .user_data = NULL,
+        .cpu_consumed_ns = 0u,
+        .io_consumed_bytes = 0u,
+        .ticket = 0,
+    };
+    atomic_init(&rw_ctx.cancel_requested, false);
+
+    size_t offset = baseline_len;
+    for (size_t i = 0; i < cep_lengthof(slices); ++i) {
+        const char* slice = slices[i];
+        size_t slice_len = strlen(slice);
+
+        cep_executor_context_set(&rw_ctx);
+        size_t written = 0u;
+        munit_assert_true(cep_ep_stream_write(ctx->stream_node,
+                                              offset,
+                                              slice,
+                                              slice_len,
+                                              &written));
+        munit_assert_size(written, ==, slice_len);
+        cep_executor_context_clear();
+        munit_assert_true(cep_ep_stream_commit_pending());
+
+        offset += slice_len;
+    }
+
+    cepEpExecutionContext budget_ctx = {
+        .profile = CEP_EP_PROFILE_RO,
+        .cpu_budget_ns = CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS,
+        .io_budget_bytes = 8u,
+        .user_data = NULL,
+        .cpu_consumed_ns = 0u,
+        .io_consumed_bytes = 0u,
+        .ticket = 0,
+    };
+    atomic_init(&budget_ctx.cancel_requested, false);
+    cep_executor_context_set(&budget_ctx);
+    cep_ep_account_io(16u);
+    munit_assert_true(cep_ep_check_cancel());
+    cep_ep_request_cancel();
+    munit_assert_true(cep_ep_check_cancel());
+    cep_executor_context_clear();
+
+    cep_executor_shutdown();
+}
+
 static void integration_stream_ctx_verify(IntegrationStreamContext* ctx) {
     munit_assert_not_null(ctx);
     munit_assert_not_null(ctx->stream_node);
 
-    char buffer[32] = {0};
+    char buffer[80] = {0};
     size_t read = 0u;
-    const char* expected = "phase-one:payload";
+    const char* expected = "phase-one:payload:episode-0:episode-1:episode-2";
     munit_assert_true(cep_cell_stream_read(ctx->stream_node,
                                            0u,
                                            buffer,
@@ -1121,6 +1234,7 @@ static void integration_execute_interleaved_timeline(IntegrationFixture* fix) {
     munit_assert_true(cep_heartbeat_stage_commit());
 
     integration_ops_ctx_verify(&ops_ctx);
+    integration_episode_executor_checks(&stream_ctx);
     integration_stream_ctx_verify(&stream_ctx);
     integration_txn_ctx_commit(&txn_ctx, fix);
     integration_serialize_and_replay(fix);
