@@ -5,7 +5,7 @@ CEP serialization packages cell state into travel-friendly pieces so snapshots a
 This document explains the moving parts in plain language first, then dives into the binary framing, chunk taxonomy, and how stream adapters plug in. If you already know the stream APIs, treat this as the map that shows how their reads and writes become serialized artifacts (and vice versa).
 
 ## Technical Details
-
+Here is the nuts-and-bolts view of how chunks are framed, identified, and replayed, plus the way stream adapters plug into the pipeline.
 ### Chunk framing
 
 - Start each serialization stream with a dedicated header chunk (see `Serialization header`). It announces the magic number, format revision, and negotiated options so readers can refuse incompatible payloads or recover after corruption.
@@ -112,4 +112,3 @@ Adapters expose their serialization hooks through `cepLibraryOps` (see `src/l0_k
 
 - **Q: How do library serializers signal failure?**
   **A:** They return an error that we record as a zero-length library capsule chunk with an error flag in the payload header. Replay tools treat that as "library context missing" and ask operators to repair or resynchronize manually.
-

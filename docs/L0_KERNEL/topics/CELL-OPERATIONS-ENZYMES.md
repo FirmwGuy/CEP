@@ -5,7 +5,7 @@ The cell operation enzymes let schedulers apply familiar tree edits (add, update
 ---
 
 ## Technical Details
-
+Here are the lifecycle rules, envelope formats, and helper functions that keep the stock cell-operation enzymes predictable across store types.
 ### Registry lifecycle
 - `cep_cell_operations_register()` ensures the five descriptors are present exactly once per registry. A small side table keeps the registry pointer and baseline size so repeated calls stay idempotent even if other subsystems add entries later.
 - Registration populates each descriptor under `sig_cell/op_*` with the appropriate `enz_*` name and `cell.*` label. The helper resists re-entrancy by pinning the active registry while it mutates entries.

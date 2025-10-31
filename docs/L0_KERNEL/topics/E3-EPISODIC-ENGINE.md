@@ -1,4 +1,4 @@
-# Episodic Enzyme Engine (E³)
+# L0 Topic: Episodic Enzyme Engine (E³)
 
 ## Introduction
 Imagine taking a long-running job, slicing it into safe, deterministic beats, and letting the kernel keep score. The Episodic Enzyme Engine (E³) is Layer 0’s answer: a scheduler that lets enzymes span beats, run on read-only worker slices, and cancel cooperatively—without giving up the calm, replayable heartbeats that define CEP.
@@ -10,6 +10,7 @@ Imagine taking a long-running job, slicing it into safe, deterministic beats, an
 - **Public API helpers.** `cep_ep_start()` creates the `op/ep` dossier, snapshots the signal/target metadata, and schedules the first slice. Slice bodies call `cep_ep_yield()` to arm an `ist:yield` watcher, `cep_ep_await()` to bind an external `op/*` state, and `cep_ep_close()` / `cep_ep_cancel()` to finish with `sts:ok` or `sts:cnl`. The helpers keep dossier histories, watcher payloads, and CEI notes consistent.
 - **Continuation enzyme.** A dedicated `ep/cont` enzyme bridges OPS watchers back into execution: it requeues the owning episode when the signal targets the dossier itself, or resumes the waiting episode when the signal resolves an awaited operation. Timeout signals (`op/tmo`) automatically cancel the waiting episode and close it with `sts:cnl`.
 - **Read-only guard.** Mutation helpers now early-out when invoked from a RO profile. They call `cep_ep_require_rw()` to emit a single `sev:usage` CEI fact (`topic=ep:pro/ro`) and skip journaling while returning `false`/`NULL`. This keeps “RO thread” episodes observational-only.
+- **Hybrid episodes.** Setting `cepEpExecutionPolicy.profile = CEP_EP_PROFILE_HYBRID` starts the slice on the threaded RO executor, then lets callers promote to cooperative RW via `cep_ep_promote_to_rw()` (optionally queuing lease requests) and demote back to RO with `cep_ep_demote_to_ro()`. Promotions force a yield so leases are acquired on the next beat; demotions require all leases released before the slice re-enters the threaded pool. Budgets, cancellation flags, and TLS bookkeeping span both modes so replay remains deterministic.
 - **RW leases.** `cep_ep_request_lease()` normalises cell paths and records store/data locks per episode so RW slices can mutate safely. Locks bubble through the hierarchy: the owning episode may continue writing while other contexts observe the lock and bail out. Descendant coverage is opt-in (`include_descendants=true`), and `cep_ep_release_lease()` unwinds remaining locks automatically when the dossier closes or the episode is removed.
 - **Coroutine helpers.** `cep_ep_suspend_rw()` lets cooperative coroutines yield without leaving RW guards or leases pinned; pair it with `cep_ep_resume_rw()` to rebind the TLS context and reacquire any dropped locks before touching kernel APIs again.
 - **Budgets & CEI integration.** `cep_ep_account_io()` and the executor’s CPU timer maintain slice budgets. When an episode overruns its configured IO/CPU ceiling, the helpers emit `ep:bud/io` or `ep:bud/cpu` CEI facts and mark the context cancelled. Enzymes should call `cep_ep_check_cancel()` at yield points to respect the signal.
@@ -38,6 +39,9 @@ Rendezvous relied on bespoke registries and opaque wait handles. E³ folds long-
 
 **Q: Can read-only episodes mutate state at the end?**  
 They can queue intents (e.g., stage a transaction) for commit on the next beat, but mutation helpers stay guarded. Use a dedicated RW episode (with leases) for mutators; RO slices exist to analyse state, stream data, or schedule follow-on work.
+
+**Q: Can a hybrid episode return to RO after writing?**  
+Yes. Call `cep_ep_demote_to_ro()` once leases are released. The current slice yields, the heartbeat schedules the next slice on the threaded executor, and subsequent mutations will require a fresh promotion. Hybrid slices preserve accumulated CPU/IO budget data across promotions and demotions so guardrails remain intact.
 
 **Q: How do RW leases interact with descendants?**  
 Call `cep_ep_request_lease()` with `include_descendants=true` when you need the whole subtree. The kernel normalises the supplied `cep_cell_path`, bears store/data locks on the lease root, and lets the owning episode mutate descendants while other contexts see the lock and return `false`. Remember to release the lease (or close the episode) so the lock vanishes before the next owner arrives.

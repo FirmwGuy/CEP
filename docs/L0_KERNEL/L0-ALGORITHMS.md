@@ -171,7 +171,33 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 
 ---
 
-# Quick index of the most impactful entry points (with purpose)
+## 12) Episodic Enzyme Engine (E³) promotion/demotion
+
+**Why it exists.** Hybrid episodes allow workloads to jump between threaded RO slices and cooperative RW slices without losing determinism. The promotion/demotion helpers coordinate queue state, leases, and TLS context so each switch occurs at a heartbeat boundary and the same slice cannot accidentally run in both modes.
+
+**What it does.**
+
+* **Promotion (`cep_ep_promote_to_rw`).** Runs inside the active RO slice. Queues optional `cepEpLeaseRequest` entries (paths plus optional `cepCell*` shortcuts), flips `episode->mode_next = RW`, and calls `cep_ep_yield()` so the heartbeat drains the current ticket. When the cooperative slice begins, `cep_ep_apply_pending_leases()` locks the requested subtrees, `mode_current` updates to RW, and mutation guards (`cep_ep_require_rw`) allow writes.
+* **Demotion (`cep_ep_demote_to_ro`).** Requires all leases released and any staged transactions committed/aborted. Records `mode_next = RO`, yields, and the heartbeat rebuilds a threaded ticket (`cep_executor_submit_ro`). Guards revert to RO, so attempts to mutate again must re-promote.
+* **Accounting.** `cep_ep_bind_tls_context()` copies `mode_current` into the TLS execution context each slice, keeping CPU/IO budgets and cancellation flags continuous. If callers try to mutate before promoting, the guard emits a `ep:pro/ro` CEI advisory and returns `false`.
+
+**Where it lives.**
+`src/l0_kernel/cep_ep.c` (`mode_current`/`mode_next`, `cep_ep_promote_to_rw`, `cep_ep_demote_to_ro`, `cep_ep_apply_pending_leases`, `cep_ep_schedule_run`) implements the switch, with `cep_executor_submit_ro` / `cep_ep_execute_cooperative` handling scheduling. Tests reside in `src/test/l0_kernel/test_episode.c` (`test_episode_hybrid_promote_demote`).
+
+
+## 13) Pause / Rollback / Resume (PRR) control loop
+
+**Why it exists.** Operations such as maintenance or emergency rollback need a deterministic way to freeze the heartbeat agenda, record a rollback horizon, and drain queued impulses when work resumes. The PRR helpers coordinate envelope state, backlog mailboxes, and locks so every transition is beat-aligned and replayable.
+
+**What it does.**
+
+* **Pause (`cep_runtime_pause`).** Acquires `/data` store/data locks, enqueues an `op/pause` dossier, and flips the agenda gate so new impulses are parked in `/data/mailbox/impulses`. Watchers record `ist:quiesce` and later `ist:paused`.
+* **Rollback (`cep_runtime_rollback`).** Records the target beat in the control dossier, updates `/sys/state/view_hzn`, and trims the backlog mailbox so only impulses at or before the horizon are replayed.
+* **Resume (`cep_runtime_resume`).** Lifts the agenda gate, drains the backlog mailbox in deterministic ID order, and records `ist:run` → `ist:ok`.
+
+**Where it lives.**
+`src/l0_kernel/cep_heartbeat.c` (`cep_runtime_pause`, `cep_runtime_resume`, `cep_runtime_rollback`, backlog drain helpers) plus the design doc `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md`. Tests: `src/test/l0_kernel/test_prr.c` and the integration POC pause/rollback scenario.
+
 
 * **History & snapshots:** `cep_cell_update`, `cep_data_history_push`, `cep_store_history_push/clear` 
 * **Links & shadows:** `cep_link_set/pull`, `cep_cell_shadow_mark_target_dead`, `cep_shadow_*` helpers 

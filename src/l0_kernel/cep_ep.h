@@ -17,6 +17,14 @@ typedef cepOID cepEID;
 
 typedef void (*cepEpCallback)(cepEID eid, void* user_context);
 
+typedef struct cepEpLeaseRequest {
+    const cepPath* path;
+    const cepCell* cell;
+    bool           lock_store;
+    bool           lock_data;
+    bool           include_descendants;
+} cepEpLeaseRequest;
+
 bool cep_ep_start(cepEID* out_eid,
                   const cepPath* signal_path,
                   const cepPath* target_path,
@@ -57,6 +65,15 @@ void cep_ep_request_cancel(void);
 
 bool cep_ep_check_cancel(void);
 void cep_ep_account_io(size_t bytes);
+
+#define CEP_EP_PROMOTE_FLAG_NONE 0u
+#define CEP_EP_DEMOTE_FLAG_NONE  0u
+
+bool cep_ep_promote_to_rw(cepEID eid,
+                          const cepEpLeaseRequest* requests,
+                          size_t request_count,
+                          uint32_t flags);
+bool cep_ep_demote_to_ro(cepEID eid, uint32_t flags);
 
 bool cep_ep_handle_continuation(const cepDT* continuation, cepOID target_oid);
 void cep_ep_runtime_reset(void);

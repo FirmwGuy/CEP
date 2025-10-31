@@ -4,6 +4,8 @@
 Think of CEP's runtime as a pair of operations that bookend every session. `op/boot` raises the curtain with a deterministic checklist, `op/shdn` lowers it, and the kernel records each phase so tooling can observe progress without chasing ad‑hoc impulses. This chapter explains how those operations are created, which states they traverse, and where to look when you need to coordinate packs or await readiness. One-beat enzymes are still supported exactly as before—fire-and-forget callbacks run through the regular heartbeat resolver without interacting with OPS/STATES. The OPS/STATES machinery is reserved for multi-stage or stateful work that spans beats.
 
 ## Technical Details
+
+The checklist below describes exactly which helpers run during bootstrap, how the OPS dossiers evolve beat by beat, and what state is written so tooling can observe readiness and teardown.
 ### Phase 0 — Bootstrap prerequisites
 - `cep_l0_bootstrap()` remains the public entry point. It calls `cep_cell_system_ensure()`, `cep_heartbeat_bootstrap()`, and `cep_namepool_bootstrap()` in order. Each helper marks its lifecycle scope ready, which now drives the `op/boot` timeline.
 - `cep_cell_system_ensure()` initialises the root cell if needed. On shutdown `cep_cell_system_shutdown()` reverses the work so the next bootstrap starts cleanly.

@@ -11,6 +11,8 @@ What this means in simple terms:
 
 ## Technical Design
 
+The notes below translate the workshop metaphor into concrete data structures, file layout, and API contracts so you can inspect, debug, or extend the heartbeat without guessing at hidden state.
+
 ### Scope and Naming
 - Enzyme: a C function that performs work. Multiple enzymes can react to the same situation.
 - Signal (Impulse): a request to act, expressed as a `cepPath`. Signals are queued for a specific beat.
@@ -142,7 +144,9 @@ During setup, register descriptors first and then call `cep_cell_bind_enzyme` on
 
 ## OPS/STATES Operations
 
-### Introduction
+OPS/STATES dossiers ride the same heartbeat as enzymes; this section explains how the helpers model long-running work, watchers, and close records so integrations can observe progress without touching raw cells.
+
+### Overview
 OPS/STATES gives every long-running operation a tidy logbook under `/rt/ops/<oid>`. A start helper seals the envelope (verb, target, mode, optional payload), subsequent state helpers append history entries, awaiters register continuations, and close seals the dossier. Instead of orchestrating these cells by hand, callers drive the lifecycle with a few purpose-built APIs while the heartbeat guarantees the same deterministic beat-to-beat cadence.
 
 ### Technical Details

@@ -23,6 +23,8 @@ In short: use a handle when you mean “that external thing,” use a snapshot w
 
 ## Technical Model
 
+The adapter contract below captures how handles, snapshots, and vtables cooperate so Layer 0 can touch foreign libraries deterministically without cheating on ownership or replay.
+
 ### Core Principles
 
 - Opaqueness at the boundary: CEP never dereferences foreign struct fields directly. It calls adapter functions owned by the library integration.

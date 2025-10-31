@@ -5,6 +5,8 @@ Mailboxes give packs a structured way to capture messages, enforce retention pol
 
 ## Technical Details
 
+Use these notes when you need the exact storage layout or helper behaviour for mailbox identity, TTL resolution, and retention planning; they capture the invariants implied by the design rationale so code changes stay compatible.
+
 ### Message identity helpers
 - `cep_mailbox_select_message_id()` settles the identifier for a message. It respects the precedence chain (caller-supplied → envelope digest → counter fallback), detects collisions by hashing the sealed envelope, and records which strategy won. Reusing a message ID with an identical sealed envelope returns a `CEP_MAILBOX_ID_REUSED` result so callers can short-circuit duplicate writes.
 - The helper expects envelopes to be immutable (`cep_cell_set_immutable()` or `cep_branch_seal_immutable()`); otherwise the digest path is skipped and the counter fallback is used.

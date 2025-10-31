@@ -84,7 +84,7 @@ Imagine putting a sticky note on a folder that says â€œrun these helpers here.â€
 - Enzyme renames: prefer stable `cepDT` identities; stale names in cells simply do not resolve (optionally provide aliases during transitions).
 
 ## Performance Analysis (Estimated)
-
+These back-of-the-envelope numbers explain how the resolver scales with registry size, wildcard use, and ancestry depth so you can judge whether a proposed change might threaten beat budget.
 ### Scenario
 - 10,000 impulses/heartbeat; average 3 enzymes triggered per impulse; 1,000 registry entries; 300 unique enzyme names.
 
@@ -144,4 +144,3 @@ Imagine putting a sticky note on a folder that says â€œrun these helpers here.â€
   The gather step is proportional to depth plus the local binding sizes, which stay small in practice. For pathological cases, interning shared binding sets and caching perâ€‘segment unions within a beat can keep it fast.
 
 ---
-

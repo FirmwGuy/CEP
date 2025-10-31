@@ -93,6 +93,7 @@ MunitResult test_episode_await_resume(const MunitParameter params[], void* user_
 MunitResult test_episode_await_timeout(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_episode_lease_enforcement(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_episode_rw_suspend_resume(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_episode_hybrid_promote_demote(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
 extern MunitSuite integration_poc_suite;

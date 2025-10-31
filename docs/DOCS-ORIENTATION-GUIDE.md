@@ -19,17 +19,17 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/CEP-TAG-LEXICON.md` — Canonical tag catalog; extend here before introducing new identifiers.
 
 - **Runtime & Lifecycle**
-- `docs/LAYER-BOOTSTRAP-POLICY.md` — Kernel vs. pack responsibilities during bootstrap.
-- `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md` — Boot/shutdown operation timeline, states, and awaiter guidance.
-- `docs/L0_KERNEL/topics/CEI.md` — Emission helper, diagnostics mailbox defaults, and severity rules for CEI facts.
-- `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` — Beat phases, agenda ordering, and signal staging contracts.
-- `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` — Mailbox identity helpers, TTL precedence, and retention planning.
-- `docs/L0_KERNEL/topics/MAILBOX-CEI-MAPPING.md` — Line-by-line severity map for mailbox helpers so CEI emits stay consistent.
-- `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md` — Binding inheritance, wildcard routing, and tombstones.
+  - `docs/LAYER-BOOTSTRAP-POLICY.md` — Kernel vs. pack responsibilities during bootstrap.
+  - `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md` — Boot/shutdown operation timeline, states, and awaiter guidance.
+  - `docs/L0_KERNEL/topics/CEI.md` — Emission helper, diagnostics mailbox defaults, and severity rules for CEI facts.
+  - `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` — Beat phases, agenda ordering, and signal staging contracts.
+  - `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` — Mailbox identity helpers, TTL precedence, and retention planning.
+  - `docs/L0_KERNEL/topics/MAILBOX-CEI-MAPPING.md` — Line-by-line severity map for mailbox helpers so CEI emits stay consistent.
+  - `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md` — Binding inheritance, wildcard routing, and tombstones.
   - `docs/L0_KERNEL/topics/CELL-OPERATIONS-ENZYMES.md` — Reference semantics for the standard `sig_cell/op_*` helpers.
   - `docs/L0_KERNEL/topics/ORGANS-AUTHORING.md` — Register organ descriptors, enforce validator bindings, and coordinate ctor/dtor/validation ops.
-- `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` — How episodes, RO budgets, and cooperative cancellation work now that E³ replaces Rendezvous.
-- `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` — Episodic engine design rationale, executor backends, and migration guidance from Rendezvous.
+  - `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` — How the Episodic Enzyme Engine (E³) handles RO budgets, hybrid RO↔RW promotions/demotions, and cooperative cancellation now that it replaces Rendezvous.
+  - `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` — Episodic engine design rationale, executor backends, and migration guidance from Rendezvous.
 - **External Integrations**
   - `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md` — Chunk framing, manifest rules, and replay expectations.
   - `docs/L0_KERNEL/topics/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect logging, CAS, and preconditions around I/O.
@@ -43,7 +43,6 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - `docs/TEST-WATCHDOG-GUIDE.md` — Harness watchdog expectations, tracing controls, and Organ Validation Harness (OVH) fixtures.
   - `docs/TOOLS.md` — Repo scripts for fixtures, code maps, and Doxygen post-processing.
   - `docs/L0_KERNEL/L0_ROADMAP.md` — Active milestones, TODO markers, and planned helper work.
-- `docs/L0_KERNEL/L0_ROADMAP.md` — Layer 0 subsystem map outlining OVH organ/OPS adoption commitments.
   - `docs/L0_KERNEL/topics/RAW-TRAVERSAL-HELPERS.md` — Upcoming `*_all` traversal APIs; recheck before touching traversal internals.
 - `docs/L0_KERNEL/design/DESIGN-INDEX.md` — Status board for Layer 0 design papers.
   - `docs/L0_KERNEL/design/L0-DESIGN-GUIDE.md` — Expectations for the new Design document tier that records architectural rationale.

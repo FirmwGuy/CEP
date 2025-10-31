@@ -157,6 +157,15 @@ typedef struct {
     atomic_bool second_allowed;
     atomic_bool third_denied;
 } IntegrationLeaseProbe;
+typedef struct {
+    cepCell*    target;
+    cepPath*    path;
+    atomic_uint stage;
+    atomic_bool promoted;
+    atomic_bool demoted;
+    atomic_bool ro_guard;
+} IntegrationHybridProbe;
+
 
 typedef struct {
     cepTxn txn;
@@ -923,6 +932,126 @@ integration_episode_lease_task(cepEID eid, void* ctx)
 }
 
 static void
+integration_episode_hybrid_task(cepEID eid, void* ctx)
+{
+    IntegrationHybridProbe* probe = ctx;
+    munit_assert_not_null(probe);
+    munit_assert_not_null(probe->target);
+    unsigned stage = atomic_load_explicit(&probe->stage, memory_order_relaxed);
+
+    cepDT field = cep_ops_make_dt("hyb_field");
+
+    if (stage == 0u) {
+        cepEpLeaseRequest request = {
+            .path = probe->path,
+            .cell = probe->target,
+            .lock_store = true,
+            .lock_data = false,
+            .include_descendants = false,
+        };
+        munit_assert_true(cep_ep_promote_to_rw(eid, &request, 1u, CEP_EP_PROMOTE_FLAG_NONE));
+        atomic_store_explicit(&probe->promoted, true, memory_order_relaxed);
+        atomic_store_explicit(&probe->stage, 1u, memory_order_relaxed);
+        return;
+    }
+
+    if (stage == 1u) {
+        munit_assert_true(cep_cell_put_text(probe->target, &field, "rw-mutated"));
+        munit_assert_true(cep_ep_release_lease(eid, probe->path));
+        munit_assert_true(cep_ep_demote_to_ro(eid, CEP_EP_DEMOTE_FLAG_NONE));
+        atomic_store_explicit(&probe->demoted, true, memory_order_relaxed);
+        atomic_store_explicit(&probe->stage, 2u, memory_order_relaxed);
+        return;
+    }
+
+    if (stage == 2u) {
+        bool ok = cep_cell_put_text(probe->target, &field, "post-demote");
+        munit_assert_false(ok);
+        cepDT status = cep_ops_make_dt("sts:ok");
+        munit_assert_true(cep_ep_close(eid, status, NULL, 0u));
+        atomic_store_explicit(&probe->ro_guard, true, memory_order_relaxed);
+        atomic_store_explicit(&probe->stage, 3u, memory_order_relaxed);
+        return;
+    }
+}
+
+static void
+integration_episode_hybrid_flow(IntegrationFixture* fix)
+{
+    munit_assert_not_null(fix);
+
+    cepCell* data_root = cep_cell_ensure_dictionary_child(cep_root(),
+                                                          CEP_DTAW("CEP", "data"),
+                                                          CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(data_root);
+    data_root = cep_cell_resolve(data_root);
+
+    cepCell* hybrid_target = cep_cell_ensure_dictionary_child(data_root,
+                                                             CEP_DTAW("CEP", "int_hybrid"),
+                                                             CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(hybrid_target);
+    hybrid_target = cep_cell_resolve(hybrid_target);
+
+    cepPath* hybrid_path = NULL;
+    munit_assert_true(cep_cell_path(hybrid_target, &hybrid_path));
+
+    IntegrationHybridProbe probe = {
+        .target = hybrid_target,
+        .path = hybrid_path,
+    };
+    atomic_init(&probe.stage, 0u);
+    atomic_init(&probe.promoted, false);
+    atomic_init(&probe.demoted, false);
+    atomic_init(&probe.ro_guard, false);
+
+    IntegrationPathBuf signal_buf = {0};
+    IntegrationPathBuf target_buf = {0};
+    const cepPath* signal_path = integration_make_path(&signal_buf,
+                                                       (const cepDT[]){ integration_named_dt("sig:integration/hybrid") }, 1u);
+    const cepPath* target_path = integration_make_path(&target_buf,
+                                                       (const cepDT[]){ integration_named_dt("rt:integration/hybrid") }, 1u);
+
+    cepEpExecutionPolicy policy = {
+        .profile = CEP_EP_PROFILE_HYBRID,
+        .cpu_budget_ns = CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS,
+        .io_budget_bytes = CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES,
+    };
+
+    cepEID eid = cep_oid_invalid();
+    munit_assert_true(cep_ep_start(&eid,
+                                   signal_path,
+                                   target_path,
+                                   integration_episode_hybrid_task,
+                                   &probe,
+                                   &policy,
+                                   0u));
+
+    unsigned spins = 0u;
+    while (atomic_load_explicit(&probe.stage, memory_order_relaxed) < 3u && spins < 32u) {
+        munit_assert_true(cep_heartbeat_stage_commit());
+        munit_assert_true(cep_heartbeat_step());
+        munit_assert_true(cep_heartbeat_resolve_agenda());
+        munit_assert_true(cep_heartbeat_process_impulses());
+        spins += 1u;
+    }
+    munit_assert_uint(atomic_load_explicit(&probe.stage, memory_order_relaxed), ==, 3u);
+    munit_assert_true(atomic_load_explicit(&probe.promoted, memory_order_relaxed));
+    munit_assert_true(atomic_load_explicit(&probe.demoted, memory_order_relaxed));
+    munit_assert_true(atomic_load_explicit(&probe.ro_guard, memory_order_relaxed));
+
+    cepDT field = cep_ops_make_dt("hyb_field");
+    cepCell* field_cell = cep_cell_find_by_name(hybrid_target, &field);
+    munit_assert_not_null(field_cell);
+    field_cell = cep_cell_resolve(field_cell);
+    munit_assert_not_null(field_cell);
+    const char* final_text = (const char*)cep_cell_data(field_cell);
+    munit_assert_not_null(final_text);
+    munit_assert_string_equal(final_text, "rw-mutated");
+
+    cep_free(hybrid_path);
+}
+
+static void
 integration_episode_lease_flow(IntegrationFixture* fix)
 {
     munit_assert_not_null(fix);
@@ -1329,6 +1458,7 @@ static void integration_execute_interleaved_timeline(IntegrationFixture* fix) {
     integration_ops_ctx_verify(&ops_ctx);
     integration_episode_executor_checks(&stream_ctx);
     integration_episode_lease_flow(fix);
+    integration_episode_hybrid_flow(fix);
     integration_stream_ctx_verify(&stream_ctx);
     integration_txn_ctx_commit(&txn_ctx, fix);
     integration_serialize_and_replay(fix);

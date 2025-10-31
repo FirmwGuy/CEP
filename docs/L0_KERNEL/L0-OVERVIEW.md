@@ -15,10 +15,11 @@ This L0 Kernel API gives you a **hierarchical, time‑aware data kernel** (“ce
 * **Proxies and library bindings** to virtualize payloads and streams behind an adapter. 
 * A **reactive “enzyme” layer** for deterministic, dependency‑aware work dispatch driven by paths and heartbeats.   
 * A **beat-recorded Operations timeline** (`op/*`) with watcher support so long-running work, boot, and shutdown stay observable and awaitable.
-* A **Common Error Interface** that centralises diagnostics, routes structured Error Facts through mailboxes, and enforces severity-driven OPS/shutdown policy.
+* A **Common Error Interface (CEI)** that centralises diagnostics, routes structured Error Facts through mailboxes, and enforces severity-driven OPS/shutdown policy.
 * A compact **chunked serialization** format with staged reading/commit and optional blob chunking for large payloads. 
 * An optional **namepool** to intern strings when you need textual names bound to IDs. 
-* **Pause / Rollback / Resume controls** that gate non-essential work, rewind the visible beat horizon, and deterministically drain queued impulses from a mailbox-backed backlog.
+* **Pause / Rollback / Resume (PRR) controls** that gate non-essential work, rewind the visible beat horizon, and deterministically drain queued impulses from a mailbox-backed backlog.
+* **Episodic Enzyme Engine (E³)** that runs long-lived workloads deterministically, with the ability to promote episodes from threaded RO slices to cooperative RW slices and demote them back without breaking replay or budget accounting.
 
 
 Together, these pieces let you build **local‑first trees, reactive dataflows, digital‑twin graphs, scene graphs with spatial indexing, and distributed state pipelines**—without giving up determinism, history, or zero‑copy performance where it matters.
@@ -26,6 +27,8 @@ Together, these pieces let you build **local‑first trees, reactive dataflows, 
 ---
 
 ## Topics Overview
+
+Each linked topic digs into a specific subsystem of Layer 0. Use this map to decide which deep-dive to read before changing kernel code or wiring new integrations.
 
 ### Append-Only and Idempotency
 This topic tracks how Layer 0 preserves deterministic history for both payloads and structure. It explains the twin timelines (`cepData` for bytes, `cepStore` for children), how timestamps reconstruct past states without cloning trees, and why duplicate updates short-circuit instead of forking history. Use it whenever you need to reason about replay, soft versus hard deletes, or store snapshot costs.
@@ -51,6 +54,9 @@ Domain/tag identifiers support globbing for routing and discovery. The glob guid
 ### Heartbeat and Enzymes
 The heartbeat topic narrates the capture → compute → commit lifecycle, impulse queues, dependency sorting, and agenda replay rules. It anchors enzyme scheduling semantics so you can reason about deterministic work ordering and beat-level safety checks.
 
+### Episodic Engine (E³)
+The engine described in `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` lets episodes span beats, yield, await other operations, and—when configured—promote from threaded RO slices to cooperative RW slices (and demote back again) without sacrificing determinism. Read it before wiring long-lived jobs that blend read-heavy analysis with targeted mutations.
+
 ### IO Streams and Foreign Resources
 Streaming payloads bridge kernel cells with foreign resources. This topic covers the effect log, CAS guarantees, chunk management, and the guardrails for mapping external handles into CEP. It is required reading before changing stream ingestion or library-backed handles.
 
@@ -64,16 +70,16 @@ Layer 0 enforces deterministic mutation using hierarchical locks. The locking 
 Mailbox organs now ship with shared helpers that settle message identity, TTL precedence, and retention buckets. `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` documents the layout under `meta/`, the `msgs/` store, and how `cep_mailbox_select_message_id()`, `cep_mailbox_resolve_ttl()`, and `cep_mailbox_plan_retention()` cooperate with the heartbeat. Revisit it before wiring board/news workflows, private inbox policies, or retention enzymes so behaviour stays deterministic across beats and replays.
 
 ### Pause, Rollback, and Resume
-Control verbs (`op/pause`, `op/rollback`, `op/resume`) introduce a control plane that can park impulses, publish a rollback horizon, and drain the backlog in ID order once work resumes. `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md` captures the state ladders, full `cepDT` path fidelity, and cleanup guarantees you need before evolving the control code.
-
-### Pause, Rollback, and Resume
-Control verbs (`op/pause`, `op/rollback`, `op/resume`) introduce a control plane that can safely park impulses, roll visibility back to a prior beat, and resume by draining the backlog in ID order. The design doc `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md` covers state ladders, backlog semantics (full `cepDT` path fidelity), and cleanup guarantees so tooling stays aligned with implementation.
+Control verbs (`op/pause`, `op/rollback`, `op/resume`) give Layer 0 a deterministic control plane: they park impulses, publish a rollback horizon, roll visibility back to a prior beat, and resume by draining the backlog in ID order. `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md` documents the state ladders, backlog semantics (full `cepDT` path fidelity), and cleanup guarantees you need before evolving the control code or tooling against it.
 
 ### Common Error Interface (CEI)
-Layer 0’s CEI helper (`docs/L0_KERNEL/topics/CEI.md`) centralises diagnostics. It seeds the default diagnostics mailbox at `/data/mailbox/diag`, assembles structured Error Facts via `cep_cei_emit`, can emit `sig_cei/*` impulses, and enforces severity policy (OPS closure, fatal shutdown). Pair it with the mailbox topic before altering diagnostics routing or severity handling.
+Layer 0’s Common Error Interface (`docs/L0_KERNEL/topics/CEI.md`) centralises diagnostics. It seeds the default diagnostics mailbox at `/data/mailbox/diag`, assembles structured Error Facts via `cep_cei_emit`, can emit `sig_cei/*` impulses, and enforces severity policy (OPS closure, fatal shutdown). Pair it with the mailbox topic before altering diagnostics routing or severity handling.
 
 ### Operations Timeline and Watchers
 Operations run as append-only dossiers under `/rt/ops/<oid>` with envelopes, history, close branches, and watcher ledgers. `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md` and `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` explain how `cep_op_start`, `cep_op_close`, and `cep_op_await` coordinate with lifecycle scopes and the heartbeat so packs can observe boot/shutdown progress—or stitch their own long-running work—without polling.
+
+### Mailbox Lifecycle and Retention
+Mailboxes combine deterministic message identifiers, TTL resolution, and retention buckets so backlog/pause flows stay replayable. The topic `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` explains how `cep_mailbox_select_message_id()`, `cep_mailbox_resolve_ttl()`, and `cep_mailbox_plan_retention()` work together; revisit it before wiring ingestion pipelines or backlog handling so new mail stays ordered and expiries behave the same across replays.
 
 ### Native Types
 Native payloads are opaque bytes labelled by compact domain/tag identifiers. This document clarifies VALUE/DATA/HANDLE/STREAM semantics, hashing rules, and how upper layers layer meaning on top. Visit it before altering payload structures or introducing new tag conventions.
@@ -96,6 +102,8 @@ Lifecycle operations (`op/boot` and `op/shdn`) replace ad-hoc signals. `docs/L0_
 ---
 
 ## Core concepts
+
+Layer 0 is built from a handful of durable ideas—cells, DT naming, stores, links, proxies, heartbeats, and episodic work. This section collects the “must-know” primitives you should internalise before modifying the kernel or building against it.
 
 ### 1) Cells: data + children (with time)
 

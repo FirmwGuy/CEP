@@ -491,6 +491,14 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
+    {
+        "/episode/hybrid_promote_demote",
+        test_episode_hybrid_promote_demote,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
 
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL}  // EOL
 };

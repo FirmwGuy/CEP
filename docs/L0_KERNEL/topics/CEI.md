@@ -4,7 +4,7 @@
 CEI is Layer 0’s single voice for reporting faults. Instead of scattering ad-hoc log lines or bespoke signals, kernel code now emits one structured Error Fact that lands in a deterministic diagnostics mailbox, can page listeners through `sig_cei/*`, and—when required—updates an operation dossier or triggers shutdown. Think of it as a shared inbox and siren for problems: drop a fact in, the kernel records when and where it happened, and every interested consumer can react without guessing how the message was formed.
 
 ## Technical Details
-
+The subsections below describe how CEI provisions mailboxes, shapes Error Facts, enforces severity policy, and integrates with OPS dossiers so feature code can emit diagnostics confidently.
 ### Diagnostics mailbox bootstrap
 - Layer 0 creates `/data/mailbox/diag` during `cep_heartbeat_bootstrap()`. It is a dictionary mailbox with `meta/kind="diagnostic"`, ready-made `meta/runtime` buckets, and a `msgs/` store for entries.
 - `cep_cei_diagnostics_mailbox()` exposes that mailbox so helpers and packs can inspect or override it. Callers may supply their own mailbox root in a request, but the diagnostics mailbox is always available as a fallback.

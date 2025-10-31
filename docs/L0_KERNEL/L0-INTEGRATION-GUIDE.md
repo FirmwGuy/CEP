@@ -11,14 +11,18 @@
 
 * **Signals → Enzymes → Work**: register, bind, match, and order enzyme callbacks; how impulses get resolved and executed  .
 * **Serialization & Streams**: emit/ingest chunked cell streams; transactions; manifest & payload; proxy snapshots .
-* **Diagnostics**: the legacy CEI channel was retired; capture faults via bespoke enzymes (log to a pack-owned journal branch) and track any outstanding integration work in your roadmap until the replacement diagnostics surface ships.
+* **Diagnostics / CEI**: the Common Error Interface (`cep_cei_emit`) publishes structured Error Facts into the diagnostics mailbox (`/data/mailbox/diag`) and can emit `sig_cei/*` impulses; re-read the CEI topic before customising severity handling or routing.
 * **Proxies & Libraries**: represent external resources/streams inside cells  .
 * **Naming & Namepool**: compact Domain/Tag IDs, intern/lookup text names  .
 * **Locking, History & “soft” vs “hard”**: data/store locks, append‑only timelines, snapshot traversals  .
+* **Episodic Enzyme Engine (E³)**: promote/demote episodic work between threaded RO and cooperative RW slices without breaking replay invariants.
+* **Pause / Rollback / Resume (PRR)**: gate the heartbeat agenda, rewind the visible horizon, and drain postponed impulses deterministically.
 
 ---
 
 ## 1) Signals, enzymes, and the heartbeat
+
+This chapter explains how work enters the kernel through signals, how enzyme registries resolve and order callbacks each beat, and how the heartbeat enforces the capture → compute → commit contract so integrations stay deterministic.
 
 ### 1.1 Enzyme descriptors and registration
 
@@ -205,6 +209,8 @@ cep_cell_finalize(&branch);
 
 ### 1.10 OPS/STATES dossiers
 
+Long-running kernel work surfaces as OPS/STATES dossiers so integrations can track progress, await transitions, and publish structured close metadata without inventing bespoke timelines.
+
 #### Introduction
 OPS/STATES records each long-running task under `/rt/ops/<oid>` so callers can watch progress without hand-rolling cell mutations. Starting an operation freezes its envelope, state transitions append to a history list, awaiters register continuations, and a close helper seals the outcome. The heartbeat keeps beat-by-beat determinism, so work queued for N never leaks into the current cycle.
 
@@ -216,8 +222,20 @@ OPS/STATES records each long-running task under `/rt/ops/<oid>` so callers can w
 - `cep_ops_stage_commit()` runs at the end of every heartbeat commit so continuations and TTL expiries share the same promotion path as other impulses. Entries flagged `armed=true` fire their continuation; entries whose `deadline <= current` emit `op/tmo`. Tests typically call `cep_heartbeat_step()` followed by `cep_heartbeat_resolve_agenda()` to assert single-fire behaviour.
 - `cep_op_get(oid, buf, cap)` generates a quick textual summary (OID components, state, status, watcher count). For deeper inspection, walk the dossier directly—`envelope/` and `close/` are sealed, `history/` is append-only, and `watchers/` stays mutable.
 
-##
+### 1.11 Mailbox lifecycle and retention
+
+When ingesting messages or managing backlogs, use the shared helpers so CEP keeps identifiers, TTLs, and backlog drains deterministic:
+
+- `cep_mailbox_select_message_id()` picks IDs (caller ID → digest → counter) and records which strategy won.
+- `cep_mailbox_resolve_ttl()` merges message/mailbox/topology scopes and records both beat and wallclock deadlines.
+- `cep_mailbox_plan_retention()` partitions due items each beat and tells your retention enzyme whether future work remains.
+
+Mailbox organs and PRR rely on these APIs, so reusing them keeps routing/backlog behaviour consistent across packs and replay runs.
+
+
 ## 2) Serialization & streams (wire format)
+
+When cells travel between processes or shards they move as chunked streams. This chapter explains how the wire format is framed, how manifests and payloads pair up during capture/commit, and which helpers keep ingestion deterministic while respecting append-only history.
 
 ### 2.1 Chunk framing and the control header
 
@@ -408,6 +426,8 @@ Diagnostics and guards often need quick answers about a node’s shape or payloa
 
 ## 6) Recipes
 
+Quick, copy‑pasteable snippets that show the happy-path sequence for common integration chores. Each recipe links the narrative guidance earlier in the guide to the concrete API calls you’ll make in production.
+
 ### A) Register and bind an enzyme
 
 ```c
@@ -574,3 +594,22 @@ Heartbeat init/shutdown operations now mirror production beats, so tooling and t
 - *When should I choose `opm:direct` over `opm:states`?* `opm:direct` fits two-impulse flows (start → close). `opm:states` is for multi-phase work where intermediate checkpoints must be observable or awaitable.
 - *How do I test awaiters deterministically?* Register a test enzyme on `op/cont` (or `op/tmo`), call `cep_op_await()`, advance a beat with `cep_heartbeat_step()`, then resolve the agenda. The enzyme should fire exactly once—immediately if the state already matched, otherwise on the next beat.
 - *Can I attach large artefacts to the close record?* Yes. Drop a CAS handle or library reference into the `summary` payload; the close branch keeps it immutable while heavy bytes live in content storage.
+- ### 1.12 Episodic Enzyme Engine (E³) promotion and demotion
+
+When you select the hybrid profile (`cepEpExecutionPolicy.profile = CEP_EP_PROFILE_HYBRID`), episodes start life on the threaded RO pool but can opt into mutations when needed:
+
+- **Promote to RW.** Call `cep_ep_promote_to_rw()` from inside the active slice. Pass an optional array of `cepEpLeaseRequest` descriptors when you already know which subtrees need locks (supply both the path and, when convenient, the resolved `cepCell*` so the lease can reuse the pointer without another lookup). The helper queues those lease requests, flips the episode into `mode_next = RW`, and forces a yield so the heartbeat activates the cooperative slice on the next beat. When the new slice begins, `cep_ep_apply_pending_leases()` acquires the requested store/data locks before your callback resumes.
+- **Mutate safely.** Once promoted, the slice behaves like a standard RW episode—`cep_ep_request_lease()` continues to work, `cep_ep_require_rw()` allows writes (but still enforces lease ownership), and CPU/IO budgets continue to accumulate on the shared `cepEpExecutionContext`.
+- **Demote back to RO.** After releasing leases and finalising any transactional work (`cep_txn_commit`/`cep_txn_abort`), call `cep_ep_demote_to_ro()`. The helper records `mode_next = RO` and yields; the heartbeat rebuilds a threaded ticket so subsequent slices return to the worker pool. Attempting to demote while leases remain (or while the slice is suspended) fails fast so replay stays deterministic.
+
+If you forget to promote before mutating, `cep_ep_require_rw()` emits a CEI advisory (`ep:pro/ro`) and returns false, making it obvious that an upgrade is required. Demotion requests are idempotent—calling them in an already-RO slice simply returns true.
+
+### 1.13 Pause / Rollback / Resume (PRR)
+
+The PRR helpers (`cep_runtime_pause()`, `cep_runtime_rollback()`, `cep_runtime_resume()`) let you gate work deterministically while maintenance or recovery tasks run:
+
+- **Pause.** Acquires `/data` locks, enqueues an `op/pause` dossier (`ist:plan → ist:quiesce → ist:paused`), and routes new impulses into `/data/mailbox/impulses` until resume opens the gate.
+- **Rollback.** Records the target beat, updates `/sys/state/view_hzn`, trims the backlog mailbox, and emits `op/rollback` history so downstream tooling knows which beat range is visible.
+- **Resume.** Re-opens the agenda, drains the backlog mailbox in deterministic ID order, and closes the control dossier with `sts:ok` once normal scheduling resumes.
+
+Tests: see `src/test/l0_kernel/test_prr.c` and the integration POC pause/rollback scenario. Design rationale lives in `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md`.

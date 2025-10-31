@@ -6,6 +6,8 @@ Layer 0 kernel work thrives on deliberate practice more than memorising every 
 Use it whenever you are onboarding a teammate or jumping back into kernel code after a break: it points to the right files, the support docs to reread, and the build/test rituals that prevent regressions.
 
 ## Technical Details
+
+This section spells out the conventions, helper macros, and review requirements you should follow while authoring kernel patches so contributions stay consistent with the existing codebase.
 ### Scope at a Glance
 - Hands-on guidance for implementing and extending CEP Layer 0 (Kernel) and preparing for Layers 1–2.
 - Focus on `cep_cell.*` as the foundation; enzyme/heartbeat modules appear only when absolutely required.
@@ -108,13 +110,12 @@ Future you would rather debug readable code than a micro-optimised crash dump. W
 ### Name Interning
 Short nicknames stay on the label; long nicknames get filed once and every cell just keeps a reference number. You still talk to the cell the same way, but the kernel decides the cheapest way to store the name.
 
-#### Technical Details
+#### Name Interning Technical Notes
 - Fast paths: decimal strings that fit 56 bits become `CEP_NAMING_NUMERIC`. Lowercase/punctuated text (≤11 chars) uses word IDs, uppercase/punctuated text (≤9 chars) uses acronym IDs. These never touch the intern pool.
 - Reference IDs: anything longer or mixed (UTF-8) up to 256 bytes goes through `cep_namepool_intern[_static]`, which stores the bytes under `/CEP/sys/namepool` and returns a `CEP_NAMING_REFERENCE` (page,slot) ID. Static entries reuse the caller’s buffer; dynamic ones copy into the CAS-backed value.
 - Refcounts: dynamic interns bump a refcount and can be released via `cep_namepool_release(id)` when modules unload. Static interns are permanent. Lookup returns the canonical byte pointer for logging or API use.
 - Validation: `cep_id_text_valid` and `cep_dt_is_valid` now treat reference IDs as first-class, so downstream code doesn’t need special cases.
 
-##
 ### Developer Q&A
 - **How do I guarantee replayability while adding features?** Make every choice explicit and logged. No implicit randomness—tie ordering to store/indexing helpers and record decisions so the heartbeat can replay them.
 - **Can I modify facts in place?** Treat `cepData` as the current value only; if you need immutable history, append new cells or rely on higher-layer packs to version meaning explicitly.
@@ -180,7 +181,7 @@ Short nicknames stay on the label; long nicknames get filed once and every cell 
 ### Hash-Indexed Stores
 Hash-indexed stores keep duplicate detection consistent without changing the public API. Linked lists, dynamic arrays, and red-black trees accept `CEP_INDEX_BY_HASH`, but they still rely on their comparator to walk the full collection (hashes are used only for equality checks). The dedicated hash-table backend is the only one that actually buckets by hash and resizes to keep lookups near O(1).
 
-#### Technical Details
+#### Hash-Indexed Store Technical Notes
 - Supported backends: linked lists, dynamic arrays, and red-black trees reuse the sorted-insert path while consulting the hash to deduplicate entries; the hash-table backend stores children in real buckets and grows/shrinks as needed.
 - Creation contract: call `cep_store_new(..., CEP_INDEX_BY_HASH, compare)` and provide a comparator that first checks the stored hash and then compares a secondary field to resolve collisions. Callers constructing children manually can follow the `hash_index_add_value` pattern from the kernel tests: initialise a temporary cell, then pass it to `cep_cell_add`.
 - Operations: use `cep_cell_add` or `cep_store_add_child` for inserts. The deduplication logic treats two children with equal structure and hash/compare results as the same record. Append/prepend helpers are restricted to insertion-ordered stores and will assert if used with hash indexing.
@@ -214,6 +215,8 @@ Hash-indexed stores keep duplicate detection consistent without changing the pub
   - Add range queries and path iteration robustness.
 
 ### Roadmap (Kernel-Focused)
+
+Keep this list handy when prioritising kernel work—it summarises the near-term tasks and dependencies that unblock the wider roadmap.
 ### 1) Complete Data Backends
    - Extend HANDLE/STREAM history snapshots and diagnostics; the read/write path now lives in `cep_cell_stream.c`.
    - Clarify resource lifecycle: reference counting or explicit unref on HANDLE/STREAM.

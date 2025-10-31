@@ -22,6 +22,8 @@ Everyday analogy: a well-run kitchen line. Orders (cells) arrive, cooks (enzymes
 
 ## 2) Technical Details
 
+The sections that follow map the story-driven overview onto concrete subsystems, clarifying what already ships in Layer 0 and what remains planned for higher layers so implementers know where to look (or when to stub).
+
 ### 2.0 Current Implementation Scope
 
 Layer 0 (the kernel, heartbeat, and stream helpers) ships in this repository today. Higher layers—coherence packs, the flow VM, governance, and culture—remain design targets that will land as separate packs. The sections below call this out explicitly so you can distinguish live code from forward-looking architecture.

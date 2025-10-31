@@ -5,6 +5,8 @@ Mailboxes sit at the crossroads of Layer‑0 identity, policy, and retention. Th
 
 ## Technical Details
 
+This section documents the concrete mechanics behind identity selection, TTL resolution, and retention so implementation work can lean on the same guarantees captured in the design rationale.
+
 ### Identity precedence and collision handling
 - **Problem:** Packs must support caller IDs, drive idempotent retries, and still ingest messages from sources that cannot provide stable names.
 - **Decision:** Implement a fixed precedence order: caller-supplied ID → digest slug → counter fallback. Digest selection depends on envelopes being immutable so the hash remains reproducible. When a collision appears (same ID, different envelope), the helper refuses the pick and reports the collision so the caller can surface diagnostics instead of silently overwriting history.

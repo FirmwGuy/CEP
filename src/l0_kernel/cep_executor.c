@@ -623,7 +623,7 @@ cep_ep_require_rw(void)
     if (!ctx) {
         return true;
     }
-    if (ctx->profile == CEP_EP_PROFILE_RO) {
+    if (ctx->profile == CEP_EP_PROFILE_RO || ctx->profile == CEP_EP_PROFILE_HYBRID) {
         CEP_DEBUG_PRINTF("[cep_ep_require_rw] profile=RO ctx=%p\n", (void*)ctx);
         cepCeiRequest req = {
             .severity = *CEP_DTAW("CEP", "sev:usage"),

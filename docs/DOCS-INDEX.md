@@ -32,6 +32,7 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/L0_KERNEL/design/L0-DESIGN-PROXY-AND-HANDLES.md` | Proxy/handle rationale | External resources, adapters | Live | Captures lifecycle, serialization, and error propagation rules. |
 | `docs/L0_KERNEL/design/L0-DESIGN-NAMEPOOL-AND-NAMING.md` | Naming rationale | Domain/tag encoding, namepool lifecycle | Live | Explains glob semantics, reference IDs, and replay guarantees. |
 | `docs/L0_KERNEL/design/L0-DESIGN-ORGANS-AND-LIFECYCLE.md` | Organ rationale | Descriptor lifecycle, validators/destructors | Live | Records boot/shutdown sequencing and validation rules. |
+| Design Doc | Status | Scope | Notes |
 | `docs/L0_KERNEL/design/L0-DESIGN-CEI.md` | CEI rationale | Diagnostics mailbox bootstrap, severity mapping, shutdown policy | Live | Explains why CEI centralises error facts and how severities drive OPS/shutdown actions. |
 | `docs/L0_KERNEL/L0_ROADMAP.md` | Planned Layer 0 refactors and milestones | Kernel backlog | Planned | Outlines work-in-progress items; consult before large kernel edits. |
 | `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md` | Append-only semantics and idempotent operations | Cell mutation paths | Live | Coordinate with `src/l0_kernel/cep_cell.c`. |

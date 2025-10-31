@@ -4,6 +4,8 @@
 Think of the CEP tree as the campus map for the runtime. Layer 0 keeps the utilities humming, and today's shipping build only exposes that layer's neighbourhood. This guide captures the directories that actually come online so everyone files data, queues, and evidence in the same predictable places.
 
 ## Technical Details
+
+This section walks the tree one directory at a time so you know which runtime component owns each branch and what evidence or configuration it stores.
 ### Always-on roots (created by `cep_heartbeat_bootstrap`)
 - `/sys` – core counters, configuration toggles, and name tables the kernel reads each beat. The `/sys/state/<scope>` dictionary also records lifecycle readiness (`status`, `ready_beat`) and teardown metadata (`td_beat`) for kernel subsystems.
 - `/rt` – heartbeat staging area. The runtime keeps beat journals here when directory capture is enabled and always maintains `/rt/ops` for live operations such as `op/boot` and `op/shdn`.

@@ -3,7 +3,7 @@
 Immutable sealing and digesting sometimes fail because we only walk the "visible" portion of a cell tree. Staged branches keep their payloads veiled, and the current helpers politely skip them. To make sealing reliable we need an explicit way to iterate every stored child, even if it is veiled, deleted, or otherwise invisible to regular lookups.
 
 ## Technical Design
-
+The draft below captures the API shape, guarantees, and adoption plan for the proposed `*_all` traversal helpers so reviewers can judge the work needed before they land.
 ### Proposed API surface
 
 - `cepCell* cep_cell_first_all(const cepCell* parent);`

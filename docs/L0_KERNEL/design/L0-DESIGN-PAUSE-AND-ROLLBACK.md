@@ -4,6 +4,8 @@
 CEP now ships first-class Pause, Rollback, and Resume controls so operators can freeze heartbeat work, rewind the visible beat window, and return to normal execution without violating determinism. This paper captures how the control verbs surface through OPS dossiers, which runtime flags they touch, and where durable evidence lives so tooling can always explain what the kernel did. Use it as the orientation map when reviewing PRR code paths or extending the control plane.
 
 ## Technical Details
+
+The following subsections describe how the public control wrappers drive OPS dossiers, gating, backlog retention, and failure paths so that pause/rollback behaviour stays deterministic under replay.
 ### Control Surface and State Machines
 - **OPS dossiers:** Each control verb opens an OPS record under `/rt/ops/*`. The verbs (`op/pause`, `op/rollback`, `op/resume`) share the `opm:states` mode so watchers can await `ist:*` transitions. The state ladders are:
   - Pause — `ist:plan → ist:quiesce → ist:paused → sts:ok`

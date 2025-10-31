@@ -4,6 +4,8 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
 
 ## Technical Roadmap Overview
 
+The tables and bullet lists below snapshot where the kernel stands today, what is actively being built, and which items remain queued so contributors can align their efforts with the current milestone plan.
+
 ### Capability Snapshot
 | Area | Status | In Place | Next Focus |
 | --- | --- | --- | --- |
@@ -30,6 +32,7 @@ The L0 Kernel keeps CEP's tree of cells organised so applications can treat it l
 - ⚙️ Harden auto-ID handling and metadata masking before exposing external name APIs.
 - ⚙️ Finish HANDLE/STREAM historical visibility and error-channel integration now that read/write/journal helpers ship.
 - ⚙️ Capture high-water metrics for the adaptive traversal stack now that it grows automatically.
+- ✅ Hybrid episode promotions/demotions (`CEP_EP_PROFILE_HYBRID`, `cep_ep_promote_to_rw()`, `cep_ep_demote_to_ro()`) let Layer 0 switch deterministically between threaded RO and cooperative RW execution while preserving budgets, leases, and replay history. Next: wire additional pack-level helpers onto the new API surface.
 
 ### Backlog Watchlist
 - 📎 Link and shadow cleanup, including refcounting and garbage collection hooks.
@@ -54,7 +57,7 @@ Bringing stream helpers into the enzyme catalogue would let impulse-driven workf
 
 ---
 
-### Milestone Q&A
+### Stream Wrapper Q&A
 - **Why start with stream wrappers?** They are the most common side-effecting calls that still bypass the heartbeat; wrapping them aligns IO with the impulse dispatch contract.
 - **Will this replace the existing API?** No. Direct calls stay available for tight loops, but enzymes give orchestration layers a safer entry point.
 - **Do we need new storage metadata?** Only lightweight descriptors (e.g., flush depth, rotation policy) so the resolver can track idempotency and retries.
@@ -69,6 +72,7 @@ Bringing stream helpers into the enzyme catalogue would let impulse-driven workf
 - **Milestone 2 - Structural resilience**: 📎 Planned — deliver traversal depth management, shadow cleanup, packed queue recycling, and re-sort helpers for RB-tree/octree back-ends to keep large collections stable.
 - **Milestone 3 - Runtime baseline**: ⚙️ Partial — heartbeat bootstrap/start/step/shutdown loops now run with memoised agenda resolution and deterministic enzyme ordering; still pending are agency executors, channel wiring, and runtime telemetry.
   - ✅ Multi-beat `op/boot`/`op/shdn` timelines publish `ist:*` milestones across successive beats and honour awaiters without the legacy signal shim.
+  - ✅ Hybrid RO↔RW episode transitions land (`CEP_EP_PROFILE_HYBRID` plus promotion/demotion helpers), with regression coverage in `test_episode_hybrid_promote_demote` exercising lease handling and cancellation boundaries.
 - **Milestone 4 - Extended feature set**: 📎 Planned — add HANDLE/STREAM lifetimes, proxy lifecycle polish, deep cloning, persistence hooks, and expanded tests once the core runtime is proven.
 
 ---
@@ -79,4 +83,3 @@ Bringing stream helpers into the enzyme catalogue would let impulse-driven workf
 - **How do I record a new Layer 0 initiative?** Add it under the appropriate milestone with status emoji, scope notes, and the owning module so the index file stays coherent.
 - **Do roadmap entries replace TODO files?** No. Keep TODOs for execution details; the roadmap summarises intent and sequencing across the kernel.
 - **Where do I flag dependencies on upper-layer packs?** Note them in the milestone body and cross-link to pack documentation so Layer 0 changes don’t outpace integration plans.
-
