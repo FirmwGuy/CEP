@@ -8,6 +8,7 @@
 #include "cep_cei.h"
 #include "cep_heartbeat_internal.h"
 #include "cep_executor.h"
+#include "cep_ep.h"
 #include "cep_namepool.h"
 #include "../enzymes/cep_cell_operations.h"
 #include "../enzymes/cep_l0_organs.h"
@@ -3300,6 +3301,8 @@ static void cep_runtime_reset_state(bool destroy_registry) {
         CEP_RUNTIME.registry = NULL;
     }
 
+    cep_ep_runtime_reset();
+
     cep_heartbeat_impulse_queue_destroy(&CEP_RUNTIME.impulses_current);
     cep_heartbeat_impulse_queue_destroy(&CEP_RUNTIME.impulses_next);
     cep_heartbeat_dispatch_cache_destroy(&CEP_RUNTIME.scratch);
@@ -4505,6 +4508,8 @@ bool cep_heartbeat_stage_commit(void) {
     }
 
     cep_beat_begin_commit();
+
+    cep_executor_service();
 
     if (!cep_stream_commit_pending()) {
         CEP_DEBUG_PRINTF("[stage_commit] stream commit failed\n");

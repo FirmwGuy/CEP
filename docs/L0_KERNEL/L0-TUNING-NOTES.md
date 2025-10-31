@@ -155,7 +155,7 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 **What to know**
 
 * `cep_executor_submit_ro` drives a cooperative ready queue processed during `cep_heartbeat_stage_commit()`. Queue capacity is static (`CEP_EXECUTOR_QUEUE_CAPACITY`, default 64). Tasks inherit a `cepEpExecutionContext` that tracks per-slice CPU/IO budgets and cancellation state.
-* Read-only contexts (`profile = CEP_EP_PROFILE_RO`) are enforced via `cep_ep_require_rw()`. Violations emit `sev:usage` CEI facts (`ep:profile/ro`) and return early so no journal mutations occur inside the guard path.
+* Read-only contexts (`profile = CEP_EP_PROFILE_RO`) are enforced via `cep_ep_require_rw()`. Violations emit `sev:usage` CEI facts (`ep:pro/ro`) and return early so no journal mutations occur inside the guard path.
 * IO-heavy helpers (stream writes, serialization) now call `cep_ep_account_io(bytes)` to record consumption. When contexts exceed their IO budget they emit `ep:budget/io` CEI facts and mark themselves cancelled so cooperating enzymes can respect the limit.
 
 **Tuning tips**

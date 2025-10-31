@@ -87,6 +87,9 @@ MunitResult test_executor_runs_task(const MunitParameter params[], void* user_da
 MunitResult test_executor_cancel_pending(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_executor_io_budget_cancel(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_executor_self_cancel(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_episode_yield_resume(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_episode_await_resume(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_episode_await_timeout(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
 extern MunitSuite integration_poc_suite;

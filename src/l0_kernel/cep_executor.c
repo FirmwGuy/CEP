@@ -134,7 +134,7 @@ cep_executor_submit_ro(void (*task)(void *ctx),
     ctx_out->io_budget_bytes = (policy && policy->io_budget_bytes)
         ? policy->io_budget_bytes
         : CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES;
-    ctx_out->user_data = NULL;
+    ctx_out->user_data = ctx;
     ctx_out->cpu_consumed_ns = 0u;
     ctx_out->io_consumed_bytes = 0u;
     atomic_store(&ctx_out->cancel_requested, false);
@@ -204,11 +204,6 @@ cep_executor_service(void)
     }
 
     cepExecutorTask *slot = &executor_state.slots[executor_state.head];
-
-    uint64_t current_beat = cep_beat_index();
-    if (current_beat && slot->submitted_beat == current_beat) {
-        return;
-    }
 
     if (slot->state == CEP_EXECUTOR_SLOT_EMPTY) {
         executor_state.head = (executor_state.head + 1u) % CEP_EXECUTOR_QUEUE_CAPACITY;
@@ -289,7 +284,7 @@ cep_ep_require_rw(void)
     if (ctx->profile == CEP_EP_PROFILE_RO) {
         cepCeiRequest req = {
             .severity = *CEP_DTAW("CEP", "sev:usage"),
-            .topic = "ep:profile/ro",
+            .topic = "ep:pro/ro",
             .topic_len = 0,
             .note = "mutation attempted from read-only episode",
             .note_len = 0,

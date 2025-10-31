@@ -140,6 +140,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_cei.c',
     'src/test/l0_kernel/test_stream.c',
     'src/test/l0_kernel/test_executor.c',
+    'src/test/l0_kernel/test_episode.c',
     'src/test/l0_kernel/test_serialization.c',
     'src/test/l0_kernel/test_locking.c',
     'src/test/l0_kernel/test_cells_randomized.c',

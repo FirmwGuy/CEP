@@ -656,7 +656,7 @@ static bool cep_ops_status_to_state(const cepDT* status, cepDT* out_state) {
         return true;
     }
     if (cep_dt_compare(status, CEP_DTAW("CEP", "sts:cnl")) == 0) {
-        *out_state = cep_ops_clean_dt(CEP_DTAW("CEP", "ist:cnl"));
+        *out_state = cep_ops_clean_dt(CEP_DTAW("CEP", "ist:cxl"));
         return true;
     }
     return false;
@@ -743,11 +743,12 @@ static bool cep_ops_fire_watcher_entry(cepCell* entry, cepOID oid, bool timeout)
         if (!cep_ops_read_dt(entry, dt_cont_field(), &signal)) {
             return false;
         }
-        return cep_ops_enqueue_signal(oid, &signal);
+        signal = cep_ops_clean_dt(&signal);
+    } else {
+        cepDT timeout_dt = cep_ops_make_dt("op/tmo");
+        signal = cep_ops_clean_dt(&timeout_dt);
     }
 
-    cepDT timeout_dt = cep_ops_make_dt("op/tmo");
-    signal = cep_ops_clean_dt(&timeout_dt);
     return cep_ops_enqueue_signal(oid, &signal);
 }
 

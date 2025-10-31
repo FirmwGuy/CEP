@@ -163,6 +163,25 @@ when a new behavior needs a fresh word before it lands in code.
 | `want` | ops | requested state or status captured for a watcher. |
 | `closed_beat` | ops | beat index recorded when the `/close/` branch was sealed. |
 
+#### Episode Engine Tags
+| Tag / Pattern | Status | Purpose |
+| --- | --- | --- |
+| `op/ep` | ops | operation verb assigned to episodic dossiers tracked under `/rt/ops/<eid>`. |
+| `ep/cont` | ops | continuation signal emitted when an episode should resume on the next beat. |
+| `ist:yield` | ops | state recorded when an episode voluntarily yields the current slice. |
+| `ist:await` | ops | state recorded while an episode is waiting on an external operation. |
+| `ist:cxl` | ops | intermediate cancellation state published before closing with `sts:cnl`. |
+| `ep:pro/ro` | core | metadata marker indicating a read-only episode profile. |
+| `ep:pro/rw` | core | metadata marker indicating a read-write episode profile. |
+| `ep:bud/io` | core | CEI topic emitted when an episode exceeds its configured I/O budget. |
+| `ep:bud/cpu` | core | CEI topic emitted when an episode exceeds its configured CPU budget. |
+| `episode` | core | metadata dictionary under an `op/ep` branch capturing policy and paths. |
+| `bud_cpu_ns` | core | metadata field storing the per-slice CPU budget in nanoseconds. |
+| `bud_io_by` | core | metadata field storing the per-slice I/O budget in bytes. |
+| `sig_path` | core | metadata field recording the signal path used to dispatch the episode. |
+| `tgt_path` | core | metadata field recording the target path resumed by continuations. |
+| `max_beats` | core | metadata field constraining how many slices an episode may execute. |
+
 #### I/O Tags
 | Tag / Pattern | Status | Purpose |
 | --- | --- | --- |
