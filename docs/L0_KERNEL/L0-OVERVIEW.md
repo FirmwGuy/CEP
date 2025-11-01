@@ -20,6 +20,7 @@ This L0 Kernel API gives you a **hierarchical, time‑aware data kernel** (“ce
 * An optional **namepool** to intern strings when you need textual names bound to IDs. 
 * **Pause / Rollback / Resume (PRR) controls** that gate non-essential work, rewind the visible beat horizon, and deterministically drain queued impulses from a mailbox-backed backlog.
 * **Episodic Enzyme Engine (E³)** that runs long-lived workloads deterministically, with the ability to promote episodes from threaded RO slices to cooperative RW slices and demote them back without breaking replay or budget accounting.
+* **Runtime contexts (`cepRuntime`)** so multiple CEP kernels can coexist in one process; activate an instance with `cep_runtime_set_active()` before calling the usual Layer 0 APIs.
 
 
 Together, these pieces let you build **local‑first trees, reactive dataflows, digital‑twin graphs, scene graphs with spatial indexing, and distributed state pipelines**—without giving up determinism, history, or zero‑copy performance where it matters.

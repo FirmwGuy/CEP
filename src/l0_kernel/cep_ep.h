@@ -9,6 +9,8 @@
 #include "cep_executor.h"
 #include "cep_ops.h"
 
+struct cepRuntime;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -41,6 +43,7 @@ bool cep_ep_await(cepEID eid,
                   const char* note);
 bool cep_ep_close(cepEID eid, cepDT status, const void* summary, size_t summary_len);
 bool cep_ep_cancel(cepEID eid, int code, const char* note);
+bool cep_ep_cancel_for_runtime(struct cepRuntime* runtime, cepEID eid, int code, const char* note);
 bool cep_ep_request_lease(cepEID eid,
                           const cepPath* root,
                           bool lock_store,

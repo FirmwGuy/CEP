@@ -5,6 +5,7 @@
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
 #include "cep_ops.h"
+#include "cep_runtime.h"
 #include "cep_molecule.h"
 #include "stream/cep_stream_internal.h"
 
@@ -12,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 
 typedef enum {
@@ -26,10 +28,12 @@ typedef struct cepEpEpisode {
     cepEID                  eid;
     cepEpCallback           callback;
     void*                   user_ctx;
+    cepRuntime*             runtime;
     cepEpExecutionPolicy    policy;
     cepEpProfile            mode_current;
     cepEpProfile            mode_next;
     cepEpExecutionContext   context;
+    cepRuntime*             previous_runtime_scope;
     uint64_t                max_beats;
     uint64_t                beats_used;
     cepExecutorTicket       ticket;
@@ -85,27 +89,40 @@ typedef struct {
     cepPast past[1];
 } cepEpPathBuf;
 
-static cepEpEpisode*      cep_ep_episodes;
-static cepEpAwaitBinding* cep_ep_await_bindings;
-static bool               cep_ep_runtime_ready;
-static bool               cep_ep_executor_ready;
-static bool               cep_ep_enzyme_registered;
-static cepDT              cep_ep_signal_ep_cont;
-static cepDT              cep_ep_signal_op_tmo;
-static _Atomic(const char*) cep_ep_last_lease_fail_reason;
+static cepRuntime*
+cep_ep_runtime_current(void)
+{
+    cepEpExecutionContext* ctx = cep_executor_context_get();
+    if (ctx && ctx->runtime) {
+        return ctx->runtime;
+    }
+    return cep_runtime_default();
+}
 
-static cepEpEpisode* cep_ep_episode_lookup(cepEID eid);
-static void          cep_ep_episode_append(cepEpEpisode* episode);
-static void          cep_ep_episode_remove(cepEpEpisode* episode);
-static cepEpAwaitBinding* cep_ep_binding_lookup(cepOID awaited_oid);
-static void          cep_ep_binding_add(cepOID awaited_oid, cepEpEpisode* episode);
-static void          cep_ep_binding_remove(cepOID awaited_oid, cepEpEpisode* episode);
-static void          cep_ep_binding_remove_episode(cepEpEpisode* episode);
-static bool          cep_ep_runtime_init(void);
+static cepEpRuntimeState*
+cep_ep_state_for_runtime(cepRuntime* runtime)
+{
+    return cep_runtime_ep_state(runtime ? runtime : cep_runtime_default());
+}
+
+static cepEpRuntimeState*
+cep_ep_state_current(void)
+{
+    return cep_ep_state_for_runtime(cep_ep_runtime_current());
+}
+
+static cepEpEpisode* cep_ep_episode_lookup(cepRuntime* runtime, cepEID eid);
+static void          cep_ep_episode_append(cepEpRuntimeState* state, cepEpEpisode* episode);
+static void          cep_ep_episode_remove(cepEpRuntimeState* state, cepEpEpisode* episode);
+static cepEpAwaitBinding* cep_ep_binding_lookup(cepEpRuntimeState* state, cepOID awaited_oid);
+static void          cep_ep_binding_add(cepEpRuntimeState* state, cepOID awaited_oid, cepEpEpisode* episode);
+static void          cep_ep_binding_remove(cepEpRuntimeState* state, cepOID awaited_oid, cepEpEpisode* episode);
+static void          cep_ep_binding_remove_episode(cepEpRuntimeState* state, cepEpEpisode* episode);
+static bool          cep_ep_runtime_init(cepRuntime* runtime, cepEpRuntimeState* state);
 static bool          cep_ep_register_enzyme(const char* signal_tag,
                                             cepEnzyme callback,
                                             cepDT* out_name);
-static bool          cep_ep_bind_operation(cepOID oid);
+static bool          cep_ep_bind_operation(cepRuntime* runtime, cepEpRuntimeState* state, cepOID oid);
 static char*         cep_ep_path_to_string(const cepPath* path);
 static bool          cep_ep_path_clone(const cepPath* path, cepPath** out_clone);
 static bool          cep_ep_paths_equal(const cepPath* lhs, const cepPath* rhs);
@@ -287,44 +304,73 @@ cep_ep_register_enzyme(const char* signal_tag, cepEnzyme callback, cepDT* out_na
 }
 
 static bool
-cep_ep_runtime_init(void)
+cep_ep_runtime_init(cepRuntime* runtime, cepEpRuntimeState* state)
 {
-    if (cep_ep_runtime_ready) {
+    if (!state) {
+        return false;
+    }
+
+    if (state->runtime_ready) {
         return true;
     }
 
-    if (!cep_ep_executor_ready) {
+    cepEpExecutionContext* previous_ctx = cep_executor_context_get();
+    cepRuntime* target_runtime = runtime ? runtime : cep_runtime_default();
+    cepEpExecutionContext shim_ctx = {0};
+    shim_ctx.runtime = target_runtime;
+
+    cepRuntime* previous_runtime_scope = cep_runtime_set_active(target_runtime);
+    cep_executor_context_set(&shim_ctx);
+
+    if (!state->executor_ready) {
         if (!cep_executor_init()) {
+            if (previous_ctx) {
+                cep_executor_context_set(previous_ctx);
+            } else {
+                cep_executor_context_clear();
+            }
+            cep_runtime_restore_active(previous_runtime_scope);
             return false;
         }
-        cep_ep_executor_ready = true;
+        state->executor_ready = true;
     }
 
-    if (!cep_ep_enzyme_registered) {
-        cepDT ep_cont = {0};
+    if (previous_ctx) {
+        cep_executor_context_set(previous_ctx);
+    } else {
+        cep_executor_context_clear();
+    }
+    cep_runtime_restore_active(previous_runtime_scope);
+
+    if (!state->enzyme_registered) {
+        cepDT ep_cont = (cepDT){0};
         if (!cep_ep_register_enzyme("ep/cont", cep_ep_continuation_enzyme, &ep_cont)) {
             return false;
         }
-        cep_ep_signal_ep_cont = ep_cont;
+        state->signal_ep_cont = ep_cont;
 
-        cepDT op_tmo = {0};
+        cepDT op_tmo = (cepDT){0};
         if (!cep_ep_register_enzyme("op/tmo", cep_ep_continuation_enzyme, &op_tmo)) {
             return false;
         }
-        cep_ep_signal_op_tmo = op_tmo;
+        state->signal_op_tmo = op_tmo;
 
-        cep_ep_enzyme_registered = true;
+        state->enzyme_registered = true;
     }
 
-    cep_ep_runtime_ready = true;
+    state->runtime_ready = true;
     return true;
 }
 
 static bool
-cep_ep_bind_operation(cepOID oid)
+cep_ep_bind_operation(cepRuntime* runtime, cepEpRuntimeState* state, cepOID oid)
 {
     cepEpRwScope scope = cep_ep_rw_scope_begin();
     bool ok = false;
+
+    if (!state) {
+        state = cep_ep_state_for_runtime(runtime);
+    }
 
     cepCell* op_cell = cep_ep_find_op_cell(oid);
     if (!op_cell) {
@@ -336,15 +382,15 @@ cep_ep_bind_operation(cepOID oid)
         op_cell = resolved;
     }
 
-    cepDT cont_name = cep_dt_is_valid(&cep_ep_signal_ep_cont)
-        ? cep_dt_clean(&cep_ep_signal_ep_cont)
+    cepDT cont_name = (state && cep_dt_is_valid(&state->signal_ep_cont))
+        ? cep_dt_clean(&state->signal_ep_cont)
         : cep_ops_make_dt("ep/cont");
     if (cep_cell_bind_enzyme(op_cell, &cont_name, false) != CEP_ENZYME_SUCCESS) {
         goto out;
     }
 
-    cepDT tmo_name = cep_dt_is_valid(&cep_ep_signal_op_tmo)
-        ? cep_dt_clean(&cep_ep_signal_op_tmo)
+    cepDT tmo_name = (state && cep_dt_is_valid(&state->signal_op_tmo))
+        ? cep_dt_clean(&state->signal_op_tmo)
         : cep_ops_make_dt("op/tmo");
     if (cep_cell_bind_enzyme(op_cell, &tmo_name, false) != CEP_ENZYME_SUCCESS) {
         goto out;
@@ -418,10 +464,15 @@ cep_ep_apply_pending_leases(cepEpEpisode* episode)
     cepEpLeaseRequestNode* node = episode->pending_lease_requests;
     episode->pending_lease_requests = NULL;
 
+    cepEpRuntimeState* state = cep_ep_state_for_runtime(episode->runtime);
+
     while (node) {
         cepEpLeaseRequestNode* next = node->next;
-        atomic_store_explicit(&cep_ep_last_lease_fail_reason, NULL,
-                              memory_order_relaxed);
+        if (state) {
+            atomic_store_explicit(&state->last_lease_fail_reason,
+                                  NULL,
+                                  memory_order_relaxed);
+        }
         bool ok = cep_ep_request_lease(episode->eid,
                                        node->path,
                                        node->lock_store,
@@ -460,9 +511,12 @@ cep_ep_apply_pending_leases(cepEpEpisode* episode)
 }
 
 static cepEpEpisode*
-cep_ep_episode_lookup(cepEID eid)
+cep_ep_episode_lookup(cepRuntime* runtime, cepEID eid)
 {
-    for (cepEpEpisode* node = cep_ep_episodes; node; node = node->next) {
+    cepEpRuntimeState* state = runtime
+        ? cep_ep_state_for_runtime(runtime)
+        : cep_ep_state_current();
+    for (cepEpEpisode* node = state->episodes; node; node = node->next) {
         if (node->eid.domain == eid.domain && node->eid.tag == eid.tag) {
             return node;
         }
@@ -471,16 +525,19 @@ cep_ep_episode_lookup(cepEID eid)
 }
 
 static void
-cep_ep_episode_append(cepEpEpisode* episode)
+cep_ep_episode_append(cepEpRuntimeState* state, cepEpEpisode* episode)
 {
-    episode->next = cep_ep_episodes;
-    cep_ep_episodes = episode;
+    if (!state || !episode) {
+        return;
+    }
+    episode->next = state->episodes;
+    state->episodes = episode;
 }
 
 static void
-cep_ep_episode_remove(cepEpEpisode* episode)
+cep_ep_episode_remove(cepEpRuntimeState* state, cepEpEpisode* episode)
 {
-    if (!episode) {
+    if (!state || !episode) {
         return;
     }
 
@@ -489,9 +546,9 @@ cep_ep_episode_remove(cepEpEpisode* episode)
         episode->ticket = 0u;
     }
 
-    cep_ep_binding_remove_episode(episode);
+    cep_ep_binding_remove_episode(state, episode);
 
-    cepEpEpisode** head = &cep_ep_episodes;
+    cepEpEpisode** head = &state->episodes;
     while (*head) {
         if (*head == episode) {
             *head = episode->next;
@@ -506,9 +563,12 @@ cep_ep_episode_remove(cepEpEpisode* episode)
 }
 
 static cepEpAwaitBinding*
-cep_ep_binding_lookup(cepOID awaited_oid)
+cep_ep_binding_lookup(cepEpRuntimeState* state, cepOID awaited_oid)
 {
-    for (cepEpAwaitBinding* node = cep_ep_await_bindings; node; node = node->next) {
+    if (!state) {
+        return NULL;
+    }
+    for (cepEpAwaitBinding* node = state->await_bindings; node; node = node->next) {
         if (node->awaited_oid.domain == awaited_oid.domain &&
             node->awaited_oid.tag == awaited_oid.tag) {
             return node;
@@ -518,19 +578,25 @@ cep_ep_binding_lookup(cepOID awaited_oid)
 }
 
 static void
-cep_ep_binding_add(cepOID awaited_oid, cepEpEpisode* episode)
+cep_ep_binding_add(cepEpRuntimeState* state, cepOID awaited_oid, cepEpEpisode* episode)
 {
+    if (!state || !episode) {
+        return;
+    }
     cepEpAwaitBinding* binding = cep_malloc(sizeof *binding);
     binding->awaited_oid = awaited_oid;
     binding->episode = episode;
-    binding->next = cep_ep_await_bindings;
-    cep_ep_await_bindings = binding;
+    binding->next = state->await_bindings;
+    state->await_bindings = binding;
 }
 
 static void
-cep_ep_binding_remove(cepOID awaited_oid, cepEpEpisode* episode)
+cep_ep_binding_remove(cepEpRuntimeState* state, cepOID awaited_oid, cepEpEpisode* episode)
 {
-    cepEpAwaitBinding** head = &cep_ep_await_bindings;
+    if (!state) {
+        return;
+    }
+    cepEpAwaitBinding** head = &state->await_bindings;
     while (*head) {
         if ((*head)->awaited_oid.domain == awaited_oid.domain &&
             (*head)->awaited_oid.tag == awaited_oid.tag &&
@@ -545,9 +611,12 @@ cep_ep_binding_remove(cepOID awaited_oid, cepEpEpisode* episode)
 }
 
 static void
-cep_ep_binding_remove_episode(cepEpEpisode* episode)
+cep_ep_binding_remove_episode(cepEpRuntimeState* state, cepEpEpisode* episode)
 {
-    cepEpAwaitBinding** head = &cep_ep_await_bindings;
+    if (!state) {
+        return;
+    }
+    cepEpAwaitBinding** head = &state->await_bindings;
     while (*head) {
         if ((*head)->episode == episode) {
             cepEpAwaitBinding* doomed = *head;
@@ -881,8 +950,9 @@ cep_ep_arm_continuation(cepEID eid, const char* state_tag)
     }
 
     cepDT want_clean = cep_dt_clean(&want_raw);
-    cepDT cont = cep_dt_is_valid(&cep_ep_signal_ep_cont)
-        ? cep_dt_clean(&cep_ep_signal_ep_cont)
+    cepEpRuntimeState* state = cep_ep_state_current();
+    cepDT cont = (state && cep_dt_is_valid(&state->signal_ep_cont))
+        ? cep_dt_clean(&state->signal_ep_cont)
         : cep_dt_clean(CEP_DTAW("CEP", "ep/cont"));
 
     ok = cep_op_await(eid,
@@ -909,7 +979,7 @@ cep_ep_schedule_run(cepEpEpisode* episode, const char* note)
     }
 
     if (episode->max_beats && episode->beats_used >= episode->max_beats) {
-        (void)cep_ep_cancel(episode->eid, -1, "max beats exceeded");
+        (void)cep_ep_cancel_for_runtime(episode->runtime, episode->eid, -1, "max beats exceeded");
         return false;
     }
 
@@ -924,8 +994,23 @@ cep_ep_schedule_run(cepEpEpisode* episode, const char* note)
         }
         cepEpExecutionPolicy ro_policy = episode->policy;
         ro_policy.profile = CEP_EP_PROFILE_RO;
-        if (!cep_executor_submit_ro(cep_ep_run_slice_task, episode, &ro_policy, &episode->ticket)) {
-            (void)cep_ep_cancel(episode->eid, -2, "executor queue full");
+        episode->context.runtime = episode->runtime;
+        cepEpExecutionContext* previous_ctx = cep_executor_context_get();
+        cep_executor_context_set(&episode->context);
+
+        bool submitted = cep_executor_submit_ro(cep_ep_run_slice_task,
+                                                episode,
+                                                &ro_policy,
+                                                &episode->ticket);
+
+        if (previous_ctx) {
+            cep_executor_context_set(previous_ctx);
+        } else {
+            cep_executor_context_clear();
+        }
+
+        if (!submitted) {
+            (void)cep_ep_cancel_for_runtime(episode->runtime, episode->eid, -2, "executor queue full");
             return false;
         }
         return true;
@@ -958,7 +1043,11 @@ cep_ep_bind_tls_context(cepEpEpisode* episode, bool fresh_slice)
     ctx->profile = episode->mode_current;
     ctx->allow_without_lease = false;
     ctx->ticket = episode->ticket;
+    ctx->runtime = episode->runtime;
     cep_executor_context_set(ctx);
+    if (!episode->context_tls_bound) {
+        episode->previous_runtime_scope = cep_runtime_set_active(episode->runtime);
+    }
     episode->context_initialized = true;
     episode->context_tls_bound = true;
     episode->context_suspended = false;
@@ -972,6 +1061,8 @@ cep_ep_unbind_tls_context(cepEpEpisode* episode)
     }
     cep_executor_context_clear();
     episode->context_tls_bound = false;
+    cep_runtime_restore_active(episode->previous_runtime_scope);
+    episode->previous_runtime_scope = NULL;
 }
 
 static void
@@ -1001,19 +1092,23 @@ cep_ep_run_slice_impl(cepEpEpisode* episode)
     episode->in_slice = true;
     episode->pending_state = CEP_EP_PENDING_RUNNING;
 
+    cepEpRuntimeState* state = cep_ep_state_for_runtime(episode->runtime);
+
     bool leases_ok = cep_ep_apply_pending_leases(episode);
     if (leases_ok) {
         episode->callback(episode->eid, episode->user_ctx);
     } else {
-        const char* reason = atomic_exchange_explicit(&cep_ep_last_lease_fail_reason,
-                                                      NULL,
-                                                      memory_order_relaxed);
+        const char* reason = state
+            ? atomic_exchange_explicit(&state->last_lease_fail_reason,
+                                       NULL,
+                                       memory_order_relaxed)
+            : NULL;
         if (reason && reason[0]) {
             char note[128];
             snprintf(note, sizeof note, "lease apply failed (%s)", reason);
-            (void)cep_ep_cancel(episode->eid, -4, note);
+            (void)cep_ep_cancel_for_runtime(episode->runtime, episode->eid, -4, note);
         } else {
-            (void)cep_ep_cancel(episode->eid, -4, "lease apply failed");
+            (void)cep_ep_cancel_for_runtime(episode->runtime, episode->eid, -4, "lease apply failed");
         }
     }
 
@@ -1034,6 +1129,8 @@ cep_ep_finalize_slice(cepEpEpisode* episode)
 
     episode->in_slice = false;
     episode->context_suspended = false;
+
+    cepEpRuntimeState* state = cep_ep_state_for_runtime(episode->runtime);
 
     switch (episode->pending_state) {
     case CEP_EP_PENDING_RUNNING:
@@ -1065,7 +1162,7 @@ cep_ep_finalize_slice(cepEpEpisode* episode)
     }
 
     if (episode->closed || episode->remove_after_slice) {
-        cep_ep_episode_remove(episode);
+        cep_ep_episode_remove(state, episode);
     }
 }
 
@@ -1118,26 +1215,27 @@ cep_ep_handle_continuation(const cepDT* continuation, cepOID target_oid)
     }
 
     cepDT signal = cep_dt_clean(continuation);
-    const bool have_ep_cont = cep_dt_is_valid(&cep_ep_signal_ep_cont);
-    const bool have_op_tmo = cep_dt_is_valid(&cep_ep_signal_op_tmo);
+    cepEpRuntimeState* state = cep_ep_state_current();
+    const bool have_ep_cont = state && cep_dt_is_valid(&state->signal_ep_cont);
+    const bool have_op_tmo = state && cep_dt_is_valid(&state->signal_op_tmo);
 
     cepDT ep_cont_dt = have_ep_cont
-        ? cep_dt_clean(&cep_ep_signal_ep_cont)
+        ? cep_dt_clean(&state->signal_ep_cont)
         : cep_dt_clean(CEP_DTAW("CEP", "ep/cont"));
     if (cep_dt_compare(&signal, &ep_cont_dt) == 0) {
-        cepEpEpisode* episode = cep_ep_episode_lookup(target_oid);
+        cepEpEpisode* episode = cep_ep_episode_lookup(NULL, target_oid);
         if (episode) {
             return cep_ep_schedule_run(episode, NULL);
         }
 
         bool routed = false;
         while (true) {
-            cepEpAwaitBinding* binding = cep_ep_binding_lookup(target_oid);
+            cepEpAwaitBinding* binding = cep_ep_binding_lookup(state, target_oid);
             if (!binding) {
                 break;
             }
             cepEpEpisode* waiting = binding->episode;
-            cep_ep_binding_remove(target_oid, waiting);
+            cep_ep_binding_remove(state, target_oid, waiting);
             waiting->awaited_oid = cep_oid_invalid();
             waiting->pending_state = CEP_EP_PENDING_RUNNING;
             if (cep_ep_schedule_run(waiting, NULL)) {
@@ -1148,21 +1246,21 @@ cep_ep_handle_continuation(const cepDT* continuation, cepOID target_oid)
     }
 
     cepDT op_tmo_dt = have_op_tmo
-        ? cep_dt_clean(&cep_ep_signal_op_tmo)
+        ? cep_dt_clean(&state->signal_op_tmo)
         : cep_dt_clean(CEP_DTAW("CEP", "op/tmo"));
     if (cep_dt_compare(&signal, &op_tmo_dt) == 0) {
         bool cancelled = false;
 
         while (true) {
-            cepEpAwaitBinding* binding = cep_ep_binding_lookup(target_oid);
+            cepEpAwaitBinding* binding = cep_ep_binding_lookup(state, target_oid);
             if (!binding) {
                 break;
             }
             cepEpEpisode* waiting = binding->episode;
-            cep_ep_binding_remove(target_oid, waiting);
+            cep_ep_binding_remove(state, target_oid, waiting);
             waiting->awaited_oid = cep_oid_invalid();
             waiting->pending_state = CEP_EP_PENDING_CANCELLED;
-            if (cep_ep_cancel(waiting->eid, -3, "await timeout")) {
+            if (cep_ep_cancel_for_runtime(waiting->runtime, waiting->eid, -3, "await timeout")) {
                 cancelled = true;
             }
         }
@@ -1189,7 +1287,10 @@ cep_ep_start(cepEID* out_eid,
         return false;
     }
 
-    if (!cep_ep_runtime_init()) {
+    cepRuntime* runtime = cep_ep_runtime_current();
+    cepEpRuntimeState* state = cep_ep_state_for_runtime(runtime);
+
+    if (!cep_ep_runtime_init(runtime, state)) {
         return false;
     }
 
@@ -1236,7 +1337,7 @@ cep_ep_start(cepEID* out_eid,
         return false;
     }
 
-    if (!cep_ep_bind_operation(eid)) {
+    if (!cep_ep_bind_operation(runtime, state, eid)) {
         CEP_DEBUG_PRINTF("[cep_ep_start] ensure bindings failed\n");
         (void)cep_op_close(eid, fail_status, NULL, 0u);
         return false;
@@ -1252,6 +1353,7 @@ cep_ep_start(cepEID* out_eid,
     episode->eid = eid;
     episode->callback = callback;
     episode->user_ctx = user_context;
+    episode->runtime = runtime;
     episode->policy = effective;
     episode->max_beats = max_beats;
     episode->pending_state = CEP_EP_PENDING_RUNNING;
@@ -1264,15 +1366,15 @@ cep_ep_start(cepEID* out_eid,
     }
     episode->mode_next = episode->mode_current;
 
-    cep_ep_episode_append(episode);
+    cep_ep_episode_append(state, episode);
     *out_eid = eid;
 
     if (!cep_ep_schedule_run(episode, "start")) {
-        cepEpEpisode* retained = cep_ep_episode_lookup(eid);
+        cepEpEpisode* retained = cep_ep_episode_lookup(runtime, eid);
         if (retained == episode) {
             CEP_DEBUG_PRINTF("[cep_ep_start] schedule failed retained episode\n");
             (void)cep_op_close(eid, fail_status, NULL, 0u);
-            cep_ep_episode_remove(episode);
+            cep_ep_episode_remove(state, episode);
         } else {
             CEP_DEBUG_PRINTF("[cep_ep_start] schedule failed episode already cancelled\n");
         }
@@ -1289,7 +1391,7 @@ cep_ep_start(cepEID* out_eid,
 bool
 cep_ep_yield(cepEID eid, const char* note)
 {
-    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    cepEpEpisode* episode = cep_ep_episode_lookup(NULL, eid);
     if (!episode || episode->closed) {
         return false;
     }
@@ -1332,7 +1434,7 @@ cep_ep_await(cepEID eid,
         return false;
     }
 
-    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    cepEpEpisode* episode = cep_ep_episode_lookup(NULL, eid);
     if (!episode || episode->closed) {
         return false;
     }
@@ -1342,15 +1444,17 @@ cep_ep_await(cepEID eid,
         return false;
     }
 
-    if (!cep_ep_binding_lookup(awaited_oid)) {
-        if (!cep_ep_bind_operation(awaited_oid)) {
+    cepEpRuntimeState* state = cep_ep_state_for_runtime(episode->runtime);
+
+    if (!cep_ep_binding_lookup(state, awaited_oid)) {
+        if (!cep_ep_bind_operation(episode->runtime, state, awaited_oid)) {
             return false;
         }
     }
 
     cepDT want_clean = cep_dt_clean(&want_state);
-    cepDT cont = cep_dt_is_valid(&cep_ep_signal_ep_cont)
-        ? cep_dt_clean(&cep_ep_signal_ep_cont)
+    cepDT cont = (state && cep_dt_is_valid(&state->signal_ep_cont))
+        ? cep_dt_clean(&state->signal_ep_cont)
         : cep_dt_clean(CEP_DTAW("CEP", "ep/cont"));
 
     cepEpRwScope scope = cep_ep_rw_scope_begin();
@@ -1378,7 +1482,7 @@ cep_ep_await(cepEID eid,
         episode->pending_note[len] = '\0';
         episode->pending_note_set = true;
     }
-    cep_ep_binding_add(awaited_oid, episode);
+    cep_ep_binding_add(state, awaited_oid, episode);
     return true;
 }
 
@@ -1389,11 +1493,16 @@ cep_ep_request_lease(cepEID eid,
                      bool lock_data,
                      bool include_descendants)
 {
+    cepEpRuntimeState* fail_state = cep_ep_state_for_runtime(cep_ep_runtime_current());
+
 #define CEP_EP_LEASE_FAIL(code)                                            \
     do {                                                                   \
         CEP_DEBUG_PRINTF("[cep_ep_request_lease] %s\n", code);             \
-        atomic_store_explicit(&cep_ep_last_lease_fail_reason, (code),       \
-                              memory_order_relaxed);                       \
+        if (fail_state) {                                                  \
+            atomic_store_explicit(&fail_state->last_lease_fail_reason,      \
+                                  (code),                                  \
+                                  memory_order_relaxed);                   \
+        }                                                                  \
         return false;                                                      \
     } while (0)
 
@@ -1404,10 +1513,12 @@ cep_ep_request_lease(cepEID eid,
         CEP_EP_LEASE_FAIL("no-locks");
     }
 
-    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    cepEpEpisode* episode = cep_ep_episode_lookup(NULL, eid);
     if (!episode || episode->closed) {
         CEP_EP_LEASE_FAIL("episode-state");
     }
+
+    fail_state = cep_ep_state_for_runtime(episode->runtime);
 
     bool can_lock = (episode->policy.profile == CEP_EP_PROFILE_RW) ||
                     (episode->policy.profile == CEP_EP_PROFILE_HYBRID &&
@@ -1540,7 +1651,7 @@ cep_ep_release_lease(cepEID eid, const cepPath* root)
         return false;
     }
 
-    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    cepEpEpisode* episode = cep_ep_episode_lookup(NULL, eid);
     if (!episode) {
         return false;
     }
@@ -1586,7 +1697,7 @@ cep_ep_release_lease(cepEID eid, const cepPath* root)
 bool
 cep_ep_suspend_rw(cepEID eid, uint32_t flags)
 {
-    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    cepEpEpisode* episode = cep_ep_episode_lookup(NULL, eid);
     if (!episode || episode->closed || episode->policy.profile != CEP_EP_PROFILE_RW) {
         return false;
     }
@@ -1634,7 +1745,7 @@ cep_ep_suspend_rw(cepEID eid, uint32_t flags)
 bool
 cep_ep_resume_rw(cepEID eid)
 {
-    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    cepEpEpisode* episode = cep_ep_episode_lookup(NULL, eid);
     if (!episode || episode->closed || episode->policy.profile != CEP_EP_PROFILE_RW) {
         return false;
     }
@@ -1691,7 +1802,7 @@ reacquire_fail:
 
     cep_ep_unbind_tls_context(episode);
     episode->context_suspended = true;
-    (void)cep_ep_cancel(eid, -3, "lease reacquire failed");
+    (void)cep_ep_cancel_for_runtime(episode->runtime, eid, -3, "lease reacquire failed");
     return false;
 }
 
@@ -1709,7 +1820,7 @@ cep_ep_close(cepEID eid, cepDT status, const void* summary, size_t summary_len)
         goto out;
     }
 
-    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    cepEpEpisode* episode = cep_ep_episode_lookup(NULL, eid);
     if (!episode) {
         CEP_DEBUG_PRINTF("[cep_ep_close] episode missing\n");
         goto out;
@@ -1724,7 +1835,7 @@ cep_ep_close(cepEID eid, cepDT status, const void* summary, size_t summary_len)
     episode->closed = true;
     episode->pending_state = CEP_EP_PENDING_COMPLETED;
     if (!episode->in_slice) {
-        cep_ep_episode_remove(episode);
+        cep_ep_episode_remove(cep_ep_state_for_runtime(episode->runtime), episode);
     } else {
         episode->remove_after_slice = true;
     }
@@ -1738,9 +1849,13 @@ out:
 /* Cancel an episode in-flight, propagating a cooperative cancellation request
    and closing the dossier with `sts:cnl`. */
 bool
-cep_ep_cancel(cepEID eid, int code, const char* note)
+cep_ep_cancel_for_runtime(cepRuntime* runtime, cepEID eid, int code, const char* note)
 {
-    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    if (!runtime) {
+        runtime = cep_ep_runtime_current();
+    }
+
+    cepEpEpisode* episode = cep_ep_episode_lookup(runtime, eid);
     if (!episode || episode->closed) {
         return false;
     }
@@ -1755,6 +1870,12 @@ cep_ep_cancel(cepEID eid, int code, const char* note)
     cepDT cancel_status = cep_ops_make_dt("sts:cnl");
     (void)cep_ep_close(eid, cancel_status, NULL, 0u);
     return true;
+}
+
+bool
+cep_ep_cancel(cepEID eid, int code, const char* note)
+{
+    return cep_ep_cancel_for_runtime(cep_ep_runtime_current(), eid, code, note);
 }
 
 /* Request cancellation from inside a running slice so the executor can stop
@@ -1798,24 +1919,43 @@ cep_ep_check_cancel(void)
 void
 cep_ep_runtime_reset(void)
 {
-    while (cep_ep_episodes) {
-        cepEpEpisode* episode = cep_ep_episodes;
-        cep_ep_episode_remove(episode);
+    cepRuntime* runtime = cep_ep_runtime_current();
+    cepEpRuntimeState* state = cep_ep_state_for_runtime(runtime);
+    if (!state) {
+        return;
     }
 
-    while (cep_ep_await_bindings) {
-        cepEpAwaitBinding* binding = cep_ep_await_bindings;
-        cep_ep_await_bindings = binding->next;
+    while (state->episodes) {
+        cepEpEpisode* episode = state->episodes;
+        cep_ep_episode_remove(state, episode);
+    }
+
+    while (state->await_bindings) {
+        cepEpAwaitBinding* binding = state->await_bindings;
+        state->await_bindings = binding->next;
         cep_free(binding);
     }
 
-    cep_ep_runtime_ready = false;
-    cep_ep_executor_ready = false;
-    cep_ep_enzyme_registered = false;
-    memset(&cep_ep_signal_ep_cont, 0, sizeof cep_ep_signal_ep_cont);
-    memset(&cep_ep_signal_op_tmo, 0, sizeof cep_ep_signal_op_tmo);
+    state->runtime_ready = false;
+    state->executor_ready = false;
+    state->enzyme_registered = false;
+    memset(&state->signal_ep_cont, 0, sizeof state->signal_ep_cont);
+    memset(&state->signal_op_tmo, 0, sizeof state->signal_op_tmo);
+    atomic_store_explicit(&state->last_lease_fail_reason, NULL, memory_order_relaxed);
 
+    cepEpExecutionContext* previous_ctx = cep_executor_context_get();
+    cepRuntime* target_runtime = runtime ? runtime : cep_runtime_default();
+    cepEpExecutionContext shim_ctx = {0};
+    shim_ctx.runtime = target_runtime;
+    cepRuntime* previous_runtime_scope = cep_runtime_set_active(target_runtime);
+    cep_executor_context_set(&shim_ctx);
     cep_executor_shutdown();
+    if (previous_ctx) {
+        cep_executor_context_set(previous_ctx);
+    } else {
+        cep_executor_context_clear();
+    }
+    cep_runtime_restore_active(previous_runtime_scope);
 }
 
 bool
@@ -1916,7 +2056,7 @@ cep_ep_promote_to_rw(cepEID eid,
         return false;
     }
 
-    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    cepEpEpisode* episode = cep_ep_episode_lookup(NULL, eid);
     if (!episode || episode->closed) {
         return false;
     }
@@ -2063,7 +2203,7 @@ cep_ep_demote_to_ro(cepEID eid, uint32_t flags)
         return false;
     }
 
-    cepEpEpisode* episode = cep_ep_episode_lookup(eid);
+    cepEpEpisode* episode = cep_ep_episode_lookup(NULL, eid);
     if (!episode || episode->closed) {
         return false;
     }

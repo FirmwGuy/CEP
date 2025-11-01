@@ -5,6 +5,23 @@
 **Audience:** engineers integrating CEP into applications, building adapters/libraries, or wiring data pipelines.
 **Scope:** enzymes & heartbeat dispatch, wire serialization/ingest, proxy & library adapters, naming & namepool, locking & history, and practical recipes with small code sketches.
 
+Layer 0 now supports multiple kernel instances inside the same process. Create additional runtimes with `cep_runtime_create()` and make one active on the current thread via `cep_runtime_set_active()`. Every API in this guide that previously assumed a single global instance now scopes its work to whatever runtime is active; remember to restore the prior handle with `cep_runtime_restore_active()` when leaving your integration entry point.
+
+- `cep_runtime_shutdown(runtime)` now tears down non-default runtimes by flushing the heartbeat state and clearing the runtime’s namepool/organ caches; destroy the handle afterward with `cep_runtime_destroy(runtime)` when the instance is no longer needed.
+
+### Runtime teardown hygiene
+
+Before this change, short-lived runtimes (especially inside tests) could leak organ bindings or heartbeat scratch buffers, which showed up as ASan leaks even though the kernel behaved correctly. The shutdown path now handles the cleanup for you, but it is useful to know what happens so custom harnesses and documentation stay aligned.
+
+**Technical details**
+- `cep_runtime_shutdown()` unbinds every organ root via `cep_l0_organs_unbind_roots()` and uses `cep_cell_clear_bindings()` to drop any lingering binding lists the organs attached. This keeps `/sys/organs/*` in sync the next time you bootstrap a runtime in the same process.
+- Heartbeat state is released in two steps: `cep_heartbeat_release_signal_dts()` frees every validator/constructor/destructor DT interned during organ registration, and `cep_heartbeat_release_runtime()` destroys both impulse queues and the dispatch scratch cache. Nothing in `/rt` survives the shutdown; the tree is rebuilt the next time `cep_heartbeat_bootstrap()` runs.
+- If you bypass `cep_runtime_shutdown()` (for example, in bespoke harnesses), make sure you either call the helpers above or start from a fresh process; otherwise ASan and Valgrind will report leaks sourced from the cached bindings or heartbeat scratch buffers.
+
+**Q&A**
+- *Do I need to call the new helpers directly?* Not when you rely on `cep_runtime_shutdown()`—it now calls them for you. Only hand-written teardown code (for example, in a minimal reproducer) should invoke `cep_l0_organs_unbind_roots()`, `cep_cell_clear_bindings()`, or `cep_heartbeat_release_runtime()` manually.
+- *Why wasn’t this an issue before multiple runtimes?* Long-running processes reused the default runtime, so bindings and scratch buffers stayed alive for the process lifetime. Once tests started creating and destroying runtimes rapidly, those caches became observable leaks without the explicit cleanup.
+
 ---
 
 ## 0) Reading map

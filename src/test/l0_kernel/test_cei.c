@@ -9,8 +9,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void cei_runtime_start(bool ensure_dirs) {
+typedef struct {
+    cepRuntime* runtime;
+    cepRuntime* previous_runtime;
+} CeiRuntimeScope;
+
+static CeiRuntimeScope cei_runtime_start(bool ensure_dirs) {
     test_runtime_shutdown();
+
+    CeiRuntimeScope scope = {
+        .runtime = cep_runtime_create(),
+        .previous_runtime = NULL,
+    };
+    munit_assert_not_null(scope.runtime);
+    scope.previous_runtime = cep_runtime_set_active(scope.runtime);
+    cep_cell_system_initiate();
 
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
@@ -21,7 +34,24 @@ static void cei_runtime_start(bool ensure_dirs) {
     };
 
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
+    munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_namepool_bootstrap());
+    munit_assert_true(cep_runtime_attach_metadata(scope.runtime));
     munit_assert_true(cep_heartbeat_startup());
+    return scope;
+}
+
+static void cei_runtime_cleanup(CeiRuntimeScope* scope) {
+    if (!scope || !scope->runtime) {
+        return;
+    }
+    cep_runtime_set_active(scope->runtime);
+    cep_stream_clear_pending();
+    cep_runtime_shutdown(scope->runtime);
+    cep_runtime_restore_active(scope->previous_runtime);
+    cep_runtime_destroy(scope->runtime);
+    scope->runtime = NULL;
+    scope->previous_runtime = NULL;
 }
 
 static cepCell* cei_msgs_root(void) {
@@ -139,7 +169,7 @@ static cepOID cei_read_oid_field(const char* field_name) {
 MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_fixture) {
     (void)user_data_or_fixture;
     test_boot_cycle_prepare(params);
-    cei_runtime_start(true);
+    CeiRuntimeScope scope = cei_runtime_start(true);
 
     cepCell* subject = cei_subject_cell();
     cepCeiRequest req = {
@@ -218,7 +248,7 @@ MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_f
     cepCell* resolved_subject = cep_link_pull(subject_link);
     munit_assert_ptr_equal(resolved_subject, subject);
 
-    test_runtime_shutdown();
+    cei_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -228,7 +258,7 @@ MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_f
 MunitResult test_cell_append_guard_cei(const MunitParameter params[], void* fixture) {
     (void)fixture;
     test_boot_cycle_prepare(params);
-    cei_runtime_start(true);
+    CeiRuntimeScope scope = cei_runtime_start(true);
 
     cepCell* rt_root = cep_heartbeat_rt_root();
     munit_assert_not_null(rt_root);
@@ -303,14 +333,14 @@ MunitResult test_cell_append_guard_cei(const MunitParameter params[], void* fixt
         op_cell->store->writable = op_store_writable ? 1u : 0u;
     }
 
-    test_runtime_shutdown();
+    cei_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 MunitResult test_cei_signal_ledger(const MunitParameter params[], void* user_data_or_fixture) {
     (void)user_data_or_fixture;
     test_boot_cycle_prepare(params);
-    cei_runtime_start(true);
+    CeiRuntimeScope scope = cei_runtime_start(true);
 
     cepBeatNumber due = cep_heartbeat_next();
     cepCeiRequest req = {
@@ -350,14 +380,14 @@ MunitResult test_cei_signal_ledger(const MunitParameter params[], void* user_dat
     munit_assert_size(text_len, >=, strlen("signal=/CEP:sig_"));
     munit_assert_int(strncmp(text, "signal=/CEP:sig_", strlen("signal=/CEP:sig_")), ==, 0);
 
-    test_runtime_shutdown();
+    cei_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 MunitResult test_cei_op_failure(const MunitParameter params[], void* user_data_or_fixture) {
     (void)user_data_or_fixture;
     test_boot_cycle_prepare(params);
-    cei_runtime_start(false);
+    CeiRuntimeScope scope = cei_runtime_start(false);
 
     cepDT verb = cep_ops_make_dt("op/cei");
     cepDT mode = cep_ops_make_dt("opm:states");
@@ -389,14 +419,14 @@ MunitResult test_cei_op_failure(const MunitParameter params[], void* user_data_o
     cepDT status = cei_read_dt_cell(status_cell);
     cei_assert_dt_matches(&status, CEP_DTAW("CEP", "sts:fail"));
 
-    test_runtime_shutdown();
+    cei_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 MunitResult test_cei_fatal_shutdown(const MunitParameter params[], void* user_data_or_fixture) {
     (void)user_data_or_fixture;
     test_boot_cycle_prepare(params);
-    cei_runtime_start(true);
+    CeiRuntimeScope scope = cei_runtime_start(true);
 
     cepCeiRequest req = {
         .severity = *CEP_DTAW("CEP", "sev:fatal"),
@@ -412,6 +442,6 @@ MunitResult test_cei_fatal_shutdown(const MunitParameter params[], void* user_da
     cepOID shdn_oid = cei_read_oid_field("shdn_oid");
     munit_assert_true(cep_oid_is_valid(shdn_oid));
 
-    test_runtime_shutdown();
+    cei_runtime_cleanup(&scope);
     return MUNIT_OK;
 }

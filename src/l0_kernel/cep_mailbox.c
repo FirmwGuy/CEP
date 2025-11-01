@@ -7,6 +7,7 @@
 
 #include "cep_identifier.h"
 #include "cep_namepool.h"
+#include "cep_runtime.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -24,9 +25,10 @@ CEP_DEFINE_STATIC_DT(dt_interval_ns_name, CEP_ACRO("CEP"), CEP_WORD("interval_ns
 CEP_DEFINE_STATIC_DT(dt_analytics_root,   CEP_ACRO("CEP"), CEP_WORD("analytics"));
 CEP_DEFINE_STATIC_DT(dt_spacing_root,     CEP_ACRO("CEP"), CEP_WORD("spacing"));
 
-static bool     CEP_MAILBOX_WALLCLOCK_DISABLED = false;
-static uint32_t CEP_MAILBOX_BEAT_LOOKAHEAD     = 32u;
-static uint32_t CEP_MAILBOX_SPACING_SAMPLES    = 8u;
+#define CEP_MAILBOX_SETTINGS        (cep_runtime_mailbox_settings(cep_runtime_default()))
+#define CEP_MAILBOX_WALLCLOCK_DISABLED (CEP_MAILBOX_SETTINGS->wallclock_disabled)
+#define CEP_MAILBOX_BEAT_LOOKAHEAD      (CEP_MAILBOX_SETTINGS->beat_lookahead)
+#define CEP_MAILBOX_SPACING_SAMPLES     (CEP_MAILBOX_SETTINGS->spacing_samples)
 
 typedef struct {
     uint64_t beat;

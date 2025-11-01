@@ -37,6 +37,8 @@ typedef struct {
     cepCell* space_entry;
     cepDT    item_type;
     cepDT    log_type;
+    cepRuntime* runtime;
+    cepRuntime* previous_runtime;
 } IntegrationFixture;
 
 typedef struct {
@@ -1883,7 +1885,12 @@ static int integration_octree_compare(const cepCell* lhs,
 
 /* Configure the runtime from a clean slate and drive the boot operation to completion. */
 static void integration_runtime_boot(IntegrationFixture* fix) {
-    test_runtime_shutdown();
+    munit_assert_not_null(fix);
+
+    fix->runtime = cep_runtime_create();
+    munit_assert_not_null(fix->runtime);
+    fix->previous_runtime = cep_runtime_set_active(fix->runtime);
+    cep_cell_system_initiate();
 
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
@@ -1894,6 +1901,8 @@ static void integration_runtime_boot(IntegrationFixture* fix) {
     };
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_namepool_bootstrap());
+    munit_assert_true(cep_runtime_attach_metadata(fix->runtime));
     munit_assert_true(cep_heartbeat_startup());
 
     fix->boot_oid = integration_read_oid("boot_oid");
@@ -1911,6 +1920,20 @@ static void integration_runtime_boot(IntegrationFixture* fix) {
         "ist:ok",
     };
     integration_assert_op_history(fix->boot_oid, expected_states, cep_lengthof(expected_states));
+}
+
+static void integration_runtime_cleanup(IntegrationFixture* fix) {
+    if (!fix || !fix->runtime) {
+        return;
+    }
+
+    cep_runtime_set_active(fix->runtime);
+    cep_stream_clear_pending();
+    cep_runtime_shutdown(fix->runtime);
+    cep_runtime_restore_active(fix->previous_runtime);
+    cep_runtime_destroy(fix->runtime);
+    fix->runtime = NULL;
+    fix->previous_runtime = NULL;
 }
 
 /* Ensure `/data/poc/catalog` contains predictable entries before other phases run. */
@@ -2541,7 +2564,7 @@ static MunitResult test_l0_integration(const MunitParameter params[], void* user
     integration_build_tree(&fixture);
     integration_execute_interleaved_timeline(&fixture);
     integration_teardown_tree(&fixture);
-    test_runtime_shutdown();
+    integration_runtime_cleanup(&fixture);
 
     return MUNIT_OK;
 }

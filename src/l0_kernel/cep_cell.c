@@ -5306,7 +5306,9 @@ void cep_cell_finalize(cepCell* cell) {
     aborting in-flight construction or reclaiming detached cells before they are
     made visible to the hierarchy. */
 void cep_cell_finalize_hard(cepCell* cell) {
-    assert(!cep_cell_is_void(cell));
+    if (!cell || cep_cell_is_void(cell)) {
+        return;
+    }
 
     if (cep_cell_is_shadowed(cell))
         cep_shadow_break_all(cell);
@@ -5593,6 +5595,10 @@ void* cep_cell_data(const cepCell* cell) {
     assert(!cep_cell_is_void(cell));
 
     cell = cep_link_pull(CEP_P(cell));
+
+    if (cep_cell_is_root((cepCell*)cell)) {
+        return NULL;
+    }
 
     cepData* data = cell->data;
     if (!data)
@@ -6156,22 +6162,42 @@ bool cep_txn_begin(cepCell* parent, const cepDT* name, const cepDT* type, cepTxn
         return false;
 
     if (!cep_ep_require_rw()) {
+        cepEpExecutionContext* ctx = cep_executor_context_get();
+        CEP_DEBUG_PRINTF_STDOUT("[instrument][txn_begin] require_rw failed parent=%p ctx=%p profile=%d allow_without_lease=%d runtime=%p\n",
+                                (void*)parent,
+                                (void*)ctx,
+                                ctx ? (int)ctx->profile : -1,
+                                ctx ? (ctx->allow_without_lease ? 1 : 0) : -1,
+                                ctx ? (void*)ctx->runtime : NULL);
         return false;
     }
 
     CEP_0(txn);
 
     cepCell* resolved = cep_link_pull(parent);
-    if (!resolved || !cep_cell_is_normal(resolved))
+    if (!resolved || !cep_cell_is_normal(resolved)) {
+        CEP_DEBUG_PRINTF_STDOUT("[instrument][txn_begin] parent not normal parent=%p resolved=%p\n",
+                                (void*)parent,
+                                (void*)resolved);
         return false;
+    }
 
     cepStore* store = NULL;
-    if (!cep_cell_require_store(&resolved, &store))
+    if (!cep_cell_require_store(&resolved, &store)) {
+        CEP_DEBUG_PRINTF_STDOUT("[instrument][txn_begin] require_store failed parent=%p resolved=%p\n",
+                                (void*)parent,
+                                (void*)resolved);
         return false;
+    }
 
     cepDT name_copy = cep_dt_clean(name);
-    if (store_find_child_by_name(store, &name_copy))
+    if (store_find_child_by_name(store, &name_copy)) {
+        CEP_DEBUG_PRINTF_STDOUT("[instrument][txn_begin] name exists parent=%p name=%08llx:%08llx\n",
+                                (void*)parent,
+                                (unsigned long long)cep_id(name_copy.domain),
+                                (unsigned long long)cep_id(name_copy.tag));
         return false;
+    }
 
     cepDT type_copy = type ? cep_dt_clean(type) : *dt_dictionary_type();
 
@@ -6188,8 +6214,10 @@ bool cep_txn_begin(cepCell* parent, const cepDT* name, const cepDT* type, cepTxn
     if (restore_writable)
         store->writable = writable_before;
 
-    if (!root)
+    if (!root) {
+        CEP_DEBUG_PRINTF_STDOUT("[instrument][txn_begin] add_dictionary failed parent=%p\n", (void*)parent);
         return false;
+    }
 
     cep_cell_mark_subtree_veiled(root);
     cep_txn_update_state(root, "building");

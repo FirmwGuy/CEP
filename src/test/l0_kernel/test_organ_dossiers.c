@@ -17,8 +17,19 @@
 #include <stdio.h>
 #include <string.h>
 
-static void organ_dossier_prepare_runtime(void) {
-    test_runtime_shutdown();
+typedef struct {
+    cepRuntime* runtime;
+    cepRuntime* previous_runtime;
+} OrganDossierRuntimeScope;
+
+static OrganDossierRuntimeScope organ_dossier_prepare_runtime(void) {
+    OrganDossierRuntimeScope scope = {
+        .runtime = cep_runtime_create(),
+        .previous_runtime = NULL,
+    };
+    munit_assert_not_null(scope.runtime);
+    scope.previous_runtime = cep_runtime_set_active(scope.runtime);
+    cep_cell_system_initiate();
 
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
@@ -29,12 +40,33 @@ static void organ_dossier_prepare_runtime(void) {
 
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_namepool_bootstrap());
+    (void)cep_namepool_intern_static("op/vl", strlen("op/vl"));
+    (void)cep_namepool_intern_static("op/ct", strlen("op/ct"));
+    (void)cep_namepool_intern_static("op/dt", strlen("op/dt"));
+    (void)cep_namepool_intern_static("opm:states", strlen("opm:states"));
+    munit_assert_true(cep_runtime_attach_metadata(scope.runtime));
     munit_assert_true(cep_heartbeat_startup());
 
     for (int i = 0; i < 6; ++i) {
         test_ovh_tracef("organ_dossier_prepare_runtime iteration=%d", i);
         munit_assert_true(test_ovh_heartbeat_step("organ_dossier_prepare_runtime"));
     }
+
+    return scope;
+}
+
+static void organ_dossier_cleanup_runtime(OrganDossierRuntimeScope* scope) {
+    if (!scope || !scope->runtime) {
+        return;
+    }
+    cep_runtime_set_active(scope->runtime);
+    cep_stream_clear_pending();
+    cep_runtime_shutdown(scope->runtime);
+    cep_runtime_restore_active(scope->previous_runtime);
+    cep_runtime_destroy(scope->runtime);
+    scope->runtime = NULL;
+    scope->previous_runtime = NULL;
 }
 
 static cepCell* organ_dossier_ops_root(void) {
@@ -259,6 +291,7 @@ static bool organ_fixture_emit_dossier(const cepPath* target, const char* verb_t
     if (test_ovh_trace_enabled() && log_label) {
         test_ovh_tracef("%s begin target=%s", log_label, path_buffer);
     }
+    munit_assert_true(cep_namepool_bootstrap());
     cepDT verb = cep_ops_make_dt(verb_tag);
     cepDT mode = cep_ops_make_dt("opm:states");
     cepOID oid = cep_op_start(verb, path_buffer, mode, NULL, 0u, 0u);
@@ -443,7 +476,7 @@ MunitResult test_organ_constructor_dossier(const MunitParameter params[], void* 
     TestWatchdog* watchdog = (TestWatchdog*)fixture;
     munit_assert_not_null(watchdog);
 
-    organ_dossier_prepare_runtime();
+    OrganDossierRuntimeScope scope = organ_dossier_prepare_runtime();
     organ_fixture_register_descriptor();
     organ_fixture_register_enzymes();
     cepCell* fixture_root = organ_fixture_root();
@@ -458,7 +491,7 @@ MunitResult test_organ_constructor_dossier(const MunitParameter params[], void* 
     organ_dossier_assert_latest(ORGAN_FIXTURE_TARGET, "op/ct");
 
     test_watchdog_signal(watchdog);
-    test_runtime_shutdown();
+    organ_dossier_cleanup_runtime(&scope);
     return MUNIT_OK;
 }
 
@@ -467,7 +500,7 @@ MunitResult test_organ_destructor_dossier(const MunitParameter params[], void* f
     TestWatchdog* watchdog = (TestWatchdog*)fixture;
     munit_assert_not_null(watchdog);
 
-    organ_dossier_prepare_runtime();
+    OrganDossierRuntimeScope scope = organ_dossier_prepare_runtime();
     organ_fixture_register_descriptor();
     organ_fixture_register_enzymes();
     cepCell* fixture_root = organ_fixture_root();
@@ -482,7 +515,7 @@ MunitResult test_organ_destructor_dossier(const MunitParameter params[], void* f
     organ_dossier_assert_latest(ORGAN_FIXTURE_TARGET, "op/dt");
 
     test_watchdog_signal(watchdog);
-    test_runtime_shutdown();
+    organ_dossier_cleanup_runtime(&scope);
     return MUNIT_OK;
 }
 
@@ -496,7 +529,7 @@ MunitResult test_organ_dossier_sequence(const MunitParameter params[], void* fix
     TestWatchdog* watchdog = (TestWatchdog*)fixture;
     munit_assert_not_null(watchdog);
 
-    organ_dossier_prepare_runtime();
+    OrganDossierRuntimeScope scope = organ_dossier_prepare_runtime();
     organ_fixture_register_descriptor();
     organ_fixture_register_enzymes();
     cepCell* fixture_root = organ_fixture_root();
@@ -520,6 +553,6 @@ MunitResult test_organ_dossier_sequence(const MunitParameter params[], void* fix
     organ_dossier_assert_count_grew(ops_root, before_destructor, "op/dt");
 
     test_watchdog_signal(watchdog);
-    test_runtime_shutdown();
+    organ_dossier_cleanup_runtime(&scope);
     return MUNIT_OK;
 }

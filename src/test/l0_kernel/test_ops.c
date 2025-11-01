@@ -6,6 +6,7 @@
 
 #include "cep_ops.h"
 #include "cep_enzyme.h"
+#include "cep_namepool.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -27,8 +28,22 @@ static const cepPath* ops_make_path(OpsPathBuf* buf, const cepDT* segments, unsi
     return (const cepPath*)buf;
 }
 
-static void ops_runtime_start(bool ensure_dirs) {
-    test_runtime_shutdown();
+typedef struct {
+    cepRuntime* runtime;
+    cepRuntime* previous_runtime;
+} OpsRuntimeScope;
+
+static OpsRuntimeScope ops_runtime_start(bool ensure_dirs) {
+    OpsRuntimeScope scope = {
+        .runtime = cep_runtime_create(),
+        .previous_runtime = NULL,
+    };
+    munit_assert_not_null(scope.runtime);
+    scope.previous_runtime = cep_runtime_set_active(scope.runtime);
+    cep_cell_system_initiate();
+    munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_namepool_bootstrap());
+    munit_assert_true(cep_runtime_attach_metadata(scope.runtime));
 
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
@@ -41,6 +56,29 @@ static void ops_runtime_start(bool ensure_dirs) {
     munit_assert_true(cep_heartbeat_startup());
 
     (void)cep_heartbeat_rt_root();
+    printf("[instrument][test] ops_runtime_start runtime=%p previous=%p ensure_dirs=%d\n",
+           (void*)scope.runtime,
+           (void*)scope.previous_runtime,
+           ensure_dirs ? 1 : 0);
+    fflush(stdout);
+    return scope;
+}
+
+static void ops_runtime_cleanup(OpsRuntimeScope* scope) {
+    if (!scope || !scope->runtime) {
+        return;
+    }
+    printf("[instrument][test] ops_runtime_cleanup runtime=%p previous=%p\n",
+           (void*)scope->runtime,
+           (void*)scope->previous_runtime);
+    fflush(stdout);
+    cep_runtime_set_active(scope->runtime);
+    cep_stream_clear_pending();
+    cep_runtime_shutdown(scope->runtime);
+    cep_runtime_restore_active(scope->previous_runtime);
+    cep_runtime_destroy(scope->runtime);
+    scope->runtime = NULL;
+    scope->previous_runtime = NULL;
 }
 
 static cepCell* ops_lookup_cell(cepOID oid) {
@@ -77,7 +115,7 @@ static uint64_t ops_child_u64(cepCell* parent, const char* field) {
 }
 
 static void test_ops_direct_close_case(void) {
-    ops_runtime_start(false);
+    OpsRuntimeScope scope = ops_runtime_start(false);
 
     cepCell* rt_root = cep_heartbeat_rt_root();
     munit_assert_not_null(rt_root);
@@ -127,11 +165,11 @@ static void test_ops_direct_close_case(void) {
     munit_assert_not_null(close_branch);
     munit_assert_true(cep_cell_is_immutable(close_branch));
 
-    test_runtime_shutdown();
+    ops_runtime_cleanup(&scope);
 }
 
 static void test_ops_stateful_history_case(void) {
-    ops_runtime_start(false);
+    OpsRuntimeScope scope = ops_runtime_start(false);
 
     cepDT verb = cep_ops_make_dt("op/vl");
     cepDT mode = cep_ops_make_dt("opm:states");
@@ -177,7 +215,7 @@ static void test_ops_stateful_history_case(void) {
 
     munit_assert_size(index, ==, cep_lengthof(expected));
 
-    test_runtime_shutdown();
+    ops_runtime_cleanup(&scope);
 }
 
 static int ops_continuation_calls;
@@ -246,7 +284,7 @@ static void unregister_enzyme(const cepDT* signal_dt, cepEnzyme callback) {
 }
 
 static void test_ops_await_continuation_case(void) {
-    ops_runtime_start(false);
+    OpsRuntimeScope scope = ops_runtime_start(false);
     cepDT cont_signal = cep_ops_make_dt("op/cont");
     register_enzyme(&cont_signal, ops_cont_enzyme);
     ops_continuation_calls = 0;
@@ -292,11 +330,11 @@ static void test_ops_await_continuation_case(void) {
     munit_assert_int(cep_cell_unbind_enzyme(op_cell, &cont_signal), ==, CEP_ENZYME_SUCCESS);
     unregister_enzyme(&cont_signal, ops_cont_enzyme);
 
-    test_runtime_shutdown();
+    ops_runtime_cleanup(&scope);
 }
 
 static void test_ops_ttl_timeout_case(void) {
-    ops_runtime_start(false);
+    OpsRuntimeScope scope = ops_runtime_start(false);
     cepDT tmo_signal = cep_ops_make_dt("op/tmo");
     register_enzyme(&tmo_signal, ops_timeout_enzyme);
     ops_timeout_calls = 0;
@@ -339,11 +377,11 @@ static void test_ops_ttl_timeout_case(void) {
     munit_assert_int(cep_cell_unbind_enzyme(op_cell, &tmo_signal), ==, CEP_ENZYME_SUCCESS);
     unregister_enzyme(&tmo_signal, ops_timeout_enzyme);
 
-    test_runtime_shutdown();
+    ops_runtime_cleanup(&scope);
 }
 
 static void test_ops_terminal_guard_case(void) {
-    ops_runtime_start(false);
+    OpsRuntimeScope scope = ops_runtime_start(false);
 
     cepDT move = cep_ops_make_dt("op/move");
     cepDT mode_states = cep_ops_make_dt("opm:states");
@@ -357,7 +395,7 @@ static void test_ops_terminal_guard_case(void) {
     munit_assert_true(cep_op_close(oid, cep_ops_make_dt("sts:ok"), NULL, 0u));
     munit_assert_false(cep_op_state_set(oid, cep_ops_make_dt("ist:run"), 0, NULL));
 
-    test_runtime_shutdown();
+    ops_runtime_cleanup(&scope);
 }
 
 MunitResult test_ops(const MunitParameter params[], void* user_data_or_fixture) {

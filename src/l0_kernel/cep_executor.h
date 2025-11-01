@@ -27,6 +27,8 @@ typedef struct cepEpExecutionPolicy {
     size_t       io_budget_bytes;
 } cepEpExecutionPolicy;
 
+struct cepRuntime;
+
 typedef struct cepEpExecutionContext {
     cepEpProfile profile;
     uint64_t     cpu_budget_ns;
@@ -37,6 +39,7 @@ typedef struct cepEpExecutionContext {
     bool         allow_without_lease;
     atomic_bool  cancel_requested;
     cepExecutorTicket ticket;
+    struct cepRuntime *runtime;
 } cepEpExecutionContext;
 
 #define CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS   (5ULL * 1000ULL * 1000ULL)  /* 5ms per slice */

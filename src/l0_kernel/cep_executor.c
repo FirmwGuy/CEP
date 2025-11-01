@@ -1,5 +1,6 @@
 #include "cep_executor.h"
 #include "cep_ep.h"
+#include "cep_runtime.h"
 
 #include "cep_cei.h"
 #include "cep_heartbeat.h"
@@ -23,9 +24,26 @@ typedef struct {
     void                 (*fn)(void *ctx);
     void                  *ctx;
     cepEpExecutionContext  context;
+    cepRuntime*            runtime;
     cepExecutorSlotState   state;
     uint64_t               submitted_beat;
 } cepExecutorTask;
+
+typedef struct {
+    cepEpExecutionContext* ctx;
+    cepRuntime*            runtime;
+} cepExecutorTlsSlot;
+
+static _Thread_local cepExecutorTlsSlot executor_tls = {0};
+
+static inline cepRuntime*
+cep_executor_active_runtime(void)
+{
+    if (executor_tls.runtime) {
+        return executor_tls.runtime;
+    }
+    return cep_runtime_default();
+}
 
 #if defined(CEP_EXECUTOR_BACKEND_THREADED)
 
@@ -41,10 +59,15 @@ typedef struct {
     cepCond         cond;
     cepThread*      workers;
     size_t          worker_count;
-} cepExecutorState;
+} cepExecutorRuntimeState;
 
-static cepExecutorState executor_state;
-static _Thread_local cepEpExecutionContext *tls_context;
+static cepExecutorRuntimeState*
+cep_executor_state_ptr(void)
+{
+    return cep_runtime_executor_state(cep_executor_active_runtime());
+}
+
+#define executor_state (*cep_executor_state_ptr())
 
 static inline uint64_t
 cep_executor_now_ns(void)
@@ -128,7 +151,9 @@ cep_executor_worker(void* arg)
         slot->state = CEP_EXECUTOR_SLOT_RUNNING;
         cep_mutex_unlock(&executor_state.mutex);
 
-        tls_context = &slot->context;
+        executor_tls.ctx = &slot->context;
+        executor_tls.runtime = slot->runtime;
+        cepRuntime* previous_runtime_scope = cep_runtime_set_active(slot->runtime);
 
         uint64_t start_ns = cep_executor_now_ns();
         slot->fn(slot->ctx);
@@ -143,7 +168,9 @@ cep_executor_worker(void* arg)
             }
         }
 
-        tls_context = NULL;
+        executor_tls.ctx = NULL;
+        executor_tls.runtime = NULL;
+        cep_runtime_restore_active(previous_runtime_scope);
 
         bool cpu_over_budget = slot->context.cpu_budget_ns &&
                                slot->context.cpu_consumed_ns > slot->context.cpu_budget_ns;
@@ -175,7 +202,8 @@ cep_executor_init(void)
     memset(&executor_state, 0, sizeof executor_state);
     executor_state.initialised = true;
     executor_state.next_ticket = 1u;
-    tls_context = NULL;
+    executor_tls.ctx = NULL;
+    executor_tls.runtime = NULL;
 
     if (!cep_mutex_init(&executor_state.mutex)) {
         executor_state.initialised = false;
@@ -251,7 +279,8 @@ cep_executor_shutdown(void)
     cep_mutex_destroy(&executor_state.mutex);
 
     memset(&executor_state, 0, sizeof executor_state);
-    tls_context = NULL;
+    executor_tls.ctx = NULL;
+    executor_tls.runtime = NULL;
 }
 
 size_t
@@ -287,6 +316,7 @@ cep_executor_submit_ro(void (*task)(void *ctx),
     slot->ticket = cep_executor_next_ticket();
     slot->fn = task;
     slot->ctx = ctx;
+    slot->runtime = cep_executor_active_runtime();
     slot->state = CEP_EXECUTOR_SLOT_PENDING;
 
     cepEpExecutionContext *ctx_out = &slot->context;
@@ -302,6 +332,7 @@ cep_executor_submit_ro(void (*task)(void *ctx),
     ctx_out->io_consumed_bytes = 0u;
     atomic_store(&ctx_out->cancel_requested, false);
     ctx_out->ticket = slot->ticket;
+    ctx_out->runtime = slot->runtime;
 
     slot->submitted_beat = cep_beat_index();
 
@@ -354,34 +385,60 @@ cep_executor_service(void)
 void
 cep_executor_context_set(cepEpExecutionContext *context)
 {
-    tls_context = context;
+    executor_tls.ctx = context;
+    executor_tls.runtime = context ? context->runtime : NULL;
 }
 
 cepEpExecutionContext *
 cep_executor_context_get(void)
 {
-    return tls_context;
+    return executor_tls.ctx;
 }
 
 void
 cep_executor_context_clear(void)
 {
-    tls_context = NULL;
+    executor_tls.ctx = NULL;
+    executor_tls.runtime = NULL;
+}
+
+struct cepExecutorRuntimeState*
+cep_executor_state_create(void)
+{
+    return cep_malloc0(sizeof(cepExecutorRuntimeState));
+}
+
+void
+cep_executor_state_destroy(struct cepExecutorRuntimeState* state)
+{
+    if (!state) {
+        return;
+    }
+    if (state->workers) {
+        cep_free(state->workers);
+        state->workers = NULL;
+    }
+    cep_free(state);
 }
 
 #else /* CEP_EXECUTOR_BACKEND_STUB */
 
-typedef struct {
+typedef struct cepExecutorRuntimeState {
     cepExecutorTask slots[CEP_EXECUTOR_QUEUE_CAPACITY];
     size_t          head;
     size_t          tail;
     size_t          count;
     cepExecutorTicket next_ticket;
     bool            initialised;
-} cepExecutorState;
+} cepExecutorRuntimeState;
 
-static cepExecutorState executor_state;
-static _Thread_local cepEpExecutionContext *tls_context;
+static cepExecutorRuntimeState*
+cep_executor_state_ptr(void)
+{
+    return cep_runtime_executor_state(cep_executor_active_runtime());
+}
+
+#define executor_state (*cep_executor_state_ptr())
 
 static inline uint64_t
 cep_executor_now_ns(void)
@@ -442,7 +499,8 @@ cep_executor_init(void)
     memset(&executor_state, 0, sizeof executor_state);
     executor_state.initialised = true;
     executor_state.next_ticket = 1u;
-    tls_context = NULL;
+    executor_tls.ctx = NULL;
+    executor_tls.runtime = NULL;
     for (size_t i = 0; i < CEP_EXECUTOR_QUEUE_CAPACITY; ++i) {
         executor_state.slots[i].state = CEP_EXECUTOR_SLOT_EMPTY;
     }
@@ -453,7 +511,8 @@ void
 cep_executor_shutdown(void)
 {
     memset(&executor_state, 0, sizeof executor_state);
-    tls_context = NULL;
+    executor_tls.ctx = NULL;
+    executor_tls.runtime = NULL;
 }
 
 size_t
@@ -492,6 +551,7 @@ cep_executor_submit_ro(void (*task)(void *ctx),
     slot->ticket = cep_executor_next_ticket();
     slot->fn = task;
     slot->ctx = ctx;
+    slot->runtime = cep_executor_active_runtime();
     slot->state = CEP_EXECUTOR_SLOT_PENDING;
 
     cepEpExecutionContext *ctx_out = &slot->context;
@@ -507,6 +567,7 @@ cep_executor_submit_ro(void (*task)(void *ctx),
     ctx_out->io_consumed_bytes = 0u;
     atomic_store(&ctx_out->cancel_requested, false);
     ctx_out->ticket = slot->ticket;
+    ctx_out->runtime = slot->runtime;
 
     slot->submitted_beat = cep_beat_index();
 
@@ -567,7 +628,9 @@ cep_executor_service(void)
     }
 
     slot->state = CEP_EXECUTOR_SLOT_RUNNING;
-    tls_context = &slot->context;
+    executor_tls.ctx = &slot->context;
+    executor_tls.runtime = slot->runtime;
+    cepRuntime* previous_runtime_scope = cep_runtime_set_active(slot->runtime);
 
     uint64_t start_ns = cep_executor_now_ns();
     slot->fn(slot->ctx);
@@ -582,7 +645,9 @@ cep_executor_service(void)
         }
     }
 
-    tls_context = NULL;
+    executor_tls.ctx = NULL;
+    executor_tls.runtime = NULL;
+    cep_runtime_restore_active(previous_runtime_scope);
 
     bool cpu_over_budget = slot->context.cpu_budget_ns &&
                            slot->context.cpu_consumed_ns > slot->context.cpu_budget_ns;
@@ -599,19 +664,36 @@ cep_executor_service(void)
 void
 cep_executor_context_set(cepEpExecutionContext *context)
 {
-    tls_context = context;
+    executor_tls.ctx = context;
+    executor_tls.runtime = context ? context->runtime : NULL;
 }
 
 cepEpExecutionContext *
 cep_executor_context_get(void)
 {
-    return tls_context;
+    return executor_tls.ctx;
 }
 
 void
 cep_executor_context_clear(void)
 {
-    tls_context = NULL;
+    executor_tls.ctx = NULL;
+    executor_tls.runtime = NULL;
+}
+
+struct cepExecutorRuntimeState*
+cep_executor_state_create(void)
+{
+    return cep_malloc0(sizeof(cepExecutorRuntimeState));
+}
+
+void
+cep_executor_state_destroy(struct cepExecutorRuntimeState* state)
+{
+    if (!state) {
+        return;
+    }
+    cep_free(state);
 }
 
 #endif /* CEP_EXECUTOR_BACKEND_THREADED */
@@ -619,7 +701,7 @@ cep_executor_context_clear(void)
 bool
 cep_ep_require_rw(void)
 {
-    cepEpExecutionContext *ctx = tls_context;
+    cepEpExecutionContext *ctx = executor_tls.ctx;
     if (!ctx) {
         return true;
     }
@@ -635,10 +717,10 @@ cep_ep_require_rw(void)
             .attach_to_op = false,
             .ttl_forever = true,
         };
-        cepEpExecutionContext *saved = tls_context;
-        tls_context = NULL;
+        cepEpExecutionContext *saved = executor_tls.ctx;
+        executor_tls.ctx = NULL;
         cep_cei_emit(&req);
-        tls_context = saved;
+        executor_tls.ctx = saved;
         return false;
     }
     if (ctx->profile == CEP_EP_PROFILE_RW) {
@@ -660,10 +742,10 @@ cep_ep_require_rw(void)
                     .attach_to_op = false,
                     .ttl_forever = true,
                 };
-                cepEpExecutionContext *saved = tls_context;
-                tls_context = NULL;
+                cepEpExecutionContext *saved = executor_tls.ctx;
+                executor_tls.ctx = NULL;
                 cep_cei_emit(&req);
-                tls_context = saved;
+                executor_tls.ctx = saved;
             }
             return false;
         }

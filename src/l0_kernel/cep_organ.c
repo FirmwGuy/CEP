@@ -9,6 +9,7 @@
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
 #include "cep_ops.h"
+#include "cep_runtime.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -26,15 +27,94 @@ typedef struct {
 } cepOrganEntry;
 
 typedef struct {
+    const char* kind;
+    cepDT       dt;
+} cepOrganStoreCacheEntry;
+
+#define CEP_ORGAN_STORE_CACHE_CAP 32u
+
+struct cepOrganRegistryState {
     cepOrganEntry* entries;
     size_t         count;
     size_t         capacity;
     cepCell*       root;
     bool           bootstrapped;
     bool           dt_dirty;
-} cepOrganRegistryState;
+    cepOrganStoreCacheEntry store_cache[CEP_ORGAN_STORE_CACHE_CAP];
+    size_t         store_cache_count;
+};
 
-static cepOrganRegistryState CEP_ORGAN_REGISTRY = {0};
+static cepOrganRegistryState*
+cep_organ_registry_state(void)
+{
+    cepRuntime* default_runtime = cep_runtime_default();
+    cepRuntime* active_runtime = cep_runtime_active();
+    cepOrganRegistryState* state = cep_runtime_organ_registry(default_runtime);
+    CEP_DEBUG_PRINTF_STDOUT("[instrument][organ] registry_state default=%p active=%p state=%p bootstrapped=%d count=%zu root=%p\n",
+           (void*)default_runtime,
+           (void*)active_runtime,
+           (void*)state,
+           state ? (state->bootstrapped ? 1 : 0) : -1,
+           state ? state->count : 0u,
+           state ? (void*)state->root : NULL);
+    return state;
+}
+
+#define CEP_ORGAN_REGISTRY (*cep_organ_registry_state())
+
+static void cep_organ_release_dt(cepDT* dt);
+
+cepOrganRegistryState*
+cep_organ_registry_create(void)
+{
+    return cep_malloc0(sizeof(cepOrganRegistryState));
+}
+
+void
+cep_organ_registry_destroy(cepOrganRegistryState* state)
+{
+    if (!state) {
+        return;
+    }
+
+    if (state->entries) {
+        for (size_t i = 0; i < state->capacity; ++i) {
+            cepOrganEntry* entry = &state->entries[i];
+            if (entry->kind_storage) {
+                cep_free(entry->kind_storage);
+                entry->kind_storage = NULL;
+            }
+            if (entry->label_storage) {
+                cep_free(entry->label_storage);
+                entry->label_storage = NULL;
+            }
+            cep_organ_release_dt(&entry->desc.store);
+            cep_organ_release_dt(&entry->desc.validator);
+            cep_organ_release_dt(&entry->desc.constructor);
+            cep_organ_release_dt(&entry->desc.destructor);
+            memset(&entry->desc, 0, sizeof entry->desc);
+        }
+        cep_free(state->entries);
+        state->entries = NULL;
+    }
+    state->count = 0u;
+    state->capacity = 0u;
+    state->root = NULL;
+    state->bootstrapped = false;
+    state->dt_dirty = false;
+
+    for (size_t i = 0; i < state->store_cache_count; ++i) {
+        cepOrganStoreCacheEntry* entry = &state->store_cache[i];
+        if (cep_dt_is_valid(&entry->dt) && cep_id_is_reference(entry->dt.tag)) {
+            (void)cep_namepool_release(entry->dt.tag);
+        }
+        entry->kind = NULL;
+        CEP_0(&entry->dt);
+    }
+    state->store_cache_count = 0u;
+
+    cep_free(state);
+}
 
 CEP_DEFINE_STATIC_DT(dt_organs_root_name, CEP_ACRO("CEP"), CEP_WORD("organs"));
 CEP_DEFINE_STATIC_DT(dt_spec_name,        CEP_ACRO("CEP"), CEP_WORD("spec"));
@@ -57,15 +137,6 @@ static void prr_organ_log(const char* fmt, ...) {
     va_end(args);
     CEP_DEBUG_PRINTF_STDOUT("%s", buffer);
 }
-
-typedef struct {
-    const char* kind;
-    cepDT       dt;
-} cepOrganStoreCacheEntry;
-
-#define CEP_ORGAN_STORE_CACHE_CAP 32u
-static cepOrganStoreCacheEntry CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_CAP];
-static size_t CEP_ORGAN_STORE_CACHE_COUNT = 0u;
 
 static bool cep_organ_store_text_matches(const char* kind, cepID tag) {
     if (!kind || !*kind || !cep_id_is_reference(tag)) {
@@ -100,26 +171,57 @@ static void cep_organ_store_cache_release(cepDT* dt) {
     dt->glob = 0u;
 }
 
+/* Tear down a descriptor-owned identifier by releasing any remaining namepool
+ * references and zeroing the slot so future bootstraps start from a clean
+ * slate. The extra lookup guards make sure we only release entries that still
+ * exist, avoiding double-release pitfalls when caches already reclaimed the
+ * same string. */
+static void
+cep_organ_release_dt(cepDT* dt)
+{
+    if (!dt) {
+        return;
+    }
+
+    if (!cep_dt_is_valid(dt)) {
+        CEP_0(dt);
+        return;
+    }
+
+    if (cep_id_is_reference(dt->tag) && cep_namepool_lookup(dt->tag, NULL)) {
+        (void)cep_namepool_release(dt->tag);
+    }
+    if (cep_id_is_reference(dt->domain) && cep_namepool_lookup(dt->domain, NULL)) {
+        (void)cep_namepool_release(dt->domain);
+    }
+
+    CEP_0(dt);
+}
+
 static cepDT cep_organ_store_cache_record(const char* kind, cepDT dt) {
     if (!kind || !*kind) {
         return dt;
     }
-    for (size_t i = 0u; i < CEP_ORGAN_STORE_CACHE_COUNT; ++i) {
-        cepOrganStoreCacheEntry* entry = &CEP_ORGAN_STORE_CACHE[i];
+    cepOrganRegistryState* registry = cep_organ_registry_state();
+    if (!registry) {
+        return dt;
+    }
+    for (size_t i = 0u; i < registry->store_cache_count; ++i) {
+        cepOrganStoreCacheEntry* entry = &registry->store_cache[i];
         if (entry->kind && strcmp(entry->kind, kind) == 0) {
             cep_organ_store_cache_release(&entry->dt);
             entry->dt = dt;
             return dt;
         }
     }
-    if (CEP_ORGAN_STORE_CACHE_COUNT < CEP_ORGAN_STORE_CACHE_CAP) {
-        CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_COUNT].kind = kind;
-        CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_COUNT].dt = dt;
-        CEP_ORGAN_STORE_CACHE_COUNT += 1u;
+    if (registry->store_cache_count < CEP_ORGAN_STORE_CACHE_CAP) {
+        registry->store_cache[registry->store_cache_count].kind = kind;
+        registry->store_cache[registry->store_cache_count].dt = dt;
+        registry->store_cache_count += 1u;
     } else {
-        cep_organ_store_cache_release(&CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_COUNT - 1u].dt);
-        CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_COUNT - 1u].kind = kind;
-        CEP_ORGAN_STORE_CACHE[CEP_ORGAN_STORE_CACHE_COUNT - 1u].dt = dt;
+        cep_organ_store_cache_release(&registry->store_cache[registry->store_cache_count - 1u].dt);
+        registry->store_cache[registry->store_cache_count - 1u].kind = kind;
+        registry->store_cache[registry->store_cache_count - 1u].dt = dt;
     }
     return dt;
 }
@@ -128,8 +230,12 @@ static bool cep_organ_store_cache_lookup(const char* kind, cepDT* out) {
     if (!kind || !*kind || !out) {
         return false;
     }
-    for (size_t i = 0u; i < CEP_ORGAN_STORE_CACHE_COUNT; ++i) {
-        const cepOrganStoreCacheEntry* entry = &CEP_ORGAN_STORE_CACHE[i];
+    cepOrganRegistryState* registry = cep_organ_registry_state();
+    if (!registry) {
+        return false;
+    }
+    for (size_t i = 0u; i < registry->store_cache_count; ++i) {
+        const cepOrganStoreCacheEntry* entry = &registry->store_cache[i];
         if (!entry->kind) {
             continue;
         }
@@ -150,6 +256,26 @@ static bool cep_organ_store_cache_lookup(const char* kind, cepDT* out) {
 }
 
 void cep_organ_runtime_reset(void) {
+    cepOrganRegistryState* registry = cep_organ_registry_state();
+    if (!registry) {
+        return;
+    }
+
+    if (CEP_ORGAN_REGISTRY.root) {
+        cepCell* organs_root = cep_cell_resolve(CEP_ORGAN_REGISTRY.root);
+        if (organs_root && organs_root->store) {
+            cepStore* store = organs_root->store;
+            unsigned writable_before = store->writable;
+            if (!store->writable) {
+                store->writable = 1u;
+            }
+            cep_store_delete_children_hard(store);
+            if (!writable_before) {
+                store->writable = 0u;
+            }
+        }
+    }
+
     for (size_t i = 0; i < CEP_ORGAN_REGISTRY.count; ++i) {
         cepOrganEntry* entry = &CEP_ORGAN_REGISTRY.entries[i];
         if (entry->kind_storage) {
@@ -160,6 +286,10 @@ void cep_organ_runtime_reset(void) {
             cep_free(entry->label_storage);
             entry->label_storage = NULL;
         }
+        cep_organ_release_dt(&entry->desc.store);
+        cep_organ_release_dt(&entry->desc.validator);
+        cep_organ_release_dt(&entry->desc.constructor);
+        cep_organ_release_dt(&entry->desc.destructor);
         memset(&entry->desc, 0, sizeof(entry->desc));
     }
     CEP_ORGAN_REGISTRY.count = 0;
@@ -167,11 +297,11 @@ void cep_organ_runtime_reset(void) {
     CEP_ORGAN_REGISTRY.bootstrapped = false;
     CEP_ORGAN_REGISTRY.dt_dirty = false;
 
-    for (size_t i = 0u; i < CEP_ORGAN_STORE_CACHE_COUNT; ++i) {
-        cep_organ_store_cache_release(&CEP_ORGAN_STORE_CACHE[i].dt);
-        CEP_ORGAN_STORE_CACHE[i].kind = NULL;
+    for (size_t i = 0u; i < registry->store_cache_count; ++i) {
+        cep_organ_store_cache_release(&registry->store_cache[i].dt);
+        registry->store_cache[i].kind = NULL;
     }
-    CEP_ORGAN_STORE_CACHE_COUNT = 0u;
+    registry->store_cache_count = 0u;
 }
 
 static void cep_organ_report_issue(const char* stage, const char* detail) {
@@ -683,10 +813,17 @@ static bool cep_organ_enqueue_signal(const cepDT* signal_dt, const cepCell* root
  * descriptor publication; returns false if the heartbeat topology cannot be
  * initialised. */
 bool cep_organ_runtime_bootstrap(void) {
+    cepRuntime* active_runtime_before = cep_runtime_active();
+    cepRuntime* default_runtime = cep_runtime_default();
+    CEP_DEBUG_PRINTF_STDOUT("[instrument][organ] runtime_bootstrap enter active=%p default=%p state=%p\n",
+           (void*)active_runtime_before,
+           (void*)default_runtime,
+           (void*)&CEP_ORGAN_REGISTRY);
     if (CEP_ORGAN_REGISTRY.bootstrapped && CEP_ORGAN_REGISTRY.root) {
         cepCell* resolved = cep_cell_resolve(CEP_ORGAN_REGISTRY.root);
         if (resolved && cep_cell_is_normal(resolved) && resolved->store) {
             CEP_ORGAN_REGISTRY.root = resolved;
+            CEP_DEBUG_PRINTF_STDOUT("[instrument][organ] runtime_bootstrap reuse root=%p\n", (void*)resolved);
             return true;
         }
 
@@ -745,6 +882,10 @@ bool cep_organ_runtime_bootstrap(void) {
 
     CEP_ORGAN_REGISTRY.root = organs_root;
     CEP_ORGAN_REGISTRY.bootstrapped = true;
+    CEP_DEBUG_PRINTF_STDOUT("[instrument][organ] runtime_bootstrap exit active=%p root=%p bootstrapped=%d\n",
+           (void*)cep_runtime_active(),
+           (void*)CEP_ORGAN_REGISTRY.root,
+           CEP_ORGAN_REGISTRY.bootstrapped ? 1 : 0);
     return true;
 }
 

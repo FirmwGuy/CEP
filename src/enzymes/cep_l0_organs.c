@@ -6,6 +6,7 @@
 #include "../l0_kernel/cep_namepool.h"
 #include "../l0_kernel/cep_ops.h"
 #include "../l0_kernel/cep_organ.h"
+#include "../l0_kernel/cep_runtime.h"
 #include "cep_cell_operations.h"
 
 #include <inttypes.h>
@@ -185,7 +186,31 @@ static cepL0OrganDefinition CEP_L0_ORGAN_DEFS[CEP_L0_ORGAN_COUNT] = {
     },
 };
 
-static void cep_l0_organs_initialise(void) {
+static cepRuntime* cep_l0_organs_runtime_hint = NULL;
+
+static void
+cep_l0_organs_reset_cached_names(void)
+{
+    cep_l0_organs_runtime_hint = cep_runtime_default();
+    for (size_t i = 0; i < CEP_L0_ORGAN_COUNT; ++i) {
+        cepL0OrganDefinition* def = &CEP_L0_ORGAN_DEFS[i];
+        def->validator_ready = false;
+        def->constructor_ready = false;
+        def->destructor_ready = false;
+    }
+}
+
+static void
+cep_l0_organs_prepare_runtime(void)
+{
+    cepRuntime* current = cep_runtime_default();
+    if (current != cep_l0_organs_runtime_hint) {
+        cep_l0_organs_reset_cached_names();
+    }
+}
+
+static void
+cep_l0_organs_initialise(void) {
     static bool initialised = false;
     if (initialised) {
         return;
@@ -236,6 +261,7 @@ static void cep_l0_organs_initialise(void) {
     enzymes->segment_count = 1u;
 
     initialised = true;
+    cep_l0_organs_reset_cached_names();
 }
 
 void cep_l0_organs_invalidate_signals(void) {
@@ -1848,6 +1874,7 @@ bool cep_l0_organs_register(cepEnzymeRegistry* registry) {
     }
 
     cep_l0_organs_initialise();
+    cep_l0_organs_prepare_runtime();
 
     for (size_t i = 0; i < CEP_L0_ORGAN_COUNT; ++i) {
         cepL0OrganDefinition* def = &CEP_L0_ORGAN_DEFS[i];
@@ -1945,8 +1972,11 @@ bool cep_l0_organs_register(cepEnzymeRegistry* registry) {
  * letting organ-level impulses resolve deterministically without requiring
  * callers to attach bindings manually. Executed during bootstrap after the
  * runtime directories exist. */
-bool cep_l0_organs_bind_roots(void) {
+static bool
+cep_l0_organs_bindings_apply(bool bind)
+{
     cep_l0_organs_initialise();
+    cep_l0_organs_prepare_runtime();
 
     for (size_t i = 0; i < CEP_L0_ORGAN_COUNT; ++i) {
         cepL0OrganDefinition* def = &CEP_L0_ORGAN_DEFS[i];
@@ -1959,6 +1989,11 @@ bool cep_l0_organs_bind_roots(void) {
         if (!root) {
             prr_l0_organs_log("[prr:bind_fail] resolve root kind=%s\n", def->kind ? def->kind : "<null>");
             return false;
+        }
+
+        if (!bind) {
+            cep_cell_clear_bindings(root);
+            continue;
         }
 
         if (!cep_l0_organ_bind_signal(root, &def->validator_name)) {
@@ -1990,4 +2025,16 @@ bool cep_l0_organs_bind_roots(void) {
     }
 
     return true;
+}
+
+bool
+cep_l0_organs_bind_roots(void)
+{
+    return cep_l0_organs_bindings_apply(true);
+}
+
+void
+cep_l0_organs_unbind_roots(void)
+{
+    (void)cep_l0_organs_bindings_apply(false);
 }
