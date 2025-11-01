@@ -16,6 +16,7 @@ This L0 Kernel API gives you a **hierarchical, time‑aware data kernel** (“ce
 * A **reactive “enzyme” layer** for deterministic, dependency‑aware work dispatch driven by paths and heartbeats.   
 * A **beat-recorded Operations timeline** (`op/*`) with watcher support so long-running work, boot, and shutdown stay observable and awaitable.
 * A **Common Error Interface (CEI)** that centralises diagnostics, routes structured Error Facts through mailboxes, and enforces severity-driven OPS/shutdown policy.
+* A **pluggable federation transport manager** that negotiates capabilities, coalesces `upd_latest` gauges deterministically, and keeps `/net/mounts` plus `/net/transports` in sync with provider selections.
 * A compact **chunked serialization** format with staged reading/commit and optional blob chunking for large payloads. 
 * An optional **namepool** to intern strings when you need textual names bound to IDs. 
 * **Pause / Rollback / Resume (PRR) controls** that gate non-essential work, rewind the visible beat horizon, and deterministically drain queued impulses from a mailbox-backed backlog.
@@ -53,6 +54,9 @@ Domain/tag identifiers support globbing for routing and discovery. The glob guid
 
 ### Heartbeat and Enzymes
 The heartbeat topic narrates the capture → compute → commit lifecycle, impulse queues, dependency sorting, and agenda replay rules. It anchors enzyme scheduling semantics so you can reason about deterministic work ordering and beat-level safety checks.
+
+### Federation Transport Manager
+Federation mounts lean on a dedicated manager to select transports, seed `/net/mounts` and `/net/transports`, and police `upd_latest` semantics. Read the topic when editing negotiation logic, adding providers, or wiring federation enzymes that publish capability preferences.
 
 ### Episodic Engine (E³)
 The engine described in `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` lets episodes span beats, yield, await other operations, and—when configured—promote from threaded RO slices to cooperative RW slices (and demote back again) without sacrificing determinism. Read it before wiring long-lived jobs that blend read-heavy analysis with targeted mutations.

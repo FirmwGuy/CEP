@@ -191,6 +191,18 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `stdio_res` / `stdio_str` | Serialization/IO | stdio-backed stream resource and descriptor nodes. |
 | `zip_entry` / `zip_stream` | Serialization/IO | libzip-backed resource and stream adapters. |
 
+#### Federation Tags
+| Tag / Pattern | Feature Area | Purpose |
+| --- | --- | --- |
+| `net` | Federation transport | root dictionary for federation metadata (peers, mounts, transports). |
+| `mounts` | Federation transport | groups mount declarations by peer and mode under `/net/mounts`. |
+| `transports` | Federation transport | registry of transport providers keyed by provider ID. |
+| `transport` | Federation transport | per-mount dictionary recording the chosen provider and capability summary. |
+| `caps` | Federation transport | nested dictionary capturing capability bitmaps (required, preferred, or provider-specific). |
+| `prov_caps` | Federation transport | mirrors the selected provider capability bitset for the active mount. |
+| `provider` | Federation transport | stores the provider identifier associated with a mount record. |
+| `upd_latest` | Federation transport | boolean flag indicating a mount opts into droppable gauge frames. |
+
 #### Test Harness Tags
 | Tag / Pattern | Feature Area | Purpose |
 | --- | --- | --- |

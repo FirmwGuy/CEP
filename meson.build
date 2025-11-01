@@ -78,6 +78,9 @@ l0_srcs = files(
   'src/l0_kernel/cep_heartbeat.c',
   'src/l0_kernel/cep_namepool.c',
   'src/l0_kernel/cep_serialization.c',
+  'src/enzymes/fed_transport.c',
+  'src/enzymes/fed_transport_manager.c',
+  'src/enzymes/fed_transport_providers.c',
 )
 
 lib_dependencies = []
@@ -144,6 +147,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_stream.c',
     'src/test/l0_kernel/test_executor.c',
     'src/test/l0_kernel/test_episode.c',
+    'src/test/federation/test_fed_transport.c',
     'src/test/l0_kernel/test_serialization.c',
     'src/test/l0_kernel/test_locking.c',
     'src/test/l0_kernel/test_cells_randomized.c',

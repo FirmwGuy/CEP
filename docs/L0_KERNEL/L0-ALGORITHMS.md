@@ -199,6 +199,20 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 `src/l0_kernel/cep_heartbeat.c` (`cep_runtime_pause`, `cep_runtime_resume`, `cep_runtime_rollback`, backlog drain helpers) plus the design doc `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md`. Tests: `src/test/l0_kernel/test_prr.c` and the integration POC pause/rollback scenario.
 
 
+## 14) Federation transport negotiation & coalescing
+
+**Why it exists.** Mounts need deterministic selection of transport media without duplicating negotiation logic across packs. The manager centralises capability scoring, schema updates, and `upd_latest` cache behaviour so every federation enzyme sees the same semantics.
+
+**What it does.**
+
+* **Provider scan & scoring.** Enumerate registered providers, filter those missing required caps, and popcount preferred caps to rank them. Allowing `upd_latest` automatically filters out providers that lack `CEP_FED_TRANSPORT_CAP_UNRELIABLE`. Preferred provider IDs override the ranking if they pass the filter.
+* **Schema synchronisation.** Each successful negotiation rewrites `/net/mounts/<peer>/<mode>/<mount>/`, storing required/preferred caps, the `caps/upd_latest` opt-in, chosen `transport/provider`, and the provider bitset (`transport/prov_caps`). Provider metadata cached under `/net/transports/<id>/` is reused when calling the provider’s `open` function.
+* **`upd_latest` cache.** When transports report backpressure, the manager caches exactly one droppable payload. READY events re-send the cached gauge immediately; older gauges are dropped. Reliable transports still forward the frame but emit a CEI warning so misuse is visible.
+* **Diagnostics.** Negotiation gaps, schema write failures, provider send errors, and illegal `upd_latest` usage yield CEI facts (`transport/*` topics) with the mount branch as the subject, making issues observable through the diagnostics mailbox.
+
+**Where it lives.** `src/enzymes/fed_transport_manager.c` implements negotiation, schema, and CEI hooks. Provider stubs plus mock helpers are in `src/enzymes/fed_transport_providers.c`. Tests covering negotiation, coalescing, and inbound delivery sit in `src/test/federation/test_fed_transport.c`.
+
+
 * **History & snapshots:** `cep_cell_update`, `cep_data_history_push`, `cep_store_history_push/clear` 
 * **Links & shadows:** `cep_link_set/pull`, `cep_cell_shadow_mark_target_dead`, `cep_shadow_*` helpers 
 * **Insertion & reindex:** `cep_store_add_child`, `cep_store_append_child`, `store_to_dictionary`, `store_sort` 

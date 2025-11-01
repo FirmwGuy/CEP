@@ -27,6 +27,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/topics/MAILBOX-CEI-MAPPING.md` — Line-by-line severity map for mailbox helpers so CEI emits stay consistent.
   - `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md` — Binding inheritance, wildcard routing, and tombstones.
   - `docs/L0_KERNEL/topics/CELL-OPERATIONS-ENZYMES.md` — Reference semantics for the standard `sig_cell/op_*` helpers.
+  - `docs/L0_KERNEL/topics/FEDERATION-TRANSPORT.md` — Transport manager duties, capability negotiation rules, and the `/net` schema layout for mounts/providers.
   - `docs/L0_KERNEL/topics/ORGANS-AUTHORING.md` — Register organ descriptors, enforce validator bindings, and coordinate ctor/dtor/validation ops.
   - `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` — How the Episodic Enzyme Engine (E³) handles RO budgets, hybrid RO↔RW promotions/demotions, and cooperative cancellation now that it replaces Rendezvous.
   - `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` — Episodic engine design rationale, executor backends, and migration guidance from Rendezvous.

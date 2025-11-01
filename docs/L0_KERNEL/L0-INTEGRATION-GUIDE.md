@@ -12,6 +12,7 @@
 * **Signals → Enzymes → Work**: register, bind, match, and order enzyme callbacks; how impulses get resolved and executed  .
 * **Serialization & Streams**: emit/ingest chunked cell streams; transactions; manifest & payload; proxy snapshots .
 * **Diagnostics / CEI**: the Common Error Interface (`cep_cei_emit`) publishes structured Error Facts into the diagnostics mailbox (`/data/mailbox/diag`) and can emit `sig_cei/*` impulses; re-read the CEI topic before customising severity handling or routing.
+* **Federation transport manager**: negotiates mount/provider capabilities, seeds `/net/mounts` & `/net/transports`, and enforces `upd_latest` semantics so federation enzymes stay deterministic.
 * **Proxies & Libraries**: represent external resources/streams inside cells  .
 * **Naming & Namepool**: compact Domain/Tag IDs, intern/lookup text names  .
 * **Locking, History & “soft” vs “hard”**: data/store locks, append‑only timelines, snapshot traversals  .
@@ -576,6 +577,21 @@ Heartbeat init/shutdown operations now mirror production beats, so tooling and t
 - `cep_heartbeat_emit_shutdown()` enqueues the shutdown operation on the live agenda and drives the same commit path as a normal beat.
 - Each bootstrap helper now marks its subsystem as ready by writing to `/sys/state/<scope>` (`status=ready`, `ready_beat=<n>`). Shutdown walks the scopes in reverse dependency order, records `status=teardown` / `td_beat`, and closes the `op/shdn` timeline once all scopes report `ok`.
 - The `/sys/state` dictionary and `/rt/ops/<oid>` branches are durable, so tooling can poll readiness/teardown even if the corresponding operations have already completed; readiness helpers return `false` if prerequisites have not finished booting.
+
+## 10) Federation transport manager
+
+**In plain words.** Federation transports are now pluggable. Instead of hard-coding sockets or pipes, integrations ask the manager to negotiate caps, wire callbacks, and keep `/net/mounts` plus `/net/transports` up to date.
+
+**Technical details**
+- Initialise once per runtime with `cep_fed_transport_manager_init(net_root)`. The helper captures `/net`, the transport registry, and the diagnostics mailbox so later CEI emissions have a landing zone.
+- Populate a `cepFedTransportMountConfig`, then call `cep_fed_transport_manager_configure_mount()`. The manager resolves providers, seeds `caps/required` & `caps/preferred`, records `transport/provider`, copies the provider’s caps into `transport/prov_caps/`, and opens the channel using the provider’s vtable.
+- Backpressure sets `mount->backpressured` and caches the latest `upd_latest` gauge. When providers signal readiness the cache is flushed immediately. Reliable transports log a warning when `upd_latest` frames appear so callers know nothing will be dropped.
+- Tests can interrogate the mock provider via `cep_fed_transport_mock_*` helpers to inject inbound payloads, pop outbound queues, or pulse READY/BACKPRESSURE events deterministically.
+
+**Q&A**
+- *Do I have to pre-seed `/net/transports/<id>/`?* Optional. The manager will create branches on demand; pre-seeding just publishes metadata earlier.
+- *How do I inspect negotiation failures?* Watch the default diagnostics mailbox for `transport/*` topics or read `/net/mounts/<peer>/<mode>/<mount>/`—the manager leaves the branch intact even when providers are missing.
+- *Can I swap providers on the fly?* Yes. Close the existing channel, tweak required/preferred caps or the preferred ID, and call `configure_mount()` again. The schema refreshes atomically.
 
 ## Global Q&A
 - *How do I check that init ran during a test?* Inspect `/rt/ops/<boot_oid>` or verify that `cep_heartbeat_sys_root()` picked up the expected namespaces after the first beat—both advance as the boot operation progresses.

@@ -499,6 +499,30 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
+    {
+        "/fed_transport/negotiation",
+        test_fed_transport_negotiation,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_transport/upd_latest",
+        test_fed_transport_upd_latest,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_transport/inbound",
+        test_fed_transport_inbound,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
 
     {NULL, NULL, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL}  // EOL
 };
