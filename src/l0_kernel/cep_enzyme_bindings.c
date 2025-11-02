@@ -54,6 +54,16 @@ static cepEnzymeBinding** cep_cell_binding_slot(cepCell* cell, cepOpCount** modi
     return NULL;
 }
 
+static void
+cep_enzyme_binding_list_destroy(cepEnzymeBinding* bindings)
+{
+    while (bindings) {
+        cepEnzymeBinding* next = bindings->next;
+        cep_free(bindings);
+        bindings = next;
+    }
+}
+
 static int cep_cell_append_binding(cepCell* cell, const cepDT* name, uint32_t flags) {
     if (!cell || !cep_cell_is_normal(cell) || !name || !cep_dt_is_valid(name)) {
         return CEP_ENZYME_FATAL;
@@ -166,4 +176,25 @@ const cepEnzymeBinding* cep_cell_enzyme_bindings(const cepCell* cell) {
     }
 
     return NULL;
+}
+
+void
+cep_cell_clear_bindings(cepCell* cell)
+{
+    if (!cell || !cep_cell_is_normal(cell)) {
+        return;
+    }
+
+    cepOpCount* modified_slot = NULL;
+    cepEnzymeBinding** head = cep_cell_binding_slot(cell, &modified_slot);
+    if (!head || !*head) {
+        return;
+    }
+
+    cep_enzyme_binding_list_destroy(*head);
+    *head = NULL;
+
+    if (modified_slot) {
+        *modified_slot = cep_cell_timestamp_next();
+    }
 }

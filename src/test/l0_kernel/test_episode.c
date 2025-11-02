@@ -17,6 +17,11 @@ typedef struct {
     cepPast     segments[4];
 } EpisodePathBuf;
 
+typedef struct {
+    cepRuntime* runtime;
+    cepRuntime* previous_runtime;
+} EpisodeRuntimeScope;
+
 static const cepPath*
 episode_make_path(EpisodePathBuf* buf, const char* tag)
 {
@@ -27,12 +32,21 @@ episode_make_path(EpisodePathBuf* buf, const char* tag)
     return (const cepPath*)buf;
 }
 
-static void
+static EpisodeRuntimeScope
 episode_runtime_start(void)
 {
     test_runtime_shutdown();
 
+    EpisodeRuntimeScope scope = {
+        .runtime = cep_runtime_create(),
+        .previous_runtime = NULL,
+    };
+    munit_assert_not_null(scope.runtime);
+    scope.previous_runtime = cep_runtime_set_active(scope.runtime);
+    cep_cell_system_initiate();
     munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_namepool_bootstrap());
+    munit_assert_true(cep_runtime_attach_metadata(scope.runtime));
 
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
@@ -44,7 +58,6 @@ episode_runtime_start(void)
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_heartbeat_startup());
     (void)cep_heartbeat_rt_root();
-    munit_assert_true(cep_namepool_bootstrap());
 
     cepOID bootstrap = cep_op_start(cep_ops_make_dt("op/probe"),
                                     "/episode/runtime/probe",
@@ -55,6 +68,22 @@ episode_runtime_start(void)
     munit_assert_true(cep_oid_is_valid(bootstrap));
     cepDT sts_ok = cep_ops_make_dt("sts:ok");
     munit_assert_true(cep_op_close(bootstrap, sts_ok, NULL, 0u));
+    return scope;
+}
+
+static void
+episode_runtime_cleanup(EpisodeRuntimeScope* scope)
+{
+    if (!scope || !scope->runtime) {
+        return;
+    }
+    cep_runtime_set_active(scope->runtime);
+    cep_stream_clear_pending();
+    cep_runtime_shutdown(scope->runtime);
+    cep_runtime_restore_active(scope->previous_runtime);
+    cep_runtime_destroy(scope->runtime);
+    scope->runtime = NULL;
+    scope->previous_runtime = NULL;
 }
 
 static cepCell*
@@ -219,7 +248,7 @@ test_episode_yield_resume(const MunitParameter params[], void* user_data_or_fixt
     (void)params;
     (void)user_data_or_fixture;
 
-    episode_runtime_start();
+    EpisodeRuntimeScope scope = episode_runtime_start();
 
     EpisodePathBuf signal_buf = {0};
     EpisodePathBuf target_buf = {0};
@@ -307,7 +336,7 @@ test_episode_yield_resume(const MunitParameter params[], void* user_data_or_fixt
     cepDT sts_ok = cep_ops_make_dt("sts:ok");
     munit_assert_uint(status->tag, ==, sts_ok.tag);
 
-    test_runtime_shutdown();
+    episode_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -342,7 +371,7 @@ test_episode_await_resume(const MunitParameter params[], void* user_data_or_fixt
     (void)params;
     (void)user_data_or_fixture;
 
-    episode_runtime_start();
+    EpisodeRuntimeScope scope = episode_runtime_start();
 
     cepDT verb = cep_ops_make_dt("op/test");
     cepDT mode = cep_ops_make_dt("opm:states");
@@ -415,7 +444,7 @@ test_episode_await_resume(const MunitParameter params[], void* user_data_or_fixt
     cepDT sts_ok = cep_ops_make_dt("sts:ok");
     munit_assert_uint(status->tag, ==, sts_ok.tag);
 
-    test_runtime_shutdown();
+    episode_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -568,7 +597,7 @@ test_episode_await_timeout(const MunitParameter params[], void* user_data_or_fix
     (void)params;
     (void)user_data_or_fixture;
 
-    episode_runtime_start();
+    EpisodeRuntimeScope scope = episode_runtime_start();
 
     cepDT verb = cep_ops_make_dt("op/slow");
     cepDT mode = cep_ops_make_dt("opm:states");
@@ -635,7 +664,7 @@ test_episode_await_timeout(const MunitParameter params[], void* user_data_or_fix
     cepDT ist_cxl = cep_ops_make_dt("ist:cxl");
     munit_assert_int(cep_dt_compare(final_state, &ist_cxl), ==, 0);
 
-    test_runtime_shutdown();
+    episode_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -645,7 +674,7 @@ test_episode_lease_enforcement(const MunitParameter params[], void* user_data_or
     (void)params;
     (void)user_data_or_fixture;
 
-    episode_runtime_start();
+    EpisodeRuntimeScope scope = episode_runtime_start();
 
     cepCell* data_root = cep_cell_ensure_dictionary_child(cep_root(),
                                                           CEP_DTAW("CEP", "data"),
@@ -701,7 +730,7 @@ test_episode_lease_enforcement(const MunitParameter params[], void* user_data_or
     munit_assert_true(atomic_load_explicit(&probe.third_mutation_denied, memory_order_relaxed));
 
     cep_free(lease_path);
-    test_runtime_shutdown();
+    episode_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -711,7 +740,7 @@ test_episode_rw_suspend_resume(const MunitParameter params[], void* user_data_or
     (void)params;
     (void)user_data_or_fixture;
 
-    episode_runtime_start();
+    EpisodeRuntimeScope scope = episode_runtime_start();
 
     cepCell* data_root = cep_cell_ensure_dictionary_child(cep_root(),
                                                           CEP_DTAW("CEP", "data"),
@@ -770,7 +799,7 @@ test_episode_rw_suspend_resume(const MunitParameter params[], void* user_data_or
     munit_assert_true(atomic_load_explicit(&probe.post_release_denied, memory_order_relaxed));
 
     cep_free(lease_path);
-    test_runtime_shutdown();
+    episode_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -780,7 +809,7 @@ test_episode_hybrid_promote_demote(const MunitParameter params[], void* user_dat
     (void)params;
     (void)user_data_or_fixture;
 
-    episode_runtime_start();
+    EpisodeRuntimeScope scope = episode_runtime_start();
 
     cepCell* data_root = cep_cell_ensure_dictionary_child(cep_root(),
                                                           CEP_DTAW("CEP", "data"),
@@ -874,6 +903,6 @@ test_episode_hybrid_promote_demote(const MunitParameter params[], void* user_dat
     munit_assert_uint(status->tag, ==, sts_ok.tag);
 
     cep_free(lease_path);
-    test_runtime_shutdown();
+    episode_runtime_cleanup(&scope);
     return MUNIT_OK;
 }

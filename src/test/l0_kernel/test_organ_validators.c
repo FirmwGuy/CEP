@@ -11,8 +11,19 @@
 #include <stdio.h>
 #include <string.h>
 
-static void organ_prepare_runtime(void) {
-    test_runtime_shutdown();
+typedef struct {
+    cepRuntime* runtime;
+    cepRuntime* previous_runtime;
+} OrganRuntimeScope;
+
+static OrganRuntimeScope organ_prepare_runtime(void) {
+    OrganRuntimeScope scope = {
+        .runtime = cep_runtime_create(),
+        .previous_runtime = NULL,
+    };
+    munit_assert_not_null(scope.runtime);
+    scope.previous_runtime = cep_runtime_set_active(scope.runtime);
+    cep_cell_system_initiate();
 
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
@@ -23,6 +34,12 @@ static void organ_prepare_runtime(void) {
 
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_namepool_bootstrap());
+    (void)cep_namepool_intern_static("op/vl", strlen("op/vl"));
+    (void)cep_namepool_intern_static("op/ct", strlen("op/ct"));
+    (void)cep_namepool_intern_static("op/dt", strlen("op/dt"));
+    (void)cep_namepool_intern_static("opm:states", strlen("opm:states"));
+    munit_assert_true(cep_runtime_attach_metadata(scope.runtime));
     munit_assert_true(cep_heartbeat_startup());
 
     /* Advance a few beats so the boot dossier reaches ist:ok before we queue
@@ -31,6 +48,32 @@ static void organ_prepare_runtime(void) {
         test_ovh_tracef("organ_prepare_runtime iteration=%d", i);
         munit_assert_true(test_ovh_heartbeat_step("organ_prepare_runtime"));
     }
+
+    printf("[instrument][test] organ_prepare_runtime runtime=%p previous=%p\n",
+           (void*)scope.runtime,
+           (void*)scope.previous_runtime);
+    fflush(stdout);
+
+    return scope;
+}
+
+static void organ_cleanup_runtime(OrganRuntimeScope* scope) {
+    if (!scope || !scope->runtime) {
+        return;
+    }
+
+    printf("[instrument][test] organ_cleanup_runtime runtime=%p previous=%p\n",
+           (void*)scope->runtime,
+           (void*)scope->previous_runtime);
+    fflush(stdout);
+
+    cep_runtime_set_active(scope->runtime);
+    cep_stream_clear_pending();
+    cep_runtime_shutdown(scope->runtime);
+    cep_runtime_restore_active(scope->previous_runtime);
+    cep_runtime_destroy(scope->runtime);
+    scope->runtime = NULL;
+    scope->previous_runtime = NULL;
 }
 
 static cepCell* organ_ops_root(void) {
@@ -294,7 +337,7 @@ MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* 
     TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
     munit_assert_not_null(watchdog);
 
-    organ_prepare_runtime();
+    OrganRuntimeScope scope = organ_prepare_runtime();
 
     cepCell* sys_root = cep_heartbeat_sys_root();
     munit_assert_not_null(sys_root);
@@ -310,7 +353,7 @@ MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* 
 
     organ_assert_latest_success("/sys/state");
     test_watchdog_signal(watchdog);
-    test_runtime_shutdown();
+    organ_cleanup_runtime(&scope);
     return MUNIT_OK;
 }
 
@@ -319,7 +362,7 @@ MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* use
     TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
     munit_assert_not_null(watchdog);
 
-    organ_prepare_runtime();
+    OrganRuntimeScope scope = organ_prepare_runtime();
 
     cepCell* rt_root = cep_heartbeat_rt_root();
     munit_assert_not_null(rt_root);
@@ -334,7 +377,7 @@ MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* use
 
     organ_assert_latest_success("/rt/ops");
     test_watchdog_signal(watchdog);
-    test_runtime_shutdown();
+    organ_cleanup_runtime(&scope);
     return MUNIT_OK;
 }
 
@@ -343,7 +386,7 @@ MunitResult test_organ_constructor_bootstrap(const MunitParameter params[], void
     TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
     munit_assert_not_null(watchdog);
 
-    organ_prepare_runtime();
+    OrganRuntimeScope scope = organ_prepare_runtime();
 
     cepCell* rt_root = cep_heartbeat_rt_root();
     munit_assert_not_null(rt_root);
@@ -375,7 +418,7 @@ MunitResult test_organ_constructor_bootstrap(const MunitParameter params[], void
     organ_assert_latest_success("/journal");
 
     test_watchdog_signal(watchdog);
-    test_runtime_shutdown();
+    organ_cleanup_runtime(&scope);
     return MUNIT_OK;
 }
 
@@ -384,7 +427,7 @@ MunitResult test_organ_constructor_destructor_cycles(const MunitParameter params
     TestWatchdog* watchdog = (TestWatchdog*)user_data_or_fixture;
     munit_assert_not_null(watchdog);
 
-    organ_prepare_runtime();
+    OrganRuntimeScope scope = organ_prepare_runtime();
 
     cepCell* rt_root = cep_heartbeat_rt_root();
     munit_assert_not_null(rt_root);
@@ -469,6 +512,6 @@ MunitResult test_organ_constructor_destructor_cycles(const MunitParameter params
     organ_assert_latest_success("/journal");
 
     test_watchdog_signal(watchdog);
-    test_runtime_shutdown();
+    organ_cleanup_runtime(&scope);
     return MUNIT_OK;
 }

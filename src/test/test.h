@@ -15,6 +15,8 @@
 
 #include "cep_cell.h"
 #include "cep_heartbeat.h"
+#include "cep_runtime.h"
+#include "cep_l0.h"
 #include "stream/cep_stream_internal.h"
 #include "watchdog.h"
 
@@ -94,6 +96,7 @@ MunitResult test_episode_await_timeout(const MunitParameter params[], void* user
 MunitResult test_episode_lease_enforcement(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_episode_rw_suspend_resume(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_episode_hybrid_promote_demote(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_runtime_dual_isolation(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitResult test_fed_transport_negotiation(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_transport_upd_latest(const MunitParameter params[], void* user_data_or_fixture);
@@ -108,8 +111,12 @@ void        test_executor_relax(void);
 
 static inline void test_runtime_shutdown(void) {
     cep_stream_clear_pending();
-    (void)cep_heartbeat_emit_shutdown();
-    cep_heartbeat_shutdown();
+    cepRuntime* runtime = cep_runtime_active();
+    (void)cep_runtime_shutdown(runtime);
+    if (runtime == cep_runtime_default()) {
+        cep_cell_system_shutdown();
+        cep_l0_bootstrap_reset();
+    }
 }
 
 #define TEST_BOOT_CYCLE_FRESH       "fresh"

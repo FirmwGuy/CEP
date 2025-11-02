@@ -9,6 +9,7 @@
 #include "cep_cei.h"
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
+#include "cep_runtime.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
@@ -17,10 +18,19 @@
 
 CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
 
-static cepBeatNumber cep_serialization_marked_decision_beat = CEP_BEAT_INVALID;
+
+static cepSerializationRuntimeState*
+cep_serialization_state(void)
+{
+    return cep_runtime_serialization_state(cep_runtime_default());
+}
 
 void cep_serialization_mark_decision_replay(void) {
-    cep_serialization_marked_decision_beat = cep_heartbeat_current();
+    cepSerializationRuntimeState* state = cep_serialization_state();
+    if (!state) {
+        return;
+    }
+    state->marked_decision_beat = cep_heartbeat_current();
 }
 
 static inline uint16_t cep_serial_to_be16(uint16_t value) {
@@ -669,21 +679,22 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     payloads. The writer callback receives each chunk and can stream it to disk
     or over the network. */
 bool cep_serialization_emit_cell(const cepCell* cell,
-                                   const cepSerializationHeader* header,
-                                   cepSerializationWriteFn write,
-                                   void* context,
-                                 size_t blob_payload_bytes) {
+                                  const cepSerializationHeader* header,
+                                  cepSerializationWriteFn write,
+                                  void* context,
+                                size_t blob_payload_bytes) {
     if (!cell || !write)
         return false;
 
     cepSerializationHeader local = header ? *header : (cepSerializationHeader){0};
+    cepSerializationRuntimeState* state = cep_serialization_state();
 
     cepBeatNumber current_beat = cep_beat_index();
-    if (cep_serialization_marked_decision_beat != CEP_BEAT_INVALID &&
-        cep_serialization_marked_decision_beat != current_beat) {
-        cep_serialization_marked_decision_beat = CEP_BEAT_INVALID;
+    if (state->marked_decision_beat != CEP_BEAT_INVALID &&
+        state->marked_decision_beat != current_beat) {
+        state->marked_decision_beat = CEP_BEAT_INVALID;
     }
-    if (cep_serialization_marked_decision_beat == current_beat) {
+    if (state->marked_decision_beat == current_beat) {
         local.journal_decision_replay = true;
     }
 

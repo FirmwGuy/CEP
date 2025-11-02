@@ -53,6 +53,15 @@ bool test_ovh_heartbeat_step(const char* label) {
     if (!ok && test_ovh_trace_enabled()) {
         test_ovh_tracef("%s heartbeat_step failed ops_error=%d", label, cep_ops_debug_last_error());
     }
+    if (!ok) {
+        fprintf(stderr,
+                "[instrument][test] heartbeat_step failure label=%s before=%" PRIu64 " after=%" PRIu64 " ops_error=%d\\n",
+                label ? label : "(null)",
+                (uint64_t)before,
+                (uint64_t)after,
+                cep_ops_debug_last_error());
+        fflush(stderr);
+    }
     return ok;
 }
 
@@ -518,6 +527,14 @@ MunitTest tests[] = {
     {
         "/fed_transport/inbound",
         test_fed_transport_inbound,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/runtime/dual_isolation",
+        test_runtime_dual_isolation,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,

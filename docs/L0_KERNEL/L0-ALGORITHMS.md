@@ -9,6 +9,7 @@ Below is a focused, implementation‑grounded report of the **main, cross‑cutt
 * **Domain–Tag (DT) naming & cepID encoding.** CEP names every cell with a compact, 58‑bit per‑field identifier (`cepDT`), with four encodings (word, acronym, reference, numeric). Helpers encode/decode and match wildcards; these are pervasive in the algorithms below (e.g., lookups, path matching, enzyme resolution) .
 * **Name pool (interning).** When you need stable “reference” IDs from text, the namepool maintains interned strings backing `CEP_NAMING_REFERENCE` so DTs remain small and stable: `cep_namepool_intern`, `lookup`, `release` .
 * **Paths.** A `cepPath` is a DT sequence from root to a cell; many algorithms accept/emit paths to keep work deterministic and decoupled from in‑memory pointers (e.g., traversal, enzymes, serialization) .
+* **Runtime context activation.** A `cepRuntime` instance now owns all mutable Layer 0 state; algorithms operate on whichever context is active on the calling thread. Use `cep_runtime_set_active()` before invoking public APIs when juggling multiple runtimes and restore the prior handle with `cep_runtime_restore_active()` when you exit.
 
 ---
 

@@ -25,6 +25,8 @@ typedef struct _cepStore      cepStore;
 typedef struct _cepCell       cepCell;
 typedef struct _cepProxy      cepProxy;
 
+cepCell*    cep_root(void);
+
 typedef int (*cepCompare)(const cepCell* restrict, const cepCell* restrict, void*);
 
 typedef uint64_t  cepOpCount;         // CEP per-cell operation id number.
@@ -1052,7 +1054,15 @@ static inline void  cep_cell_set_name(cepCell* cell, cepDT* name)     {
 /* #define cep_cell_is_private(r)    ((r)->metacell.priv) */  /* Commented out: 'priv' bitfield is not defined in cepMetacell; avoid invalid access. */
 /* #define cep_cell_is_system(r)     ((r)->metacell.system) */ /* Commented out: 'system' bitfield is not defined in cepMetacell; avoid invalid access. */
 
-static inline bool cep_cell_has_data(const cepCell* cell)     {assert(cep_cell_is_normal(cell));  return cell->data;}
+cepCell*    cep_root(void);
+
+static inline bool cep_cell_has_data(const cepCell* cell) {
+    assert(cep_cell_is_normal(cell));
+    if (cell == cep_root()) {
+        return false;
+    }
+    return cell->data != NULL;
+}
 static inline bool cep_cell_has_store(const cepCell* cell)    {assert(cep_cell_is_normal(cell));  return cell->store;}
 
 static inline bool cep_cell_is_deleted(const cepCell* cell) {
@@ -1253,10 +1263,9 @@ static inline void cep_cell_replace(cepCell* oldr, cepCell* newr) {
 
 
 // Root dictionary
-static inline cepCell* cep_root(void)  {extern cepCell CEP_ROOT; assert(!cep_cell_is_void(&CEP_ROOT));  return &CEP_ROOT;}
 cepOpCount  cep_cell_timestamp_next(void);
 void        cep_cell_timestamp_reset(void);
-static inline cepOpCount cep_cell_timestamp(void)  {extern cepOpCount CEP_OP_COUNT; return CEP_OP_COUNT;}
+cepOpCount  cep_cell_timestamp(void);
 
 
 // Links

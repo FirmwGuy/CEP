@@ -27,6 +27,11 @@ typedef struct {
     cepCell*                  root;
 } cepOrganRoot;
 
+typedef struct cepOrganRegistryState cepOrganRegistryState;
+
+cepOrganRegistryState* cep_organ_registry_create(void);
+void    cep_organ_registry_destroy(cepOrganRegistryState* state);
+
 bool    cep_organ_runtime_bootstrap(void);
 void    cep_organ_runtime_reset(void);
 bool    cep_organ_register(const cepOrganDescriptor* descriptor);

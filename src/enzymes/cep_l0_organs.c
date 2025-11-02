@@ -6,6 +6,7 @@
 #include "../l0_kernel/cep_namepool.h"
 #include "../l0_kernel/cep_ops.h"
 #include "../l0_kernel/cep_organ.h"
+#include "../l0_kernel/cep_runtime.h"
 #include "cep_cell_operations.h"
 
 #include <inttypes.h>
@@ -185,7 +186,72 @@ static cepL0OrganDefinition CEP_L0_ORGAN_DEFS[CEP_L0_ORGAN_COUNT] = {
     },
 };
 
-static void cep_l0_organs_initialise(void) {
+static cepRuntime* cep_l0_organs_runtime_hint = NULL;
+static struct cepNamePoolRuntimeState* cep_l0_organs_namepool_hint = NULL;
+
+static void
+cep_l0_organs_reset_cached_names(void)
+{
+    cepRuntime* runtime = cep_runtime_default();
+    cep_l0_organs_runtime_hint = runtime;
+    cep_l0_organs_namepool_hint = runtime ? cep_runtime_namepool_state(runtime) : NULL;
+    for (size_t i = 0; i < CEP_L0_ORGAN_COUNT; ++i) {
+        cepL0OrganDefinition* def = &CEP_L0_ORGAN_DEFS[i];
+        def->validator_ready = false;
+        def->constructor_ready = false;
+        def->destructor_ready = false;
+        def->validator_name = (cepDT){0};
+        def->constructor_name = (cepDT){0};
+        def->destructor_name = (cepDT){0};
+    }
+}
+
+static void
+cep_l0_organs_prepare_runtime(void)
+{
+    cepRuntime* current = cep_runtime_default();
+    struct cepNamePoolRuntimeState* namepool = current ? cep_runtime_namepool_state(current) : NULL;
+    if (current != cep_l0_organs_runtime_hint ||
+        namepool != cep_l0_organs_namepool_hint) {
+        cep_l0_organs_reset_cached_names();
+    }
+}
+
+static cepDT cep_l0_organs_make_signal_dt(const char* kind, const char* suffix);
+
+static bool
+cep_l0_organs_refresh_signal(cepL0OrganDefinition* def,
+                             const char* suffix,
+                             cepDT* cached,
+                             bool* ready)
+{
+    if (!def || !suffix || !cached || !ready || !def->kind) {
+        if (ready) {
+            *ready = false;
+        }
+        if (cached) {
+            *cached = (cepDT){0};
+        }
+        return false;
+    }
+
+    cepDT refreshed = cep_l0_organs_make_signal_dt(def->kind, suffix);
+    if (!cep_dt_is_valid(&refreshed)) {
+        *cached = (cepDT){0};
+        *ready = false;
+        return false;
+    }
+
+    if (!*ready || cep_dt_compare(cached, &refreshed) != 0) {
+        *cached = refreshed;
+    }
+
+    *ready = true;
+    return true;
+}
+
+static void
+cep_l0_organs_initialise(void) {
     static bool initialised = false;
     if (initialised) {
         return;
@@ -236,6 +302,7 @@ static void cep_l0_organs_initialise(void) {
     enzymes->segment_count = 1u;
 
     initialised = true;
+    cep_l0_organs_reset_cached_names();
 }
 
 void cep_l0_organs_invalidate_signals(void) {
@@ -1848,13 +1915,13 @@ bool cep_l0_organs_register(cepEnzymeRegistry* registry) {
     }
 
     cep_l0_organs_initialise();
+    cep_l0_organs_prepare_runtime();
 
     for (size_t i = 0; i < CEP_L0_ORGAN_COUNT; ++i) {
         cepL0OrganDefinition* def = &CEP_L0_ORGAN_DEFS[i];
 
-        if (!def->validator_ready) {
-            def->validator_name = cep_l0_organs_make_signal_dt(def->kind, "vl");
-            def->validator_ready = true;
+        if (!cep_l0_organs_refresh_signal(def, "vl", &def->validator_name, &def->validator_ready)) {
+            return false;
         }
 
         cepPathConst1 validator_path = {
@@ -1882,9 +1949,8 @@ bool cep_l0_organs_register(cepEnzymeRegistry* registry) {
         }
 
         if (def->constructor_cb) {
-            if (!def->constructor_ready) {
-                def->constructor_name = cep_l0_organs_make_signal_dt(def->kind, "ct");
-                def->constructor_ready = true;
+            if (!cep_l0_organs_refresh_signal(def, "ct", &def->constructor_name, &def->constructor_ready)) {
+                return false;
             }
             cepPathConst1 ctor_path = {
                 .length = 1u,
@@ -1910,9 +1976,8 @@ bool cep_l0_organs_register(cepEnzymeRegistry* registry) {
         }
 
         if (def->destructor_cb) {
-            if (!def->destructor_ready) {
-                def->destructor_name = cep_l0_organs_make_signal_dt(def->kind, "dt");
-                def->destructor_ready = true;
+            if (!cep_l0_organs_refresh_signal(def, "dt", &def->destructor_name, &def->destructor_ready)) {
+                return false;
             }
             cepPathConst1 dtor_path = {
                 .length = 1u,
@@ -1945,14 +2010,17 @@ bool cep_l0_organs_register(cepEnzymeRegistry* registry) {
  * letting organ-level impulses resolve deterministically without requiring
  * callers to attach bindings manually. Executed during bootstrap after the
  * runtime directories exist. */
-bool cep_l0_organs_bind_roots(void) {
+static bool
+cep_l0_organs_bindings_apply(bool bind)
+{
     cep_l0_organs_initialise();
+    cep_l0_organs_prepare_runtime();
 
     for (size_t i = 0; i < CEP_L0_ORGAN_COUNT; ++i) {
         cepL0OrganDefinition* def = &CEP_L0_ORGAN_DEFS[i];
-        if (!def->validator_ready) {
-            def->validator_name = cep_l0_organs_make_signal_dt(def->kind, "vl");
-            def->validator_ready = true;
+        if (!cep_l0_organs_refresh_signal(def, "vl", &def->validator_name, &def->validator_ready)) {
+            prr_l0_organs_log("[prr:bind_fail] validator dn invalid kind=%s\n", def->kind ? def->kind : "<null>");
+            return false;
         }
 
         cepCell* root = cep_l0_organ_resolve_root_from_segments(def);
@@ -1961,15 +2029,20 @@ bool cep_l0_organs_bind_roots(void) {
             return false;
         }
 
+        if (!bind) {
+            cep_cell_clear_bindings(root);
+            continue;
+        }
+
         if (!cep_l0_organ_bind_signal(root, &def->validator_name)) {
             prr_l0_organs_log("[prr:bind_fail] validator kind=%s\n", def->kind ? def->kind : "<null>");
             return false;
         }
 
         if (def->constructor_cb) {
-            if (!def->constructor_ready) {
-                def->constructor_name = cep_l0_organs_make_signal_dt(def->kind, "ct");
-                def->constructor_ready = true;
+            if (!cep_l0_organs_refresh_signal(def, "ct", &def->constructor_name, &def->constructor_ready)) {
+                prr_l0_organs_log("[prr:bind_fail] constructor dn invalid kind=%s\n", def->kind ? def->kind : "<null>");
+                return false;
             }
             if (!cep_l0_organ_bind_signal(root, &def->constructor_name)) {
                 prr_l0_organs_log("[prr:bind_fail] constructor kind=%s\n", def->kind ? def->kind : "<null>");
@@ -1978,9 +2051,9 @@ bool cep_l0_organs_bind_roots(void) {
         }
 
         if (def->destructor_cb) {
-            if (!def->destructor_ready) {
-                def->destructor_name = cep_l0_organs_make_signal_dt(def->kind, "dt");
-                def->destructor_ready = true;
+            if (!cep_l0_organs_refresh_signal(def, "dt", &def->destructor_name, &def->destructor_ready)) {
+                prr_l0_organs_log("[prr:bind_fail] destructor dn invalid kind=%s\n", def->kind ? def->kind : "<null>");
+                return false;
             }
             if (!cep_l0_organ_bind_signal(root, &def->destructor_name)) {
                 prr_l0_organs_log("[prr:bind_fail] destructor kind=%s\n", def->kind ? def->kind : "<null>");
@@ -1990,4 +2063,16 @@ bool cep_l0_organs_bind_roots(void) {
     }
 
     return true;
+}
+
+bool
+cep_l0_organs_bind_roots(void)
+{
+    return cep_l0_organs_bindings_apply(true);
+}
+
+void
+cep_l0_organs_unbind_roots(void)
+{
+    (void)cep_l0_organs_bindings_apply(false);
 }

@@ -114,6 +114,7 @@ size_t              cep_enzyme_resolve(const cepEnzymeRegistry* registry, const 
 int                 cep_cell_bind_enzyme(cepCell* cell, const cepDT* name, bool propagate);
 int                 cep_cell_unbind_enzyme(cepCell* cell, const cepDT* name);
 const cepEnzymeBinding* cep_cell_enzyme_bindings(const cepCell* cell);
+void                cep_cell_clear_bindings(cepCell* cell);
 const cepEnzymeDescriptor* cep_enzyme_current(void);
 
 

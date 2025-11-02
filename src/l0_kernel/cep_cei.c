@@ -7,15 +7,18 @@
 #include "cep_heartbeat.h"
 #include "cep_mailbox.h"
 #include "cep_namepool.h"
+#include "cep_runtime.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
 
-static int CEP_CEI_DEBUG_LAST_ERROR = 0;
-
 int cep_cei_debug_last_error(void) {
-    return CEP_CEI_DEBUG_LAST_ERROR;
+    cepMailboxRuntimeSettings* settings = cep_runtime_mailbox_settings(cep_runtime_default());
+    if (!settings) {
+        return 0;
+    }
+    return settings->cei_debug_last_error;
 }
 
 CEP_DEFINE_STATIC_DT(dt_mailbox_root,      CEP_ACRO("CEP"), CEP_WORD("mailbox"))
@@ -387,17 +390,18 @@ static bool cep_cei_format_summary(const cepDT* severity,
 /* Compose an Error Fact in the diagnostics mailbox, queue optional impulses,
    and enforce severity policies such as OPS attachment and fatal shutdown. */
 bool cep_cei_emit(const cepCeiRequest* request) {
-    CEP_CEI_DEBUG_LAST_ERROR = 0;
+    cepMailboxRuntimeSettings* settings = cep_runtime_mailbox_settings(cep_runtime_default());
+    if (settings) settings->cei_debug_last_error = 0;
 
     if (!request || !cep_dt_is_valid(&request->severity)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 100;
+        if (settings) settings->cei_debug_last_error = 100;
         return false;
     }
 
     cepCell* mailbox_root = request->mailbox_root ? cep_cell_resolve(request->mailbox_root)
                                                   : cep_cei_diagnostics_mailbox();
     if (!mailbox_root) {
-        CEP_CEI_DEBUG_LAST_ERROR = 1;
+        if (settings) settings->cei_debug_last_error = 1;
         return false;
     }
 
@@ -420,7 +424,7 @@ bool cep_cei_emit(const cepCeiRequest* request) {
 
     cepMailboxMessageId message_id = {0};
     if (!cep_mailbox_select_message_id(mailbox_root, NULL, NULL, &message_id)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 2;
+        if (settings) settings->cei_debug_last_error = 2;
         cepCell* meta_debug = cep_cell_find_by_name(mailbox_root, dt_meta_name());
 #if defined(CEP_ENABLE_DEBUG)
         cepCell* runtime_debug = meta_debug ? cep_cell_find_by_name(meta_debug, dt_runtime_name()) : NULL;
@@ -434,13 +438,13 @@ bool cep_cei_emit(const cepCeiRequest* request) {
 
     cepCell* msgs = cep_cell_find_by_name(mailbox_root, dt_msgs_name());
     if (!msgs) {
-        CEP_CEI_DEBUG_LAST_ERROR = 3;
+        if (settings) settings->cei_debug_last_error = 3;
         cep_free(owned_subject_path);
         return false;
     }
     msgs = cep_cell_resolve(msgs);
     if (!msgs) {
-        CEP_CEI_DEBUG_LAST_ERROR = 4;
+        if (settings) settings->cei_debug_last_error = 4;
         cep_free(owned_subject_path);
         return false;
     }
@@ -448,7 +452,7 @@ bool cep_cei_emit(const cepCeiRequest* request) {
     cepTxn txn = {0};
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
     if (!cep_txn_begin(msgs, &message_id.id, &dict_type, &txn)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 5;
+        if (settings) settings->cei_debug_last_error = 5;
         cep_free(owned_subject_path);
         return false;
     }
@@ -458,41 +462,41 @@ bool cep_cei_emit(const cepCeiRequest* request) {
     cepCell* envelope = cep_cell_ensure_dictionary_child(message_root, dt_envelope_name(), CEP_STORAGE_RED_BLACK_T);
     cepCell* err_root = envelope ? cep_cell_ensure_dictionary_child(message_root, dt_err_name(), CEP_STORAGE_RED_BLACK_T) : NULL;
     if (!envelope || !err_root) {
-        CEP_CEI_DEBUG_LAST_ERROR = 6;
+        if (settings) settings->cei_debug_last_error = 6;
         goto cleanup;
     }
 
     if (!cep_cei_populate_envelope(envelope, beat, has_unix, unix_ns, request)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 7;
+        if (settings) settings->cei_debug_last_error = 7;
         goto cleanup;
     }
     if (!cep_cell_set_immutable(envelope)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 8;
+        if (settings) settings->cei_debug_last_error = 8;
         goto cleanup;
     }
 
     if (!cep_cei_populate_fact(err_root, request, beat, has_unix, unix_ns, request->subject)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 9;
+        if (settings) settings->cei_debug_last_error = 9;
         goto cleanup;
     }
     if (!cep_cell_set_immutable(err_root)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 10;
+        if (settings) settings->cei_debug_last_error = 10;
         goto cleanup;
     }
 
     if (!cep_txn_mark_ready(&txn)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 11;
+        if (settings) settings->cei_debug_last_error = 11;
         goto cleanup;
     }
     if (!cep_txn_commit(&txn)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 12;
+        if (settings) settings->cei_debug_last_error = 12;
         goto cleanup;
     }
     txn.root = NULL;
     txn.parent = NULL;
 
     if (!cep_cei_record_ttl(mailbox_root, &message_id.id, request, beat, has_unix, unix_ns)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 13;
+        if (settings) settings->cei_debug_last_error = 13;
         goto cleanup;
     }
 
@@ -501,12 +505,12 @@ bool cep_cei_emit(const cepCeiRequest* request) {
         summary[0] = '\0';
     }
     if (!cep_cei_close_operation_if_requested(request, &request->severity, summary)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 14;
+        if (settings) settings->cei_debug_last_error = 14;
         goto cleanup;
     }
 
     if (!cep_cei_emit_signal_if_requested(request, &request->severity, target_path)) {
-        CEP_CEI_DEBUG_LAST_ERROR = 15;
+        if (settings) settings->cei_debug_last_error = 15;
         goto cleanup;
     }
 

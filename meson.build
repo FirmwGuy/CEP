@@ -59,6 +59,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
   'src/l0_kernel/cep_cell_stream.c',
   'src/l0_kernel/cep_cell_system.c',
+  'src/l0_kernel/cep_runtime.c',
   'src/l0_kernel/cep_l0.c',
   'src/l0_kernel/cep_identifier.c',
   'src/l0_kernel/cep_cei.c',
@@ -158,6 +159,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_serialization_randomized.c',
     'src/test/l0_kernel/test_streams_randomized.c',
     'src/test/l0_kernel/test_prr.c',
+    'src/test/l0_kernel/test_runtime_dual.c',
     'src/test/poc/l0_integration_poc.c',
     )
   test_dependencies = []
@@ -181,6 +183,12 @@ if get_option('tests').enabled()
     args: ['--no-fork', '--single', '/CEP/integration_poc/l0/integration'],
     timeout: 240,
     suite: ['integration_poc'],
+  )
+
+  test('runtime_dual_default', exe,
+    args: ['--no-fork', '--single', '/CEP/runtime/dual_isolation'],
+    timeout: 180,
+    suite: ['runtime'],
   )
 
 endif

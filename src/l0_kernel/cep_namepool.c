@@ -12,6 +12,8 @@
 #include "cep_cei.h"
 #include "cep_heartbeat.h"
 #include "cep_organ.h"
+#include "cep_runtime.h"
+#include "cep_namepool_runtime.h"
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -56,16 +58,33 @@ typedef struct {
     cepNamePoolEntry*   entry;
 } cepNamePoolBucket;
 
-static cepNamePoolPage**    name_pages        = NULL;
-static size_t               name_page_count   = 0u;
-static size_t               name_page_cap     = 0u;
+typedef struct cepNamePoolRuntimeState {
+    cepNamePoolPage**   pages;
+    size_t              page_count;
+    size_t              page_cap;
+    cepNamePoolBucket*  buckets;
+    size_t              bucket_cap;
+    size_t              bucket_count;
+    size_t              bucket_threshold;
+    cepCell*            root;
+} cepNamePoolRuntimeState;
 
-static cepNamePoolBucket*   name_buckets      = NULL;
-static size_t               name_bucket_cap   = 0u;
-static size_t               name_bucket_count = 0u;
-static size_t               name_bucket_threshold = 0u;
+static cepNamePoolRuntimeState*
+cep_namepool_state(void)
+{
+    cepNamePoolRuntimeState* state = cep_runtime_namepool_state(cep_runtime_default());
+    CEP_ASSERT(state);
+    return state;
+}
 
-static cepCell*             namepool_root     = NULL;
+#define name_pages            (cep_namepool_state()->pages)
+#define name_page_count       (cep_namepool_state()->page_count)
+#define name_page_cap         (cep_namepool_state()->page_cap)
+#define name_buckets          (cep_namepool_state()->buckets)
+#define name_bucket_cap       (cep_namepool_state()->bucket_cap)
+#define name_bucket_count     (cep_namepool_state()->bucket_count)
+#define name_bucket_threshold (cep_namepool_state()->bucket_threshold)
+#define namepool_root         (cep_namepool_state()->root)
 
 /* Namepool bootstrap runs before the diagnostics mailbox exists; guard CEI
    emissions until the kernel scope is ready so bootstrap callers do not trip
@@ -901,4 +920,46 @@ void cep_namepool_reset(void) {
            (void*)namepool_root,
            (void*)name_pages,
            (void*)name_buckets);
+}
+
+struct cepNamePoolRuntimeState*
+cep_namepool_state_create(void)
+{
+    return cep_malloc0(sizeof(cepNamePoolRuntimeState));
+}
+
+void
+cep_namepool_state_destroy(struct cepNamePoolRuntimeState* state)
+{
+    if (!state) {
+        return;
+    }
+
+    if (state->pages) {
+        for (size_t i = 0; i < state->page_count; ++i) {
+            cepNamePoolPage* page = state->pages[i];
+            if (!page) {
+                continue;
+            }
+            for (size_t slot = 0; slot < CEP_NAMEPOOL_SLOTS_PER_PAGE; ++slot) {
+                cep_namepool_clear_entry(&page->entries[slot]);
+            }
+            cep_free(page);
+        }
+        cep_free(state->pages);
+        state->pages = NULL;
+    }
+    state->page_count = 0u;
+    state->page_cap = 0u;
+
+    if (state->buckets) {
+        cep_free(state->buckets);
+        state->buckets = NULL;
+    }
+    state->bucket_cap = 0u;
+    state->bucket_count = 0u;
+    state->bucket_threshold = 0u;
+    state->root = NULL;
+
+    cep_free(state);
 }

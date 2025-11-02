@@ -6,6 +6,7 @@
 #include "cep_cell.h"
 #include "cep_enzyme.h"
 #include "cep_heartbeat.h"
+#include "cep_runtime.h"
 #include "cep_ops.h"
 #include "cep_namepool.h"
 
@@ -19,7 +20,23 @@ typedef struct {
     cepPast     segments[4];
 } CepPrrPathBuf;
 
-static void prr_runtime_start(void) {
+typedef struct {
+    cepRuntime* runtime;
+    cepRuntime* previous_runtime;
+} PrrRuntimeScope;
+
+static PrrRuntimeScope prr_runtime_start(void) {
+    PrrRuntimeScope scope = {
+        .runtime = cep_runtime_create(),
+        .previous_runtime = NULL,
+    };
+    munit_assert_not_null(scope.runtime);
+    scope.previous_runtime = cep_runtime_set_active(scope.runtime);
+    cep_cell_system_initiate();
+    munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_namepool_bootstrap());
+    munit_assert_true(cep_runtime_attach_metadata(scope.runtime));
+
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
         .ensure_directories = false,
@@ -28,6 +45,20 @@ static void prr_runtime_start(void) {
     };
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_heartbeat_startup());
+    return scope;
+}
+
+static void prr_runtime_cleanup(PrrRuntimeScope* scope) {
+    if (!scope || !scope->runtime) {
+        return;
+    }
+    cep_runtime_set_active(scope->runtime);
+    cep_stream_clear_pending();
+    cep_runtime_shutdown(scope->runtime);
+    cep_runtime_restore_active(scope->previous_runtime);
+    cep_runtime_destroy(scope->runtime);
+    scope->runtime = NULL;
+    scope->previous_runtime = NULL;
 }
 
 static size_t prr_diag_message_count(void);
@@ -219,9 +250,8 @@ MunitResult test_prr_pause_resume_backlog(const MunitParameter params[], void* u
     if (test_boot_cycle_is_after(params)) {
         return MUNIT_SKIP;
     }
-    test_runtime_shutdown();
     test_boot_cycle_prepare(params);
-    prr_runtime_start();
+    PrrRuntimeScope scope = prr_runtime_start();
 
     prr_enzyme_calls = 0;
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
@@ -284,7 +314,7 @@ MunitResult test_prr_pause_resume_backlog(const MunitParameter params[], void* u
     }
     munit_assert_int(prr_enzyme_calls, ==, 1);
 
-    test_runtime_shutdown();
+    prr_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -300,7 +330,7 @@ MunitResult test_prr_pause_rollback_backlog_guard(const MunitParameter params[],
     test_boot_cycle_prepare(params);
 
     test_runtime_shutdown();
-    prr_runtime_start();
+    PrrRuntimeScope scope = prr_runtime_start();
 
     prr_enzyme_calls = 0;
 
@@ -369,7 +399,7 @@ MunitResult test_prr_pause_rollback_backlog_guard(const MunitParameter params[],
     munit_assert_int(prr_enzyme_calls, ==, 1);
     munit_assert_size(prr_impulse_backlog_count(), ==, 0u);
 
-    test_runtime_shutdown();
+    prr_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -385,7 +415,7 @@ MunitResult test_prr_soft_delete_lookup(const MunitParameter params[], void* use
     test_boot_cycle_prepare(params);
 
     test_runtime_shutdown();
-    prr_runtime_start();
+    PrrRuntimeScope scope = prr_runtime_start();
 
     cepCell* data_root = cep_heartbeat_data_root();
     munit_assert_not_null(data_root);
@@ -491,7 +521,7 @@ MunitResult test_prr_soft_delete_lookup(const MunitParameter params[], void* use
     munit_assert_ptr_equal(value_live, value_past);
     munit_assert_true(cep_cell_has_data(value_past));
 
-    test_runtime_shutdown();
+    prr_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -503,7 +533,7 @@ MunitResult test_prr_view_horizon_snapshot(const MunitParameter params[], void* 
     }
     test_boot_cycle_prepare(params);
     test_runtime_shutdown();
-    prr_runtime_start();
+    PrrRuntimeScope scope = prr_runtime_start();
 
     cepCell* data_root = cep_heartbeat_data_root();
     munit_assert_not_null(data_root);
@@ -580,7 +610,7 @@ MunitResult test_prr_view_horizon_snapshot(const MunitParameter params[], void* 
     munit_assert_uint32(*restored, ==, value);
     munit_assert_ptr_equal((const void*)debug_live, (const void*)live);
 
-    test_runtime_shutdown();
+    prr_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -598,7 +628,7 @@ MunitResult test_prr_soft_deleted_dictionary_revives(const MunitParameter params
 
     test_boot_cycle_prepare(params);
     test_runtime_shutdown();
-    prr_runtime_start();
+    PrrRuntimeScope scope = prr_runtime_start();
 
     cepCell* data_root = cep_heartbeat_data_root();
     munit_assert_not_null(data_root);
@@ -720,7 +750,7 @@ MunitResult test_prr_soft_deleted_dictionary_revives(const MunitParameter params
     value_past = cep_cell_resolve(value_past);
     munit_assert_ptr_equal(value_past, value_live);
 
-    test_runtime_shutdown();
+    prr_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -810,7 +840,7 @@ MunitResult test_prr_history_autoid_monotonic(const MunitParameter params[], voi
     test_boot_cycle_prepare(params);
 
     test_runtime_shutdown();
-    prr_runtime_start();
+    PrrRuntimeScope scope = prr_runtime_start();
 
     cepCell* data_root = cep_heartbeat_data_root();
     munit_assert_not_null(data_root);
@@ -845,7 +875,7 @@ MunitResult test_prr_history_autoid_monotonic(const MunitParameter params[], voi
     munit_assert_not_null(resume_op);
     prr_assert_history_autoid_monotonic(resume_op);
 
-    test_runtime_shutdown();
+    prr_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -859,7 +889,7 @@ MunitResult test_prr_minimal_rollback(const MunitParameter params[], void* user_
     test_boot_cycle_prepare(params);
 
     test_runtime_shutdown();
-    prr_runtime_start();
+    PrrRuntimeScope scope = prr_runtime_start();
 
     prr_step(2u);
     munit_assert_true(cep_runtime_pause());
@@ -874,7 +904,7 @@ MunitResult test_prr_minimal_rollback(const MunitParameter params[], void* user_
     munit_assert_true(cep_runtime_resume());
     prr_step(4u);
 
-    test_runtime_shutdown();
+    prr_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -883,7 +913,7 @@ MunitResult test_prr_control_failure_cei(const MunitParameter params[], void* us
     (void)user_data_or_fixture;
     test_runtime_shutdown();
     test_boot_cycle_prepare(params);
-    prr_runtime_start();
+    PrrRuntimeScope scope = prr_runtime_start();
 
     cepCell* data_root = cep_heartbeat_data_root();
     munit_assert_not_null(data_root);
@@ -912,7 +942,7 @@ MunitResult test_prr_control_failure_cei(const MunitParameter params[], void* us
     munit_assert_not_null(note);
     munit_assert_ptr_not_equal(strstr(note, "pause failure"), NULL);
 
-    test_runtime_shutdown();
+    prr_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -921,7 +951,7 @@ MunitResult test_prr_watcher_timeout_cei(const MunitParameter params[], void* us
     (void)user_data_or_fixture;
     test_runtime_shutdown();
     test_boot_cycle_prepare(params);
-    prr_runtime_start();
+    PrrRuntimeScope scope = prr_runtime_start();
 
     cepDT verb = cep_ops_make_dt("op/prr_test");
     cepDT mode = cep_ops_make_dt("opm:states");
@@ -940,6 +970,6 @@ MunitResult test_prr_watcher_timeout_cei(const MunitParameter params[], void* us
     munit_assert_not_null(note);
     munit_assert_ptr_not_equal(strstr(note, "watcher timeout"), NULL);
 
-    test_runtime_shutdown();
+    prr_runtime_cleanup(&scope);
     return MUNIT_OK;
 }

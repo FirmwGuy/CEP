@@ -40,11 +40,12 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 
 - **Tooling & Planning**
   - `docs/BUILD.md` — Meson/Ninja workflow, options, and sanitizer toggles before compiling or running tests.
-  - `docs/L0_KERNEL/topics/DEBUG-MACROS.md` — Debug-only macro behavior, asserts inside control flow, and release-build caveats.
+- `docs/L0_KERNEL/topics/DEBUG-MACROS.md` — Debug-only macro behavior, asserts inside control flow, and release-build caveats.
 - `docs/TEST-WATCHDOG-GUIDE.md` — Harness watchdog expectations, tracing controls, and Organ Validation Harness (OVH) fixtures.
-  - `docs/TOOLS.md` — Repo scripts for fixtures, code maps, and Doxygen post-processing.
-  - `docs/L0_KERNEL/L0_ROADMAP.md` — Active milestones, TODO markers, and planned helper work.
-  - `docs/L0_KERNEL/topics/RAW-TRAVERSAL-HELPERS.md` — Upcoming `*_all` traversal APIs; recheck before touching traversal internals.
+- `docs/TOOLS.md` — Repo scripts for fixtures, code maps, and Doxygen post-processing.
+- `docs/L0_KERNEL/L0_ROADMAP.md` — Active milestones, TODO markers, and planned helper work.
+- Dual-runtime harness — run `meson test runtime_dual_default` (or the generated Valgrind variant when available) to prove multi-instance isolation after touching runtime plumbing; the runtime context walkthrough lives in `docs/L0_KERNEL/L0-OVERVIEW.md`.
+- `docs/L0_KERNEL/topics/RAW-TRAVERSAL-HELPERS.md` — Upcoming `*_all` traversal APIs; recheck before touching traversal internals.
 - `docs/L0_KERNEL/design/DESIGN-INDEX.md` — Status board for Layer 0 design papers.
   - `docs/L0_KERNEL/design/L0-DESIGN-GUIDE.md` — Expectations for the new Design document tier that records architectural rationale.
 - `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` — Rationale behind beat ordering, enzyme dependencies, and OPS timelines.

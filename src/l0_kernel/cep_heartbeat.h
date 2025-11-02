@@ -27,7 +27,8 @@ extern "C" {
  */
 typedef uint64_t cepBeatNumber;
 
-#define CEP_BEAT_INVALID  ((cepBeatNumber)UINT64_MAX)
+#define CEP_BEAT_INVALID          ((cepBeatNumber)UINT64_MAX)
+#define CEP_HEARTBEAT_SIGNAL_DT_CAP 16u
 
 
 /**
@@ -161,6 +162,12 @@ typedef struct {
     cepBeatNumber             view_horizon;
     cepOpCount                view_horizon_stamp;
     cepOpCount                view_horizon_floor_stamp;
+    cepDT                     registered_validator_dts[CEP_HEARTBEAT_SIGNAL_DT_CAP];
+    size_t                    registered_validator_count;
+    cepDT                     registered_constructor_dts[CEP_HEARTBEAT_SIGNAL_DT_CAP];
+    size_t                    registered_constructor_count;
+    cepDT                     registered_destructor_dts[CEP_HEARTBEAT_SIGNAL_DT_CAP];
+    size_t                    registered_destructor_count;
 } cepHeartbeatRuntime;
 
 
@@ -187,6 +194,8 @@ bool  cep_heartbeat_step(void);
 bool  cep_heartbeat_emit_shutdown(void);
 void  cep_heartbeat_shutdown(void);
 void  cep_heartbeat_detach_topology(void);
+void  cep_heartbeat_release_signal_dts(cepHeartbeatRuntime* runtime);
+void  cep_heartbeat_release_runtime(cepHeartbeatRuntime* runtime);
 
 bool          cep_runtime_pause(void);
 bool          cep_runtime_resume(void);

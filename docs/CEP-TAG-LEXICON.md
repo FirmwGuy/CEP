@@ -50,6 +50,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `enzymes` | Runtime platform | registry dictionary exposing registered enzymes. |
 | `impulses` | Runtime platform | beat impulse log recorded under `/rt/beat/<n>/impulses` (legacy `inbox` link retained for one release). |
 | `analytics` | Runtime platform | runtime analytics root under `/rt/analytics`. |
+| `runtime_isolation` | Runtime platform | harness marker ensuring per-runtime storage separation during tests. |
 | `spacing` | Runtime platform | beat-to-beat spacing metrics recorded by the heartbeat analytics helper. |
 | `interval_ns` | Runtime platform | nanosecond interval payload inside spacing analytics entries. |
 | `issued_unix` | Runtime platform | unix timestamp captured alongside `issued_beat` inside a mailbox envelope. |
@@ -83,6 +84,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `parents` | Runtime platform | provenance list capturing the source lineage. |
 | `rt` | Runtime platform | runtime staging root holding beat journals. |
 | `runtime` | Runtime platform | per-mailbox runtime metadata bucket (ID counters, expiry buckets). |
+| `rt_ctx` | Runtime platform | hidden root payload recording the owning runtime context for multi-instance isolation. |
 | `expiries` | Runtime platform | beat-indexed expiry bucket dictionary under mailbox runtime metadata. |
 | `exp_wall` | Runtime platform | unix timestamp expiry bucket dictionary under mailbox runtime metadata. |
 | `stage` | Runtime platform | per-beat stage log recording committed mutations. |

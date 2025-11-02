@@ -11,6 +11,7 @@
 #include "cep_enzyme.h"
 #include "cep_ops.h"
 #include "cep_l0.h"
+#include "cep_namepool.h"
 #include "stream/cep_stream_internal.h"
 #include <inttypes.h>
 #include <stddef.h>
@@ -284,15 +285,71 @@ static cepDT heartbeat_read_dt_field(cepCell* parent, const char* field_name) {
     return cep_dt_clean(payload);
 }
 
-static void heartbeat_runtime_start(void) {
+typedef struct {
+    cepRuntime* runtime;
+    cepRuntime* previous_runtime;
+} HeartbeatRuntimeScope;
+
+static HeartbeatRuntimeScope heartbeat_runtime_start_with_policy(const cepHeartbeatPolicy* override_policy) {
+    test_runtime_shutdown();
+
+    HeartbeatRuntimeScope scope = {
+        .runtime = cep_runtime_create(),
+        .previous_runtime = NULL,
+    };
+    munit_assert_not_null(scope.runtime);
+    scope.previous_runtime = cep_runtime_set_active(scope.runtime);
+    cep_cell_system_initiate();
+    munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_namepool_bootstrap());
+    munit_assert_true(cep_runtime_attach_metadata(scope.runtime));
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
         .ensure_directories = false,
         .enforce_visibility = false,
         .boot_ops = true,
+        .spacing_window = 0u,
     };
+    if (override_policy) {
+        policy = *override_policy;
+    }
     munit_assert_true(cep_heartbeat_configure(NULL, &policy));
     munit_assert_true(cep_heartbeat_startup());
+    test_ovh_tracef("heartbeat_runtime_start runtime=%p previous=%p",
+                    (void*)scope.runtime,
+                    (void*)scope.previous_runtime);
+    return scope;
+}
+
+static HeartbeatRuntimeScope heartbeat_runtime_start_with_dirs(bool ensure_directories) {
+    cepHeartbeatPolicy policy = {
+        .start_at = 0u,
+        .ensure_directories = ensure_directories,
+        .enforce_visibility = false,
+        .boot_ops = true,
+        .spacing_window = 0u,
+    };
+    return heartbeat_runtime_start_with_policy(&policy);
+}
+
+static HeartbeatRuntimeScope heartbeat_runtime_start(void) {
+    return heartbeat_runtime_start_with_policy(NULL);
+}
+
+static void heartbeat_runtime_cleanup(HeartbeatRuntimeScope* scope) {
+    if (!scope || !scope->runtime) {
+        return;
+    }
+    test_ovh_tracef("heartbeat_runtime_cleanup runtime=%p previous=%p",
+                    (void*)scope->runtime,
+                    (void*)scope->previous_runtime);
+    cep_runtime_set_active(scope->runtime);
+    cep_stream_clear_pending();
+    cep_runtime_shutdown(scope->runtime);
+    cep_runtime_restore_active(scope->previous_runtime);
+    cep_runtime_destroy(scope->runtime);
+    scope->runtime = NULL;
+    scope->previous_runtime = NULL;
 }
 
 
@@ -345,8 +402,7 @@ static int heartbeat_cont_enzyme(const cepPath* signal, const cepPath* target) {
 
 
 static MunitResult test_heartbeat_duplicate_impulses(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -382,14 +438,13 @@ static MunitResult test_heartbeat_duplicate_impulses(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_success_calls, ==, 3);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 
 static MunitResult test_heartbeat_retry_requeues(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -423,7 +478,7 @@ static MunitResult test_heartbeat_retry_requeues(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_retry_calls, ==, 2);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -448,8 +503,7 @@ static const cepPath* create_binding_path(const cepDT* segments, size_t count, C
 
 
 static MunitResult test_heartbeat_binding_propagation(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -505,14 +559,13 @@ static MunitResult test_heartbeat_binding_propagation(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 1);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 
 static MunitResult test_heartbeat_binding_tombstone(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -581,15 +634,14 @@ static MunitResult test_heartbeat_binding_tombstone(void) {
     }
     munit_assert_true(found_tombstone);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 
 #if 0  /* TODO: Re-calibrate binding filtering tests for the post-OPS watcher pipeline. */
 static MunitResult test_heartbeat_binding_no_propagation(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -642,15 +694,14 @@ munit_assert_int(cep_heartbeat_enqueue_impulse(0u, &impulse), ==, CEP_ENZYME_SUC
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 1);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 #endif /* TODO: Re-calibrate binding filtering tests for the post-OPS watcher pipeline. */
 
 static MunitResult test_heartbeat_binding_union_chain(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -720,7 +771,7 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 3);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 static void heartbeat_drive_boot_completion(cepOID boot_oid) {
@@ -735,22 +786,8 @@ static MunitResult test_heartbeat_boot_timeline(const MunitParameter params[], v
     (void)params;
     (void)user_data_or_fixture;
 
-    test_runtime_shutdown();
-    test_ovh_tracef("boot_timeline: after runtime shutdown");
-
-    cepHeartbeatPolicy policy = {
-        .start_at = 0u,
-        .ensure_directories = true,
-        .enforce_visibility = false,
-        .boot_ops = true,
-    };
-
-    test_ovh_tracef("boot_timeline: configuring heartbeat");
-    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    test_ovh_tracef("boot_timeline: bootstrap");
-    munit_assert_true(cep_l0_bootstrap());
-    test_ovh_tracef("boot_timeline: startup");
-    munit_assert_true(cep_heartbeat_startup());
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start_with_dirs(true);
+    test_ovh_tracef("boot_timeline: runtime booted ensure_dirs=1");
 
     cepOID boot_oid = heartbeat_read_oid("boot_oid");
     munit_assert_true(cep_oid_is_valid(boot_oid));
@@ -774,7 +811,7 @@ static MunitResult test_heartbeat_boot_timeline(const MunitParameter params[], v
     cepDT status = heartbeat_read_dt_field(close_branch, "status");
     munit_assert_int(cep_dt_compare(&status, CEP_DTAW("CEP", "sts:ok")), ==, 0);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -782,22 +819,8 @@ static MunitResult test_heartbeat_shutdown_timeline(const MunitParameter params[
     (void)params;
     (void)user_data_or_fixture;
 
-    test_runtime_shutdown();
-    test_ovh_tracef("shutdown_timeline: after runtime shutdown");
-
-    cepHeartbeatPolicy policy = {
-        .start_at = 0u,
-        .ensure_directories = true,
-        .enforce_visibility = false,
-        .boot_ops = true,
-    };
-
-    test_ovh_tracef("shutdown_timeline: configuring heartbeat");
-    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    test_ovh_tracef("shutdown_timeline: bootstrap");
-    munit_assert_true(cep_l0_bootstrap());
-    test_ovh_tracef("shutdown_timeline: startup");
-    munit_assert_true(cep_heartbeat_startup());
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start_with_dirs(true);
+    test_ovh_tracef("shutdown_timeline: runtime booted ensure_dirs=1");
 
     cepOID boot_oid = heartbeat_read_oid("boot_oid");
     munit_assert_true(cep_oid_is_valid(boot_oid));
@@ -831,7 +854,7 @@ static MunitResult test_heartbeat_shutdown_timeline(const MunitParameter params[
     cepDT status = heartbeat_read_dt_field(close_branch, "status");
     munit_assert_int(cep_dt_compare(&status, CEP_DTAW("CEP", "sts:ok")), ==, 0);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -839,22 +862,8 @@ static MunitResult test_heartbeat_boot_awaiters(const MunitParameter params[], v
     (void)params;
     (void)user_data_or_fixture;
 
-    test_runtime_shutdown();
-    test_ovh_tracef("boot_awaiters: after runtime shutdown");
-
-    cepHeartbeatPolicy policy = {
-        .start_at = 0u,
-        .ensure_directories = false,
-        .enforce_visibility = false,
-        .boot_ops = true,
-    };
-
-    test_ovh_tracef("boot_awaiters: configuring heartbeat");
-    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    test_ovh_tracef("boot_awaiters: bootstrap");
-    munit_assert_true(cep_l0_bootstrap());
-    test_ovh_tracef("boot_awaiters: startup");
-    munit_assert_true(cep_heartbeat_startup());
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
+    test_ovh_tracef("boot_awaiters: runtime booted");
 
     cepOID boot_oid = heartbeat_read_oid("boot_oid");
     munit_assert_true(cep_oid_is_valid(boot_oid));
@@ -913,14 +922,13 @@ static MunitResult test_heartbeat_boot_awaiters(const MunitParameter params[], v
     munit_assert_int(heartbeat_cont_calls, ==, 1);
     heartbeat_assert_state(boot_oid, "ist:ok");
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 #if 0  /* TODO: Revisit advanced binding propagation semantics under OPS/STATES. */
 static MunitResult test_heartbeat_binding_duplicate_mask(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -974,13 +982,12 @@ static MunitResult test_heartbeat_binding_duplicate_mask(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 1);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 static MunitResult test_heartbeat_target_requires_binding(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -1029,13 +1036,12 @@ static MunitResult test_heartbeat_target_requires_binding(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 0);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 static MunitResult test_heartbeat_binding_signal_filter(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -1095,14 +1101,13 @@ static MunitResult test_heartbeat_binding_signal_filter(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_binding_calls, ==, 0);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 
 static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -1209,14 +1214,13 @@ static MunitResult test_heartbeat_binding_matches_data_suffix(void) {
     munit_assert_int(heartbeat_binding_calls, ==, 1);
 
     cep_free(dynamic_path);
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 
 static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -1314,7 +1318,7 @@ static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
     munit_assert_int(heartbeat_binding_calls, ==, 1);
 
     cep_free(dynamic_path);
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
@@ -1323,8 +1327,7 @@ static MunitResult test_heartbeat_binding_matches_store_suffix(void) {
 
 
 static MunitResult test_heartbeat_signal_broadcast(void) {
-    test_runtime_shutdown();
-    heartbeat_runtime_start();
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start();
 
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
@@ -1363,13 +1366,11 @@ static MunitResult test_heartbeat_signal_broadcast(void) {
     munit_assert_true(cep_heartbeat_process_impulses());
     munit_assert_int(heartbeat_secondary_calls, ==, 1);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 
 static MunitResult test_heartbeat_wallclock_capture(void) {
-    test_runtime_shutdown();
-
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
         .ensure_directories = true,
@@ -1377,8 +1378,7 @@ static MunitResult test_heartbeat_wallclock_capture(void) {
         .boot_ops = true,
         .spacing_window = 0u,
     };
-    munit_assert_true(cep_heartbeat_configure(NULL, &policy));
-    munit_assert_true(cep_heartbeat_startup());
+    HeartbeatRuntimeScope scope = heartbeat_runtime_start_with_policy(&policy);
 
     size_t default_spacing_window = cep_heartbeat_get_spacing_window();
     munit_assert_size(default_spacing_window, >, 0u);
@@ -1644,7 +1644,7 @@ static MunitResult test_heartbeat_wallclock_capture(void) {
     munit_assert_not_null(journal_data);
     munit_assert_uint64(journal_data->unix_ts_ns, ==, ts_beat0);
 
-    test_runtime_shutdown();
+    heartbeat_runtime_cleanup(&scope);
     return MUNIT_OK;
 }
 

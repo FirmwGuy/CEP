@@ -7,6 +7,7 @@
 #include "cep_heartbeat.h"
 #include "cep_cei.h"
 #include "cep_heartbeat_internal.h"
+#include "cep_runtime.h"
 #include "cep_executor.h"
 #include "cep_ep.h"
 #include "cep_namepool.h"
@@ -24,6 +25,10 @@
 #include <inttypes.h>
 #include <limits.h>
 
+
+#define CEP_RUNTIME          (*cep_runtime_heartbeat(cep_runtime_default()))
+#define CEP_CONTROL_STATE    (*cep_runtime_control_state(cep_runtime_default()))
+#define CEP_DEFAULT_TOPOLOGY (*cep_runtime_default_topology(cep_runtime_default()))
 
 
 static const cepDT* dt_state_root(void);
@@ -53,6 +58,7 @@ static const cepDT* dt_allow_signal_cei(void);
 static const cepDT* dt_paused_field(void);
 static const cepDT* dt_view_horizon_field(void);
 static const cepDT* dt_ops_rt_name(void);
+static void cep_heartbeat_dispatch_cache_destroy(cepHeartbeatScratch* scratch);
 #if defined(CEP_ENABLE_DEBUG)
 static const cepDT* dt_debug_root_name(void);
 static const cepDT* dt_debug_stage_field(void);
@@ -77,70 +83,72 @@ static bool cep_heartbeat_beat_to_op_stamp(cepBeatNumber beat, cepOpCount* stamp
 static bool cep_control_op_is_closed(cepOID oid);
 static bool cep_control_op_closed_ok(cepOID oid);
 
-static cepHeartbeatRuntime CEP_RUNTIME = {
-    .current = CEP_BEAT_INVALID,
-    .phase   = CEP_BEAT_CAPTURE,
-    .deferred_activations = 0u,
-    .sys_shutdown_emitted = false,
-    .current_descriptor = NULL,
-    .last_wallclock_beat = CEP_BEAT_INVALID,
-    .last_wallclock_ns = 0u,
-    .view_horizon = CEP_BEAT_INVALID,
-    .view_horizon_stamp = 0u,
-    .view_horizon_floor_stamp = 0u,
-};
+static void
+cep_heartbeat_track_signal_dt(cepHeartbeatRuntime* runtime,
+                              const cepDT* dt,
+                              cepDT* cache,
+                              size_t* count)
+{
+    if (!runtime || !dt || !cep_dt_is_valid(dt)) {
+        return;
+    }
 
-static cepHeartbeatTopology CEP_DEFAULT_TOPOLOGY;
+    if (*count >= CEP_HEARTBEAT_SIGNAL_DT_CAP) {
+        if (cep_id_is_reference(dt->tag)) {
+            (void)cep_namepool_release(dt->tag);
+        }
+        return;
+    }
 
-typedef enum {
-    CEP_CTRL_PHASE_IDLE = 0,
-    CEP_CTRL_PHASE_PLAN,
-    CEP_CTRL_PHASE_APPLY,
-    CEP_CTRL_PHASE_STEADY,
-    CEP_CTRL_PHASE_CLOSING,
-} cepControlPhase;
+    cache[*count] = cep_dt_clean(dt);
+    *count += 1u;
+}
 
-typedef enum {
-    CEP_ROLLBACK_STAGE_IDLE = 0,
-    CEP_ROLLBACK_STAGE_EXAMINE,
-    CEP_ROLLBACK_STAGE_PRUNE,
-    CEP_ROLLBACK_STAGE_CUTOVER,
-    CEP_ROLLBACK_STAGE_STEADY,
-    CEP_ROLLBACK_STAGE_FAILED,
-} cepRollbackStage;
+static void
+cep_heartbeat_release_signal_array(cepDT* cache, size_t* count)
+{
+    if (!cache || !count) {
+        return;
+    }
 
-typedef struct {
-    cepOID          oid;
-    bool            started;
-    bool            closed;
-    bool            failed;
-    cepControlPhase phase;
-    cepBeatNumber   last_beat;
-    cepDT           verb_dt;
-    bool            diag_emitted;
-} cepControlOpState;
+    for (size_t index = 0; index < *count; ++index) {
+        cepDT* slot = &cache[index];
+        if (cep_dt_is_valid(slot) && cep_id_is_reference(slot->tag)) {
+            (void)cep_namepool_release(slot->tag);
+        }
+        CEP_0(slot);
+    }
+    *count = 0u;
+}
 
-typedef struct {
-    cepControlOpState pause;
-    cepControlOpState resume;
-    cepControlOpState rollback;
-    bool              gating_active;
-    bool              paused_published;
-    bool              locks_acquired;
-    bool              drain_requested;
-    bool              backlog_dirty;
-    bool              agenda_noted;
-    bool              cleanup_pending;
-    bool              backlog_cleanup_pending;
-    bool              data_cleanup_pending;
-    bool              gc_pending;
-    cepLockToken      store_lock;
-    cepLockToken      data_lock;
-    cepBeatNumber     rollback_target;
-    cepRollbackStage  rollback_stage;
-} cepControlRuntimeState;
+void
+cep_heartbeat_release_signal_dts(cepHeartbeatRuntime* runtime)
+{
+    if (!runtime) {
+        return;
+    }
 
-static cepControlRuntimeState CEP_CONTROL_STATE;
+    cep_heartbeat_release_signal_array(runtime->registered_validator_dts,
+                                       &runtime->registered_validator_count);
+    cep_heartbeat_release_signal_array(runtime->registered_constructor_dts,
+                                       &runtime->registered_constructor_count);
+    cep_heartbeat_release_signal_array(runtime->registered_destructor_dts,
+                                       &runtime->registered_destructor_count);
+}
+
+void
+cep_heartbeat_release_runtime(cepHeartbeatRuntime* runtime)
+{
+    if (!runtime) {
+        return;
+    }
+
+    cep_heartbeat_impulse_queue_destroy(&runtime->impulses_current);
+    cep_heartbeat_impulse_queue_destroy(&runtime->impulses_next);
+    cep_heartbeat_dispatch_cache_destroy(&runtime->scratch);
+}
+
+
 
 /* Refresh the aggregated cleanup flag so callers can gate control verbs on the
    presence of any outstanding backlog, data revival, or GC work. */
@@ -2250,7 +2258,6 @@ typedef struct {
     bool        has_destructor;
 } cepHeartbeatOrganDescriptorInit;
 
-#define CEP_HEARTBEAT_SPACING_WINDOW_DEFAULT 256u
 
 static cepCell* ensure_root_dictionary(cepCell* root, const cepDT* name, const cepDT* store_dt);
 static cepCell* ensure_root_list(cepCell* root, const cepDT* name, const cepDT* store_dt);
@@ -2286,6 +2293,9 @@ static bool cep_heartbeat_register_l0_organs(void) {
         { "enzymes",       "Enzyme manifest organ",         false, false },
     };
 
+    cepHeartbeatRuntime* heartbeat =
+        cep_runtime_heartbeat(cep_runtime_active());
+
     size_t count = sizeof descriptors / sizeof descriptors[0];
     for (size_t index = 0; index < count; ++index) {
         const cepHeartbeatOrganDescriptorInit* init = &descriptors[index];
@@ -2308,8 +2318,36 @@ static bool cep_heartbeat_register_l0_organs(void) {
         if (init->has_destructor) {
             descriptor.destructor = cep_heartbeat_make_signal_dt(init->kind, "dt");
         }
-if (!cep_organ_register(&descriptor)) {
-return false;
+        if (!cep_organ_register(&descriptor)) {
+            if (cep_dt_is_valid(&descriptor.validator) && cep_id_is_reference(descriptor.validator.tag)) {
+                (void)cep_namepool_release(descriptor.validator.tag);
+            }
+            if (cep_dt_is_valid(&descriptor.constructor) && cep_id_is_reference(descriptor.constructor.tag)) {
+                (void)cep_namepool_release(descriptor.constructor.tag);
+            }
+            if (cep_dt_is_valid(&descriptor.destructor) && cep_id_is_reference(descriptor.destructor.tag)) {
+                (void)cep_namepool_release(descriptor.destructor.tag);
+            }
+            return false;
+        }
+
+        if (heartbeat) {
+            cep_heartbeat_track_signal_dt(heartbeat,
+                                          &descriptor.validator,
+                                          heartbeat->registered_validator_dts,
+                                          &heartbeat->registered_validator_count);
+            if (cep_dt_is_valid(&descriptor.constructor)) {
+                cep_heartbeat_track_signal_dt(heartbeat,
+                                              &descriptor.constructor,
+                                              heartbeat->registered_constructor_dts,
+                                              &heartbeat->registered_constructor_count);
+            }
+            if (cep_dt_is_valid(&descriptor.destructor)) {
+                cep_heartbeat_track_signal_dt(heartbeat,
+                                              &descriptor.destructor,
+                                              heartbeat->registered_destructor_dts,
+                                              &heartbeat->registered_destructor_count);
+            }
         }
     }
 
@@ -4919,7 +4957,24 @@ bool cep_heartbeat_process_impulses(void) {
 
                 CEP_RUNTIME.current_descriptor = descriptor;
                 size_t before_signals = CEP_RUNTIME.impulses_next.count;
+                cepEpExecutionContext* previous_ctx = cep_executor_context_get();
+                cepEpExecutionContext shim_ctx = {0};
+                cepRuntime* previous_runtime_scope = NULL;
+                bool pushed_ctx = false;
+                if (!previous_ctx) {
+                    cepRuntime* active_runtime = cep_runtime_default();
+                    shim_ctx.runtime = active_runtime;
+                    shim_ctx.profile = CEP_EP_PROFILE_RW;
+                    shim_ctx.allow_without_lease = true;
+                    previous_runtime_scope = cep_runtime_set_active(active_runtime);
+                    cep_executor_context_set(&shim_ctx);
+                    pushed_ctx = true;
+                }
                 int rc = descriptor->callback(impulse.signal_path, impulse.target_path);
+                if (pushed_ctx) {
+                    cep_executor_context_clear();
+                    cep_runtime_restore_active(previous_runtime_scope);
+                }
                 CEP_RUNTIME.current_descriptor = NULL;
                 CEP_DEBUG_PRINTF("DEBUG heartbeat: descriptor %llu:%llu callback=%p rc=%d\n",
                         (unsigned long long)descriptor->name.domain,
