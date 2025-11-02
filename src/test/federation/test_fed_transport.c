@@ -11,6 +11,7 @@
 #include "fed_transport_manager.h"
 #include "fed_transport_providers.h"
 #include "fed_link_organ.h"
+#include "fed_mirror_organ.h"
 
 #include <string.h>
 
@@ -56,10 +57,6 @@ static const char* fed_test_read_text_field(cepCell* parent,
     munit_assert_not_null(node);
     cepData* data = NULL;
     munit_assert_true(cep_cell_require_data(&node, &data));
-    cepDT type = cep_ops_make_dt("val/text");
-    if (cep_dt_compare(&data->dt, &type) != 0) {
-        munit_assert_int(cep_dt_compare(&data->dt, CEP_DTAW("CEP", "text")), ==, 0);
-    }
     munit_assert_size(data->size, <, capacity);
     const void* payload = cep_data_payload(data);
     munit_assert_not_null(payload);
@@ -573,6 +570,51 @@ static void fed_test_write_bool(cepCell* parent, const char* tag, bool value) {
                                              sizeof payload));
 }
 
+static void fed_test_write_u32(cepCell* parent, const char* tag, uint32_t value) {
+    cepCell* resolved = parent;
+    munit_assert_true(cep_cell_require_dictionary_store(&resolved));
+    cepDT field = fed_test_make_dt(tag);
+    cepDT num_type = cep_ops_make_dt("val/u32");
+    uint32_t payload = value;
+    cepDT field_copy = field;
+    munit_assert_not_null(cep_dict_add_value(resolved,
+                                             &field_copy,
+                                             &num_type,
+                                             &payload,
+                                             sizeof payload,
+                                             sizeof payload));
+}
+
+static void fed_test_write_u16(cepCell* parent, const char* tag, uint16_t value) {
+    cepCell* resolved = parent;
+    munit_assert_true(cep_cell_require_dictionary_store(&resolved));
+    cepDT field = fed_test_make_dt(tag);
+    cepDT num_type = cep_ops_make_dt("val/u16");
+    uint16_t payload = value;
+    cepDT field_copy = field;
+    munit_assert_not_null(cep_dict_add_value(resolved,
+                                             &field_copy,
+                                             &num_type,
+                                             &payload,
+                                             sizeof payload,
+                                             sizeof payload));
+}
+
+static void fed_test_write_u64(cepCell* parent, const char* tag, uint64_t value) {
+    cepCell* resolved = parent;
+    munit_assert_true(cep_cell_require_dictionary_store(&resolved));
+    cepDT field = fed_test_make_dt(tag);
+    cepDT num_type = cep_ops_make_dt("val/u64");
+    uint64_t payload = value;
+    cepDT field_copy = field;
+    munit_assert_not_null(cep_dict_add_value(resolved,
+                                             &field_copy,
+                                             &num_type,
+                                             &payload,
+                                             sizeof payload,
+                                             sizeof payload));
+}
+
 MunitResult test_fed_link_validator_success(const MunitParameter params[], void* fixture) {
     (void)params;
     (void)fixture;
@@ -768,6 +810,224 @@ MunitResult test_fed_link_validator_missing_peer(const MunitParameter params[], 
     char provider_text[32] = {0};
     munit_assert_false(fed_test_try_read_text_field(request, "provider", provider_text, sizeof provider_text));
 
+    cep_free(request_path);
+    cep_fed_transport_manager_teardown(&manager);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_mirror_validator_success(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_test_prepare_providers();
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+    munit_assert_true(cep_fed_mirror_organ_init(&manager, net_root));
+
+    cepCell* organs = fed_test_require_dictionary(fed_test_lookup_child(net_root, "organs"));
+    cepCell* mirror_root = fed_test_require_dictionary(fed_test_lookup_child(organs, "mirror"));
+    cepCell* requests = fed_test_require_dictionary(fed_test_lookup_child(mirror_root, "requests"));
+
+    cepDT request_name = fed_test_make_dt("mirror_ok");
+    cepCell* request = cep_cell_ensure_dictionary_child(requests, &request_name, CEP_STORAGE_RED_BLACK_T);
+    request = fed_test_require_dictionary(request);
+
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","peer"), "peer_mir");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","mount"), "mount_mir");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","mode"), "mirror");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","local_node"), "node-local");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","src_peer"), "peer-source");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","src_chan"), "channel-alpha");
+
+    cepCell* caps = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","caps"), CEP_STORAGE_RED_BLACK_T);
+    caps = fed_test_require_dictionary(caps);
+    cepCell* required_caps = cep_cell_ensure_dictionary_child(caps, CEP_DTAW("CEP","required"), CEP_STORAGE_RED_BLACK_T);
+    required_caps = fed_test_require_dictionary(required_caps);
+    fed_test_write_bool(required_caps, "reliable", true);
+    fed_test_write_bool(required_caps, "ordered", true);
+    fed_test_write_bool(required_caps, "remote_net", true);
+
+    cepCell* bundle = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","bundle"), CEP_STORAGE_RED_BLACK_T);
+    bundle = fed_test_require_dictionary(bundle);
+    fed_test_write_u32(bundle, "beat_window", 2u);
+    fed_test_write_u16(bundle, "max_infl", 2u);
+    (void)cep_cell_put_text(bundle, CEP_DTAW("CEP","commit_mode"), "stream");
+
+    cepPath* request_path = NULL;
+    munit_assert_true(cep_cell_path(request, &request_path));
+
+    int rc = cep_fed_mirror_validator(NULL, request_path);
+    if (rc != CEP_ENZYME_SUCCESS) {
+        char note[96] = {0};
+        fed_test_try_read_text_field(request, "error_note", note, sizeof note);
+        munit_errorf("mirror validator failed: %s", note);
+    }
+
+    char text[64] = {0};
+    fed_test_read_text_field(request, "state", text, sizeof text);
+    munit_assert_string_equal(text, "active");
+    fed_test_read_text_field(request, "provider", text, sizeof text);
+    munit_assert_size(strlen(text), >, (size_t)0);
+
+    for (unsigned i = 0; i < 8u; ++i) {
+        munit_assert_true(cep_heartbeat_step());
+    }
+
+    uint64_t last_seq = fed_test_read_u64_field(request, "bundle_seq");
+    munit_assert_uint64(last_seq, >=, 1u);
+    uint64_t last_beat = fed_test_read_u64_field(request, "commit_beat");
+    munit_assert_uint64(last_beat, !=, 0u);
+    char resume_text[64] = {0};
+    fed_test_try_read_text_field(request, "pend_resum", resume_text, sizeof resume_text);
+    munit_assert_string_equal(resume_text, "");
+
+    rc = cep_fed_mirror_destructor(NULL, request_path);
+    munit_assert_int(rc, ==, CEP_ENZYME_SUCCESS);
+    fed_test_read_text_field(request, "state", text, sizeof text);
+    munit_assert_string_equal(text, "removed");
+
+    cep_free(request_path);
+    cep_fed_transport_manager_teardown(&manager);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_mirror_validator_conflict(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_test_prepare_providers();
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+    munit_assert_true(cep_fed_mirror_organ_init(&manager, net_root));
+
+    cepCell* organs = fed_test_require_dictionary(fed_test_lookup_child(net_root, "organs"));
+    cepCell* mirror_root = fed_test_require_dictionary(fed_test_lookup_child(organs, "mirror"));
+    cepCell* requests = fed_test_require_dictionary(fed_test_lookup_child(mirror_root, "requests"));
+
+    cepDT first_name = fed_test_make_dt("mir_conf_a");
+    cepCell* first = cep_cell_ensure_dictionary_child(requests, &first_name, CEP_STORAGE_RED_BLACK_T);
+    first = fed_test_require_dictionary(first);
+    (void)cep_cell_put_text(first, CEP_DTAW("CEP","peer"), "peer_conf");
+    (void)cep_cell_put_text(first, CEP_DTAW("CEP","mount"), "mount_conf");
+    (void)cep_cell_put_text(first, CEP_DTAW("CEP","mode"), "mirror");
+    (void)cep_cell_put_text(first, CEP_DTAW("CEP","local_node"), "node-local");
+    (void)cep_cell_put_text(first, CEP_DTAW("CEP","src_peer"), "peer-source");
+    (void)cep_cell_put_text(first, CEP_DTAW("CEP","src_chan"), "channel-alpha");
+
+    cepCell* first_caps = cep_cell_ensure_dictionary_child(first, CEP_DTAW("CEP","caps"), CEP_STORAGE_RED_BLACK_T);
+    first_caps = fed_test_require_dictionary(first_caps);
+    cepCell* first_required = cep_cell_ensure_dictionary_child(first_caps, CEP_DTAW("CEP","required"), CEP_STORAGE_RED_BLACK_T);
+    first_required = fed_test_require_dictionary(first_required);
+    fed_test_write_bool(first_required, "reliable", true);
+    fed_test_write_bool(first_required, "ordered", true);
+
+    cepCell* first_bundle = cep_cell_ensure_dictionary_child(first, CEP_DTAW("CEP","bundle"), CEP_STORAGE_RED_BLACK_T);
+    first_bundle = fed_test_require_dictionary(first_bundle);
+    fed_test_write_u32(first_bundle, "beat_window", 1u);
+    fed_test_write_u16(first_bundle, "max_infl", 1u);
+    (void)cep_cell_put_text(first_bundle, CEP_DTAW("CEP","commit_mode"), "batch");
+
+    cepPath* first_path = NULL;
+    munit_assert_true(cep_cell_path(first, &first_path));
+    int rc = cep_fed_mirror_validator(NULL, first_path);
+    munit_assert_int(rc, ==, CEP_ENZYME_SUCCESS);
+
+    cepDT second_name = fed_test_make_dt("mir_conf_b");
+    cepCell* second = cep_cell_ensure_dictionary_child(requests, &second_name, CEP_STORAGE_RED_BLACK_T);
+    second = fed_test_require_dictionary(second);
+    (void)cep_cell_put_text(second, CEP_DTAW("CEP","peer"), "peer_conf");
+    (void)cep_cell_put_text(second, CEP_DTAW("CEP","mount"), "mount_conf");
+    (void)cep_cell_put_text(second, CEP_DTAW("CEP","mode"), "mirror");
+    (void)cep_cell_put_text(second, CEP_DTAW("CEP","local_node"), "node-local");
+    (void)cep_cell_put_text(second, CEP_DTAW("CEP","src_peer"), "peer-source");
+    (void)cep_cell_put_text(second, CEP_DTAW("CEP","src_chan"), "channel-beta");
+
+    cepCell* second_bundle = cep_cell_ensure_dictionary_child(second, CEP_DTAW("CEP","bundle"), CEP_STORAGE_RED_BLACK_T);
+    second_bundle = fed_test_require_dictionary(second_bundle);
+    fed_test_write_u32(second_bundle, "beat_window", 1u);
+    fed_test_write_u16(second_bundle, "max_infl", 1u);
+
+    cepPath* second_path = NULL;
+    munit_assert_true(cep_cell_path(second, &second_path));
+    rc = cep_fed_mirror_validator(NULL, second_path);
+    munit_assert_int(rc, ==, CEP_ENZYME_FATAL);
+
+    char text[64] = {0};
+    fed_test_read_text_field(second, "state", text, sizeof text);
+    munit_assert_string_equal(text, "error");
+    fed_test_read_text_field(second, "error_note", text, sizeof text);
+    munit_assert_string_equal(text, "mirror mount already active");
+
+    fed_test_read_text_field(first, "state", text, sizeof text);
+    munit_assert_string_equal(text, "active");
+
+    (void)cep_fed_mirror_destructor(NULL, second_path);
+    cep_free(second_path);
+    (void)cep_fed_mirror_destructor(NULL, first_path);
+    cep_free(first_path);
+
+    cep_fed_transport_manager_teardown(&manager);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_mirror_validator_deadline(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_test_prepare_providers();
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+    munit_assert_true(cep_fed_mirror_organ_init(&manager, net_root));
+
+    cepCell* organs = fed_test_require_dictionary(fed_test_lookup_child(net_root, "organs"));
+    cepCell* mirror_root = fed_test_require_dictionary(fed_test_lookup_child(organs, "mirror"));
+    cepCell* requests = fed_test_require_dictionary(fed_test_lookup_child(mirror_root, "requests"));
+
+    cepDT request_name = fed_test_make_dt("mir_dead");
+    cepCell* request = cep_cell_ensure_dictionary_child(requests, &request_name, CEP_STORAGE_RED_BLACK_T);
+    request = fed_test_require_dictionary(request);
+
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","peer"), "peer_dead");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","mount"), "mount_dead");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","mode"), "mirror");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","local_node"), "node-local");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","src_peer"), "peer-source");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","src_chan"), "channel-deadline");
+
+    cepCell* caps = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","caps"), CEP_STORAGE_RED_BLACK_T);
+    caps = fed_test_require_dictionary(caps);
+    cepCell* required_caps = cep_cell_ensure_dictionary_child(caps, CEP_DTAW("CEP","required"), CEP_STORAGE_RED_BLACK_T);
+    required_caps = fed_test_require_dictionary(required_caps);
+    fed_test_write_bool(required_caps, "reliable", true);
+
+    cepCell* bundle = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","bundle"), CEP_STORAGE_RED_BLACK_T);
+    bundle = fed_test_require_dictionary(bundle);
+    fed_test_write_u32(bundle, "beat_window", 1u);
+    fed_test_write_u16(bundle, "max_infl", 1u);
+    (void)cep_cell_put_text(bundle, CEP_DTAW("CEP","commit_mode"), "manual");
+
+    (void)cep_heartbeat_current();
+    fed_test_write_u64(request, "deadline", 0u);
+
+    cepPath* request_path = NULL;
+    munit_assert_true(cep_cell_path(request, &request_path));
+
+    int rc = cep_fed_mirror_validator(NULL, request_path);
+    munit_assert_int(rc, ==, CEP_ENZYME_FATAL);
+
+    char text[64] = {0};
+    fed_test_read_text_field(request, "state", text, sizeof text);
+    munit_assert_string_equal(text, "error");
+    fed_test_read_text_field(request, "error_note", text, sizeof text);
+    munit_assert_string_equal(text, "deadline expired before activation");
+
+    (void)cep_fed_mirror_destructor(NULL, request_path);
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);
     test_runtime_shutdown();

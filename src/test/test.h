@@ -105,6 +105,9 @@ MunitResult test_fed_transport_close_events(const MunitParameter params[], void*
 MunitResult test_fed_link_validator_success(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_validator_duplicate_request(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_validator_missing_peer(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_mirror_validator_success(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_mirror_validator_conflict(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_mirror_validator_deadline(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
 extern MunitSuite integration_poc_suite;

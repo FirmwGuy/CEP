@@ -565,6 +565,30 @@ MunitTest tests[] = {
         NULL
     },
     {
+        "/fed_mirror/validator_success",
+        test_fed_mirror_validator_success,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_mirror/validator_conflict",
+        test_fed_mirror_validator_conflict,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_mirror/validator_deadline",
+        test_fed_mirror_validator_deadline,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/runtime/dual_isolation",
         test_runtime_dual_isolation,
         NULL,

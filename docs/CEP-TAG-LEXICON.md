@@ -206,6 +206,13 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `prov_caps` | Federation transport | mirrors the selected provider capability bitset for the active mount. |
 | `provider` | Federation transport | stores the provider identifier associated with a mount record. |
 | `upd_latest` | Federation transport | boolean flag indicating a mount opts into droppable gauge frames. |
+| `src_peer` | Federation transport | mirror organ request field naming the remote peer supplying bundles. |
+| `src_chan` | Federation transport | mirror organ request field naming the remote channel supplying bundles. |
+| `max_infl` | Federation transport | mirror organ bundle parameter limiting simultaneous in-flight bundles. |
+| `resume_tok` | Federation transport | mirror organ optional token handed to callers to resume paused mirrors. |
+| `pend_resum` | Federation transport | mirror organ status field publishing the pending resume token when manual commits pause work. |
+| `bundle_seq` | Federation transport | mirror organ status field recording the last committed bundle sequence. |
+| `commit_beat` | Federation transport | mirror organ status field recording the beat of the most recent commit. |
 | `services` | Federation transport | peer-level dictionary listing advertised services/mounts. |
 | `telemetry` | Federation transport | heartbeat-sampled metrics root under `/net/telemetry`. |
 | `ceh` | Federation transport | consolidated CEI health facts per peer keyed by telemetry topic. |
@@ -227,6 +234,8 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `tp_sendfail` | Federation transport | CEI topic emitted when a provider send operation fails. |
 | `tp_upd_den` | Federation transport | CEI topic capturing rejected `upd_latest` frames (mount opted out). |
 | `tp_upd_mis` | Federation transport | CEI topic capturing `upd_latest` frames sent to non-unreliable transports. |
+| `tp_mconf` | Federation transport | CEI topic emitted when a mirror organ request conflicts with an existing mount. |
+| `tp_mtimeout` | Federation transport | CEI topic emitted when a mirror organ request exceeds its deadline. |
 
 #### Test Harness Tags
 | Tag / Pattern | Feature Area | Purpose |

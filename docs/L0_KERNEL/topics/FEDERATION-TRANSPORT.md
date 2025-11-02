@@ -12,6 +12,21 @@ Federation mounts no longer wire transports by hand. The transport manager gives
 - **Channel lifecycle.** `cep_fed_transport_manager_configure_mount()` opens the provider channel immediately using the persistent provider cell from `/net/transports/<id>/`. Mount callbacks receive inbound frames through the provider’s vtable and all events flow back through `cepFedTransportCallbacks`. `cep_fed_transport_manager_close()` closes channels but leaves schema intact so the mount can be reconfigured without re-seeding the tree.
 - **`upd_latest` handling.** For unreliable transports the manager caches at most one droppable payload per channel. When providers report backpressure the latest `upd_latest` frame replaces the previous one. Ready events trigger a flush; stale gauges are discarded instead of queuing. Sending `upd_latest` across reliable transports yields a CEI warning because the manager cannot legally drop the payload.
 - **CEI diagnostics.** Failure to find a provider, schema issues, send failures, backpressure, fatal events, and `upd_latest` misuse raise structured CEI facts with short-form topics (`tp_noprov`, `tp_schema`, `tp_catsync`, `tp_backpr`, `tp_sendfail`, `tp_fatal`, …). Each peer’s `/net/peers/<peer>/ceh/<topic>/` branch records the last severity/note/beat so tools and tests can assert on the manager’s health signals without trawling logs.
+- **Link organ (`/net/organs/link`).** Requests live under `/net/organs/link/requests/<id>/` and are plain dictionaries. Required fields are `peer`, `mount`, `mode`, and `local_node` (all `text`). Optional knobs include `pref_prov`, `allow_upd` (`bool`), `deadline` (`val/u64`), and a `caps/` sub-dictionary with `required/` and `preferred/` boolean flags matching `CEP_FED_TRANSPORT_CAP_*`. The validator writes `state` (`pending`, `active`, `error`, `removed`), clears or fills `error_note`, records the selected `provider`, and keeps those fields in the request cell so tools can watch the mount lifecycle without traversing `/net/mounts/…`. The destructor flips `state` to `removed`, clears `provider/error_note`, and asks the transport manager to close the mount with `reason="link-request-destroy"`.
+- **Mirror organ (`/net/organs/mirror`).** Mirror requests also sit under `/net/organs/mirror/requests/<id>/` and extend the link layout with the information the episodic engine needs to stage bundles:
+  - `peer` / `mount` / `mode` / `local_node` mirror the link contract and identify the local mirror mount to configure.
+  - `src_peer` and `src_chan` (`text`) specify which remote peer and publish-side mount feed bundle data.
+  - `bundle/` is a dictionary that captures staging limits:
+    - `beat_window` (`val/u32`) – how many beats form a bundle.
+    - `max_infl` (`val/u16`) – how many bundles may be outstanding before backpressure is asserted.
+    - `resume_tok` (`text`, optional) – opaque token the episodic engine can hand back to resume an interrupted mirror.
+    - `commit_mode` (`text`, optional) – `stream`, `batch`, or `manual` depending on whether commits happen every bundle, after a swarm of bundles, or under explicit operator control.
+  - `caps/` and `pref_prov` follow the link schema so mirrors can favour providers (for example, low-latency LAN transports).
+  - The validator publishes the usual `state`, `provider`, and `error_note` plus mirror-specific status keys:
+    - `bundle_seq` (`val/u64`) – highest bundle sequence the organ has committed.
+    - `commit_beat` (`val/u64`) – beat of the most recent successful commit.
+    - `pend_resum` (`text`, optional) – non-empty when the organ has paused and holds a new resume token for the caller.
+  - On teardown the destructor closes the configured mount, clears the status fields, and deletes any `bundle/` progress nodes so subsequent requests start from a clean slate.
 - **Stub providers.** The repository ships three providers: `tcp` (reliable remote stream semantics), `pipe` (reliable local IPC) and `mock` (unreliable in-process test harness). The mock provider keeps queues visible to tests via helpers in `fed_transport_providers.h` so suites can drive backpressure, inbound frames, and verify coalescing without real sockets.
 
 ## Q&A

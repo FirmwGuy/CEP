@@ -2,6 +2,7 @@
 
 #include "fed_transport_manager.h"
 #include "fed_link_organ.h"
+#include "fed_mirror_organ.h"
 
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_cei.h"
@@ -22,6 +23,7 @@ CEP_DEFINE_STATIC_DT(dt_organs_name,      CEP_ACRO("CEP"), CEP_WORD("organs"));
 CEP_DEFINE_STATIC_DT(dt_discovery_name,   CEP_ACRO("CEP"), CEP_WORD("discovery"));
 CEP_DEFINE_STATIC_DT(dt_health_name,      CEP_ACRO("CEP"), CEP_WORD("health"));
 CEP_DEFINE_STATIC_DT(dt_link_name,        CEP_ACRO("CEP"), CEP_WORD("link"));
+CEP_DEFINE_STATIC_DT(dt_mirror_name,      CEP_ACRO("CEP"), CEP_WORD("mirror"));
 CEP_DEFINE_STATIC_DT(dt_spec_name,        CEP_ACRO("CEP"), CEP_WORD("spec"));
 CEP_DEFINE_STATIC_DT(dt_kind_field_name,  CEP_ACRO("CEP"), CEP_WORD("kind"));
 CEP_DEFINE_STATIC_DT(dt_label_field_name, CEP_ACRO("CEP"), CEP_WORD("label"));
@@ -71,6 +73,12 @@ static const char* const CEP_FED_LINK_LABEL = "organ.net_link.vl";
 static const char* const CEP_FED_LINK_STORE = "organ/net_link";
 static const char* const CEP_FED_LINK_VALIDATOR_SIGNAL = "org:net_link:vl";
 static const char* const CEP_FED_LINK_DESTRUCTOR_SIGNAL = "org:net_link:dt";
+
+static const char* const CEP_FED_MIRROR_KIND = "net_mirror";
+static const char* const CEP_FED_MIRROR_LABEL = "organ.net_mirror.vl";
+static const char* const CEP_FED_MIRROR_STORE = "organ/net_mirror";
+static const char* const CEP_FED_MIRROR_VALIDATOR_SIGNAL = "org:net_mirror:vl";
+static const char* const CEP_FED_MIRROR_DESTRUCTOR_SIGNAL = "org:net_mirror:dt";
 
 static cepFedTransportManager g_fed_transport_manager;
 static bool g_fed_transport_manager_ready = false;
@@ -971,7 +979,8 @@ bool cep_fed_pack_bootstrap(void) {
     cepCell* discovery = cep_fed_pack_ensure_dict_child(organs, dt_discovery_name());
     cepCell* health = cep_fed_pack_ensure_dict_child(organs, dt_health_name());
     cepCell* link = cep_fed_pack_ensure_dict_child(organs, dt_link_name());
-    if (!discovery || !health || !link) {
+    cepCell* mirror = cep_fed_pack_ensure_dict_child(organs, dt_mirror_name());
+    if (!discovery || !health || !link || !mirror) {
         return false;
     }
 
@@ -1002,6 +1011,15 @@ bool cep_fed_pack_bootstrap(void) {
         return false;
     }
 
+    if (!cep_fed_pack_publish_organ_spec(mirror,
+                                         CEP_FED_MIRROR_KIND,
+                                         CEP_FED_MIRROR_LABEL,
+                                         CEP_FED_MIRROR_STORE,
+                                         CEP_FED_MIRROR_VALIDATOR_SIGNAL,
+                                         CEP_FED_MIRROR_DESTRUCTOR_SIGNAL)) {
+        return false;
+    }
+
     if (!g_fed_transport_manager_ready) {
         if (!cep_fed_transport_manager_init(&g_fed_transport_manager, net_root)) {
             return false;
@@ -1010,6 +1028,10 @@ bool cep_fed_pack_bootstrap(void) {
     }
 
     if (!cep_fed_link_organ_init(&g_fed_transport_manager, net_root)) {
+        return false;
+    }
+
+    if (!cep_fed_mirror_organ_init(&g_fed_transport_manager, net_root)) {
         return false;
     }
 
@@ -1138,11 +1160,18 @@ static bool cep_fed_pack_register_organs(void) {
     health.destructor = cep_ops_make_dt(CEP_FED_HEALTH_DESTRUCTOR_SIGNAL);
 
     cepOrganDescriptor link = {0};
-    link.kind = CEP_FED_LINK_KIND;
-    link.label = CEP_FED_LINK_LABEL;
-    link.store = cep_organ_store_dt("net_link");
-    link.validator = cep_ops_make_dt(CEP_FED_LINK_VALIDATOR_SIGNAL);
-    link.destructor = cep_ops_make_dt(CEP_FED_LINK_DESTRUCTOR_SIGNAL);
+   link.kind = CEP_FED_LINK_KIND;
+   link.label = CEP_FED_LINK_LABEL;
+   link.store = cep_organ_store_dt("net_link");
+   link.validator = cep_ops_make_dt(CEP_FED_LINK_VALIDATOR_SIGNAL);
+   link.destructor = cep_ops_make_dt(CEP_FED_LINK_DESTRUCTOR_SIGNAL);
+
+    cepOrganDescriptor mirror = {0};
+    mirror.kind = CEP_FED_MIRROR_KIND;
+    mirror.label = CEP_FED_MIRROR_LABEL;
+    mirror.store = cep_organ_store_dt("net_mirror");
+    mirror.validator = cep_ops_make_dt(CEP_FED_MIRROR_VALIDATOR_SIGNAL);
+    mirror.destructor = cep_ops_make_dt(CEP_FED_MIRROR_DESTRUCTOR_SIGNAL);
 
     if (!cep_organ_register(&discovery)) {
         return false;
@@ -1151,6 +1180,9 @@ static bool cep_fed_pack_register_organs(void) {
         return false;
     }
     if (!cep_organ_register(&link)) {
+        return false;
+    }
+    if (!cep_organ_register(&mirror)) {
         return false;
     }
 
@@ -1228,6 +1260,32 @@ static bool cep_fed_pack_register_organs(void) {
             .match = CEP_ENZYME_MATCH_EXACT,
         };
         if (cep_enzyme_register(registry, (const cepPath*)&link_destructor_path, &link_destructor) != CEP_ENZYME_SUCCESS) {
+            return false;
+        }
+    }
+
+    cepFedPackPath mirror_validator_path = cep_fed_pack_make_signal_path("org:net_mirror:vl");
+    cepEnzymeDescriptor mirror_validator = {
+        .name = mirror_validator_path.past[0].dt,
+        .label = "organ.net_mirror.vl",
+        .callback = cep_fed_mirror_validator,
+        .flags = CEP_ENZYME_FLAG_IDEMPOTENT | CEP_ENZYME_FLAG_EMIT_SIGNALS,
+        .match = CEP_ENZYME_MATCH_EXACT,
+    };
+    if (cep_enzyme_register(registry, (const cepPath*)&mirror_validator_path, &mirror_validator) != CEP_ENZYME_SUCCESS) {
+        return false;
+    }
+
+    if (cep_dt_is_valid(&mirror.destructor)) {
+        cepFedPackPath mirror_destructor_path = cep_fed_pack_make_signal_path("org:net_mirror:dt");
+        cepEnzymeDescriptor mirror_destructor = {
+            .name = mirror_destructor_path.past[0].dt,
+            .label = "organ.net_mirror.dt",
+            .callback = cep_fed_mirror_destructor,
+            .flags = CEP_ENZYME_FLAG_IDEMPOTENT,
+            .match = CEP_ENZYME_MATCH_EXACT,
+        };
+        if (cep_enzyme_register(registry, (const cepPath*)&mirror_destructor_path, &mirror_destructor) != CEP_ENZYME_SUCCESS) {
             return false;
         }
     }
