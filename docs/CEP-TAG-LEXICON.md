@@ -198,12 +198,35 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | --- | --- | --- |
 | `net` | Federation transport | root dictionary for federation metadata (peers, mounts, transports). |
 | `mounts` | Federation transport | groups mount declarations by peer and mode under `/net/mounts`. |
+| `peers` | Federation transport | peer registry keyed by peer identifier; hosts services and CEI health. |
+| `catalog` | Federation transport | per-mode mount catalog generated during bootstrap under `/net/catalog`. |
 | `transports` | Federation transport | registry of transport providers keyed by provider ID. |
 | `transport` | Federation transport | per-mount dictionary recording the chosen provider and capability summary. |
 | `caps` | Federation transport | nested dictionary capturing capability bitmaps (required, preferred, or provider-specific). |
 | `prov_caps` | Federation transport | mirrors the selected provider capability bitset for the active mount. |
 | `provider` | Federation transport | stores the provider identifier associated with a mount record. |
 | `upd_latest` | Federation transport | boolean flag indicating a mount opts into droppable gauge frames. |
+| `services` | Federation transport | peer-level dictionary listing advertised services/mounts. |
+| `telemetry` | Federation transport | heartbeat-sampled metrics root under `/net/telemetry`. |
+| `ceh` | Federation transport | consolidated CEI health facts per peer keyed by telemetry topic. |
+| `net_discovery` | Federation transport | discovery organ slug registered by the federation pack. |
+| `net_health` | Federation transport | health organ slug registered by the federation pack. |
+| `bp_count` | Federation transport | telemetry counter tracking total backpressure events for a mount. |
+| `bp_flag` | Federation transport | boolean flag indicating the mount is currently backpressured. |
+| `last_mode` | Federation transport | telemetry field recording the last transmitted frame mode. |
+| `last_sample` | Federation transport | telemetry field recording the first byte of the last transmitted frame. |
+| `tp_backpr` | Federation transport | CEI topic and health key for backpressure notifications. |
+| `tp_catsync` | Federation transport | CEI topic for catalog/telemetry publication failures. |
+| `tp_fatal` | Federation transport | CEI topic recording fatal transport channel events. |
+| `tp_noprov` | Federation transport | CEI topic recorded when no provider satisfies mount requirements. |
+| `tp_openfail` | Federation transport | CEI topic emitted when provider channel negotiation fails. |
+| `tp_provcell` | Federation transport | CEI topic noting provider cell resolution failures. |
+| `tp_provid` | Federation transport | CEI topic emitted when provider identifiers cannot be encoded. |
+| `tp_schema` | Federation transport | CEI topic indicating the mount schema branch could not be ensured. |
+| `tp_schemup` | Federation transport | CEI topic signalling mount schema update failures. |
+| `tp_sendfail` | Federation transport | CEI topic emitted when a provider send operation fails. |
+| `tp_upd_den` | Federation transport | CEI topic capturing rejected `upd_latest` frames (mount opted out). |
+| `tp_upd_mis` | Federation transport | CEI topic capturing `upd_latest` frames sent to non-unreliable transports. |
 
 #### Test Harness Tags
 | Tag / Pattern | Feature Area | Purpose |

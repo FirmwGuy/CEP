@@ -533,6 +533,38 @@ MunitTest tests[] = {
         NULL
     },
     {
+        "/fed_transport/close_events",
+        test_fed_transport_close_events,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_link/validator_success",
+        test_fed_link_validator_success,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_link/validator_duplicate_request",
+        test_fed_link_validator_duplicate_request,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_link/validator_missing_peer",
+        test_fed_link_validator_missing_peer,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/runtime/dual_isolation",
         test_runtime_dual_isolation,
         NULL,

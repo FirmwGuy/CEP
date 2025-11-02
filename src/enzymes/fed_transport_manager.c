@@ -1,5 +1,6 @@
 #include "fed_transport_manager.h"
 
+#include "fed_pack.h"
 #include "fed_transport.h"
 
 #include "../l0_kernel/cep_cell.h"
@@ -26,6 +27,12 @@ struct cepFedTransportManagerMount {
     bool                           supports_upd_latest;
     bool                           channel_open;
     bool                           backpressured;
+    uint64_t                       ready_events;
+    uint64_t                       backpressure_events;
+    uint64_t                       fatal_events;
+    uint64_t                       frame_count;
+    cepFedFrameMode                last_frame_mode;
+    uint8_t                        last_frame_sample;
     uint8_t*                       pending_payload;
     size_t                         pending_len;
     cepFedTransportMountCallbacks  callbacks;
@@ -50,6 +57,23 @@ CEP_DEFINE_STATIC_DT(dt_cap_remote_net_name, CEP_ACRO("CEP"), CEP_WORD("remote_n
 CEP_DEFINE_STATIC_DT(dt_cap_unreliable_name, CEP_ACRO("CEP"), CEP_WORD("unreliable"));
 CEP_DEFINE_STATIC_DT(dt_sev_error_name, CEP_ACRO("sev"), CEP_WORD("error"));
 CEP_DEFINE_STATIC_DT(dt_sev_warn_name, CEP_ACRO("sev"), CEP_WORD("warn"));
+CEP_DEFINE_STATIC_DT(dt_services_name, CEP_ACRO("CEP"), CEP_WORD("services"));
+CEP_DEFINE_STATIC_DT(dt_peer_field_name, CEP_ACRO("CEP"), CEP_WORD("peer"));
+CEP_DEFINE_STATIC_DT(dt_mode_field_name, CEP_ACRO("CEP"), CEP_WORD("mode"));
+CEP_DEFINE_STATIC_DT(dt_local_node_field_name, CEP_ACRO("CEP"), CEP_WORD("local_node"));
+CEP_DEFINE_STATIC_DT(dt_mount_path_name, CEP_ACRO("CEP"), CEP_WORD("mount_path"));
+CEP_DEFINE_STATIC_DT(dt_last_event_name, CEP_ACRO("CEP"), CEP_WORD("last_event"));
+CEP_DEFINE_STATIC_DT(dt_ready_count_name, CEP_ACRO("CEP"), CEP_WORD("ready_count"));
+CEP_DEFINE_STATIC_DT(dt_backpressure_count_name, CEP_ACRO("CEP"), CEP_WORD("bp_count"));
+CEP_DEFINE_STATIC_DT(dt_fatal_count_name, CEP_ACRO("CEP"), CEP_WORD("fatal_count"));
+CEP_DEFINE_STATIC_DT(dt_frame_count_name, CEP_ACRO("CEP"), CEP_WORD("frame_count"));
+CEP_DEFINE_STATIC_DT(dt_last_frame_mode_name, CEP_ACRO("CEP"), CEP_WORD("last_mode"));
+CEP_DEFINE_STATIC_DT(dt_last_frame_sample_name, CEP_ACRO("CEP"), CEP_WORD("last_sample"));
+CEP_DEFINE_STATIC_DT(dt_backpressured_flag_name, CEP_ACRO("CEP"), CEP_WORD("bp_flag"));
+CEP_DEFINE_STATIC_DT(dt_ceh_name, CEP_ACRO("CEP"), CEP_WORD("ceh"));
+CEP_DEFINE_STATIC_DT(dt_severity_field_name, CEP_ACRO("CEP"), CEP_WORD("severity"));
+CEP_DEFINE_STATIC_DT(dt_note_field_name, CEP_ACRO("CEP"), CEP_WORD("note"));
+CEP_DEFINE_STATIC_DT(dt_beat_field_name, CEP_ACRO("CEP"), CEP_WORD("beat"));
 
 typedef const cepDT* (*cepFedTransportDtGetter)(void);
 
@@ -70,6 +94,19 @@ static const cepFedTransportCapEntry cep_fed_transport_cap_entries[] = {
     { CEP_FED_TRANSPORT_CAP_UNRELIABLE,  dt_cap_unreliable_name  },
 };
 
+static const char* const CEP_FED_TOPIC_NO_PROVIDER      = "tp_noprov";
+static const char* const CEP_FED_TOPIC_SCHEMA           = "tp_schema";
+static const char* const CEP_FED_TOPIC_SCHEMA_UPDATE    = "tp_schemup";
+static const char* const CEP_FED_TOPIC_PROVIDER_ID      = "tp_provid";
+static const char* const CEP_FED_TOPIC_PROVIDER_CELL    = "tp_provcell";
+static const char* const CEP_FED_TOPIC_OPEN_FAILED      = "tp_openfail";
+static const char* const CEP_FED_TOPIC_CATALOG_SYNC     = "tp_catsync";
+static const char* const CEP_FED_TOPIC_UPD_DENIED       = "tp_upd_den";
+static const char* const CEP_FED_TOPIC_UPD_MISUSE       = "tp_upd_mis";
+static const char* const CEP_FED_TOPIC_BACKPRESSURE     = "tp_backpr";
+static const char* const CEP_FED_TOPIC_SEND_FAILED      = "tp_sendfail";
+static const char* const CEP_FED_TOPIC_FATAL_EVENT      = "tp_fatal";
+
 static inline unsigned cep_fed_transport_popcount(cepFedTransportCaps value) {
     unsigned count = 0u;
     while (value) {
@@ -78,6 +115,12 @@ static inline unsigned cep_fed_transport_popcount(cepFedTransportCaps value) {
     }
     return count;
 }
+
+static void cep_fed_transport_manager_update_health(cepFedTransportManager* manager,
+                                                    cepFedTransportManagerMount* mount,
+                                                    const cepDT* severity,
+                                                    const char* note,
+                                                    const char* topic);
 
 static void cep_fed_transport_manager_mount_reset_pending(cepFedTransportManagerMount* mount) {
     if (!mount) {
@@ -109,6 +152,9 @@ static void cep_fed_transport_manager_emit_diag(cepFedTransportManager* manager,
     req.attach_to_op = false;
     req.ttl_forever = false;
     (void)cep_cei_emit(&req);
+    if (mount && topic) {
+        cep_fed_transport_manager_update_health(manager, mount, severity, note, topic);
+    }
 }
 
 static cepCell* cep_fed_transport_manager_ensure_mount_cell(cepFedTransportManager* manager,
@@ -181,9 +227,14 @@ static bool cep_fed_transport_manager_write_bool(cepCell* parent,
         return false;
     }
 
+    uint8_t bool_value = value ? 1u : 0u;
+    cepCell* existing = cep_cell_find_by_name(resolved, field);
+    if (existing) {
+        return cep_cell_update(existing, sizeof bool_value, sizeof bool_value, &bool_value, false) != NULL;
+    }
+
     cepDT field_copy = *field;
     cepDT type_dt = cep_ops_make_dt("val/bool");
-    uint8_t bool_value = value ? 1u : 0u;
     return cep_dict_add_value(resolved, &field_copy, &type_dt, &bool_value, sizeof bool_value, sizeof bool_value) != NULL;
 }
 
@@ -198,10 +249,104 @@ static bool cep_fed_transport_manager_write_text(cepCell* parent,
         return false;
     }
 
+    size_t len = strlen(value);
+    cepCell* existing = cep_cell_find_by_name(resolved, field);
+    if (existing) {
+        return cep_cell_update(existing, len, len, (void*)value, false) != NULL;
+    }
+
     cepDT field_copy = *field;
     cepDT type_dt = cep_ops_make_dt("val/text");
-    size_t len = strlen(value);
     return cep_dict_add_value(resolved, &field_copy, &type_dt, (void*)value, len, len) != NULL;
+}
+
+static bool cep_fed_transport_manager_write_u64(cepCell* parent,
+                                                const cepDT* field,
+                                                uint64_t value) {
+    if (!parent || !field) {
+        return false;
+    }
+    cepCell* resolved = parent;
+    if (!cep_cell_require_dictionary_store(&resolved)) {
+        return false;
+    }
+
+    cepCell* existing = cep_cell_find_by_name(resolved, field);
+    if (existing) {
+        return cep_cell_update(existing, sizeof value, sizeof value, &value, false) != NULL;
+    }
+
+    cepDT field_copy = *field;
+    cepDT type_dt = cep_ops_make_dt("val/u64");
+    return cep_dict_add_value(resolved, &field_copy, &type_dt, &value, sizeof value, sizeof value) != NULL;
+}
+
+static cepCell* cep_fed_transport_manager_ensure_word_child(cepCell* parent, const char* word) {
+    if (!parent || !word || !*word) {
+        return NULL;
+    }
+    cepDT name = {
+        .domain = cep_namepool_intern_cstr("CEP"),
+        .tag = cep_text_to_word(word),
+    };
+    if (!name.tag) {
+        return NULL;
+    }
+    cepCell* child = cep_cell_ensure_dictionary_child(parent, &name, CEP_STORAGE_RED_BLACK_T);
+    if (!child) {
+        return NULL;
+    }
+    child = cep_cell_resolve(child);
+    if (!child || !cep_cell_require_dictionary_store(&child)) {
+        return NULL;
+    }
+    return child;
+}
+
+static void cep_fed_transport_manager_reset_dictionary(cepCell* cell) {
+    if (cell && cell->store) {
+        cep_store_delete_children_hard(cell->store);
+    }
+}
+
+static void cep_fed_transport_manager_compose_mount_path(const cepFedTransportManagerMount* mount,
+                                                         char buffer[256]) {
+    if (!mount || !buffer) {
+        return;
+    }
+    const char* mode = mount->mount_mode ? mount->mount_mode : "link";
+    snprintf(buffer,
+             256,
+             "/net/mounts/%s/%s/%s",
+             mount->peer_id ? mount->peer_id : "",
+             mode,
+             mount->mount_id ? mount->mount_id : "");
+}
+
+static const char* cep_fed_transport_event_kind_text(cepFedTransportEventKind kind) {
+    switch (kind) {
+    case CEP_FED_TRANSPORT_EVENT_READY_RX:
+        return "ready_rx";
+    case CEP_FED_TRANSPORT_EVENT_BACKPRESSURE:
+        return "backpressure";
+    case CEP_FED_TRANSPORT_EVENT_FATAL:
+        return "fatal";
+    case CEP_FED_TRANSPORT_EVENT_RESET:
+        return "reset";
+    default:
+        return "event";
+    }
+}
+
+static const char* cep_fed_transport_frame_mode_text(cepFedFrameMode mode) {
+    switch (mode) {
+    case CEP_FED_FRAME_MODE_DATA:
+        return "data";
+    case CEP_FED_FRAME_MODE_UPD_LATEST:
+        return "upd_latest";
+    default:
+        return "unknown";
+    }
 }
 
 static bool cep_fed_transport_manager_write_caps_branch(cepCell* parent,
@@ -228,6 +373,164 @@ static bool cep_fed_transport_manager_write_caps_branch(cepCell* parent,
         ok = cep_fed_transport_manager_write_bool(branch_cell, entry->getter ? entry->getter() : NULL, bit_on) && ok;
     }
     return ok;
+}
+
+static bool cep_fed_transport_manager_refresh_catalog(cepFedTransportManager* manager,
+                                                      cepFedTransportManagerMount* mount) {
+    if (!manager || !mount || !manager->catalog_root) {
+        return true;
+    }
+
+    cepCell* mode_cell = cep_fed_transport_manager_ensure_word_child(manager->catalog_root, mount->mount_mode ? mount->mount_mode : "link");
+    if (!mode_cell) {
+        return false;
+    }
+
+    cepCell* mount_cell = cep_fed_transport_manager_ensure_word_child(mode_cell, mount->mount_id);
+    if (!mount_cell) {
+        return false;
+    }
+
+    cep_fed_transport_manager_reset_dictionary(mount_cell);
+
+    bool ok = true;
+    ok = cep_fed_transport_manager_write_text(mount_cell, dt_peer_field_name(), mount->peer_id) && ok;
+    ok = cep_fed_transport_manager_write_text(mount_cell, dt_mode_field_name(), mount->mount_mode ? mount->mount_mode : "link") && ok;
+    ok = cep_fed_transport_manager_write_text(mount_cell, dt_local_node_field_name(), mount->local_node_id) && ok;
+    if (mount->provider_id) {
+        ok = cep_fed_transport_manager_write_text(mount_cell, dt_provider_name(), mount->provider_id) && ok;
+    }
+    ok = cep_fed_transport_manager_write_bool(mount_cell, dt_upd_latest_name(), mount->allow_upd_latest) && ok;
+    return ok;
+}
+
+static bool cep_fed_transport_manager_refresh_peer_services(cepFedTransportManager* manager,
+                                                            cepFedTransportManagerMount* mount) {
+    if (!manager || !mount || !manager->peers_root) {
+        return true;
+    }
+
+    cepCell* peer_cell = cep_fed_transport_manager_ensure_word_child(manager->peers_root, mount->peer_id);
+    if (!peer_cell) {
+        return false;
+    }
+
+    cepCell* services_cell = cep_cell_ensure_dictionary_child(peer_cell, dt_services_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!services_cell) {
+        return false;
+    }
+    services_cell = cep_cell_resolve(services_cell);
+    if (!services_cell || !cep_cell_require_dictionary_store(&services_cell)) {
+        return false;
+    }
+
+    cepCell* service_cell = cep_fed_transport_manager_ensure_word_child(services_cell, mount->mount_id);
+    if (!service_cell) {
+        return false;
+    }
+
+    cep_fed_transport_manager_reset_dictionary(service_cell);
+
+    char path_buffer[256];
+    cep_fed_transport_manager_compose_mount_path(mount, path_buffer);
+
+    bool ok = true;
+    ok = cep_fed_transport_manager_write_text(service_cell, dt_mode_field_name(), mount->mount_mode ? mount->mount_mode : "link") && ok;
+    ok = cep_fed_transport_manager_write_text(service_cell, dt_mount_path_name(), path_buffer) && ok;
+    ok = cep_fed_transport_manager_write_text(service_cell, dt_local_node_field_name(), mount->local_node_id) && ok;
+    if (mount->provider_id) {
+        ok = cep_fed_transport_manager_write_text(service_cell, dt_provider_name(), mount->provider_id) && ok;
+    }
+    ok = cep_fed_transport_manager_write_bool(service_cell, dt_upd_latest_name(), mount->allow_upd_latest) && ok;
+    return ok;
+}
+
+static bool cep_fed_transport_manager_refresh_telemetry(cepFedTransportManager* manager,
+                                                        cepFedTransportManagerMount* mount,
+                                                        const char* last_event) {
+    if (!manager || !mount || !manager->telemetry_root) {
+        return true;
+    }
+
+    cepCell* peer_cell = cep_fed_transport_manager_ensure_word_child(manager->telemetry_root, mount->peer_id);
+    if (!peer_cell) {
+        return false;
+    }
+
+    cepCell* mount_cell = cep_fed_transport_manager_ensure_word_child(peer_cell, mount->mount_id);
+    if (!mount_cell) {
+        return false;
+    }
+
+    cep_fed_transport_manager_reset_dictionary(mount_cell);
+
+    bool ok = true;
+    ok = cep_fed_transport_manager_write_text(mount_cell, dt_mode_field_name(), mount->mount_mode ? mount->mount_mode : "link") && ok;
+    ok = cep_fed_transport_manager_write_text(mount_cell, dt_local_node_field_name(), mount->local_node_id) && ok;
+    if (mount->provider_id) {
+        ok = cep_fed_transport_manager_write_text(mount_cell, dt_provider_name(), mount->provider_id) && ok;
+    }
+    if (last_event) {
+        ok = cep_fed_transport_manager_write_text(mount_cell, dt_last_event_name(), last_event) && ok;
+    }
+    ok = cep_fed_transport_manager_write_bool(mount_cell, dt_backpressured_flag_name(), mount->backpressured) && ok;
+    ok = cep_fed_transport_manager_write_u64(mount_cell, dt_ready_count_name(), mount->ready_events) && ok;
+    ok = cep_fed_transport_manager_write_u64(mount_cell, dt_backpressure_count_name(), mount->backpressure_events) && ok;
+    ok = cep_fed_transport_manager_write_u64(mount_cell, dt_fatal_count_name(), mount->fatal_events) && ok;
+    ok = cep_fed_transport_manager_write_u64(mount_cell, dt_frame_count_name(), mount->frame_count) && ok;
+    ok = cep_fed_transport_manager_write_text(mount_cell, dt_last_frame_mode_name(), cep_fed_transport_frame_mode_text(mount->last_frame_mode)) && ok;
+    ok = cep_fed_transport_manager_write_u64(mount_cell, dt_last_frame_sample_name(), (uint64_t)mount->last_frame_sample) && ok;
+    return ok;
+}
+
+static void cep_fed_transport_manager_update_health(cepFedTransportManager* manager,
+                                                    cepFedTransportManagerMount* mount,
+                                                    const cepDT* severity,
+                                                    const char* note,
+                                                    const char* topic) {
+    if (!manager || !manager->peers_root || !mount || !topic) {
+        return;
+    }
+
+    cepCell* peer_cell = cep_fed_transport_manager_ensure_word_child(manager->peers_root, mount->peer_id);
+    if (!peer_cell) {
+        return;
+    }
+
+    cepCell* ceh_cell = cep_cell_ensure_dictionary_child(peer_cell, dt_ceh_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!ceh_cell) {
+        return;
+    }
+    ceh_cell = cep_cell_resolve(ceh_cell);
+    if (!ceh_cell || !cep_cell_require_dictionary_store(&ceh_cell)) {
+        return;
+    }
+
+    cepCell* topic_cell = cep_fed_transport_manager_ensure_word_child(ceh_cell, topic);
+    if (!topic_cell) {
+        return;
+    }
+
+    cep_fed_transport_manager_reset_dictionary(topic_cell);
+
+    char severity_text[32] = {0};
+    size_t sev_len = 0u;
+    if (severity && cep_id_is_word(cep_id(severity->tag))) {
+        sev_len = cep_word_to_text(cep_id(severity->tag), severity_text);
+    }
+
+    if (sev_len > 0u) {
+        (void)cep_fed_transport_manager_write_text(topic_cell, dt_severity_field_name(), severity_text);
+    }
+    if (note) {
+        (void)cep_fed_transport_manager_write_text(topic_cell, dt_note_field_name(), note);
+    }
+
+    cepBeatNumber beat = cep_heartbeat_current();
+    if (beat == CEP_BEAT_INVALID) {
+        beat = (cepBeatNumber)cep_beat_index();
+    }
+    (void)cep_fed_transport_manager_write_u64(topic_cell, dt_beat_field_name(), (uint64_t)beat);
 }
 
 static bool cep_fed_transport_manager_update_mount_schema(cepFedTransportManagerMount* mount) {
@@ -372,6 +675,7 @@ static bool cep_fed_transport_manager_flush_pending(cepFedTransportManagerMount*
     if (!mount->channel) {
         return false;
     }
+    uint8_t sample = (mount->pending_len > 0u && mount->pending_payload) ? mount->pending_payload[0] : 0u;
     bool sent = mount->provider->vtable->send(mount->provider_ctx,
                                               mount->channel,
                                               mount->pending_payload,
@@ -381,6 +685,14 @@ static bool cep_fed_transport_manager_flush_pending(cepFedTransportManagerMount*
     if (sent) {
         cep_fed_transport_manager_mount_reset_pending(mount);
         mount->backpressured = false;
+        ++mount->frame_count;
+        mount->last_frame_mode = CEP_FED_FRAME_MODE_UPD_LATEST;
+        mount->last_frame_sample = sample;
+        if (mount->manager) {
+            (void)cep_fed_transport_manager_refresh_telemetry(mount->manager,
+                                                              mount,
+                                                              cep_fed_transport_frame_mode_text(CEP_FED_FRAME_MODE_UPD_LATEST));
+        }
     }
     return sent;
 }
@@ -409,19 +721,51 @@ static void cep_fed_transport_manager_on_event(void* manager_ctx,
         return;
     }
 
+    cepFedTransportManager* manager = mount->manager;
+    const char* event_text = cep_fed_transport_event_kind_text(kind);
+
     switch (kind) {
     case CEP_FED_TRANSPORT_EVENT_BACKPRESSURE:
+        ++mount->backpressure_events;
         mount->backpressured = true;
+        if (manager) {
+            const char* note = detail ? detail : "Transport backpressure signalled";
+            cep_fed_transport_manager_emit_diag(manager,
+                                                mount,
+                                                dt_sev_warn_name(),
+                                                note,
+                                                CEP_FED_TOPIC_BACKPRESSURE);
+            (void)cep_fed_transport_manager_refresh_telemetry(manager, mount, event_text);
+        }
         break;
     case CEP_FED_TRANSPORT_EVENT_READY_RX:
     case CEP_FED_TRANSPORT_EVENT_RESET:
+        if (kind == CEP_FED_TRANSPORT_EVENT_READY_RX) {
+            ++mount->ready_events;
+        }
         mount->backpressured = false;
         (void)cep_fed_transport_manager_flush_pending(mount, 0u);
+        if (manager) {
+            (void)cep_fed_transport_manager_refresh_telemetry(manager, mount, event_text);
+        }
         break;
     case CEP_FED_TRANSPORT_EVENT_FATAL:
+        ++mount->fatal_events;
         mount->channel_open = false;
+        if (manager) {
+            const char* note = detail ? detail : "Transport channel fatal event";
+            cep_fed_transport_manager_emit_diag(manager,
+                                                mount,
+                                                dt_sev_error_name(),
+                                                note,
+                                                CEP_FED_TOPIC_FATAL_EVENT);
+            (void)cep_fed_transport_manager_refresh_telemetry(manager, mount, event_text);
+        }
         break;
     default:
+        if (manager) {
+            (void)cep_fed_transport_manager_refresh_telemetry(manager, mount, event_text);
+        }
         break;
     }
 
@@ -504,6 +848,14 @@ bool cep_fed_transport_manager_init(cepFedTransportManager* manager,
         return false;
     }
 
+    if (!cep_fed_pack_ensure_roots(manager->net_root,
+                                   &manager->peers_root,
+                                   &manager->catalog_root,
+                                   &manager->telemetry_root,
+                                   NULL)) {
+        return false;
+    }
+
     manager->transports_root = cep_fed_transport_ensure_transports_root(manager->net_root);
     if (!manager->transports_root) {
         return false;
@@ -569,6 +921,15 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
     mount->preferred_caps = config->preferred_caps;
     mount->allow_upd_latest = config->allow_upd_latest;
     mount->callbacks = callbacks ? *callbacks : (cepFedTransportMountCallbacks){0};
+    mount->channel_open = false;
+    mount->backpressured = false;
+    mount->ready_events = 0u;
+    mount->backpressure_events = 0u;
+    mount->fatal_events = 0u;
+    mount->frame_count = 0u;
+    mount->last_frame_mode = CEP_FED_FRAME_MODE_DATA;
+    mount->last_frame_sample = 0u;
+    cep_fed_transport_manager_mount_reset_pending(mount);
 
     const char* provider_id = NULL;
     const cepFedTransportProvider* provider = NULL;
@@ -579,7 +940,7 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
                                             mount,
                                             dt_sev_error_name(),
                                             "No transport provider satisfies mount requirements",
-                                            "transport/no_provider");
+                                            CEP_FED_TOPIC_NO_PROVIDER);
         return false;
     }
 
@@ -600,7 +961,7 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
                                             mount,
                                             dt_sev_error_name(),
                                             "Failed to ensure mount schema branch",
-                                            "transport/schema");
+                                            CEP_FED_TOPIC_SCHEMA);
         return false;
     }
 
@@ -609,7 +970,7 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
                                             mount,
                                             dt_sev_error_name(),
                                             "Failed to update mount schema with provider selection",
-                                            "transport/schema_update");
+                                            CEP_FED_TOPIC_SCHEMA_UPDATE);
         return false;
     }
 
@@ -622,7 +983,7 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
                                             mount,
                                             dt_sev_error_name(),
                                             "Provider identifier could not be encoded",
-                                            "transport/provider_id");
+                                            CEP_FED_TOPIC_PROVIDER_ID);
         return false;
     }
 
@@ -632,7 +993,7 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
                                             mount,
                                             dt_sev_error_name(),
                                             "Provider cell missing in transport registry",
-                                            "transport/provider_cell");
+                                            CEP_FED_TOPIC_PROVIDER_CELL);
         return false;
     }
 
@@ -642,7 +1003,7 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
                                             mount,
                                             dt_sev_error_name(),
                                             "Provider cell unavailable for open request",
-                                            "transport/provider_cell");
+                                            CEP_FED_TOPIC_PROVIDER_CELL);
         return false;
     }
 
@@ -672,13 +1033,25 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
                                             mount,
                                             dt_sev_error_name(),
                                             "Transport provider failed to open channel",
-                                            "transport/open_failed");
+                                            CEP_FED_TOPIC_OPEN_FAILED);
         return false;
     }
 
     mount->channel = opened_channel;
     mount->channel_open = (opened_channel != NULL);
     mount->backpressured = false;
+
+    if (!cep_fed_transport_manager_refresh_catalog(manager, mount) ||
+        !cep_fed_transport_manager_refresh_peer_services(manager, mount) ||
+        !cep_fed_transport_manager_refresh_telemetry(manager, mount, "open")) {
+        cep_fed_transport_manager_emit_diag(manager,
+                                            mount,
+                                            dt_sev_error_name(),
+                                            "Failed to publish federation catalog or telemetry branches",
+                                            CEP_FED_TOPIC_CATALOG_SYNC);
+        cep_fed_transport_manager_close(manager, mount, "catalog-sync-failed");
+        return false;
+    }
 
     if (out_mount) {
         *out_mount = mount;
@@ -704,7 +1077,7 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
                                             mount,
                                             dt_sev_warn_name(),
                                             "upd_latest frame rejected because mount does not opt in",
-                                            "transport/upd_latest_denied");
+                                            CEP_FED_TOPIC_UPD_DENIED);
         return false;
     }
 
@@ -713,10 +1086,11 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
                                             mount,
                                             dt_sev_warn_name(),
                                             "upd_latest frame sent to provider without unreliable support",
-                                            "transport/upd_latest_misuse");
+                                            CEP_FED_TOPIC_UPD_MISUSE);
     }
 
-    bool sent = true;
+    cepFedTransportManager* owning_manager = mount->manager;
+    bool immediate_sent = false;
 
     if (mode == CEP_FED_FRAME_MODE_UPD_LATEST && mount->supports_upd_latest) {
         if (mount->backpressured) {
@@ -727,15 +1101,20 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
             }
             mount->pending_payload = snapshot;
             mount->pending_len = payload_len;
+            if (owning_manager) {
+                (void)cep_fed_transport_manager_refresh_telemetry(owning_manager,
+                                                                   mount,
+                                                                   "backpressure");
+            }
             return true;
         }
-        sent = mount->provider->vtable->send(mount->provider_ctx,
-                                             mount->channel,
-                                             payload,
-                                             payload_len,
-                                             mode,
-                                             deadline_beat);
-        if (!sent) {
+        immediate_sent = mount->provider->vtable->send(mount->provider_ctx,
+                                                       mount->channel,
+                                                       payload,
+                                                       payload_len,
+                                                       mode,
+                                                       deadline_beat);
+        if (!immediate_sent) {
             uint8_t* snapshot = cep_malloc(payload_len);
             memcpy(snapshot, payload, payload_len);
             if (mount->pending_payload) {
@@ -748,26 +1127,43 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
                                                 mount,
                                                 dt_sev_warn_name(),
                                                 "Transport send backpressured; caching upd_latest frame",
-                                                "transport/backpressure");
-            sent = true;
+                                                CEP_FED_TOPIC_BACKPRESSURE);
+            if (owning_manager) {
+                (void)cep_fed_transport_manager_refresh_telemetry(owning_manager,
+                                                                   mount,
+                                                                   "backpressure");
+            }
+            return true;
         }
     } else {
-        sent = mount->provider->vtable->send(mount->provider_ctx,
-                                             mount->channel,
-                                             payload,
-                                             payload_len,
-                                             mode,
-                                             deadline_beat);
-        if (!sent) {
+        immediate_sent = mount->provider->vtable->send(mount->provider_ctx,
+                                                       mount->channel,
+                                                       payload,
+                                                       payload_len,
+                                                       mode,
+                                                       deadline_beat);
+        if (!immediate_sent) {
             cep_fed_transport_manager_emit_diag(manager,
                                                 mount,
                                                 dt_sev_error_name(),
                                                 "Transport provider failed to send frame",
-                                                "transport/send_failed");
+                                                CEP_FED_TOPIC_SEND_FAILED);
+            return false;
         }
     }
 
-    return sent;
+    if (immediate_sent) {
+        ++mount->frame_count;
+        mount->last_frame_mode = mode;
+        mount->last_frame_sample = payload_len > 0u ? payload[0] : 0u;
+        if (owning_manager) {
+            (void)cep_fed_transport_manager_refresh_telemetry(owning_manager,
+                                                               mount,
+                                                               cep_fed_transport_frame_mode_text(mode));
+        }
+    }
+
+    return true;
 }
 
 /* cep_fed_transport_manager_request_receive bridges the provider's receive hook so
@@ -785,7 +1181,6 @@ bool cep_fed_transport_manager_request_receive(cepFedTransportManager* manager,
 bool cep_fed_transport_manager_close(cepFedTransportManager* manager,
                                      cepFedTransportManagerMount* mount,
                                      const char* reason) {
-    (void)manager;
     if (!mount) {
         return false;
     }
@@ -796,6 +1191,9 @@ bool cep_fed_transport_manager_close(cepFedTransportManager* manager,
     mount->channel_open = false;
     mount->backpressured = false;
     cep_fed_transport_manager_mount_reset_pending(mount);
+    if (manager) {
+        (void)cep_fed_transport_manager_refresh_telemetry(manager, mount, "close");
+    }
     return true;
 }
 

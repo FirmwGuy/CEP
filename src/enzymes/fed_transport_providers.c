@@ -244,13 +244,23 @@ static bool cep_fed_transport_provider_request_receive(void* provider_ctx,
 static bool cep_fed_transport_provider_close(void* provider_ctx,
                                              cepFedTransportChannel* channel,
                                              const char* reason) {
-    (void)reason;
     cepFedTransportProviderState* state = cep_fed_transport_state_from_ctx(provider_ctx);
     if (!state || !channel) {
         return false;
     }
     if (channel->closed) {
         return true;
+    }
+
+    cepFedTransportEventKind close_kind = CEP_FED_TRANSPORT_EVENT_RESET;
+    if (reason && strcmp(reason, "manager-detach") != 0) {
+        close_kind = CEP_FED_TRANSPORT_EVENT_FATAL;
+    }
+    if (channel->callbacks.on_event) {
+        channel->callbacks.on_event(channel->manager_ctx,
+                                    channel,
+                                    close_kind,
+                                    reason ? reason : "provider-close");
     }
 
     channel->closed = true;
@@ -375,6 +385,12 @@ void cep_fed_transport_mock_reset(void) {
         cepFedTransportChannel* channel = state->channels[i];
         if (!channel) {
             continue;
+        }
+        if (!channel->closed && channel->callbacks.on_event) {
+            channel->callbacks.on_event(channel->manager_ctx,
+                                        channel,
+                                        CEP_FED_TRANSPORT_EVENT_RESET,
+                                        "mock-reset");
         }
         cep_fed_transport_frame_free(channel->outbound_head);
         channel->outbound_head = NULL;

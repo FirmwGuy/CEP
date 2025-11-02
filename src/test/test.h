@@ -101,6 +101,10 @@ MunitResult test_runtime_dual_isolation(const MunitParameter params[], void* use
 MunitResult test_fed_transport_negotiation(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_transport_upd_latest(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_transport_inbound(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_transport_close_events(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_link_validator_success(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_link_validator_duplicate_request(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_link_validator_missing_peer(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
 extern MunitSuite integration_poc_suite;

@@ -80,6 +80,8 @@ l0_srcs = files(
   'src/l0_kernel/cep_namepool.c',
   'src/l0_kernel/cep_serialization.c',
   'src/enzymes/fed_transport.c',
+  'src/enzymes/fed_pack.c',
+  'src/enzymes/fed_link_organ.c',
   'src/enzymes/fed_transport_manager.c',
   'src/enzymes/fed_transport_providers.c',
 )

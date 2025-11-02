@@ -4,6 +4,7 @@
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
 #include "cep_runtime.h"
+#include "../enzymes/fed_pack.h"
 
 bool cep_l0_bootstrap(void) {
     cepRuntime* runtime = cep_runtime_default();
@@ -22,7 +23,10 @@ bool cep_l0_bootstrap(void) {
         return true;
     }
 
-    cep_cell_system_ensure();
+    if (!cep_fed_pack_bootstrap()) {
+        cep_runtime_restore_active(previous_scope);
+        return false;
+    }
 
     if (!cep_heartbeat_bootstrap()) {
         cep_runtime_restore_active(previous_scope);
