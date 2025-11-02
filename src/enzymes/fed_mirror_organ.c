@@ -8,6 +8,7 @@
 #include "../l0_kernel/cep_cei.h"
 #include "../l0_kernel/cep_ep.h"
 #include "../l0_kernel/cep_heartbeat.h"
+#include "../l0_kernel/cep_runtime.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -24,6 +25,7 @@ typedef struct cepFedMirrorRequestCtx {
     cepFedTransportManagerMount*     mount;
     cepEID                           episode;
     cepPath*                         request_path;
+    cepRuntime*                      runtime;
     char                             peer[64];
     char                             mount_id[64];
     char                             mode[32];
@@ -939,6 +941,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
             return CEP_ENZYME_FATAL;
         }
         ctx->request_cell = request_cell;
+        ctx->runtime = cep_runtime_active();
         ctx->episode = cep_oid_invalid();
         ctx->next = g_mirror_requests;
         g_mirror_requests = ctx;
@@ -949,6 +952,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
             cep_free(ctx->request_path);
             ctx->request_path = NULL;
         }
+        ctx->runtime = cep_runtime_active();
     }
 
     (void)snprintf(ctx->peer, sizeof ctx->peer, "%s", peer);
@@ -1001,7 +1005,8 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
         if (other == ctx || other->request_cell == request_cell) {
             continue;
         }
-        if (strcmp(other->peer, ctx->peer) == 0 &&
+        if (other->runtime == ctx->runtime &&
+            strcmp(other->peer, ctx->peer) == 0 &&
             strcmp(other->mount_id, ctx->mount_id) == 0 &&
             other->mount != NULL) {
             cep_fed_mirror_publish_state(request_cell,

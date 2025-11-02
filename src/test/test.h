@@ -108,6 +108,14 @@ MunitResult test_fed_link_validator_missing_peer(const MunitParameter params[], 
 MunitResult test_fed_mirror_validator_success(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_mirror_validator_conflict(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_mirror_validator_deadline(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_invoke_validator_rejects_long_names(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_invoke_success(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_invoke_reconfigure_cancels_pending(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_invoke_dual_runtime_happy_path(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_invoke_dual_runtime_timeout(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_invoke_timeout(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_invoke_reject(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_link_dual_runtime_provider_fatal(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
 extern MunitSuite integration_poc_suite;

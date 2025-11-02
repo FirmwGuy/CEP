@@ -206,6 +206,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `prov_caps` | Federation transport | mirrors the selected provider capability bitset for the active mount. |
 | `provider` | Federation transport | stores the provider identifier associated with a mount record. |
 | `upd_latest` | Federation transport | boolean flag indicating a mount opts into droppable gauge frames. |
+| `net_invoke` | Federation transport | invoke organ slug registered by the federation pack. |
 | `src_peer` | Federation transport | mirror organ request field naming the remote peer supplying bundles. |
 | `src_chan` | Federation transport | mirror organ request field naming the remote channel supplying bundles. |
 | `max_infl` | Federation transport | mirror organ bundle parameter limiting simultaneous in-flight bundles. |
@@ -213,6 +214,8 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `pend_resum` | Federation transport | mirror organ status field publishing the pending resume token when manual commits pause work. |
 | `bundle_seq` | Federation transport | mirror organ status field recording the last committed bundle sequence. |
 | `commit_beat` | Federation transport | mirror organ status field recording the beat of the most recent commit. |
+| `tp_inv_timeout` | Federation transport | CEI topic emitted when a remote invocation exceeds its beat budget. |
+| `tp_inv_reject` | Federation transport | CEI topic emitted when the remote peer rejects an invocation request. |
 | `services` | Federation transport | peer-level dictionary listing advertised services/mounts. |
 | `telemetry` | Federation transport | heartbeat-sampled metrics root under `/net/telemetry`. |
 | `ceh` | Federation transport | consolidated CEI health facts per peer keyed by telemetry topic. |

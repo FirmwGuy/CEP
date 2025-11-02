@@ -27,6 +27,11 @@ Federation mounts no longer wire transports by hand. The transport manager gives
     - `commit_beat` (`val/u64`) – beat of the most recent successful commit.
     - `pend_resum` (`text`, optional) – non-empty when the organ has paused and holds a new resume token for the caller.
   - On teardown the destructor closes the configured mount, clears the status fields, and deletes any `bundle/` progress nodes so subsequent requests start from a clean slate.
+- **Invoke organ (`/net/organs/invoke`).** Invoke requests wire mounts that transport remote enzyme impulses:
+  - `peer` / `mount` / `local_node` mirror the link contract; `pref_prov` (optional) and the `caps/` dictionary (`required` / `preferred`) reuse the capability schema so callers can steer transports and capability matching.
+  - `deadline` (`val/u64`, optional) records the beat by which the request must become active. Validators flip the request to `state=error` with `error_note="deadline expired before activation"` if the supplied beat is in the past.
+  - The validator publishes `state`, `provider`, and `error_note` inside the request. As invocation frames flow the module emits CEI on timeouts (`tp_inv_timeout`) or remote rejections (`tp_inv_reject`).
+  - Successful submissions encode the signal and target paths into a transport frame, receive immediate acknowledgement frames, and schedule a timeout enzyme so late or missing responses surface deterministically.
 - **Stub providers.** The repository ships three providers: `tcp` (reliable remote stream semantics), `pipe` (reliable local IPC) and `mock` (unreliable in-process test harness). The mock provider keeps queues visible to tests via helpers in `fed_transport_providers.h` so suites can drive backpressure, inbound frames, and verify coalescing without real sockets.
 
 ## Q&A

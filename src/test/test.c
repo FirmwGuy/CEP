@@ -589,6 +589,70 @@ MunitTest tests[] = {
         NULL
     },
     {
+        "/fed_invoke/validator_long_name",
+        test_fed_invoke_validator_rejects_long_names,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_invoke/success",
+        test_fed_invoke_success,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_invoke/reconfigure_cancel",
+        test_fed_invoke_reconfigure_cancels_pending,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_invoke/dual_runtime_happy",
+        test_fed_invoke_dual_runtime_happy_path,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_invoke/dual_runtime_timeout",
+        test_fed_invoke_dual_runtime_timeout,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_link/dual_runtime_provider_fatal",
+        test_fed_link_dual_runtime_provider_fatal,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_invoke/timeout",
+        test_fed_invoke_timeout,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_invoke/reject",
+        test_fed_invoke_reject,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/runtime/dual_isolation",
         test_runtime_dual_isolation,
         NULL,

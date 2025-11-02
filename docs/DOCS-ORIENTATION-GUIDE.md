@@ -50,6 +50,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/design/L0-DESIGN-GUIDE.md` — Expectations for the new Design document tier that records architectural rationale.
 - `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` — Rationale behind beat ordering, enzyme dependencies, and OPS timelines.
 - `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` — Why the episodic engine replaces Rendezvous, how watcher/lease invariants fit, and what executor backends guarantee.
+- `docs/L0_KERNEL/design/L0-DESIGN-FEDERATION.md` — Federation transport architecture, covering Beats 0–3, transport manager duties, and the link/mirror/invoke organ contracts plus diagnostics.
 - `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md` — Control-plane design for Pause/Rollback/Resume, backlog policy, and heartbeat gating.
 - `docs/L0_KERNEL/design/L0-DESIGN-SERIALIZATION.md` — Design trade-offs for manifests, chunking, and replay safety.
 - `docs/L0_KERNEL/design/L0-DESIGN-CELL-AND-STORE.md` — Why cells stay append-only and how store backends uphold invariants.
