@@ -403,6 +403,62 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/serialization/proxy_release_once",
+        test_serialization_proxy_release_single,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/serialization/manifest_history",
+        test_serialization_manifest_history,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/serialization/manifest/split_child_capacity",
+        test_serialization_manifest_split_child_capacity,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/serialization/manifest/positional_add",
+        test_serialization_manifest_positional_add,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/serialization/manifest/fingerprint_corruption",
+        test_serialization_manifest_fingerprint_corruption,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/serialization/manifest/delta_fingerprint_corruption",
+        test_serialization_manifest_delta_fingerprint_corruption,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/serialization/header/capability_mismatch",
+        test_serialization_header_capability_mismatch,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
         "/stream/episode_guard",
         test_ep_stream_access,
         NULL,

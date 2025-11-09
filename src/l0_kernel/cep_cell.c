@@ -134,7 +134,14 @@ static const char* cep_debug_id_desc(cepID id, char* buf, size_t cap) {
 
 
 
-static inline int cell_compare_by_name(const cepCell* restrict key, const cepCell* restrict rec, void* unused) {
+static inline int cell_compare_by_name(const cepCell* restrict key,
+                                       const cepCell* restrict rec,
+                                       void* unused,
+                                       cepCompareInfo* info) {
+    if (CEP_RARELY_PTR(info)) {
+        cep_compare_info_set(info, CEP_DTAW("CEP", "cmp:name"), 1u, 0u);
+        return 0;
+    }
     (void)unused;
     int cmp = cep_dt_compare(CEP_DT_PTR(key), CEP_DT_PTR(rec));
     if (cmp)
@@ -149,6 +156,17 @@ static inline int cell_compare_by_name(const cepCell* restrict key, const cepCel
         return cep_cell_order_compare(key, rec);
 
     return 0;
+}
+
+bool cep_compare_identity_query(cepCompare comparator, cepCompareInfo* info) {
+    if (!comparator || !info)
+        return false;
+    cepCompareInfo local = {0};
+    int rc = comparator(NULL, NULL, NULL, &local);
+    if (rc != 0 || !cep_dt_is_valid(&local.identifier))
+        return false;
+    *info = local;
+    return true;
 }
 
 static cepCell* cep_store_replace_child(cepStore* store, cepCell* existing, cepCell* incoming);
@@ -379,10 +397,38 @@ bool cep_proxy_restore(cepCell* cell, const cepProxySnapshot* snapshot) {
 }
 
 typedef struct {
-    cepCell*    library;
-    cepCell*    resource;
-    bool        isStream;
+    cepCell*            library;
+    cepCell*            resource;
+    bool                isStream;
+    bool                resource_finalized;
+    unsigned            refcount;
+    cepLibraryBinding*  binding;
 } cepProxyLibraryCtx;
+
+static void cep_proxy_library_ctx_retain(cepProxyLibraryCtx* ctx) {
+    if (!ctx)
+        return;
+
+    ctx->refcount += 1u;
+}
+
+static void cep_proxy_library_ctx_release(cepProxyLibraryCtx* ctx) {
+    if (!ctx)
+        return;
+
+    if (ctx->refcount > 0u)
+        ctx->refcount -= 1u;
+
+    if (ctx->refcount)
+        return;
+
+    if (ctx->binding) {
+        cep_library_binding_release(ctx->binding);
+        ctx->binding = NULL;
+    }
+
+    cep_free(ctx);
+}
 
 static cepProxyLibraryCtx* cep_proxy_library_ctx(cepCell* cell) {
     if (!cell)
@@ -393,13 +439,19 @@ static cepProxyLibraryCtx* cep_proxy_library_ctx(cepCell* cell) {
 }
 
 static const cepLibraryBinding* cep_proxy_library_binding(const cepProxyLibraryCtx* ctx) {
-    if (!ctx || !ctx->library)
+    if (!ctx)
+        return NULL;
+
+    if (ctx->binding)
+        return ctx->binding;
+
+    if (!ctx->library)
         return NULL;
 
     return cep_library_binding(ctx->library);
 }
 
-static bool cep_proxy_library_set_resource(cepCell* cell, cepProxyLibraryCtx* ctx, cepCell* resource) {
+static bool cep_proxy_library_set_resource(cepCell* cell, cepProxyLibraryCtx* ctx, cepCell* resource, bool notify_release) {
     (void)cell;
 
     if (!ctx)
@@ -411,13 +463,49 @@ static bool cep_proxy_library_set_resource(cepCell* cell, cepProxyLibraryCtx* ct
     if (ctx->resource == canonical)
         return true;
 
-    if (ctx->resource && binding && binding->ops && binding->ops->handle_release)
-        binding->ops->handle_release(binding, ctx->resource);
+    cepCell* previous = ctx->resource;
+    cepLibraryBinding* previous_binding = NULL;
+    bool released_previous = false;
+    if (notify_release && previous && cep_cell_is_normal(previous) && previous->data) {
+        previous->data->binding_released = 1u;
+        if ((previous->data->datatype == CEP_DATATYPE_HANDLE || previous->data->datatype == CEP_DATATYPE_STREAM)
+            && previous->data->binding) {
+            previous_binding = previous->data->binding;
+            previous->data->binding = NULL;
+        }
+    }
+
+    if (notify_release && previous_binding)
+        cep_library_binding_release(previous_binding);
+
+    if (notify_release && previous && binding && binding->ops && binding->ops->handle_release) {
+        bool already_released = false;
+        if (!cep_cell_is_normal(previous))
+            already_released = true;
+        else if (previous->data && previous->data->binding_released)
+            already_released = true;
+
+        if (!already_released) {
+            binding->ops->handle_release(binding, previous);
+            if (previous->data)
+                previous->data->binding_released = 1u;
+            released_previous = true;
+        }
+    }
 
     ctx->resource = canonical;
 
     if (ctx->resource && binding && binding->ops && binding->ops->handle_retain)
         binding->ops->handle_retain(binding, ctx->resource);
+
+    if (ctx->resource && cep_cell_is_normal(ctx->resource) && ctx->resource->data)
+        ctx->resource->data->binding_released = 0u;
+
+    if (ctx->resource) {
+        ctx->resource_finalized = false;
+    } else if (released_previous) {
+        ctx->resource_finalized = true;
+    }
 
     return true;
 }
@@ -478,7 +566,7 @@ static bool cep_proxy_library_restore(cepCell* cell, const cepProxySnapshot* sna
     if (!ok)
         return false;
 
-    return cep_proxy_library_set_resource(cell, ctx, restored);
+    return cep_proxy_library_set_resource(cell, ctx, restored, true);
 }
 
 static void cep_proxy_library_finalize(cepCell* cell) {
@@ -493,9 +581,10 @@ static void cep_proxy_library_finalize(cepCell* cell) {
     if (!ctx)
         return;
 
-    cep_proxy_library_set_resource(cell, ctx, NULL);
+    cep_proxy_library_set_resource(cell, ctx, NULL, false);
+    ctx->resource_finalized = true;
     proxy->context = NULL;
-    cep_free(ctx);
+    cep_proxy_library_ctx_release(ctx);
 }
 
 static const cepProxyOps cep_proxy_library_ops = {
@@ -517,11 +606,15 @@ void cep_proxy_initialize_handle(cepCell* cell, cepDT* name, cepCell* handle, ce
     ctx->library = library? cep_link_pull(library): NULL;
     ctx->resource = NULL;
     ctx->isStream = false;
+    ctx->refcount = 1u;
+    ctx->binding = ctx->library ? (cepLibraryBinding*)cep_library_binding(ctx->library) : NULL;
+    if (ctx->binding)
+        cep_library_binding_retain(ctx->binding);
 
     cep_proxy_initialize(cell, name, &cep_proxy_library_ops, ctx);
 
     if (handle)
-        cep_proxy_library_set_resource(cell, ctx, handle);
+        cep_proxy_library_set_resource(cell, ctx, handle, true);
 }
 
 /** Prepare a proxy-backed STREAM using the same library wiring as the handle
@@ -536,11 +629,15 @@ void cep_proxy_initialize_stream(cepCell* cell, cepDT* name, cepCell* stream, ce
     ctx->library = library? cep_link_pull(library): NULL;
     ctx->resource = NULL;
     ctx->isStream = true;
+    ctx->refcount = 1u;
+    ctx->binding = ctx->library ? (cepLibraryBinding*)cep_library_binding(ctx->library) : NULL;
+    if (ctx->binding)
+        cep_library_binding_retain(ctx->binding);
 
     cep_proxy_initialize(cell, name, &cep_proxy_library_ops, ctx);
 
     if (stream)
-        cep_proxy_library_set_resource(cell, ctx, stream);
+        cep_proxy_library_set_resource(cell, ctx, stream, true);
 }
 
 
@@ -554,6 +651,7 @@ void cep_data_history_push(cepData* data) {
     memcpy(past, (const cepDataNode*) &data->modified, sizeof *past);
     past->past = data->past;
     past->bindings = NULL;
+    past->binding = NULL;
     data->past = past;
 }
 
@@ -777,8 +875,21 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
         data->size = 0;
 
         const cepLibraryBinding* binding = cep_library_binding(library);
+        if (binding) {
+            cep_library_binding_retain(binding);
+            data->binding = (cepLibraryBinding*)binding;
+        }
         if (binding && binding->ops && binding->ops->handle_retain)
             binding->ops->handle_retain(binding, handle);
+
+        cepCell* canonical = handle ? cep_link_pull(handle) : NULL;
+        if (canonical && cep_cell_is_proxy(canonical)) {
+            cepProxyLibraryCtx* ctx = cep_proxy_library_ctx(canonical);
+            if (ctx) {
+                cep_proxy_library_ctx_retain(ctx);
+                data->proxy_ctx = ctx;
+            }
+        }
 
         address = cep_cell_data(handle);
         break;
@@ -797,8 +908,21 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
         data->size = 0;
 
         const cepLibraryBinding* binding = cep_library_binding(library);
+        if (binding) {
+            cep_library_binding_retain(binding);
+            data->binding = (cepLibraryBinding*)binding;
+        }
         if (binding && binding->ops && binding->ops->handle_retain)
             binding->ops->handle_retain(binding, stream);
+
+        cepCell* canonical = stream ? cep_link_pull(stream) : NULL;
+        if (canonical && cep_cell_is_proxy(canonical)) {
+            cepProxyLibraryCtx* ctx = cep_proxy_library_ctx(canonical);
+            if (ctx) {
+                cep_proxy_library_ctx_retain(ctx);
+                data->proxy_ctx = ctx;
+            }
+        }
 
         address = cep_cell_data(stream);
         break;
@@ -845,13 +969,58 @@ void cep_data_del(cepData* data) {
       }
       case CEP_DATATYPE_HANDLE:
       case CEP_DATATYPE_STREAM: {
-        if (data->library) {
-            const cepLibraryBinding* binding = cep_library_binding(data->library);
-            if (binding && binding->ops && binding->ops->handle_release) {
-                cepCell* resource = (data->datatype == CEP_DATATYPE_HANDLE)? data->handle: data->stream;
-                if (resource)
-                    binding->ops->handle_release(binding, resource);
+        cepLibraryBinding* binding = data->binding;
+        bool release_owned_binding = (binding != NULL);
+        cepCell* resource = (data->datatype == CEP_DATATYPE_HANDLE) ? data->handle : data->stream;
+        cepProxyLibraryCtx* ctx = data->proxy_ctx ? (cepProxyLibraryCtx*)data->proxy_ctx : NULL;
+        cepCell* canonical = NULL;
+
+        if (!ctx && resource) {
+            canonical = cep_link_pull(resource);
+            if (canonical && cep_cell_is_proxy(canonical))
+                ctx = cep_proxy_library_ctx(canonical);
+        } else if (!canonical) {
+            canonical = resource ? cep_link_pull(resource) : NULL;
+        }
+
+        if (!binding) {
+            if (ctx && ctx->binding) {
+                binding = ctx->binding;
+            } else if (data->library) {
+                binding = (cepLibraryBinding*)cep_library_binding(data->library);
             }
+        }
+
+        cepCell* release_target = NULL;
+        bool resource_finalized = (ctx && ctx->resource_finalized);
+        if (ctx && ctx->resource && !resource_finalized)
+            release_target = ctx->resource;
+        if (!release_target && !resource_finalized)
+            release_target = canonical;
+
+        bool released_now = false;
+        if (!data->binding_released
+            && binding && !cep_library_binding_is_destroying(binding)
+            && binding->ops && binding->ops->handle_release && release_target) {
+            binding->ops->handle_release(binding, release_target);
+            released_now = true;
+        }
+
+        data->binding_released = 1u;
+
+        if (released_now && ctx) {
+            ctx->resource = NULL;
+            ctx->resource_finalized = true;
+        }
+
+        if (release_owned_binding) {
+            cep_library_binding_release(binding);
+            data->binding = NULL;
+        }
+
+        if (data->proxy_ctx) {
+            cep_proxy_library_ctx_release((cepProxyLibraryCtx*)data->proxy_ctx);
+            data->proxy_ctx = NULL;
         }
         break;
       }
@@ -2877,6 +3046,7 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
         cepCompare compare = va_arg(args, cepCompare);
         assert(compare);
         store->compare = compare;
+        cep_comparator_registry_record(compare);
     }
 
     va_end(args);
@@ -4758,6 +4928,7 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
     cep_store_history_push(store);   // Snapshot current layout before re-sorting by custom comparator.
 
     store->compare  = compare;
+    cep_comparator_registry_record(compare);
     store->indexing = CEP_INDEX_BY_FUNCTION;
     store->modified = cep_cell_timestamp_next();
 

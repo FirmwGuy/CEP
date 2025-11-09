@@ -1,0 +1,6 @@
+# CEP Valgrind suppressions
+#
+# This file is intentionally left minimal. Add targeted suppressions here if a
+# future toolchain surfaces benign noise, and keep each entry documented with
+# the originating platform/runtime.
+

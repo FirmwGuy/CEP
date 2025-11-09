@@ -12,6 +12,7 @@
 
 #include "test.h"
 #include "cep_cell.h"
+#include "cep_runtime.h"
 
 #include <stdio.h>      // sprintf()
 #include <string.h>     // memset()
@@ -101,8 +102,12 @@ static bool print_values(cepEntry* entry, void* unused) {
 
 
 
-static int hash_value_compare(const cepCell* first, const cepCell* second, void* context) {
+static int hash_value_compare(const cepCell* first, const cepCell* second, void* context, cepCompareInfo* info) {
     (void)context;
+    if (CEP_RARELY_PTR(info)) {
+        cep_compare_info_set(info, CEP_DTAW("CEP", "cmp:t_hash"), 1u, 0u);
+        return 0;
+    }
 
     assert(first && second);
 
@@ -720,13 +725,22 @@ static cepCell* tech_catalog_prepare_key(cepCell* key, cepID name, int32_t value
     return item;
 }
 
-int tech_catalog_compare(const cepCell* key, const cepCell* cell, void* unused) {
+int tech_catalog_compare(const cepCell* key, const cepCell* cell, void* unused, cepCompareInfo* info) {
     (void)unused;
+    if (CEP_RARELY_PTR(info)) {
+        cep_compare_info_set(info, CEP_DTAW("CEP", "cmp:t_cat"), 1u, 0u);
+        return 0;
+    }
 
     cepCell* itemK = cep_cell_find_by_name(key, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
     cepCell* itemB = cep_cell_find_by_name(cell, CEP_DTS(CEP_ACRO("CEP"), CEP_NAME_ENUMERATION));
     assert(itemK && itemB);
     return *(int32_t*)cep_cell_data(itemK) - *(int32_t*)cep_cell_data(itemB);
+}
+
+static void test_cell_register_comparators(void) {
+    (void)cep_comparator_registry_record(hash_value_compare);
+    (void)cep_comparator_registry_record(tech_catalog_compare);
 }
 
 
@@ -1020,7 +1034,12 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
     TestWatchdog* watchdog = user_data_or_fixture;
     (void)watchdog;
 
+    cepRuntime* runtime = cep_runtime_create();
+    munit_assert_not_null(runtime);
+    cepRuntime* previous_runtime = cep_runtime_set_active(runtime);
+
     cep_cell_system_initiate();
+    test_cell_register_comparators();
 
     test_cell_tech_list(CEP_STORAGE_LINKED_LIST);
     test_cell_tech_list(CEP_STORAGE_ARRAY);
@@ -1051,6 +1070,9 @@ MunitResult test_cell(const MunitParameter params[], void* user_data_or_fixture)
     if (watchdog)
         test_watchdog_signal(watchdog);
 
+    cep_comparator_registry_reset_active();
     cep_cell_system_shutdown();
+    cep_runtime_set_active(previous_runtime);
+    cep_runtime_destroy(runtime);
     return MUNIT_OK;
 }

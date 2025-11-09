@@ -1,3 +1,8 @@
+/* Copyright (c) 2025 Victor M. Barrientos (https://github.com/FirmwGuy/CEP) */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 #ifndef CEP_RUNTIME_H
 #define CEP_RUNTIME_H
 
@@ -32,7 +37,22 @@ typedef struct {
 } cepMailboxRuntimeSettings;
 
 typedef struct {
-    cepBeatNumber marked_decision_beat;
+    cepCompareInfo info;
+    cepCompare     comparator;
+} cepComparatorRegistryEntry;
+
+typedef struct {
+    cepComparatorRegistryEntry* entries;
+    size_t                      count;
+    size_t                      capacity;
+} cepComparatorRegistry;
+
+typedef struct {
+    cepBeatNumber          marked_decision_beat;
+    cepComparatorRegistry  comparator_registry;
+    bool                   comparators_initialized;
+    _Atomic uint32_t       emit_active;
+    _Atomic uint32_t       replay_active;
 } cepSerializationRuntimeState;
 
 typedef struct {

@@ -1,3 +1,8 @@
+/* Copyright (c) 2025 Victor M. Barrientos (https://github.com/FirmwGuy/CEP) */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 #include "fed_mirror_organ.h"
 
 #include "fed_pack.h"
@@ -80,6 +85,8 @@ CEP_DEFINE_STATIC_DT(dt_beat_window_name,        CEP_ACRO("CEP"), CEP_WORD("beat
 CEP_DEFINE_STATIC_DT(dt_max_inflight_name,       CEP_ACRO("CEP"), CEP_WORD("max_infl"));
 CEP_DEFINE_STATIC_DT(dt_commit_mode_name,        CEP_ACRO("CEP"), CEP_WORD("commit_mode"));
 CEP_DEFINE_STATIC_DT(dt_resume_token_name,       CEP_ACRO("CEP"), CEP_WORD("resume_tok"));
+CEP_DEFINE_STATIC_DT(dt_bundle_hist_cap_name, CEP_ACRO("CEP"), CEP_WORD("hist_cap"));
+CEP_DEFINE_STATIC_DT(dt_bundle_delta_cap_name, CEP_ACRO("CEP"), CEP_WORD("delta_cap"));
 CEP_DEFINE_STATIC_DT(dt_pending_resume_name,     CEP_ACRO("CEP"), CEP_WORD("pend_resum"));
 CEP_DEFINE_STATIC_DT(dt_last_bundle_seq_name,    CEP_ACRO("CEP"), CEP_WORD("bundle_seq"));
 CEP_DEFINE_STATIC_DT(dt_last_commit_beat_name,   CEP_ACRO("CEP"), CEP_WORD("commit_beat"));
@@ -903,6 +910,28 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
                                        false,
                                        resume_token,
                                        sizeof resume_token);
+        bool history_cap = false;
+        if (!cep_fed_mirror_read_bool(bundle, dt_bundle_hist_cap_name(), &history_cap) || !history_cap) {
+            cep_fed_mirror_publish_state(request_cell,
+                                         "error",
+                                         "bundle missing hist_cap capability",
+                                         NULL);
+            cep_fed_mirror_emit_issue(request_cell,
+                                      CEP_FED_MIRROR_TOPIC_SCHEMA,
+                                      "bundle.hist_cap capability required");
+            return CEP_ENZYME_FATAL;
+        }
+        bool deltas_cap = false;
+        if (!cep_fed_mirror_read_bool(bundle, dt_bundle_delta_cap_name(), &deltas_cap) || !deltas_cap) {
+            cep_fed_mirror_publish_state(request_cell,
+                                         "error",
+                                         "bundle missing delta_cap capability",
+                                         NULL);
+            cep_fed_mirror_emit_issue(request_cell,
+                                      CEP_FED_MIRROR_TOPIC_SCHEMA,
+                                      "bundle.delta_cap capability required");
+            return CEP_ENZYME_FATAL;
+        }
     }
 
     if (beat_window == 0u) {

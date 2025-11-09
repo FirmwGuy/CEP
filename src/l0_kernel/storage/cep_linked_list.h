@@ -148,7 +148,7 @@ static inline cepCell* list_named_insert(cepList* list, cepCell* cell) {
     cepListNode* node = list_node_new(cell);
     cepListNode* next;
     for (next = list->head;  next;  next = next->next) {
-        int cmp = cell_compare_by_name(&node->cell, &next->cell, NULL);
+        int cmp = cell_compare_by_name(&node->cell, &next->cell, NULL, NULL);
         if (0 > cmp) {
             list_insert_node_before_next(list, node, next);
             break;
@@ -166,7 +166,7 @@ static inline cepCell* list_sorted_insert(cepList* list, cepCell* cell, cepCompa
     cepListNode* node = list_node_new(cell);
     cepListNode* next;
     for (next = list->head;  next;  next = next->next) {
-        int cmp = compare(&node->cell, &next->cell, context);
+        int cmp = compare(&node->cell, &next->cell, context, NULL);
         if (0 > cmp) {
             list_insert_node_before_next(list, node, next);
             break;
@@ -220,7 +220,7 @@ static inline cepCell* list_find_by_name(cepList* list, const cepDT* name) {
 
 static inline cepCell* list_find_by_key(cepList* list, cepCell* key, cepCompare compare, void* context) {
     for (cepListNode* node = list->head;  node;  node = node->next) {
-        if (0 == compare(key, &node->cell, context))
+        if (0 == compare(key, &node->cell, context, NULL))
             return &node->cell;
     }
     return NULL;
@@ -286,7 +286,7 @@ static inline void list_sort(cepList* list, cepCompare compare, void* context) {
     cepListNode* prev = list->head, *next;
     cepListNode* node = prev->next, *smal;
     while (node) {
-        if (0 > compare(&node->cell, &prev->cell, context)) {
+        if (0 > compare(&node->cell, &prev->cell, context, NULL)) {
             // Unlink node.
             next = node->next;
             prev->next = next;
@@ -294,7 +294,7 @@ static inline void list_sort(cepList* list, cepCompare compare, void* context) {
 
             // Look backwards for a smaller id.
             for (smal = prev->prev;  smal;  smal = smal->prev) {
-                if (0 <= compare(&node->cell, &smal->cell, context))
+                if (0 <= compare(&node->cell, &smal->cell, context, NULL))
                     break;
             }
             if (smal) {

@@ -1,3 +1,9 @@
+/* To the extent possible under law, the authors have dedicated this
+ * work to the public domain by waiving all rights to the work worldwide
+ * under CC0 1.0. You can copy, modify, distribute, and perform this work,
+ * even for commercial purposes, without asking permission.
+ * See https://creativecommons.org/publicdomain/zero/1.0/. */
+
 #include "test.h"
 
 #include "cep_l0.h"
@@ -10,7 +16,9 @@ test_runtime_dual_isolation(const MunitParameter params[], void* user_data_or_fi
     (void)params;
     (void)user_data_or_fixture;
 
-    cepRuntime* runtime_a = cep_runtime_default();
+    /* FIXME: Migrate this suite to a dedicated runtime once the comparator/runtime
+       cleanup lands so we can drop the legacy default-context shim. */
+    cepRuntime* runtime_a = test_runtime_legacy_default_context();
     cepRuntime* initial_scope = cep_runtime_active();
 
     cepRuntime* previous_scope = cep_runtime_set_active(runtime_a);

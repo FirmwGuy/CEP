@@ -141,7 +141,7 @@ static inline void rb_tree_sorted_insert_tnode(cepRbTree* tree, cepRbTreeNode* t
         cepRbTreeNode* x = tree->root, *y;
         do {
             y = x;
-            int cmp = compare(&tnode->cell, &x->cell, context);
+        int cmp = compare(&tnode->cell, &x->cell, context, NULL);
             if (0 > cmp) {
                 x = x->left;
             } else if (0 < cmp) {
@@ -152,7 +152,7 @@ static inline void rb_tree_sorted_insert_tnode(cepRbTree* tree, cepRbTreeNode* t
             }
         } while (x);
         tnode->tParent = y;
-        if (0 > compare(&tnode->cell, &y->cell, context)) {
+        if (0 > compare(&tnode->cell, &y->cell, context, NULL)) {
             y->left = tnode;
         } else {
             y->right = tnode;
@@ -330,7 +330,7 @@ static inline bool rb_tree_traverse_internal(cepRbTree* tree, cepTraverse func, 
 static inline cepCell* rb_tree_find_by_dt(cepRbTree* tree, const cepDT* dt) {
     cepCell key = {.metacell.domain = dt->domain, .metacell.tag = dt->tag};
     for (cepRbTreeNode* tnode = tree->root; tnode; ) {
-        int cmp = cell_compare_by_name(&key, &tnode->cell, NULL);
+        int cmp = cell_compare_by_name(&key, &tnode->cell, NULL, NULL);
         if (cmp < 0) {
             tnode = tnode->left;
         } else if (cmp > 0) {
@@ -380,7 +380,7 @@ static inline cepCell* rb_tree_find_by_name(cepRbTree* tree, const cepDT* name) 
 static inline cepCell* rb_tree_find_by_key(cepRbTree* tree, cepCell* key, cepCompare compare, void* context) {
     cepRbTreeNode* tnode = tree->root;
     do {
-        int cmp = compare(key, &tnode->cell, context);
+        int cmp = compare(key, &tnode->cell, context, NULL);
         if (0 > cmp) {
             tnode = tnode->left;
         } else if (0 < cmp) {

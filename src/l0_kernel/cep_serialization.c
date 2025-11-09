@@ -10,19 +10,256 @@
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
 #include "cep_runtime.h"
+#include "storage/cep_octree.h"
+#include "stream/cep_stream_internal.h"
+#include <stdlib.h>
 
+/* Storage backends expose inline helpers that depend on internal Layer 0
+   symbols such as `cep_shadow_rebind_links` and `cell_compare_by_name`. This
+   translation unit only needs the struct layouts, so provide conservative
+   stubs that should never run; if they ever do, crash loudly. */
+static inline void cep_serialization_unreachable_stub(void) {
+#ifdef CEP_ENABLE_DEBUG
+    CEP_ASSERT(!"storage shim invoked from cep_serialization.c");
+#else
+    abort();
+#endif
+}
+
+static void cep_shadow_rebind_links(cepCell* target) {
+    (void)target;
+    cep_serialization_unreachable_stub();
+}
+
+static int cell_compare_by_name(const cepCell* restrict key,
+                                const cepCell* restrict rec,
+                                void* unused,
+                                cepCompareInfo* info) {
+    (void)key;
+    (void)rec;
+    (void)unused;
+    (void)info;
+    cep_serialization_unreachable_stub();
+    return 0;
+}
+
+#include "storage/cep_dynamic_array.h"
+#include "storage/cep_hash_table.h"
+#include "storage/cep_packed_queue.h"
+
+#include <assert.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+
+static const char* cep_serialization_id_desc(cepID id, char* buf, size_t cap) {
+    if (!buf || !cap) {
+        return "<buf>";
+    }
+    if (!id) {
+        snprintf(buf, cap, "0");
+        return buf;
+    }
+    if (cep_id_is_reference(id)) {
+        const char* text = cep_namepool_lookup(id, NULL);
+        if (text) {
+            snprintf(buf, cap, "%s", text);
+            return buf;
+        }
+    } else if (cep_id_is_word(id)) {
+        size_t len = cep_word_to_text(id, buf);
+        if (len >= cap)
+            len = cap - 1u;
+        buf[len] = '\0';
+        return buf;
+    } else if (cep_id_is_acronym(id)) {
+        size_t len = cep_acronym_to_text(id, buf);
+        if (len >= cap)
+            len = cap - 1u;
+        buf[len] = '\0';
+        while (len && buf[len - 1] == ' ')
+            buf[--len] = '\0';
+        return buf;
+    } else if (cep_id_is_numeric(id)) {
+        snprintf(buf, cap, "#%llu", (unsigned long long)cep_id_to_numeric(id));
+        return buf;
+    }
+    snprintf(buf, cap, "0x%016" PRIx64, (uint64_t)id);
+    return buf;
+}
+
+static bool cep_serialization_env_flag_enabled(const char* name) {
+    const char* value = getenv(name);
+    if (!value || !*value)
+        return false;
+    if (strcmp(value, "0") == 0)
+        return false;
+    if (strcasecmp(value, "false") == 0)
+        return false;
+    return true;
+}
+
+static bool cep_serialization_debug_logging_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        bool enabled = cep_serialization_env_flag_enabled("CEP_SERIALIZATION_DEBUG") ||
+                       cep_serialization_env_flag_enabled("CEP_POC_SERIALIZATION_DEBUG");
+        cached = enabled ? 1 : 0;
+    }
+    return cached == 1;
+}
+
+static void cep_serialization_debug_log(const char* fmt, ...) {
+    if (!cep_serialization_debug_logging_enabled())
+        return;
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    fflush(stderr);
+}
+
+#ifdef CEP_ENABLE_DEBUG
+#define CEP_SERIALIZATION_DEBUG_PRINTF(...)                                            \
+    do {                                                                              \
+        if (cep_serialization_debug_logging_enabled()) {                              \
+            CEP_DEBUG_PRINTF(__VA_ARGS__);                                            \
+        }                                                                             \
+    } while (0)
+#else
+#define CEP_SERIALIZATION_DEBUG_PRINTF(...) do { } while (0)
+#endif
 
 CEP_DEFINE_STATIC_DT(dt_dictionary_type, CEP_ACRO("CEP"), CEP_WORD("dictionary"));
+CEP_DEFINE_STATIC_DT(dt_list_type_default, CEP_ACRO("CEP"), CEP_WORD("list"));
+CEP_DEFINE_STATIC_DT(dt_stream_outcome, CEP_ACRO("CEP"), CEP_WORD("outcome"));
+
+#define SERIAL_RECORD_MANIFEST_BASE    0x01u
+#define SERIAL_RECORD_MANIFEST_DELTA   0x02u
+#define SERIAL_RECORD_MANIFEST_CHILDREN 0x03u
+
+#define SERIAL_RECORD_NAMEPOOL_MAP     0x05u
+
+#define SERIAL_CHILD_FLAG_TOMBSTONE    0x01u
+#define SERIAL_CHILD_FLAG_VEILED       0x02u
+#define SERIAL_CHILD_FLAG_FINGERPRINT  0x04u
+
+#define SERIAL_NAMEPOOL_FLAG_MORE      0x01u
+#define SERIAL_NAMEPOOL_FLAG_GLOB      0x01u
+
+#define CEP_SERIALIZATION_NAMEPOOL_MAX_PAYLOAD 4096u
+
+#define SERIAL_BASE_FLAG_CHILDREN      0x01u
+#define SERIAL_BASE_FLAG_PAYLOAD       0x02u
+#define SERIAL_BASE_FLAG_VEILED        0x04u
+#define SERIAL_BASE_FLAG_CHILDREN_SPLIT 0x08u
+
+#define SERIAL_ORGANISER_INSERTION         0x01u
+#define SERIAL_ORGANISER_NAME              0x02u
+#define SERIAL_ORGANISER_FUNCTION          0x03u
+#define SERIAL_ORGANISER_HASH              0x04u
+#define SERIAL_ORGANISER_FUNCTION_OCTREE   0x05u
+
+#define SERIAL_STORAGE_FLAG_METADATA   0x80u
+
+#define SERIAL_OCTREE_METADATA_SIZE    (sizeof(float) * 5u + sizeof(uint16_t) * 2u)
+#define SERIAL_STORE_META_TLV_HEADER_SIZE 4u
+#define SERIAL_COMPARATOR_METADATA_PAYLOAD_SIZE (sizeof(uint64_t) * 2u + 1u + 3u + sizeof(uint32_t) * 2u)
+#define SERIAL_COMPARATOR_METADATA_SIZE (SERIAL_STORE_META_TLV_HEADER_SIZE + SERIAL_COMPARATOR_METADATA_PAYLOAD_SIZE)
+#define SERIAL_STORE_META_TYPE_PAYLOAD_SIZE (sizeof(uint64_t) * 2u + 1u + 3u)
+#define SERIAL_STORE_META_TYPE_SIZE (SERIAL_STORE_META_TLV_HEADER_SIZE + SERIAL_STORE_META_TYPE_PAYLOAD_SIZE)
+#define SERIAL_STORE_META_TLV_COMPARATOR 0x01u
+#define SERIAL_STORE_META_TLV_OCTREE     0x02u
+#define SERIAL_STORE_META_TLV_LAYOUT     0x03u
+#define SERIAL_STORE_META_TLV_TYPE       0x04u
+#define SERIAL_STORE_META_LAYOUT_PAYLOAD_SIZE (sizeof(uint32_t) + sizeof(uint64_t))
+#define SERIAL_STORE_METADATA_CAPACITY (SERIAL_STORE_META_TYPE_SIZE + SERIAL_COMPARATOR_METADATA_SIZE + SERIAL_STORE_META_TLV_HEADER_SIZE + SERIAL_OCTREE_METADATA_SIZE + SERIAL_STORE_META_TLV_HEADER_SIZE + SERIAL_STORE_META_LAYOUT_PAYLOAD_SIZE)
+
+#define SERIAL_DELTA_FLAG_ADD          0x01u
+#define SERIAL_DELTA_FLAG_DELETE       0x02u
+#define SERIAL_DELTA_FLAG_VEIL         0x04u
+#define SERIAL_DELTA_FLAG_UNVEIL       0x08u
+#define SERIAL_DELTA_FLAG_REORDER      0x10u
+
+#define SERIAL_PROXY_KIND_HANDLE       0x00u
+#define SERIAL_PROXY_KIND_STREAM       0x01u
+
+#define SERIAL_PATH_FLAG_POSITION      0x01u
+
+static uint16_t cep_serial_read_be16_buf(const uint8_t* src);
+static uint32_t cep_serial_read_be32_buf(const uint8_t* src);
+static uint64_t cep_serial_read_be64_buf(const uint8_t* src);
+static void cep_serialization_register_builtin_comparators(void);
 
 
 static cepSerializationRuntimeState*
 cep_serialization_state(void)
 {
-    return cep_runtime_serialization_state(cep_runtime_default());
+    cepRuntime* runtime = cep_runtime_active();
+    if (!runtime)
+        runtime = cep_runtime_default();
+    cepSerializationRuntimeState* state = cep_runtime_serialization_state(runtime);
+    if (state && !state->comparators_initialized) {
+        state->comparators_initialized = true;
+        cep_serialization_register_builtin_comparators();
+    }
+    return state;
+}
+
+static bool
+cep_serialization_emit_scope_enter(void)
+{
+    cepSerializationRuntimeState* state = cep_serialization_state();
+    if (!state)
+        return false;
+    atomic_fetch_add_explicit(&state->emit_active, 1u, memory_order_acq_rel);
+    return true;
+}
+
+static void
+cep_serialization_emit_scope_exit(bool entered)
+{
+    if (!entered)
+        return;
+    cepSerializationRuntimeState* state = cep_serialization_state();
+    if (!state)
+        return;
+    atomic_fetch_sub_explicit(&state->emit_active, 1u, memory_order_acq_rel);
+}
+
+static bool
+cep_serialization_replay_scope_enter(void)
+{
+    cepSerializationRuntimeState* state = cep_serialization_state();
+    if (!state)
+        return false;
+    atomic_fetch_add_explicit(&state->replay_active, 1u, memory_order_acq_rel);
+    return true;
+}
+
+static void
+cep_serialization_replay_scope_exit(bool entered)
+{
+    if (!entered)
+        return;
+    cepSerializationRuntimeState* state = cep_serialization_state();
+    if (!state)
+        return;
+    atomic_fetch_sub_explicit(&state->replay_active, 1u, memory_order_acq_rel);
+}
+
+bool
+cep_serialization_is_busy(void)
+{
+    cepSerializationRuntimeState* state = cep_serialization_state();
+    if (!state)
+        return false;
+    uint32_t emit = atomic_load_explicit(&state->emit_active, memory_order_acquire);
+    uint32_t replay = atomic_load_explicit(&state->replay_active, memory_order_acquire);
+    return (emit != 0u) || (replay != 0u);
 }
 
 void cep_serialization_mark_decision_replay(void) {
@@ -57,6 +294,462 @@ static inline uint64_t cep_serial_from_be64(uint64_t value) {
     return __builtin_bswap64(value);
 }
 
+static inline void cep_serialization_write_float(uint8_t** cursor, float value) {
+    uint32_t bits = 0u;
+    memcpy(&bits, &value, sizeof bits);
+    uint32_t be = cep_serial_to_be32(bits);
+    memcpy(*cursor, &be, sizeof be);
+    *cursor += sizeof be;
+}
+
+static inline float cep_serialization_read_float(const uint8_t** cursor) {
+    uint32_t be = 0u;
+    memcpy(&be, *cursor, sizeof be);
+    *cursor += sizeof be;
+    uint32_t host = cep_serial_from_be32(be);
+    float value = 0.0f;
+    memcpy(&value, &host, sizeof value);
+    return value;
+}
+
+static size_t cep_serialization_store_metadata_octree(const cepCell* cell,
+                                                      uint8_t* buffer,
+                                                      size_t capacity) {
+    if (!cell || !cell->store || cell->store->storage != CEP_STORAGE_OCTREE)
+        return 0u;
+    if (!buffer || capacity < SERIAL_OCTREE_METADATA_SIZE)
+        return 0u;
+
+    const cepOctree* octree = (const cepOctree*)cell->store;
+    uint8_t* cursor = buffer;
+    const float* center = octree->root.bound.center;
+    for (size_t i = 0; i < 3; ++i)
+        cep_serialization_write_float(&cursor, center[i]);
+    cep_serialization_write_float(&cursor, octree->root.bound.subwide);
+
+    uint16_t max_depth_be = cep_serial_to_be16((uint16_t)octree->maxDepth);
+    memcpy(cursor, &max_depth_be, sizeof max_depth_be);
+    cursor += sizeof max_depth_be;
+
+    uint16_t max_per_node_be = cep_serial_to_be16((uint16_t)octree->maxPerNode);
+    memcpy(cursor, &max_per_node_be, sizeof max_per_node_be);
+    cursor += sizeof max_per_node_be;
+
+    cep_serialization_write_float(&cursor, octree->minSubwide);
+    return (size_t)(cursor - buffer);
+}
+
+static bool cep_serialization_parse_octree_metadata(const uint8_t* buffer,
+                                                    size_t size,
+                                                    float center[3],
+                                                    float* subwide,
+                                                    uint16_t* max_depth,
+                                                    uint16_t* max_per_node,
+                                                    float* min_subwide) {
+    if (!buffer || size < SERIAL_OCTREE_METADATA_SIZE || !center || !subwide ||
+        !max_depth || !max_per_node || !min_subwide) {
+        return false;
+    }
+    const uint8_t* cursor = buffer;
+    for (size_t i = 0; i < 3; ++i)
+        center[i] = cep_serialization_read_float(&cursor);
+    *subwide = cep_serialization_read_float(&cursor);
+    uint16_t max_depth_be = 0u;
+    memcpy(&max_depth_be, cursor, sizeof max_depth_be);
+    cursor += sizeof max_depth_be;
+    *max_depth = cep_serial_from_be16(max_depth_be);
+
+    uint16_t max_per_node_be = 0u;
+    memcpy(&max_per_node_be, cursor, sizeof max_per_node_be);
+    cursor += sizeof max_per_node_be;
+    *max_per_node = cep_serial_from_be16(max_per_node_be);
+
+    *min_subwide = cep_serialization_read_float(&cursor);
+    return true;
+}
+
+static bool cep_serialization_store_meta_write_layout(const cepCell* cell,
+                                                      uint8_t* buffer,
+                                                      size_t capacity,
+                                                      size_t* out_size) {
+    if (!out_size) {
+        return false;
+    }
+    *out_size = 0u;
+    if (!cell || !cell->store || !buffer || !capacity)
+        return true;
+
+    const cepStore* store = cell->store;
+    uint64_t layout_capacity = 0u;
+    bool needs_layout = false;
+
+    switch (store->storage) {
+      case CEP_STORAGE_ARRAY: {
+        const cepArray* array = (const cepArray*)store;
+        layout_capacity = array ? (uint64_t)array->capacity : 0u;
+        needs_layout = true;
+        break;
+      }
+      case CEP_STORAGE_PACKED_QUEUE: {
+        const cepPackedQ* queue = (const cepPackedQ*)store;
+        layout_capacity = queue ? (uint64_t)queue->nodeCapacity : 0u;
+        needs_layout = true;
+        break;
+      }
+      case CEP_STORAGE_HASH_TABLE: {
+        const cepHashTable* table = (const cepHashTable*)store;
+        layout_capacity = table ? (uint64_t)table->bucketCount : 0u;
+        needs_layout = true;
+        break;
+      }
+      default:
+        break;
+    }
+
+    if (!needs_layout)
+        return true;
+
+    size_t required = SERIAL_STORE_META_TLV_HEADER_SIZE + SERIAL_STORE_META_LAYOUT_PAYLOAD_SIZE;
+    if (required > capacity)
+        return false;
+
+    buffer[0] = SERIAL_STORE_META_TLV_LAYOUT;
+    buffer[1] = 0u;
+    uint16_t payload_len_be = cep_serial_to_be16((uint16_t)SERIAL_STORE_META_LAYOUT_PAYLOAD_SIZE);
+    memcpy(buffer + 2u, &payload_len_be, sizeof payload_len_be);
+
+    uint8_t* cursor = buffer + SERIAL_STORE_META_TLV_HEADER_SIZE;
+    cursor[0] = (uint8_t)store->storage;
+    cursor[1] = 0u;
+    cursor[2] = 0u;
+    cursor[3] = 0u;
+    uint64_t capacity_be = cep_serial_to_be64(layout_capacity);
+    memcpy(cursor + 4u, &capacity_be, sizeof capacity_be);
+
+    *out_size = required;
+    return true;
+}
+
+static bool cep_serialization_store_meta_write_comparator(const cepStore* store,
+                                                          uint8_t* buffer,
+                                                          size_t capacity,
+                                                          size_t* written) {
+    if (!buffer || !written)
+        return false;
+    *written = 0u;
+    if (!store || !store->compare)
+        return true;
+
+    cepCompareInfo info = {0};
+    if (!cep_compare_identity(store->compare, &info))
+        return false;
+
+    if (capacity < SERIAL_COMPARATOR_METADATA_SIZE)
+        return false;
+
+    uint8_t* cursor = buffer;
+    cursor[0] = SERIAL_STORE_META_TLV_COMPARATOR;
+    cursor[1] = 0u;
+    uint16_t payload_len = (uint16_t)SERIAL_COMPARATOR_METADATA_PAYLOAD_SIZE;
+    uint16_t payload_be = cep_serial_to_be16(payload_len);
+    memcpy(cursor + 2u, &payload_be, sizeof payload_be);
+    cursor += SERIAL_STORE_META_TLV_HEADER_SIZE;
+
+    uint64_t domain_be = cep_serial_to_be64(info.identifier.domain);
+    memcpy(cursor, &domain_be, sizeof domain_be);
+    cursor += sizeof domain_be;
+
+    uint64_t tag_be = cep_serial_to_be64(info.identifier.tag);
+    memcpy(cursor, &tag_be, sizeof tag_be);
+    cursor += sizeof tag_be;
+
+    *cursor++ = info.identifier.glob ? 1u : 0u;
+    *cursor++ = 0u;
+    *cursor++ = 0u;
+    *cursor++ = 0u;
+
+    uint32_t version_be = cep_serial_to_be32(info.version);
+    memcpy(cursor, &version_be, sizeof version_be);
+    cursor += sizeof version_be;
+
+    uint32_t flags_be = cep_serial_to_be32(info.flags);
+    memcpy(cursor, &flags_be, sizeof flags_be);
+    cursor += sizeof flags_be;
+
+    *written = (size_t)(cursor - buffer);
+    return true;
+}
+
+static bool cep_serialization_store_meta_write_type(const cepStore* store,
+                                                    uint8_t* buffer,
+                                                    size_t capacity,
+                                                    size_t* written) {
+    if (!buffer || !written)
+        return false;
+    *written = 0u;
+    if (!store)
+        return true;
+
+    const cepDT* dt = &store->dt;
+    if (!cep_dt_is_valid(dt))
+        return true;
+
+    if (capacity < SERIAL_STORE_META_TYPE_SIZE)
+        return false;
+
+    uint8_t* cursor = buffer;
+    cursor[0] = SERIAL_STORE_META_TLV_TYPE;
+    cursor[1] = 0u;
+    uint16_t payload_len = (uint16_t)SERIAL_STORE_META_TYPE_PAYLOAD_SIZE;
+    uint16_t payload_be = cep_serial_to_be16(payload_len);
+    memcpy(cursor + 2u, &payload_be, sizeof payload_be);
+    cursor += SERIAL_STORE_META_TLV_HEADER_SIZE;
+
+    uint64_t domain_be = cep_serial_to_be64(dt->domain);
+    memcpy(cursor, &domain_be, sizeof domain_be);
+    cursor += sizeof domain_be;
+
+    uint64_t tag_be = cep_serial_to_be64(dt->tag);
+    memcpy(cursor, &tag_be, sizeof tag_be);
+    cursor += sizeof tag_be;
+
+    *cursor++ = dt->glob ? 1u : 0u;
+    *cursor++ = 0u;
+    *cursor++ = 0u;
+    *cursor++ = 0u;
+
+    *written = (size_t)(cursor - buffer);
+    return true;
+}
+
+static bool cep_serialization_store_meta_write_octree(const cepCell* cell,
+                                                      uint8_t* buffer,
+                                                      size_t capacity,
+                                                      size_t* written) {
+    if (!buffer || !written)
+        return false;
+    *written = 0u;
+
+    uint8_t payload[SERIAL_OCTREE_METADATA_SIZE] = {0};
+    size_t payload_len = cep_serialization_store_metadata_octree(cell, payload, sizeof payload);
+    if (!payload_len)
+        return true;
+
+    size_t required = SERIAL_STORE_META_TLV_HEADER_SIZE + payload_len;
+    if (capacity < required)
+        return false;
+
+    buffer[0] = SERIAL_STORE_META_TLV_OCTREE;
+    buffer[1] = 0u;
+    uint16_t len_be = cep_serial_to_be16((uint16_t)payload_len);
+    memcpy(buffer + 2u, &len_be, sizeof len_be);
+    memcpy(buffer + 4u, payload, payload_len);
+    *written = required;
+    return true;
+}
+
+static bool cep_serialization_build_store_metadata(const cepCell* cell,
+                                                   uint8_t* buffer,
+                                                   size_t capacity,
+                                                   size_t* out_size) {
+    if (!out_size) {
+        return false;
+    }
+    *out_size = 0u;
+    if (!cell || !cell->store || !buffer || !capacity)
+        return true;
+
+    size_t used = 0u;
+    size_t chunk = 0u;
+    if (!cep_serialization_store_meta_write_type(cell->store, buffer + used, capacity - used, &chunk))
+        return false;
+    used += chunk;
+
+    if (!cep_serialization_store_meta_write_comparator(cell->store, buffer + used, capacity - used, &chunk))
+        return false;
+    used += chunk;
+
+    if (!cep_serialization_store_meta_write_octree(cell, buffer + used, capacity - used, &chunk))
+        return false;
+    used += chunk;
+
+    if (!cep_serialization_store_meta_write_layout(cell, buffer + used, capacity - used, &chunk))
+        return false;
+    used += chunk;
+
+    *out_size = used;
+    return true;
+}
+
+typedef struct {
+    bool            has_comparator;
+    cepCompareInfo  comparator;
+    bool            has_octree;
+    const uint8_t*  octree_payload;
+    uint16_t        octree_payload_size;
+    bool            has_layout;
+    uint8_t         layout_storage;
+    uint64_t        layout_capacity;
+    bool            has_type;
+    cepDT           type;
+} cepSerializationStoreMeta;
+
+static bool cep_serialization_parse_store_metadata(const uint8_t* buffer,
+                                                   size_t size,
+                                                   cepSerializationStoreMeta* meta) {
+    if (!meta) {
+        return false;
+    }
+    memset(meta, 0, sizeof *meta);
+    if (!buffer || !size)
+        return true;
+
+    const uint8_t* cursor = buffer;
+    size_t remaining = size;
+    while (remaining >= SERIAL_STORE_META_TLV_HEADER_SIZE) {
+        uint8_t kind = cursor[0];
+        uint16_t payload_len = cep_serial_from_be16(*(const uint16_t*)(cursor + 2u));
+        cursor += SERIAL_STORE_META_TLV_HEADER_SIZE;
+        remaining -= SERIAL_STORE_META_TLV_HEADER_SIZE;
+        if (payload_len > remaining)
+            return false;
+
+        switch (kind) {
+          case SERIAL_STORE_META_TLV_COMPARATOR: {
+            if (payload_len < SERIAL_COMPARATOR_METADATA_PAYLOAD_SIZE)
+                return false;
+            const uint8_t* cmp_cursor = cursor;
+            const uint8_t* cmp_end = cursor + payload_len;
+            cepCompareInfo info = {0};
+            info.identifier.domain = cep_serial_read_be64_buf(cmp_cursor);
+            cmp_cursor += sizeof(uint64_t);
+            info.identifier.tag = cep_serial_read_be64_buf(cmp_cursor);
+            cmp_cursor += sizeof(uint64_t);
+            info.identifier.glob = (*cmp_cursor++) ? 1u : 0u;
+            cmp_cursor += 3u; /* padding */
+            uint32_t version_be = 0u;
+            memcpy(&version_be, cmp_cursor, sizeof version_be);
+            info.version = cep_serial_from_be32(version_be);
+            cmp_cursor += sizeof version_be;
+            uint32_t flags_be = 0u;
+            memcpy(&flags_be, cmp_cursor, sizeof flags_be);
+            info.flags = cep_serial_from_be32(flags_be);
+            cmp_cursor += sizeof flags_be;
+            meta->comparator = info;
+            meta->has_comparator = true;
+            cursor = cmp_end;
+            break;
+          }
+          case SERIAL_STORE_META_TLV_OCTREE: {
+            meta->octree_payload = cursor;
+            meta->octree_payload_size = payload_len;
+            meta->has_octree = true;
+            cursor += payload_len;
+            break;
+          }
+          case SERIAL_STORE_META_TLV_LAYOUT: {
+            if (payload_len < SERIAL_STORE_META_LAYOUT_PAYLOAD_SIZE)
+                return false;
+            meta->layout_storage = cursor[0];
+            uint64_t capacity_be = 0u;
+            memcpy(&capacity_be, cursor + 4u, sizeof capacity_be);
+            meta->layout_capacity = cep_serial_from_be64(capacity_be);
+            meta->has_layout = true;
+            cursor += payload_len;
+            break;
+          }
+          case SERIAL_STORE_META_TLV_TYPE: {
+            if (payload_len < SERIAL_STORE_META_TYPE_PAYLOAD_SIZE)
+                return false;
+            uint64_t domain_be = 0u;
+            memcpy(&domain_be, cursor, sizeof domain_be);
+            cursor += sizeof domain_be;
+            uint64_t tag_be = 0u;
+            memcpy(&tag_be, cursor, sizeof tag_be);
+            cursor += sizeof tag_be;
+            cepDT type = {0};
+            type.domain = cep_serial_from_be64(domain_be);
+            type.tag = cep_serial_from_be64(tag_be);
+            type.glob = (*cursor++) ? 1u : 0u;
+            cursor += 3u; /* padding */
+            meta->type = type;
+            meta->has_type = cep_dt_is_valid(&type);
+            break;
+          }
+          default:
+            cursor += payload_len;
+            break;
+        }
+        remaining -= payload_len;
+    }
+
+    return remaining == 0u;
+}
+
+static int cep_serialization_default_compare(const cepCell* lhs,
+                                             const cepCell* rhs,
+                                             void* context,
+                                             cepCompareInfo* info) {
+    (void)context;
+    if (CEP_RARELY_PTR(info)) {
+        cep_compare_info_set(info, CEP_DTAW("CEP", "cmp:order"), 1u, 0u);
+        return 0;
+    }
+    return cep_cell_order_compare(lhs, rhs);
+}
+
+static int cep_serialization_octree_compare_stub(const cepCell* lhs,
+                                                 const cepCell* rhs,
+                                                 void* context,
+                                                 cepCompareInfo* info) {
+    (void)context;
+    if (CEP_RARELY_PTR(info)) {
+        cep_compare_info_set(info, CEP_DTAW("CEP", "cmp:o_stub"), 1u, 0u);
+        return 0;
+    }
+    if (lhs == rhs)
+        return 0;
+    return lhs < rhs ? -1 : 1;
+}
+
+static void cep_serialization_register_builtin_comparators(void) {
+    (void)cep_comparator_registry_record(cep_serialization_default_compare);
+    (void)cep_comparator_registry_record(cep_serialization_octree_compare_stub);
+}
+
+static void cep_serialization_reset_registry_for_runtime(cepRuntime* runtime) {
+    if (!runtime)
+        return;
+    cepSerializationRuntimeState* state = cep_runtime_serialization_state(runtime);
+    if (!state)
+        return;
+    if (state->comparator_registry.entries) {
+        cep_free(state->comparator_registry.entries);
+        state->comparator_registry.entries = NULL;
+    }
+    state->comparator_registry.count = 0;
+    state->comparator_registry.capacity = 0;
+    state->comparators_initialized = false;
+}
+
+static void cep_serialization_cleanup_default_registry(void) {
+    cep_serialization_reset_registry_for_runtime(cep_runtime_default());
+}
+
+static void CEP_AT_STARTUP_(202) cep_serialization_register_cleanup_startup(void) {
+    (void)atexit(cep_serialization_cleanup_default_registry);
+}
+
+void cep_comparator_registry_reset_active(void) {
+    cep_serialization_reset_registry_for_runtime(cep_runtime_active());
+}
+
+void cep_comparator_registry_reset_default(void) {
+    /* FIXME: Temporary escape hatch for legacy tests still mutating the
+       default runtime; remove once every suite provisions its own runtime. */
+    cep_serialization_cleanup_default_registry();
+}
+
 CEP_DEFINE_STATIC_DT(dt_sev_crit, CEP_ACRO("CEP"), CEP_WORD("sev:crit"));
 
 /* Serialization failures should not emit CEI until the diagnostics mailbox is
@@ -84,6 +777,8 @@ static void cep_serialization_emit_failure(const char* topic,
     va_start(args, detail_fmt);
     vsnprintf(note, sizeof note, detail_fmt, args);
     va_end(args);
+
+    cep_serialization_debug_log("[serialization][fail] topic=%s detail=%s\n", topic, note);
 
     cepCell* canonical = NULL;
     if (subject) {
@@ -115,6 +810,78 @@ static void cep_serialization_emit_failure(const char* topic,
     (void)cep_cei_emit(&req);
 }
 
+static bool cep_compare_info_equal(const cepCompareInfo* lhs, const cepCompareInfo* rhs) {
+    if (!lhs || !rhs)
+        return false;
+    return lhs->identifier.domain == rhs->identifier.domain &&
+           lhs->identifier.tag == rhs->identifier.tag &&
+           lhs->identifier.glob == rhs->identifier.glob &&
+           lhs->version == rhs->version &&
+           lhs->flags == rhs->flags;
+}
+
+static cepComparatorRegistry* cep_serialization_comparator_registry(void) {
+    cepSerializationRuntimeState* state = cep_serialization_state();
+    if (!state)
+        return NULL;
+    return &state->comparator_registry;
+}
+
+static bool cep_comparator_registry_reserve(cepComparatorRegistry* registry, size_t min_capacity) {
+    if (!registry)
+        return false;
+    if (registry->capacity >= min_capacity)
+        return true;
+    size_t new_capacity = registry->capacity ? registry->capacity * 2u : 8u;
+    while (new_capacity < min_capacity)
+        new_capacity *= 2u;
+    cepComparatorRegistryEntry* grown = cep_realloc(registry->entries, new_capacity * sizeof(*grown));
+    if (!grown)
+        return false;
+    registry->entries = grown;
+    registry->capacity = new_capacity;
+    return true;
+}
+
+bool cep_comparator_registry_record(cepCompare comparator) {
+    if (!comparator)
+        return false;
+    cepComparatorRegistry* registry = cep_serialization_comparator_registry();
+    if (!registry)
+        return false;
+    cepCompareInfo info = {0};
+    if (!cep_compare_identity(comparator, &info))
+        return false;
+
+    for (size_t i = 0; i < registry->count; ++i) {
+        if (cep_compare_info_equal(&registry->entries[i].info, &info)) {
+            registry->entries[i].comparator = comparator;
+            return true;
+        }
+    }
+
+    if (!cep_comparator_registry_reserve(registry, registry->count + 1u))
+        return false;
+
+    registry->entries[registry->count].info = info;
+    registry->entries[registry->count].comparator = comparator;
+    registry->count += 1u;
+    return true;
+}
+
+cepCompare cep_comparator_registry_lookup(const cepCompareInfo* info) {
+    if (!info)
+        return NULL;
+    cepComparatorRegistry* registry = cep_serialization_comparator_registry();
+    if (!registry || !registry->entries)
+        return NULL;
+    for (size_t i = 0; i < registry->count; ++i) {
+        if (cep_compare_info_equal(&registry->entries[i].info, info))
+            return registry->entries[i].comparator;
+    }
+    return NULL;
+}
+
 typedef struct {
     uint64_t beat;
     uint8_t  flags;
@@ -140,7 +907,10 @@ static size_t cep_serialization_effective_metadata_length(const cepSerialization
 
 static size_t cep_serialization_header_payload_size(const cepSerializationHeader* header) {
     assert(header);
-    return CEP_SERIALIZATION_HEADER_BASE + cep_serialization_effective_metadata_length(header);
+    size_t payload = CEP_SERIALIZATION_HEADER_BASE + cep_serialization_effective_metadata_length(header);
+    if ((header->flags & CEP_SERIALIZATION_FLAG_CAPABILITIES) != 0u || header->capabilities_present)
+        payload += sizeof(uint16_t);
+    return payload;
 }
 
 /** Compute the number of bytes required to serialise @p header into a chunk so
@@ -179,7 +949,11 @@ bool cep_serialization_header_write(const cepSerializationHeader* header,
         return false;
 
     size_t metadata_len = cep_serialization_effective_metadata_length(header);
+    bool include_capabilities = ((header->flags & CEP_SERIALIZATION_FLAG_CAPABILITIES) != 0u) ||
+                                header->capabilities_present;
     size_t payload = CEP_SERIALIZATION_HEADER_BASE + metadata_len;
+    if (include_capabilities)
+        payload += sizeof(uint16_t);
     size_t required = payload + CEP_SERIALIZATION_CHUNK_OVERHEAD;
     if (capacity < required)
         return false;
@@ -204,8 +978,12 @@ bool cep_serialization_header_write(const cepSerializationHeader* header,
     memcpy(p, &version_be, sizeof version_be);
     p += sizeof version_be;
 
+    uint8_t write_flags = header->flags;
+    if (include_capabilities)
+        write_flags |= CEP_SERIALIZATION_FLAG_CAPABILITIES;
+
     *p++ = order;
-    *p++ = header->flags;
+    *p++ = write_flags;
 
     uint32_t metadata_len_be = cep_serial_to_be32((uint32_t)metadata_len);
     memcpy(p, &metadata_len_be, sizeof metadata_len_be);
@@ -230,6 +1008,12 @@ bool cep_serialization_header_write(const cepSerializationHeader* header,
             memset(p, 0, sizeof meta.reserved);
             p += sizeof meta.reserved;
         }
+    }
+
+    if (include_capabilities) {
+        uint16_t caps_be = cep_serial_to_be16(header->capabilities);
+        memcpy(p, &caps_be, sizeof caps_be);
+        p += sizeof caps_be;
     }
 
     if (out_size)
@@ -298,6 +1082,8 @@ bool cep_serialization_header_read(const uint8_t* chunk,
         return false;
 
     const uint8_t* metadata = metadata_len ? p : NULL;
+    const uint8_t* after_metadata = p + metadata_len;
+    size_t remaining_after_metadata = payload - (CEP_SERIALIZATION_HEADER_BASE + metadata_len);
 
     header->magic = magic;
     header->version = version;
@@ -308,6 +1094,8 @@ bool cep_serialization_header_read(const uint8_t* chunk,
     header->journal_metadata_present = false;
     header->journal_decision_replay = false;
     header->journal_beat = 0u;
+    header->capabilities = 0u;
+    header->capabilities_present = false;
 
     if (metadata && metadata_len == CEP_SERIALIZATION_JOURNAL_METADATA_BYTES) {
         uint64_t beat_be = 0u;
@@ -319,6 +1107,15 @@ bool cep_serialization_header_read(const uint8_t* chunk,
         header->journal_metadata_present = true;
     }
 
+    if ((flags & CEP_SERIALIZATION_FLAG_CAPABILITIES) != 0u) {
+        if (remaining_after_metadata < sizeof(uint16_t))
+            return false;
+        uint16_t caps_be = 0u;
+        memcpy(&caps_be, after_metadata, sizeof caps_be);
+        header->capabilities = cep_serial_from_be16(caps_be);
+        header->capabilities_present = true;
+    }
+
     return true;
 }
 
@@ -328,12 +1125,708 @@ typedef struct {
     uint32_t               transaction;
     uint16_t               sequence;
     size_t                 blob_limit;
+    uint64_t               digest;
+    uint64_t               journal_beat;
+    const cepCell*         root;
+    struct {
+        cepID      id;
+        uint16_t   length;
+        char*      text;
+        uint8_t    flags;
+    } *namepool_entries;
+    size_t                 namepool_count;
+    size_t                 namepool_capacity;
+    size_t                 namepool_emit_index;
 } cepSerializationEmitter;
+
+static bool cep_serialization_emitter_emit(cepSerializationEmitter* emitter,
+                                           uint16_t chunk_class,
+                                           const uint8_t* payload,
+                                           size_t payload_size);
+
+static inline uint64_t cep_serialization_hash_payload(const uint8_t* payload, size_t payload_size) {
+    return (payload && payload_size) ? cep_hash_bytes(payload, payload_size) : UINT64_C(0);
+}
+
+static uint64_t cep_serialization_digest_mix(uint64_t seed,
+                                             uint64_t chunk_id,
+                                             const uint8_t* payload,
+                                             size_t payload_size) {
+    struct {
+        uint64_t seed;
+        uint64_t id;
+        uint64_t payload;
+    } block = {
+        .seed = seed,
+        .id = chunk_id,
+        .payload = cep_serialization_hash_payload(payload, payload_size),
+    };
+    return cep_hash_bytes(&block, sizeof block);
+}
+
+static uint8_t cep_serialization_store_organiser(const cepCell* cell) {
+    if (!cell || !cep_cell_is_normal(cell) || !cell->store)
+        return 0u;
+
+    switch (cell->store->indexing) {
+      case CEP_INDEX_BY_INSERTION:
+        return 0x01u;
+      case CEP_INDEX_BY_NAME:
+        return 0x02u;
+      case CEP_INDEX_BY_FUNCTION:
+        return (cell->store->storage == CEP_STORAGE_OCTREE) ? 0x05u : 0x03u;
+      case CEP_INDEX_BY_HASH:
+        return 0x04u;
+      default:
+        break;
+    }
+    return 0u;
+}
+
+static uint8_t cep_serialization_store_hint(const cepCell* cell) {
+    if (!cell || !cep_cell_is_normal(cell) || !cell->store)
+        return 0u;
+
+    switch (cell->store->storage) {
+      case CEP_STORAGE_LINKED_LIST:
+        return 0x01u;
+      case CEP_STORAGE_RED_BLACK_T:
+        return 0x02u;
+      case CEP_STORAGE_ARRAY:
+        return 0x03u;
+      case CEP_STORAGE_PACKED_QUEUE:
+        return 0x04u;
+      case CEP_STORAGE_HASH_TABLE:
+        return 0x05u;
+      case CEP_STORAGE_OCTREE:
+        return 0x06u;
+      default:
+        break;
+    }
+    return 0u;
+}
+
+static bool cep_serialization_compute_cell_fingerprint(const cepCell* cell, uint64_t* out_fingerprint) {
+    if (!cell || !out_fingerprint)
+        return false;
+    if (!cep_cell_is_normal(cell))
+        return false;
+    cepCell* canonical = cep_link_pull((cepCell*)cell);
+    if (!canonical)
+        return false;
+    cepData* data = canonical->data;
+    if (!data)
+        return false;
+    if (data->datatype != CEP_DATATYPE_VALUE && data->datatype != CEP_DATATYPE_DATA)
+        return false;
+
+    size_t size = data->size;
+    const void* bytes = cep_data_payload(data);
+    uint64_t payload_hash = size ? cep_hash_bytes(bytes, size) : UINT64_C(0);
+    struct {
+        uint64_t domain;
+        uint64_t tag;
+        uint64_t size;
+        uint64_t payload;
+    } fingerprint = {
+        .domain = data->dt.domain,
+        .tag = data->dt.tag,
+        .size = size,
+        .payload = payload_hash,
+    };
+    *out_fingerprint = cep_hash_bytes(&fingerprint, sizeof fingerprint);
+    return true;
+}
+
+typedef struct {
+    cepDT    name;
+    uint8_t  flags;
+    uint16_t position;
+    bool     has_fingerprint;
+    uint64_t fingerprint;
+    uint8_t  cell_type;
+    uint8_t  delta_flags;
+} cepSerializationManifestChild;
+
+typedef struct {
+    cepCell* library;
+    cepCell* resource;
+    bool     isStream;
+} cepSerializationProxyLibraryCtx;
+
+static int cep_serialization_manifest_child_cmp_name(const void* lhs_ptr,
+                                                     const void* rhs_ptr);
+
+static void cep_serialization_normalize_stream_outcome(cepData* payload) {
+    if (!payload)
+        return;
+    if (payload->datatype != CEP_DATATYPE_DATA &&
+        payload->datatype != CEP_DATATYPE_VALUE)
+        return;
+    if (!cep_dt_is_valid(&payload->dt))
+        return;
+    const cepDT* outcome_dt = dt_stream_outcome();
+    if (payload->dt.domain != outcome_dt->domain ||
+        payload->dt.tag != outcome_dt->tag)
+        return;
+    cepStreamOutcomeEntry* entry = (cepStreamOutcomeEntry*)cep_data_payload(payload);
+    if (!entry)
+        return;
+    if (entry->payload_hash && entry->resulting_hash == 0u) {
+        uint64_t hash_copy = entry->payload_hash;
+        CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][normalize_outcome] restoring resulting_hash payload=0x%016" PRIx64 "\n",
+                                       hash_copy);
+        entry->resulting_hash = hash_copy;
+    }
+}
+
+static bool cep_serialization_collect_children(const cepCell* cell,
+                                               uint8_t organiser,
+                                               cepSerializationManifestChild** out_children,
+                                               size_t* out_count) {
+    if (!out_children || !out_count)
+        return false;
+    *out_children = NULL;
+    *out_count = 0;
+
+    if (!cell || !cep_cell_is_normal(cell) || !cell->store || !cell->store->chdCount)
+        return true;
+
+    size_t capacity = cell->store->chdCount;
+    cepSerializationManifestChild* items = cep_malloc(capacity * sizeof(*items));
+    if (!items)
+        return false;
+
+    size_t index = 0;
+    uint32_t next_position = 0u;
+    bool positional = (organiser == SERIAL_ORGANISER_INSERTION);
+    for (cepCell* child = cep_cell_first_all(cell); child; child = cep_cell_next_all(cell, child)) {
+        cepCell* resolved = cep_link_pull(child);
+        if (!resolved)
+            continue;
+        const cepDT* name = cep_cell_get_name(resolved);
+        if (!name)
+            continue;
+
+        uint32_t assigned_position = next_position;
+        if (positional) {
+            size_t ordinal = 0u;
+            if (cep_cell_indexof((cepCell*)cell, resolved, &ordinal)) {
+                assigned_position = ordinal > (size_t)UINT32_MAX ? UINT32_MAX : (uint32_t)ordinal;
+            }
+        }
+
+        cepSerializationManifestChild info = {
+            .name = *name,
+            .cell_type = (uint8_t)resolved->metacell.type,
+            .flags = 0u,
+            .position = (uint16_t)((assigned_position > UINT16_MAX) ? UINT16_MAX : assigned_position),
+            .has_fingerprint = false,
+            .fingerprint = 0u,
+            .delta_flags = SERIAL_DELTA_FLAG_ADD,
+        };
+
+        if (next_position < UINT32_MAX)
+            next_position++;
+
+        if (resolved->metacell.veiled)
+            info.flags |= SERIAL_CHILD_FLAG_VEILED;
+
+        bool tombstone = cep_cell_is_deleted(resolved);
+        if (tombstone) {
+            info.flags |= SERIAL_CHILD_FLAG_TOMBSTONE;
+            info.delta_flags = SERIAL_DELTA_FLAG_DELETE;
+        }
+
+        uint64_t fingerprint = 0u;
+        if (!tombstone && cep_serialization_compute_cell_fingerprint(resolved, &fingerprint)) {
+            info.has_fingerprint = true;
+            info.fingerprint = fingerprint;
+            info.flags |= SERIAL_CHILD_FLAG_FINGERPRINT;
+        }
+
+        items[index++] = info;
+    }
+
+    if (!index) {
+        cep_free(items);
+        items = NULL;
+    } else if (index > 1u) {
+        bool sort_by_name =
+            organiser == SERIAL_ORGANISER_NAME ||
+            organiser == SERIAL_ORGANISER_FUNCTION ||
+            organiser == SERIAL_ORGANISER_HASH;
+        if (sort_by_name) {
+            qsort(items, index, sizeof(*items), cep_serialization_manifest_child_cmp_name);
+            for (size_t i = 0; i < index; ++i) {
+                uint32_t ordinal = (uint32_t)i;
+                items[i].position = (uint16_t)((ordinal > UINT16_MAX) ? UINT16_MAX : ordinal);
+            }
+        }
+    }
+
+    *out_children = items;
+    *out_count = index;
+    return true;
+}
+
+static bool cep_serialization_collect_name_segments(const cepCell* cell,
+                                                    cepDT** out_segments,
+                                                    size_t* out_count) {
+    if (!cell || !out_segments || !out_count)
+        return false;
+
+    size_t count = 0u;
+    const cepCell* current = cell;
+    while (current && !cep_cell_is_root((cepCell*)current)) {
+        const cepDT* name = cep_cell_get_name(current);
+        if (!name || !cep_dt_is_valid(name))
+            return false;
+        count++;
+        current = cep_cell_parent(current);
+    }
+
+    if (count == 0u) {
+        *out_segments = NULL;
+        *out_count = 0u;
+        return false;
+    }
+
+    cepDT* segments = cep_malloc(count * sizeof(*segments));
+    if (!segments)
+        return false;
+
+    current = cell;
+    for (size_t i = count; i-- > 0;) {
+        const cepDT* name = cep_cell_get_name(current);
+        if (!name || !cep_dt_is_valid(name)) {
+            cep_free(segments);
+            return false;
+        }
+        segments[i] = *name;
+        current = cep_cell_parent(current);
+    }
+
+    *out_segments = segments;
+    *out_count = count;
+    return true;
+}
+
+/* Stamp each path segment with its ordinal when the parent store is indexed by
+   insertion order. The timestamp field carries (position + 1) so zero remains
+   reserved for “no positional metadata”. */
+static void cep_serialization_stamp_path_positions(const cepCell* leaf, cepPath* path) {
+    if (!leaf || !path || !path->length)
+        return;
+
+    unsigned structural = 0u;
+    for (const cepCell* cursor = leaf; cursor; cursor = cep_cell_parent(cursor))
+        structural++;
+    if (!structural)
+        return;
+
+    const cepCell* current = leaf;
+    for (unsigned idx = structural; idx-- > 0u && current; ) {
+        cepOpCount stamp = 0u;
+        const cepCell* parent = cep_cell_parent(current);
+        if (parent) {
+            size_t ordinal = 0u;
+            if (cep_cell_indexof(parent, current, &ordinal)) {
+                size_t bounded = ordinal > (size_t)UINT16_MAX ? (size_t)UINT16_MAX : ordinal;
+                stamp = (cepOpCount)(bounded + 1u);
+            }
+        }
+        path->past[idx].timestamp = stamp;
+        current = parent;
+    }
+
+    for (unsigned idx = structural; idx < path->length; ++idx)
+        path->past[idx].timestamp = 0u;
+}
+
+static void cep_serialization_trim_duplicate_root(cepPath* path) {
+    if (!path || path->length < 2u)
+        return;
+    const cepDT* root = &path->past[0].dt;
+    for (unsigned idx = 1u; idx < path->length; ++idx) {
+        const cepDT* segment = &path->past[idx].dt;
+        if (segment->domain == root->domain &&
+            segment->tag == root->tag &&
+            segment->glob == root->glob) {
+            unsigned remaining = path->length - idx;
+            memmove(path->past, path->past + idx, remaining * sizeof(path->past[0]));
+            path->length = remaining;
+            return;
+        }
+    }
+}
+
+static size_t cep_serialization_reference_path_size(size_t segment_count) {
+    return sizeof(uint16_t) + segment_count * ((sizeof(uint64_t) * 2u) + 4u);
+}
+
+static uint8_t* cep_serialization_reference_path_encode(uint8_t* cursor,
+                                                        const cepDT* segments,
+                                                        size_t segment_count) {
+    uint16_t count_be = cep_serial_to_be16((uint16_t)segment_count);
+    memcpy(cursor, &count_be, sizeof count_be);
+    cursor += sizeof count_be;
+    for (size_t i = 0; i < segment_count; ++i) {
+        uint64_t domain_be = cep_serial_to_be64(segments[i].domain);
+        memcpy(cursor, &domain_be, sizeof domain_be);
+        cursor += sizeof domain_be;
+
+        uint64_t tag_be = cep_serial_to_be64(segments[i].tag);
+        memcpy(cursor, &tag_be, sizeof tag_be);
+        cursor += sizeof tag_be;
+
+        *cursor++ = (uint8_t)(segments[i].glob ? 1u : 0u);
+        *cursor++ = 0u;
+        uint16_t reserved = 0u;
+        memcpy(cursor, &reserved, sizeof reserved);
+        cursor += sizeof reserved;
+    }
+    return cursor;
+}
+
+static bool cep_serialization_reference_path_decode(const uint8_t** cursor_ptr,
+                                                    size_t* remaining,
+                                                    cepDT** out_segments,
+                                                    size_t* out_count) {
+    if (!cursor_ptr || !*cursor_ptr || !remaining || !out_segments || !out_count)
+        return false;
+    if (*remaining < sizeof(uint16_t))
+        return false;
+
+    const uint8_t* cursor = *cursor_ptr;
+    uint16_t segment_count = cep_serial_read_be16_buf(cursor);
+    cursor += sizeof(uint16_t);
+    *remaining -= sizeof(uint16_t);
+
+    size_t expected = (size_t)segment_count * ((sizeof(uint64_t) * 2u) + 4u);
+    if (*remaining < expected)
+        return false;
+
+    cepDT* segments = NULL;
+    if (segment_count) {
+        segments = cep_malloc((size_t)segment_count * sizeof(*segments));
+        if (!segments)
+            return false;
+    }
+
+    for (uint16_t i = 0; i < segment_count; ++i) {
+        uint64_t domain = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        uint64_t tag = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        uint8_t glob = *cursor++;
+        uint8_t meta = *cursor++;
+        (void)meta;
+        cursor += sizeof(uint16_t);
+
+        segments[i].domain = domain;
+        segments[i].tag = tag;
+        segments[i].glob = (glob != 0u);
+    }
+
+    *cursor_ptr = cursor;
+    *remaining -= expected;
+    *out_segments = segments;
+    *out_count = segment_count;
+    return true;
+}
+
+static void cep_serialization_root_ids(cepID* out_domain, cepID* out_tag) {
+    static cepID cached_domain = 0u;
+    static cepID cached_tag = 0u;
+    static bool initialized = false;
+    if (!initialized) {
+        cep_namepool_bootstrap();
+        cached_domain = cep_namepool_intern_cstr("CEP");
+        cached_tag = cep_namepool_intern_cstr("/");
+        initialized = true;
+    }
+    if (out_domain)
+        *out_domain = cached_domain;
+    if (out_tag)
+        *out_tag = cached_tag;
+}
+
+static bool cep_serialization_emitter_register_id(cepSerializationEmitter* emitter, cepID id) {
+    if (!emitter || !cep_id_is_reference(id))
+        return true;
+
+    for (size_t i = 0; i < emitter->namepool_count; ++i) {
+        if (emitter->namepool_entries[i].id == id)
+            return true;
+    }
+
+    size_t length = 0u;
+    const char* text = cep_namepool_lookup(id, &length);
+    if (!text) {
+        cep_serialization_emit_failure("serialization.namepool.lookup",
+                                       NULL,
+                                       "reference id=%016" PRIx64 " missing from namepool",
+                                       (uint64_t)id);
+        return false;
+    }
+    if (length > UINT16_MAX) {
+        cep_serialization_emit_failure("serialization.namepool.length",
+                                       NULL,
+                                       "reference id=%016" PRIx64 " exceeds map limits (len=%zu)",
+                                       (uint64_t)id,
+                                       length);
+        return false;
+    }
+
+    if (emitter->namepool_count == emitter->namepool_capacity) {
+        size_t new_cap = emitter->namepool_capacity ? emitter->namepool_capacity << 1u : 16u;
+        void* resized = cep_realloc(emitter->namepool_entries, new_cap * sizeof *emitter->namepool_entries);
+        if (!resized)
+            return false;
+        emitter->namepool_entries = resized;
+        emitter->namepool_capacity = new_cap;
+    }
+
+    char* copy = NULL;
+    if (length) {
+        copy = cep_malloc(length);
+        if (!copy)
+            return false;
+        memcpy(copy, text, length);
+    }
+
+    emitter->namepool_entries[emitter->namepool_count].id = id;
+    emitter->namepool_entries[emitter->namepool_count].length = (uint16_t)length;
+    emitter->namepool_entries[emitter->namepool_count].text = copy;
+    emitter->namepool_entries[emitter->namepool_count].flags =
+        cep_namepool_reference_is_glob(id) ? SERIAL_NAMEPOOL_FLAG_GLOB : 0u;
+    emitter->namepool_count += 1u;
+    return true;
+}
+
+static bool cep_serialization_emitter_register_dt(cepSerializationEmitter* emitter, const cepDT* dt) {
+    if (!dt)
+        return true;
+    if (!cep_serialization_emitter_register_id(emitter, dt->domain))
+        return false;
+    if (!cep_serialization_emitter_register_id(emitter, dt->tag))
+        return false;
+    return true;
+}
+
+static bool cep_serialization_emitter_flush_namepool_map(cepSerializationEmitter* emitter) {
+    if (!emitter)
+        return false;
+
+    while (emitter->namepool_emit_index < emitter->namepool_count) {
+        size_t start = emitter->namepool_emit_index;
+        size_t payload_size = 4u; /* record + flags + count */
+        size_t emit_count = 0u;
+
+        while (emitter->namepool_emit_index < emitter->namepool_count) {
+            const typeof(*emitter->namepool_entries)* entry = &emitter->namepool_entries[emitter->namepool_emit_index];
+            size_t entry_size = sizeof(uint64_t) + sizeof(uint16_t) + sizeof(uint8_t) + entry->length;
+            if (emit_count && payload_size + entry_size > CEP_SERIALIZATION_NAMEPOOL_MAX_PAYLOAD)
+                break;
+            payload_size += entry_size;
+            emitter->namepool_emit_index += 1u;
+            emit_count += 1u;
+        }
+
+        uint8_t flags = 0u;
+        if (emitter->namepool_emit_index < emitter->namepool_count)
+            flags |= SERIAL_NAMEPOOL_FLAG_MORE;
+
+        uint8_t* payload = cep_malloc(payload_size);
+        if (!payload)
+            return false;
+
+        uint8_t* cursor = payload;
+        *cursor++ = SERIAL_RECORD_NAMEPOOL_MAP;
+        *cursor++ = flags;
+        uint16_t count_be = cep_serial_to_be16((uint16_t)emit_count);
+        memcpy(cursor, &count_be, sizeof count_be);
+        cursor += sizeof count_be;
+
+        for (size_t i = 0; i < emit_count; ++i) {
+            const typeof(*emitter->namepool_entries)* entry = &emitter->namepool_entries[start + i];
+            uint64_t id_be = cep_serial_to_be64((uint64_t)entry->id);
+            memcpy(cursor, &id_be, sizeof id_be);
+            cursor += sizeof id_be;
+
+            uint16_t len_be = cep_serial_to_be16(entry->length);
+            memcpy(cursor, &len_be, sizeof len_be);
+            cursor += sizeof len_be;
+
+            *cursor++ = entry->flags;
+            if (entry->length) {
+                memcpy(cursor, entry->text, entry->length);
+                cursor += entry->length;
+            }
+        }
+
+        bool ok = cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_CONTROL, payload, payload_size);
+        cep_free(payload);
+        if (!ok)
+            return false;
+    }
+
+    return true;
+}
+
+static void cep_serialization_emitter_clear_namepool(cepSerializationEmitter* emitter) {
+    if (!emitter)
+        return;
+    if (emitter->namepool_entries) {
+        for (size_t i = 0; i < emitter->namepool_count; ++i) {
+            if (emitter->namepool_entries[i].text)
+                cep_free(emitter->namepool_entries[i].text);
+        }
+        cep_free(emitter->namepool_entries);
+    }
+    emitter->namepool_entries = NULL;
+    emitter->namepool_count = 0u;
+    emitter->namepool_capacity = 0u;
+    emitter->namepool_emit_index = 0u;
+}
+
+static bool cep_serialization_collect_namepool_entries(cepSerializationEmitter* emitter,
+                                                       const cepCell* cell) {
+    if (!emitter || !cell)
+        return false;
+
+    cepCell* canonical = cep_link_pull((cepCell*)cell);
+    if (!canonical)
+        return false;
+
+    cepPath* path = NULL;
+    if (!cep_cell_path(canonical, &path))
+        return false;
+
+    for (unsigned i = 0; i < path->length; ++i) {
+        if (!cep_serialization_emitter_register_dt(emitter, &path->past[i].dt)) {
+            if (path)
+                cep_free(path);
+            return false;
+        }
+    }
+    if (path)
+        cep_free(path);
+
+    if (cep_cell_is_normal(canonical) && canonical->data) {
+        cepData* data = canonical->data;
+        if (data && cep_dt_is_valid(&data->dt)) {
+            if (!cep_serialization_emitter_register_dt(emitter, &data->dt))
+                return false;
+
+            bool is_handle = (data->datatype == CEP_DATATYPE_HANDLE);
+            bool is_stream = (data->datatype == CEP_DATATYPE_STREAM);
+            if (is_handle || is_stream) {
+                cepCell* library_cell = data->library;
+                cepCell* resource_cell = is_handle ? data->handle : data->stream;
+                if (library_cell && resource_cell) {
+                    cepDT* segments = NULL;
+                    size_t count = 0u;
+                    if (cep_serialization_collect_name_segments(library_cell, &segments, &count)) {
+                        for (size_t i = 0; i < count; ++i)
+                            (void)cep_serialization_emitter_register_dt(emitter, &segments[i]);
+                        if (segments)
+                            cep_free(segments);
+                    }
+                    segments = NULL;
+                    count = 0u;
+                    if (cep_serialization_collect_name_segments(resource_cell, &segments, &count)) {
+                        for (size_t i = 0; i < count; ++i)
+                            (void)cep_serialization_emitter_register_dt(emitter, &segments[i]);
+                        if (segments)
+                            cep_free(segments);
+                    }
+                }
+            }
+        }
+    }
+
+    for (cepCell* child = cep_cell_first_all(canonical); child; child = cep_cell_next_all(canonical, child)) {
+        cepCell* resolved = cep_link_pull(child);
+        if (!resolved)
+            continue;
+        if (cep_cell_is_deleted(resolved))
+            continue;
+        const cepDT* name = cep_cell_get_name(resolved);
+        if (name && cep_dt_is_valid(name))
+            (void)cep_serialization_emitter_register_dt(emitter, name);
+        if (!cep_serialization_collect_namepool_entries(emitter, resolved))
+            return false;
+    }
+
+    return true;
+}
+
+static cepCell* cep_serialization_resolve_segments(cepCell* root,
+                                                   const cepDT* segments,
+                                                   size_t segment_count) {
+    if (!root)
+        return NULL;
+    cepCell* current = root;
+    for (size_t i = 0; i < segment_count; ++i) {
+        cepDT name = segments[i];
+        if (!cep_dt_is_valid(&name))
+            return NULL;
+        cepCell* child = cep_cell_find_by_name(current, &name);
+        if (!child)
+            goto fallback;
+        current = cep_link_pull(child);
+        if (!current)
+            return NULL;
+    }
+    return current;
+
+fallback:
+    {
+        cepID root_domain = 0u;
+        cepID root_tag = 0u;
+        cep_serialization_root_ids(&root_domain, &root_tag);
+
+        cepCell* absolute = cep_link_pull(cep_root());
+        if (!absolute)
+            return NULL;
+
+        size_t start = 0u;
+        if (segment_count && root_domain && root_tag &&
+            segments[0].domain == root_domain &&
+            segments[0].tag == root_tag) {
+            start = 1u;
+        }
+
+        current = absolute;
+        for (size_t i = start; i < segment_count; ++i) {
+            cepDT name = segments[i];
+            if (!cep_dt_is_valid(&name))
+                return NULL;
+            cepCell* child = cep_cell_find_by_name(current, &name);
+            if (!child) {
+                char dom_buf[64];
+                char tag_buf[64];
+                cep_serialization_debug_log("[serialization][resolve] missing segment=%zu domain=%s tag=%s\n",
+                                            i,
+                                            cep_serialization_id_desc(name.domain, dom_buf, sizeof dom_buf),
+                                            cep_serialization_id_desc(name.tag, tag_buf, sizeof tag_buf));
+                return NULL;
+            }
+            current = cep_link_pull(child);
+            if (!current)
+                return NULL;
+        }
+    }
+    return current;
+}
 
 static inline void cep_serialization_emitter_reset(cepSerializationEmitter* emitter, uint32_t transaction) {
     assert(emitter);
     emitter->transaction = transaction;
     emitter->sequence = 0;
+    emitter->digest = 0u;
 }
 
 static inline bool cep_serialization_emitter_emit(cepSerializationEmitter* emitter,
@@ -374,8 +1867,19 @@ static inline bool cep_serialization_emitter_emit(cepSerializationEmitter* emitt
         memcpy(buffer + CEP_SERIALIZATION_CHUNK_OVERHEAD, payload, payload_size);
 
     bool ok = emitter->write(emitter->context, buffer, total);
+    if (ok && chunk_class != CEP_CHUNK_CLASS_CONTROL) {
+        emitter->digest = cep_serialization_digest_mix(emitter->digest,
+                                                       chunk_id,
+                                                       payload,
+                                                       payload_size);
+    }
     cep_free(buffer);
     if (!ok) {
+        cep_serialization_debug_log("[serialization][debug] emitter_write_failed class=0x%04x tx=%u seq=%u payload_size=%zu\n",
+                                    chunk_class,
+                                    emitter->transaction,
+                                    emitter->sequence,
+                                    payload_size);
         cep_serialization_emit_failure("serialization.chunk.write",
                                        NULL,
                                        "writer callback failed (class=%u tx=%u seq=%u)",
@@ -386,73 +1890,372 @@ static inline bool cep_serialization_emitter_emit(cepSerializationEmitter* emitt
     return ok;
 }
 
-static bool cep_serialization_emit_manifest(cepSerializationEmitter* emitter,
-                                            const cepCell* cell,
-                                            const cepPath* path) {
-    assert(emitter && cell && path);
+static size_t cep_serialization_manifest_child_descriptor_size(const cepSerializationManifestChild* child) {
+    if (!child)
+        return 0u;
+    size_t size = (sizeof(uint64_t) * 2u) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint32_t);
+    if (child->has_fingerprint)
+        size += sizeof(uint64_t);
+    return size;
+}
 
-    cepCell* canonical = cep_link_pull((cepCell*)cell);
-    if (!canonical) {
-        cep_serialization_emit_failure("serialization.manifest.resolve",
-                                       cell,
-                                       "failed to resolve canonical cell for manifest");
-        return false;
+static uint8_t* cep_serialization_manifest_write_child(uint8_t* cursor,
+                                                       const cepSerializationManifestChild* child) {
+    uint64_t domain_be = cep_serial_to_be64(child->name.domain);
+    memcpy(cursor, &domain_be, sizeof domain_be);
+    cursor += sizeof domain_be;
+
+    uint64_t tag_be = cep_serial_to_be64(child->name.tag);
+    memcpy(cursor, &tag_be, sizeof tag_be);
+    cursor += sizeof tag_be;
+
+    *cursor++ = (uint8_t)(child->name.glob ? 1u : 0u);
+    *cursor++ = child->flags;
+
+    uint16_t position_be = cep_serial_to_be16(child->position);
+    memcpy(cursor, &position_be, sizeof position_be);
+    cursor += sizeof position_be;
+
+    uint32_t reserved = 0u;
+    memcpy(cursor, &reserved, sizeof reserved);
+    cursor += sizeof reserved;
+
+    if (child->has_fingerprint) {
+        uint64_t fingerprint_be = cep_serial_to_be64(child->fingerprint);
+        memcpy(cursor, &fingerprint_be, sizeof fingerprint_be);
+        cursor += sizeof fingerprint_be;
     }
 
-    uint16_t segments = (uint16_t)path->length;
-    if ((unsigned)path->length > UINT16_MAX) {
+    return cursor;
+}
+
+static bool cep_serialization_emit_manifest_base(cepSerializationEmitter* emitter,
+                                                 const cepCell* cell,
+                                                 const cepPath* path,
+                                                 uint8_t organiser,
+                                                 uint8_t storage_hint,
+                                                 uint8_t base_flags,
+                                                 const cepSerializationManifestChild* children,
+                                                 size_t child_count,
+                                                 bool split_children,
+                                                 uint16_t descriptor_spans,
+                                                 uint8_t cell_type,
+                                                 const uint8_t* store_meta,
+                                                 size_t store_meta_size) {
+    assert(emitter && cell && path);
+
+    if (path->length > UINT16_MAX) {
         cep_serialization_emit_failure("serialization.manifest.bounds",
                                        cell,
-                                       "path length %u exceeds UINT16_MAX",
+                                       "path length %u exceeds manifest limits",
                                        (unsigned)path->length);
         return false;
     }
 
-    size_t payload_size = sizeof(uint16_t) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t)
-                        + (size_t)segments * ((sizeof(uint64_t) * 2u) + sizeof(uint8_t));
+    if (split_children && descriptor_spans == 0u) {
+        cep_serialization_emit_failure("serialization.manifest.descriptor_spans",
+                                       cell,
+                                       "split manifest missing descriptor spans");
+        return false;
+    }
+
+#ifdef CEP_ENABLE_DEBUG
+    if (cep_serialization_debug_logging_enabled()) {
+        char cell_dom_buf[64];
+        char cell_tag_buf[64];
+        const cepDT* cell_name = cep_cell_get_name(cell);
+        const char* cell_dom = cell_name
+            ? cep_serialization_id_desc(cell_name->domain, cell_dom_buf, sizeof cell_dom_buf)
+            : "<anon>";
+        const char* cell_tag = cell_name
+            ? cep_serialization_id_desc(cell_name->tag, cell_tag_buf, sizeof cell_tag_buf)
+            : "<anon>";
+        CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][manifest_base] cell=%s/%s segments=%u children=%zu split=%u spans=%u base_flags=0x%02x store_meta=%zu\n",
+                                       cell_dom,
+                                       cell_tag,
+                                       path ? (unsigned)path->length : 0u,
+                                       child_count,
+                                       split_children ? 1u : 0u,
+                                       (unsigned)descriptor_spans,
+                                       base_flags,
+                                       store_meta_size);
+        if (path && path->length) {
+            for (uint16_t idx = 0; idx < path->length; ++idx) {
+                const cepPast* segment = &path->past[idx];
+                char seg_dom_buf[64];
+                char seg_tag_buf[64];
+                CEP_SERIALIZATION_DEBUG_PRINTF("  [serialization][manifest_base_path] idx=%u dom=%s tag=%s glob=%u stamp=%" PRIu64 "\n",
+                                               (unsigned)idx,
+                                               cep_serialization_id_desc(segment->dt.domain, seg_dom_buf, sizeof seg_dom_buf),
+                                               cep_serialization_id_desc(segment->dt.tag, seg_tag_buf, sizeof seg_tag_buf),
+                                               segment->dt.glob ? 1u : 0u,
+                                               (uint64_t)segment->timestamp);
+            }
+        }
+    }
+#endif
+
+    uint16_t segment_count = (uint16_t)path->length;
+    bool include_children_inline = child_count && !split_children;
+    uint16_t descriptor_span_count = split_children ? descriptor_spans : 0u;
+    size_t payload_size = 11u + ((size_t)segment_count * ((sizeof(uint64_t) * 2u) + 4u));
+    if (include_children_inline) {
+        for (size_t i = 0; i < child_count; ++i)
+            payload_size += cep_serialization_manifest_child_descriptor_size(&children[i]);
+    }
+    size_t meta_section = (store_meta && store_meta_size) ? (sizeof(uint16_t) + store_meta_size) : 0u;
+    payload_size += meta_section;
+
     uint8_t* payload = cep_malloc(payload_size);
-    uint8_t* p = payload;
+    if (!payload)
+        return false;
 
-    uint16_t count_be = cep_serial_to_be16(segments);
-    memcpy(p, &count_be, sizeof count_be);
-    p += sizeof count_be;
+    uint8_t* cursor = payload;
+    *cursor++ = SERIAL_RECORD_MANIFEST_BASE;
+    *cursor++ = organiser;
+    *cursor++ = storage_hint;
+    *cursor++ = base_flags;
+    *cursor++ = cell_type;
 
-    *p++ = (uint8_t)canonical->metacell.type;
+    uint16_t segments_be = cep_serial_to_be16(segment_count);
+    memcpy(cursor, &segments_be, sizeof segments_be);
+    cursor += sizeof segments_be;
 
-    uint8_t flags = 0;
-    if (canonical->metacell.veiled)
-        flags |= 0x01u;
-    flags |= (uint8_t)((canonical->metacell.shadowing & 0x03u) << 1);
-    if (cep_cell_is_normal(canonical) && canonical->data)
-        flags |= 0x08u;
-    if (cep_cell_is_normal(canonical) && canonical->store && canonical->store->chdCount)
-        flags |= 0x10u;
-    if (cep_cell_is_proxy(canonical))
-        flags |= 0x20u;
-    *p++ = flags;
+    uint16_t children_be = cep_serial_to_be16((uint16_t)child_count);
+    memcpy(cursor, &children_be, sizeof children_be);
+    cursor += sizeof children_be;
 
-    uint16_t reserved = 0;
-    memcpy(p, &reserved, sizeof reserved);
-    p += sizeof reserved;
+    uint16_t spans_be = cep_serial_to_be16(descriptor_span_count);
+    memcpy(cursor, &spans_be, sizeof spans_be);
+    cursor += sizeof spans_be;
 
-    for (unsigned i = 0; i < path->length; ++i) {
+    for (uint16_t i = 0; i < segment_count; ++i) {
         const cepPast* segment = &path->past[i];
         uint64_t domain_be = cep_serial_to_be64(segment->dt.domain);
-        memcpy(p, &domain_be, sizeof domain_be);
-        p += sizeof domain_be;
+        memcpy(cursor, &domain_be, sizeof domain_be);
+        cursor += sizeof domain_be;
+
         uint64_t tag_be = cep_serial_to_be64(segment->dt.tag);
-        memcpy(p, &tag_be, sizeof tag_be);
-        p += sizeof tag_be;
-        *p++ = (uint8_t)(segment->dt.glob ? 1u : 0u);
+        memcpy(cursor, &tag_be, sizeof tag_be);
+        cursor += sizeof tag_be;
+
+        uint8_t glob_flag = (uint8_t)(segment->dt.glob ? 1u : 0u);
+        *cursor++ = glob_flag;
+        uint8_t meta_flags = 0u;
+        uint16_t position = 0u;
+        if (segment->timestamp) {
+            cepOpCount stamp = segment->timestamp;
+            uint64_t ordinal = stamp > 0u ? (uint64_t)(stamp - 1u) : 0u;
+            if (ordinal > UINT16_MAX)
+                ordinal = UINT16_MAX;
+            position = (uint16_t)ordinal;
+            meta_flags |= SERIAL_PATH_FLAG_POSITION;
+        }
+#ifdef CEP_ENABLE_DEBUG
+        if (cep_serialization_debug_logging_enabled()) {
+            char dom_buf[64];
+            char tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][manifest_base_segment] idx=%u dom=%s tag=%s glob=%u meta_flags=0x%02x position=%u\n",
+                                           (unsigned)i,
+                                           cep_serialization_id_desc(segment->dt.domain, dom_buf, sizeof dom_buf),
+                                           cep_serialization_id_desc(segment->dt.tag, tag_buf, sizeof tag_buf),
+                                           (unsigned)glob_flag,
+                                           (unsigned)meta_flags,
+                                           (unsigned)position);
+        }
+#endif
+        *cursor++ = meta_flags;
+        uint16_t position_be = cep_serial_to_be16(position);
+        memcpy(cursor, &position_be, sizeof position_be);
+        cursor += sizeof position_be;
+    }
+
+    if (include_children_inline) {
+        for (size_t i = 0; i < child_count; ++i)
+            cursor = cep_serialization_manifest_write_child(cursor, &children[i]);
+    }
+
+    if (meta_section) {
+        uint16_t meta_be = cep_serial_to_be16((uint16_t)store_meta_size);
+        memcpy(cursor, &meta_be, sizeof meta_be);
+        cursor += sizeof meta_be;
+        memcpy(cursor, store_meta, store_meta_size);
+        cursor += store_meta_size;
     }
 
     bool ok = cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_STRUCTURE, payload, payload_size);
-    cep_free(payload);
     if (!ok) {
         cep_serialization_emit_failure("serialization.manifest.emit",
                                        cell,
                                        "failed to emit manifest chunk");
     }
+    cep_free(payload);
+    return ok;
+}
+
+static bool cep_serialization_emit_manifest_children(cepSerializationEmitter* emitter,
+                                                     const cepCell* cell,
+                                                     const cepPath* path,
+                                                     const cepSerializationManifestChild* children,
+                                                     size_t child_count,
+                                                     uint16_t descriptor_offset,
+                                                     uint16_t descriptor_count,
+                                                     uint16_t span_index) {
+    if (!emitter || !cell || !path || !children)
+        return false;
+    if (!descriptor_count)
+        return true;
+    if ((size_t)descriptor_offset + descriptor_count > child_count)
+        return false;
+    if (path->length == 0u || path->length > UINT16_MAX)
+        return false;
+
+    uint16_t segment_count = (uint16_t)path->length;
+    size_t segments_bytes = (size_t)segment_count * ((sizeof(uint64_t) * 2u) + 4u);
+    size_t descriptor_bytes = 0u;
+    for (uint16_t i = 0; i < descriptor_count; ++i) {
+        const cepSerializationManifestChild* child = &children[descriptor_offset + i];
+        descriptor_bytes += cep_serialization_manifest_child_descriptor_size(child);
+    }
+
+    size_t payload_size = 10u + segments_bytes + descriptor_bytes;
+    uint8_t* payload = cep_malloc(payload_size);
+    if (!payload)
+        return false;
+
+    uint8_t* cursor = payload;
+    *cursor++ = SERIAL_RECORD_MANIFEST_CHILDREN;
+    *cursor++ = 0u;
+
+    uint16_t span_be = cep_serial_to_be16(span_index);
+    memcpy(cursor, &span_be, sizeof span_be);
+    cursor += sizeof span_be;
+
+    uint16_t offset_be = cep_serial_to_be16(descriptor_offset);
+    memcpy(cursor, &offset_be, sizeof offset_be);
+    cursor += sizeof offset_be;
+
+    uint16_t count_be = cep_serial_to_be16(descriptor_count);
+    memcpy(cursor, &count_be, sizeof count_be);
+    cursor += sizeof count_be;
+
+    uint16_t segments_be = cep_serial_to_be16(segment_count);
+    memcpy(cursor, &segments_be, sizeof segments_be);
+    cursor += sizeof segments_be;
+
+    for (uint16_t i = 0; i < segment_count; ++i) {
+        const cepPast* segment = &path->past[i];
+        uint64_t domain_be = cep_serial_to_be64(segment->dt.domain);
+        memcpy(cursor, &domain_be, sizeof domain_be);
+        cursor += sizeof domain_be;
+
+        uint64_t tag_be = cep_serial_to_be64(segment->dt.tag);
+        memcpy(cursor, &tag_be, sizeof tag_be);
+        cursor += sizeof tag_be;
+
+        *cursor++ = (uint8_t)(segment->dt.glob ? 1u : 0u);
+        uint8_t meta_flags = 0u;
+        uint16_t position = 0u;
+        if (segment->timestamp) {
+            cepOpCount stamp = segment->timestamp;
+            uint64_t ordinal = stamp > 0u ? (uint64_t)(stamp - 1u) : 0u;
+            if (ordinal > UINT16_MAX)
+                ordinal = UINT16_MAX;
+            position = (uint16_t)ordinal;
+            meta_flags |= SERIAL_PATH_FLAG_POSITION;
+        }
+        *cursor++ = meta_flags;
+        uint16_t position_be = cep_serial_to_be16(position);
+        memcpy(cursor, &position_be, sizeof position_be);
+        cursor += sizeof position_be;
+    }
+
+    for (uint16_t i = 0; i < descriptor_count; ++i) {
+        const cepSerializationManifestChild* child = &children[descriptor_offset + i];
+        cursor = cep_serialization_manifest_write_child(cursor, child);
+    }
+
+    bool ok = cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_STRUCTURE, payload, payload_size);
+    cep_free(payload);
+    if (!ok) {
+        cep_serialization_emit_failure("serialization.manifest.children_emit",
+                                       cell,
+                                       "failed to emit manifest children chunk");
+    }
+    return ok;
+}
+
+static bool cep_serialization_emit_manifest_delta(cepSerializationEmitter* emitter,
+                                                  const cepCell* cell,
+                                                  const cepPath* path,
+                                                  uint8_t organiser,
+                                                  uint8_t storage_hint,
+                                                  uint64_t journal_beat,
+                                                  const cepSerializationManifestChild* child) {
+    assert(emitter && cell && path && child);
+
+    if (path->length > UINT16_MAX) {
+        cep_serialization_emit_failure("serialization.manifest.delta_bounds",
+                                       cell,
+                                       "path length %u exceeds manifest limits",
+                                       (unsigned)path->length);
+        return false;
+    }
+
+    uint16_t segment_count = (uint16_t)path->length;
+    size_t child_size = cep_serialization_manifest_child_descriptor_size(child);
+    size_t payload_size = 8u + (sizeof(uint64_t) * 2u) + ((size_t)segment_count * ((sizeof(uint64_t) * 2u) + 4u)) + child_size;
+
+    uint8_t* payload = cep_malloc(payload_size);
+    if (!payload)
+        return false;
+
+    uint8_t* cursor = payload;
+    *cursor++ = SERIAL_RECORD_MANIFEST_DELTA;
+    *cursor++ = child->delta_flags;
+    *cursor++ = organiser;
+    *cursor++ = storage_hint;
+
+    uint16_t segments_be = cep_serial_to_be16(segment_count);
+    memcpy(cursor, &segments_be, sizeof segments_be);
+    cursor += sizeof segments_be;
+
+    *cursor++ = child->cell_type;
+    *cursor++ = 0u; /* reserved */
+
+    uint64_t beat_be = cep_serial_to_be64(journal_beat);
+    memcpy(cursor, &beat_be, sizeof beat_be);
+    cursor += sizeof beat_be;
+
+    uint64_t lineage_parent = 0u;
+    uint64_t lineage_be = cep_serial_to_be64(lineage_parent);
+    memcpy(cursor, &lineage_be, sizeof lineage_be);
+    cursor += sizeof lineage_be;
+
+    for (uint16_t i = 0; i < segment_count; ++i) {
+        const cepPast* segment = &path->past[i];
+        uint64_t domain_be = cep_serial_to_be64(segment->dt.domain);
+        memcpy(cursor, &domain_be, sizeof domain_be);
+        cursor += sizeof domain_be;
+
+        uint64_t tag_be = cep_serial_to_be64(segment->dt.tag);
+        memcpy(cursor, &tag_be, sizeof tag_be);
+        cursor += sizeof tag_be;
+
+        *cursor++ = (uint8_t)(segment->dt.glob ? 1u : 0u);
+        memset(cursor, 0, 3u);
+        cursor += 3u;
+    }
+
+    cursor = cep_serialization_manifest_write_child(cursor, child);
+
+    bool ok = cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_STRUCTURE, payload, payload_size);
+    if (!ok) {
+        cep_serialization_emit_failure("serialization.manifest.delta_emit",
+                                       cell,
+                                       "failed to emit manifest delta chunk");
+    }
+    cep_free(payload);
     return ok;
 }
 
@@ -477,51 +2280,57 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
             return false;
         }
 
-        size_t payload_size = sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint64_t);
-        if (snapshot.size) {
-            if (!snapshot.payload) {
-                cep_serialization_emit_failure("serialization.data.proxy_payload",
-                                               canonical,
-                                               "proxy snapshot missing payload bytes (size=%zu)",
-                                               snapshot.size);
-                cep_proxy_release_snapshot(canonical, &snapshot);
-                return false;
-            }
-            if (payload_size > SIZE_MAX - snapshot.size) {
-                cep_serialization_emit_failure("serialization.data.proxy_payload",
-                                               canonical,
-                                               "proxy payload size overflow (base=%zu extra=%zu)",
-                                               payload_size,
-                                               snapshot.size);
-                cep_proxy_release_snapshot(canonical, &snapshot);
-                return false;
-            }
-            payload_size += snapshot.size;
+        const cepSerializationProxyLibraryCtx* ctx =
+            (const cepSerializationProxyLibraryCtx*)cep_proxy_context(canonical);
+        uint8_t proxy_kind = (ctx && ctx->isStream) ? SERIAL_PROXY_KIND_STREAM : SERIAL_PROXY_KIND_HANDLE;
+
+        bool inline_payload = snapshot.payload && snapshot.size;
+        uint8_t envelope_flags = inline_payload ? 0x01u : 0u;
+
+        if (inline_payload && snapshot.size > SIZE_MAX - (sizeof(uint8_t) * 4u + sizeof(uint32_t) + sizeof(uint64_t))) {
+            cep_serialization_emit_failure("serialization.data.proxy_payload",
+                                           canonical,
+                                           "proxy payload size overflow (size=%zu)",
+                                           snapshot.size);
+            cep_proxy_release_snapshot(canonical, &snapshot);
+            return false;
         }
 
+        size_t payload_size = sizeof(uint8_t) * 4u + sizeof(uint32_t) + sizeof(uint64_t) + (inline_payload ? snapshot.size : 0u);
         uint8_t* payload = cep_malloc(payload_size);
-        uint8_t* p = payload;
+        if (!payload) {
+            cep_proxy_release_snapshot(canonical, &snapshot);
+            return false;
+        }
 
-        uint32_t flags_be = cep_serial_to_be32(snapshot.flags);
-        memcpy(p, &flags_be, sizeof flags_be);
-        p += sizeof flags_be;
+        uint8_t* cursor = payload;
+        *cursor++ = 0x01u; /* version */
+        *cursor++ = proxy_kind;
+        *cursor++ = envelope_flags;
+        *cursor++ = 0u; /* reserved */
 
-        uint32_t reserved = 0;
-        uint32_t reserved_be = cep_serial_to_be32(reserved);
-        memcpy(p, &reserved_be, sizeof reserved_be);
-        p += sizeof reserved_be;
+        uint32_t ticket_len_be = cep_serial_to_be32(0u);
+        memcpy(cursor, &ticket_len_be, sizeof ticket_len_be);
+        cursor += sizeof ticket_len_be;
 
-        uint64_t size_be = cep_serial_to_be64((uint64_t)snapshot.size);
-        memcpy(p, &size_be, sizeof size_be);
-        p += sizeof size_be;
+        uint64_t payload_len = inline_payload ? (uint64_t)snapshot.size : 0u;
+        uint64_t payload_len_be = cep_serial_to_be64(payload_len);
+        memcpy(cursor, &payload_len_be, sizeof payload_len_be);
+        cursor += sizeof payload_len_be;
 
-        if (snapshot.size)
-            memcpy(p, snapshot.payload, snapshot.size);
+        if (inline_payload) {
+            memcpy(cursor, snapshot.payload, snapshot.size);
+            cursor += snapshot.size;
+        }
 
         bool ok = cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_LIBRARY, payload, payload_size);
         cep_free(payload);
         cep_proxy_release_snapshot(canonical, &snapshot);
         if (!ok) {
+            cep_serialization_debug_log("[serialization][data] emit_proxy_failure payload_size=%zu kind=%u flags=0x%x\n",
+                                        payload_size,
+                                        (unsigned)proxy_kind,
+                                        (unsigned)envelope_flags);
             cep_serialization_emit_failure("serialization.data.proxy_emit",
                                            canonical,
                                            "failed to emit proxy chunk");
@@ -540,7 +2349,12 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     if (!data)
         return true;
 
-    if (data->datatype != CEP_DATATYPE_VALUE && data->datatype != CEP_DATATYPE_DATA) {
+    bool is_value = (data->datatype == CEP_DATATYPE_VALUE);
+    bool is_data_type = (data->datatype == CEP_DATATYPE_DATA);
+    bool is_handle = (data->datatype == CEP_DATATYPE_HANDLE);
+    bool is_stream = (data->datatype == CEP_DATATYPE_STREAM);
+
+    if (!is_value && !is_data_type && !is_handle && !is_stream) {
         cep_serialization_emit_failure("serialization.data.type",
                                        canonical,
                                        "unsupported datatype=%u for serialization",
@@ -552,9 +2366,9 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     if (blob_limit < 16u)
         blob_limit = 16u;
 
-    size_t total_size = data->size;
-    const uint8_t* bytes = (const uint8_t*)cep_data_payload(data);
-    if (total_size && !bytes) {
+    size_t total_size = (is_value || is_data_type) ? data->size : 0u;
+    const uint8_t* bytes = (is_value || is_data_type) ? (const uint8_t*)cep_data_payload(data) : NULL;
+    if ((is_value || is_data_type) && total_size && !bytes) {
         cep_serialization_emit_failure("serialization.data.buffer",
                                        canonical,
                                        "payload bytes missing for size=%zu",
@@ -562,70 +2376,184 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
         return false;
     }
 
-    bool chunked = total_size > blob_limit;
+    bool chunked = (is_value || is_data_type) && (total_size > blob_limit);
 
-    size_t header_payload = sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint32_t)
-                           + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t)
-                           + sizeof(uint8_t);
-    size_t inline_size = chunked ? 0u : total_size;
-    if (!chunked)
-        header_payload += inline_size;
+    cepDT* library_segments = NULL;
+    size_t library_count = 0u;
+    cepDT* resource_segments = NULL;
+    size_t resource_count = 0u;
+    uint8_t* metadata = NULL;
+    size_t metadata_size = 0u;
+    uint8_t* payload = NULL;
+    bool ok = false;
 
+    uint64_t payload_hash = 0u;
+    uint64_t journal_beat = emitter->journal_beat;
+
+    if (is_handle || is_stream) {
+        cepCell* library_cell = data->library;
+        cepCell* resource_cell = is_handle ? data->handle : data->stream;
+        if (!library_cell || !resource_cell) {
+            cep_serialization_emit_failure("serialization.data.reference",
+                                           canonical,
+                                           "library/resource missing for handle/stream serialization");
+            goto data_cleanup;
+        }
+        if (!cep_serialization_collect_name_segments(library_cell, &library_segments, &library_count)) {
+            cep_serialization_emit_failure("serialization.data.reference",
+                                           canonical,
+                                           "failed to capture library reference path");
+            goto data_cleanup;
+        }
+        if (!cep_serialization_collect_name_segments(resource_cell, &resource_segments, &resource_count)) {
+            cep_serialization_emit_failure("serialization.data.reference",
+                                           canonical,
+                                           "failed to capture resource reference path");
+            goto data_cleanup;
+        }
+
+        metadata_size = sizeof(uint8_t) * 2u + sizeof(uint16_t)
+                      + cep_serialization_reference_path_size(library_count)
+                      + cep_serialization_reference_path_size(resource_count);
+        if (metadata_size) {
+            metadata = cep_malloc(metadata_size);
+            if (!metadata)
+                goto data_cleanup;
+            uint8_t* meta_cursor = metadata;
+            *meta_cursor++ = 0x01u;
+            uint8_t meta_flags = 0u;
+            if (library_count)
+                meta_flags |= 0x01u;
+            if (resource_count)
+                meta_flags |= 0x02u;
+            *meta_cursor++ = meta_flags;
+            uint16_t reserved_be = cep_serial_to_be16(0u);
+            memcpy(meta_cursor, &reserved_be, sizeof reserved_be);
+            meta_cursor += sizeof reserved_be;
+            if (library_count)
+                meta_cursor = cep_serialization_reference_path_encode(meta_cursor, library_segments, library_count);
+            if (resource_count)
+                meta_cursor = cep_serialization_reference_path_encode(meta_cursor, resource_segments, resource_count);
+        }
+        payload_hash = metadata_size ? cep_hash_bytes(metadata, metadata_size) : 0u;
+    } else {
+        payload_hash = cep_data_compute_hash(data);
+    }
+
+    size_t inline_size = chunked ? 0u : (is_handle || is_stream ? metadata_size : total_size);
+    if (is_handle || is_stream) {
+        char dt_dom_buf[64];
+        char dt_tag_buf[64];
+        cep_serialization_debug_log("[serialization][debug] emit_handle meta_size=%zu library_count=%zu resource_count=%zu inline_size=%zu dt=%s/%s\n",
+                                    metadata_size,
+                                    library_count,
+                                    resource_count,
+                                    inline_size,
+                                    cep_serialization_id_desc(data->dt.domain, dt_dom_buf, sizeof dt_dom_buf),
+                                    cep_serialization_id_desc(data->dt.tag, dt_tag_buf, sizeof dt_tag_buf));
+    }
+    size_t header_payload = 60u + inline_size;
     if (header_payload > SIZE_MAX - CEP_SERIALIZATION_CHUNK_OVERHEAD) {
         cep_serialization_emit_failure("serialization.data.header",
                                        canonical,
                                        "header payload overflow (size=%zu)",
                                        header_payload);
-        return false;
+        goto data_cleanup;
     }
 
-    uint8_t* payload = cep_malloc(header_payload);
-    uint8_t* p = payload;
+    payload = cep_malloc(header_payload);
+    if (!payload)
+        goto data_cleanup;
+
+    uint8_t* cursor = payload;
+    *cursor++ = 0x01u; /* version */
+    uint8_t kind = 0x00u;
+    if (is_data_type)
+        kind = 0x01u;
+    else if (is_handle)
+        kind = 0x02u;
+    else if (is_stream)
+        kind = 0x03u;
+    *cursor++ = kind;
+
+    uint16_t data_flags = chunked ? UINT16_C(0x0001) : UINT16_C(0x0000);
+    data_flags |= UINT16_C(0x0002); /* has hash */
+    uint16_t data_flags_be = cep_serial_to_be16(data_flags);
+    memcpy(cursor, &data_flags_be, sizeof data_flags_be);
+    cursor += sizeof data_flags_be;
+
+    uint64_t journal_be = cep_serial_to_be64(journal_beat);
+    memcpy(cursor, &journal_be, sizeof journal_be);
+    cursor += sizeof journal_be;
+
+    uint64_t hash_be = cep_serial_to_be64(payload_hash);
+    memcpy(cursor, &hash_be, sizeof hash_be);
+    cursor += sizeof hash_be;
 
     uint16_t datatype_be = cep_serial_to_be16((uint16_t)data->datatype);
-    memcpy(p, &datatype_be, sizeof datatype_be);
-    p += sizeof datatype_be;
+    memcpy(cursor, &datatype_be, sizeof datatype_be);
+    cursor += sizeof datatype_be;
 
-    uint16_t flags = chunked ? UINT16_C(0x0001) : UINT16_C(0x0000);
-    uint16_t flags_be = cep_serial_to_be16(flags);
-    memcpy(p, &flags_be, sizeof flags_be);
-    p += sizeof flags_be;
+    uint16_t legacy_flags = chunked ? UINT16_C(0x0001) : UINT16_C(0x0000);
+    uint16_t legacy_flags_be = cep_serial_to_be16(legacy_flags);
+    memcpy(cursor, &legacy_flags_be, sizeof legacy_flags_be);
+    cursor += sizeof legacy_flags_be;
 
     uint32_t inline_be = cep_serial_to_be32((uint32_t)(inline_size & UINT32_C(0xFFFFFFFF)));
-    memcpy(p, &inline_be, sizeof inline_be);
-    p += sizeof inline_be;
+    memcpy(cursor, &inline_be, sizeof inline_be);
+    cursor += sizeof inline_be;
 
     uint64_t total_be = cep_serial_to_be64((uint64_t)total_size);
-    memcpy(p, &total_be, sizeof total_be);
-    p += sizeof total_be;
-
-    uint64_t hash_be = cep_serial_to_be64(data->hash);
-    memcpy(p, &hash_be, sizeof hash_be);
-    p += sizeof hash_be;
+    memcpy(cursor, &total_be, sizeof total_be);
+    cursor += sizeof total_be;
 
     uint64_t dt_domain_be = cep_serial_to_be64(data->dt.domain);
-    memcpy(p, &dt_domain_be, sizeof dt_domain_be);
-    p += sizeof dt_domain_be;
+    memcpy(cursor, &dt_domain_be, sizeof dt_domain_be);
+    cursor += sizeof dt_domain_be;
 
     uint64_t dt_tag_be = cep_serial_to_be64(data->dt.tag);
-    memcpy(p, &dt_tag_be, sizeof dt_tag_be);
-    p += sizeof dt_tag_be;
+    memcpy(cursor, &dt_tag_be, sizeof dt_tag_be);
+    cursor += sizeof dt_tag_be;
 
-    *p++ = (uint8_t)(data->dt.glob ? 1u : 0u);
+    *cursor++ = (uint8_t)(data->dt.glob ? 1u : 0u);
+    memset(cursor, 0, 7u);
+    cursor += 7u;
 
     if (!chunked && inline_size) {
-        memcpy(p, bytes, inline_size);
-        p += inline_size;
+        if (is_handle || is_stream) {
+            memcpy(cursor, metadata, metadata_size);
+        } else {
+            memcpy(cursor, bytes, inline_size);
+        }
+        cursor += inline_size;
+    }
+
+    if (metadata) {
+        cep_free(metadata);
+        metadata = NULL;
+    }
+    if (library_segments) {
+        cep_free(library_segments);
+        library_segments = NULL;
+    }
+    if (resource_segments) {
+        cep_free(resource_segments);
+        resource_segments = NULL;
     }
 
     if (!cep_serialization_emitter_emit(emitter, CEP_CHUNK_CLASS_STRUCTURE, payload, header_payload)) {
         cep_serialization_emit_failure("serialization.data.header_emit",
                                        canonical,
                                        "failed to emit data header chunk");
-        cep_free(payload);
-        return false;
+        goto data_cleanup;
     }
     cep_free(payload);
+    payload = NULL;
+
+    if (!chunked || !total_size) {
+        ok = true;
+        goto data_cleanup;
+    }
 
     if (!chunked || !total_size)
         return true;
@@ -658,7 +2586,7 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
                                            "blob chunk emit failed at offset=%" PRIu64,
                                            offset);
             cep_free(blob);
-            return false;
+            goto data_cleanup;
         }
 
         cep_free(blob);
@@ -666,7 +2594,290 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
         remaining -= slice;
     }
 
-    return true;
+    ok = true;
+
+data_cleanup:
+    if (payload)
+        cep_free(payload);
+    if (metadata)
+        cep_free(metadata);
+    if (library_segments)
+        cep_free(library_segments);
+    if (resource_segments)
+        cep_free(resource_segments);
+    return ok;
+}
+
+static bool cep_serialization_emit_cell_recursive(cepSerializationEmitter* emitter,
+                                                  const cepCell* cell) {
+    if (!emitter || !cell)
+        return false;
+
+    cepCell* canonical = cep_link_pull((cepCell*)cell);
+    if (!canonical) {
+        cep_serialization_emit_failure("serialization.manifest.resolve",
+                                       cell,
+                                       "failed to resolve canonical cell");
+        return false;
+    }
+
+    cepPath* path = NULL;
+    if (!cep_cell_path(canonical, &path)) {
+        cep_serialization_emit_failure("serialization.path.resolve",
+                                       canonical,
+                                       "failed to build cell path for serialization");
+        return false;
+    }
+    cep_serialization_stamp_path_positions(canonical, path);
+    cep_serialization_trim_duplicate_root(path);
+
+    if (cep_serialization_debug_logging_enabled() && path && path->length) {
+        cep_serialization_debug_log("[serialization][emit_cell] path_len=%u",
+                                    (unsigned)path->length);
+        for (unsigned idx = 0; idx < path->length; ++idx) {
+            char dom_buf[64];
+            char tag_buf[64];
+            cepDT cleaned = cep_dt_clean(&path->past[idx].dt);
+            cep_serialization_debug_log("  [%u]=%s/%s%s",
+                                        idx,
+                                        cep_serialization_id_desc(cleaned.domain, dom_buf, sizeof dom_buf),
+                                        cep_serialization_id_desc(cleaned.tag, tag_buf, sizeof tag_buf),
+                                        cleaned.glob ? "*" : "");
+        }
+    }
+
+    uint8_t organiser = cep_serialization_store_organiser(canonical);
+    uint8_t storage_hint = cep_serialization_store_hint(canonical);
+    uint8_t store_meta_buf[SERIAL_STORE_METADATA_CAPACITY] = {0};
+    const uint8_t* store_meta = NULL;
+    size_t store_meta_size = 0u;
+    if (!cep_serialization_build_store_metadata(canonical,
+                                                store_meta_buf,
+                                                sizeof store_meta_buf,
+                                                &store_meta_size)) {
+        uint64_t dt_domain = (canonical->store && cep_dt_is_valid(&canonical->store->dt))
+            ? canonical->store->dt.domain
+            : 0u;
+        uint64_t dt_tag = (canonical->store && cep_dt_is_valid(&canonical->store->dt))
+            ? canonical->store->dt.tag
+            : 0u;
+        cep_serialization_emit_failure("serialization.store.comparator",
+                                       canonical,
+                                       "missing comparator identity for store dt=%016" PRIx64 "/%016" PRIx64,
+                                       dt_domain,
+                                       dt_tag);
+        if (path)
+            cep_free(path);
+        return false;
+    }
+    if (store_meta_size) {
+        storage_hint |= SERIAL_STORAGE_FLAG_METADATA;
+        store_meta = store_meta_buf;
+    }
+
+    cepSerializationManifestChild* children = NULL;
+    size_t child_count = 0u;
+    if (!cep_serialization_collect_children(canonical, organiser, &children, &child_count)) {
+        if (path)
+            cep_free(path);
+        return false;
+    }
+
+    uint8_t base_flags = 0u;
+    bool split_children = child_count > 0u;
+    if (child_count)
+        base_flags |= SERIAL_BASE_FLAG_CHILDREN;
+    if (split_children)
+        base_flags |= SERIAL_BASE_FLAG_CHILDREN_SPLIT;
+    if (canonical->metacell.veiled)
+        base_flags |= SERIAL_BASE_FLAG_VEILED;
+
+    bool wants_payload = false;
+    if (cep_cell_is_proxy(canonical))
+        wants_payload = true;
+    else if (cep_cell_is_normal(canonical) && canonical->data)
+        wants_payload = true;
+
+    if (wants_payload)
+        base_flags |= SERIAL_BASE_FLAG_PAYLOAD;
+
+    uint16_t descriptor_spans = split_children ? 1u : 0u;
+
+    unsigned original_path_len = path ? path->length : 0u;
+    unsigned manifest_path_len = original_path_len;
+    const cepStore* canonical_store = canonical->store;
+    bool trimmed_store_segment = false;
+    if (path &&
+        manifest_path_len &&
+        canonical_store &&
+        canonical_store->chdCount &&
+        cep_dt_is_valid(&canonical_store->dt)) {
+        const cepDT* tail = &path->past[manifest_path_len - 1u].dt;
+        if (tail->domain == canonical_store->dt.domain &&
+            tail->tag == canonical_store->dt.tag &&
+            tail->glob == canonical_store->dt.glob) {
+            manifest_path_len--;
+            trimmed_store_segment = true;
+        }
+    }
+    if (path && manifest_path_len != path->length) {
+#ifdef CEP_ENABLE_DEBUG
+        if (cep_serialization_debug_logging_enabled()) {
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][manifest_path_trim] trimmed_store=%u original_len=%u new_len=%u\n",
+                                           trimmed_store_segment ? 1u : 0u,
+                                           path->length,
+                                           manifest_path_len);
+        }
+#endif
+        path->length = manifest_path_len;
+    }
+
+    bool ok = cep_serialization_emit_manifest_base(emitter,
+                                                   canonical,
+                                                   path,
+                                                   organiser,
+                                                   storage_hint,
+                                                   base_flags,
+                                                   children,
+                                                   child_count,
+                                                   split_children,
+                                                   descriptor_spans,
+                                                   (uint8_t)canonical->metacell.type,
+                                                   store_meta,
+                                                   store_meta_size);
+    if (!ok)
+        goto cleanup;
+
+    if (split_children) {
+        uint16_t descriptor_count = (uint16_t)child_count;
+        if (!cep_serialization_emit_manifest_children(emitter,
+                                                      canonical,
+                                                      path,
+                                                      children,
+                                                      child_count,
+                                                      0u,
+                                                      descriptor_count,
+                                                      0u)) {
+            ok = false;
+            goto cleanup;
+        }
+    }
+
+    for (size_t i = 0; i < child_count; ++i) {
+        if (!cep_serialization_emit_manifest_delta(emitter,
+                                                   canonical,
+                                                   path,
+                                                   organiser,
+                                                   storage_hint,
+                                                   emitter->journal_beat,
+                                                   &children[i])) {
+            ok = false;
+            goto cleanup;
+        }
+    }
+
+    if (!cep_serialization_emit_data(emitter, canonical)) {
+        ok = false;
+        goto cleanup;
+    }
+
+    const cepDT* parent_name = cep_cell_get_name(canonical);
+    bool use_descriptor_order = (children && child_count && organiser != SERIAL_ORGANISER_INSERTION);
+    bool children_emitted = false;
+#ifdef CEP_ENABLE_DEBUG
+    if (cep_serialization_debug_logging_enabled()) {
+        char parent_dom_buf[64];
+        char parent_tag_buf[64];
+        const char* parent_dom = parent_name ? cep_serialization_id_desc(parent_name->domain, parent_dom_buf, sizeof parent_dom_buf) : "<anon>";
+        const char* parent_tag = parent_name ? cep_serialization_id_desc(parent_name->tag, parent_tag_buf, sizeof parent_tag_buf) : "<anon>";
+        CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][emit_children_order] parent=%s/%s descriptors=%zu available=%d organiser=0x%02x\n",
+                                       parent_dom,
+                                       parent_tag,
+                                       child_count,
+                                       use_descriptor_order ? 1 : 0,
+                                       (unsigned)organiser);
+    }
+#endif
+    if (use_descriptor_order) {
+        children_emitted = true;
+        for (size_t i = 0; i < child_count; ++i) {
+            const cepSerializationManifestChild* descriptor = &children[i];
+            if (!descriptor)
+                continue;
+            if ((descriptor->flags & SERIAL_CHILD_FLAG_TOMBSTONE) != 0u)
+                continue;
+            if ((descriptor->delta_flags & SERIAL_DELTA_FLAG_DELETE) != 0u)
+                continue;
+            cepCell* child = cep_cell_find_by_name_all(canonical, &descriptor->name);
+            if (!child)
+                continue;
+            cepCell* resolved = cep_link_pull(child);
+            if (!resolved || cep_cell_is_deleted(resolved))
+                continue;
+#ifdef CEP_ENABLE_DEBUG
+            if (cep_serialization_debug_logging_enabled()) {
+                const cepDT* child_name = cep_cell_get_name(resolved);
+                if (child_name) {
+                    char child_dom_buf[64];
+                    char child_tag_buf[64];
+                    char parent_dom_buf[64];
+                    char parent_tag_buf[64];
+                    const char* parent_dom = parent_name ? cep_serialization_id_desc(parent_name->domain, parent_dom_buf, sizeof parent_dom_buf) : "<anon>";
+                    const char* parent_tag = parent_name ? cep_serialization_id_desc(parent_name->tag, parent_tag_buf, sizeof parent_tag_buf) : "<anon>";
+                    cep_serialization_debug_log("[serialization][emit_child] parent=%s/%s child=%s/%s\n",
+                                                parent_dom,
+                                                parent_tag,
+                                                cep_serialization_id_desc(child_name->domain, child_dom_buf, sizeof child_dom_buf),
+                                                cep_serialization_id_desc(child_name->tag, child_tag_buf, sizeof child_tag_buf));
+                }
+            }
+#endif
+            if (!cep_serialization_emit_cell_recursive(emitter, resolved)) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    if (!children_emitted && ok) {
+        for (cepCell* child = cep_cell_first_all(canonical); child; child = cep_cell_next_all(canonical, child)) {
+            cepCell* resolved = cep_link_pull(child);
+            if (!resolved)
+                continue;
+            if (cep_cell_is_deleted(resolved))
+                continue;
+#ifdef CEP_ENABLE_DEBUG
+            if (cep_serialization_debug_logging_enabled()) {
+                const cepDT* child_name = cep_cell_get_name(resolved);
+                if (child_name) {
+                    char child_dom_buf[64];
+                    char child_tag_buf[64];
+                    char parent_dom_buf[64];
+                    char parent_tag_buf[64];
+                    const char* parent_dom = parent_name ? cep_serialization_id_desc(parent_name->domain, parent_dom_buf, sizeof parent_dom_buf) : "<anon>";
+                    const char* parent_tag = parent_name ? cep_serialization_id_desc(parent_name->tag, parent_tag_buf, sizeof parent_tag_buf) : "<anon>";
+                    cep_serialization_debug_log("[serialization][emit_child] parent=%s/%s child=%s/%s\n",
+                                                parent_dom,
+                                                parent_tag,
+                                                cep_serialization_id_desc(child_name->domain, child_dom_buf, sizeof child_dom_buf),
+                                                cep_serialization_id_desc(child_name->tag, child_tag_buf, sizeof child_tag_buf));
+                }
+            }
+#endif
+            if (!cep_serialization_emit_cell_recursive(emitter, resolved)) {
+                ok = false;
+                break;
+            }
+        }
+    }
+
+cleanup:
+    if (path)
+        path->length = original_path_len;
+    if (children)
+        cep_free(children);
+    if (path)
+        cep_free(path);
+    return ok;
 }
 
 /* Serialise a single cell into the chunked wire format described in
@@ -679,12 +2890,25 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
     payloads. The writer callback receives each chunk and can stream it to disk
     or over the network. */
 bool cep_serialization_emit_cell(const cepCell* cell,
-                                  const cepSerializationHeader* header,
-                                  cepSerializationWriteFn write,
-                                  void* context,
-                                size_t blob_payload_bytes) {
+                                 const cepSerializationHeader* header,
+                                 cepSerializationWriteFn write,
+                                 void* context,
+                               size_t blob_payload_bytes) {
+    bool emit_scope_entered = cep_serialization_emit_scope_enter();
+    bool success = false;
+    cepSerializationEmitter emitter = {0};
+    bool emitter_ready = false;
+
     if (!cell || !write)
-        return false;
+        goto exit;
+
+    cepCell* canonical_root = cep_link_pull((cepCell*)cell);
+    if (!canonical_root) {
+        cep_serialization_emit_failure("serialization.root.resolve",
+                                       cell,
+                                       "failed to resolve canonical root for serialization");
+        goto exit;
+    }
 
     cepSerializationHeader local = header ? *header : (cepSerializationHeader){0};
     cepSerializationRuntimeState* state = cep_serialization_state();
@@ -711,12 +2935,23 @@ bool cep_serialization_emit_cell(const cepCell* cell,
     if (!local.byte_order)
         local.byte_order = CEP_SERIAL_ENDIAN_BIG;
 
+    uint16_t required_caps = CEP_SERIALIZATION_CAP_HISTORY_MANIFEST |
+                             CEP_SERIALIZATION_CAP_MANIFEST_DELTAS  |
+                             CEP_SERIALIZATION_CAP_PAYLOAD_HASH     |
+                             CEP_SERIALIZATION_CAP_PROXY_ENVELOPE   |
+                             CEP_SERIALIZATION_CAP_DIGEST_TRAILER   |
+                             CEP_SERIALIZATION_CAP_SPLIT_DESCRIPTORS;
+    local.flags |= CEP_SERIALIZATION_FLAG_CAPABILITIES;
+    local.capabilities_present = true;
+    local.capabilities |= required_caps;
+    local.capabilities |= CEP_SERIALIZATION_CAP_NAMEPOOL_MAP;
+
     size_t header_size = cep_serialization_header_chunk_size(&local);
     if (!header_size) {
         cep_serialization_emit_failure("serialization.header.size",
                                        cell,
                                        "header chunk size calculation failed");
-        return false;
+        goto exit;
     }
 
     uint8_t* header_chunk = cep_malloc(header_size);
@@ -726,7 +2961,7 @@ bool cep_serialization_emit_cell(const cepCell* cell,
         cep_serialization_emit_failure("serialization.header.write",
                                        cell,
                                        "failed to encode header chunk");
-        return false;
+        goto exit;
     }
 
     bool ok = write(context, header_chunk, written);
@@ -735,49 +2970,72 @@ bool cep_serialization_emit_cell(const cepCell* cell,
         cep_serialization_emit_failure("serialization.header.flush",
                                        cell,
                                        "writer rejected header chunk");
-        return false;
+        goto exit;
     }
 
-    cepSerializationEmitter emitter = {
+    emitter = (cepSerializationEmitter){
         .write = write,
         .context = context,
         .blob_limit = blob_payload_bytes ? blob_payload_bytes : CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD,
+        .journal_beat = local.journal_beat,
+        .root = canonical_root,
     };
+    emitter_ready = true;
+
+    if (!cep_serialization_collect_namepool_entries(&emitter, canonical_root)) {
+        goto exit;
+    }
+
+    if (!cep_serialization_emitter_flush_namepool_map(&emitter)) {
+        goto exit;
+    }
+
     cep_serialization_emitter_reset(&emitter, 1u);
 
-    cepPath* path = NULL;
-    bool success = false;
-
-    if (!cep_cell_path(cell, &path)) {
-        cep_serialization_emit_failure("serialization.path.resolve",
-                                       cell,
-                                       "failed to build cell path for serialization");
-        goto cleanup;
-    }
-
-    if (!cep_serialization_emit_manifest(&emitter, cell, path)) {
-        cep_serialization_emit_failure("serialization.manifest.emit",
-                                       cell,
-                                       "manifest emission failed");
-        goto cleanup;
-    }
-
-    if (!cep_serialization_emit_data(&emitter, cell)) {
-        goto cleanup;
+    if (!cep_serialization_emit_cell_recursive(&emitter, cell)) {
+        goto exit;
     }
 
     if (!cep_serialization_emitter_emit(&emitter, CEP_CHUNK_CLASS_CONTROL, NULL, 0u)) {
         cep_serialization_emit_failure("serialization.control.emit",
                                        cell,
                                        "failed to emit control terminator chunk");
-        goto cleanup;
+        goto exit;
+    }
+
+    uint8_t digest_payload[sizeof(uint16_t) * 2u + sizeof(uint64_t) * 2u];
+    uint8_t* cursor = digest_payload;
+    uint16_t digest_algo = cep_serial_to_be16(UINT16_C(0x0001));
+    memcpy(cursor, &digest_algo, sizeof digest_algo);
+    cursor += sizeof digest_algo;
+
+    uint16_t digest_flags = cep_serial_to_be16(UINT16_C(0x0000));
+    memcpy(cursor, &digest_flags, sizeof digest_flags);
+    cursor += sizeof digest_flags;
+
+    uint64_t digest_beat_be = cep_serial_to_be64(local.journal_beat);
+    memcpy(cursor, &digest_beat_be, sizeof digest_beat_be);
+    cursor += sizeof digest_beat_be;
+
+    uint64_t digest_value_be = cep_serial_to_be64(emitter.digest);
+    memcpy(cursor, &digest_value_be, sizeof digest_value_be);
+
+    if (!cep_serialization_emitter_emit(&emitter,
+                                        CEP_CHUNK_CLASS_CONTROL,
+                                        digest_payload,
+                                        sizeof digest_payload)) {
+        cep_serialization_emit_failure("serialization.control.digest",
+                                       cell,
+                                       "failed to emit digest trailer chunk");
+        goto exit;
     }
 
     success = true;
 
-cleanup:
-    if (path)
-        cep_free(path);
+exit:
+    if (emitter_ready)
+        cep_serialization_emitter_clear_namepool(&emitter);
+    cep_serialization_emit_scope_exit(emit_scope_entered);
     return success;
 }
 
@@ -787,6 +3045,7 @@ typedef struct {
     bool        header_received;
     bool        chunked;
     bool        complete;
+    uint8_t     kind;
     uint16_t    datatype;
     uint16_t    flags;
     cepDT       dt;
@@ -795,24 +3054,172 @@ typedef struct {
     uint8_t*    buffer;
     size_t      size;
     uint64_t    next_offset;
+    uint64_t    journal_beat;
+    uint16_t    legacy_flags;
+    cepDT*      library_segments;
+    size_t      library_segment_count;
+    cepDT*      resource_segments;
+    size_t      resource_segment_count;
 } cepSerializationStageData;
 
 typedef struct {
     bool        needed;
     bool        complete;
     uint32_t    flags;
+    uint8_t     kind;
     uint8_t*    buffer;
     size_t      size;
 } cepSerializationStageProxy;
 
 typedef struct {
+    cepDT       name;
+    uint8_t     flags;
+    uint16_t    position;
+    bool        has_fingerprint;
+    bool        matched;
+    bool        descriptor_ready;
+    bool        freshly_materialized;
+    uint64_t    fingerprint;
+    uint8_t     delta_flags;
+    uint8_t     cell_type;
+} cepSerializationStageChild;
+
+typedef struct {
     cepPath*                     path;
     uint8_t                      cell_type;
-    uint8_t                      manifest_flags;
+    uint8_t                      organiser;
+    uint8_t                      storage_hint;
+    uint8_t                      base_flags;
+    uint8_t*                     store_metadata;
+    size_t                       store_metadata_size;
     uint32_t                     transaction;
     cepSerializationStageData    data;
     cepSerializationStageProxy   proxy;
+    cepSerializationStageChild*  children;
+    size_t                       child_count;
+    size_t                       child_capacity;
+    size_t                       child_target;
+    size_t                       descriptor_spans_expected;
+    size_t                       descriptor_spans_seen;
+    size_t                       delta_expected;
+    size_t                       delta_seen;
 } cepSerializationStage;
+
+#ifdef CEP_ENABLE_DEBUG
+static void cep_serialization_debug_dump_stage(const cepSerializationStage* stage, const char* label) {
+    if (!stage)
+        return;
+
+    unsigned path_len = stage->path ? stage->path->length : 0u;
+    CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][stage] label=%s tx=%u organiser=0x%02x storage_hint=0x%02x base_flags=0x%02x cell_type=%u children=%zu path_len=%u delta=%zu/%zu\n",
+                     label ? label : "(null)",
+                     (unsigned)stage->transaction,
+                     (unsigned)stage->organiser,
+                     (unsigned)stage->storage_hint,
+                     (unsigned)stage->base_flags,
+                     (unsigned)stage->cell_type,
+                     stage->child_count,
+                     path_len,
+                     stage->delta_seen,
+                     stage->delta_expected);
+    if (stage->path) {
+        for (unsigned idx = 0; idx < path_len; ++idx) {
+            const cepPast* segment = &stage->path->past[idx];
+            char dom_buf[64];
+            char tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][stage]   path[%u]=%s/%s%s\n",
+                             idx,
+                             cep_serialization_id_desc(segment->dt.domain, dom_buf, sizeof dom_buf),
+                             cep_serialization_id_desc(segment->dt.tag, tag_buf, sizeof tag_buf),
+                             segment->dt.glob ? "*" : "");
+        }
+    }
+    if (stage->children) {
+        for (size_t i = 0; i < stage->child_count; ++i) {
+            const cepSerializationStageChild* child = &stage->children[i];
+            char dom_buf[64];
+            char tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][stage]   child[%zu] name=%s/%s%s pos=%u flags=0x%02x delta=0x%02x type=%u fp=%s\n",
+                             i,
+                             cep_serialization_id_desc(child->name.domain, dom_buf, sizeof dom_buf),
+                             cep_serialization_id_desc(child->name.tag, tag_buf, sizeof tag_buf),
+                             child->name.glob ? "*" : "",
+                             (unsigned)child->position,
+                             (unsigned)child->flags,
+                             (unsigned)child->delta_flags,
+                             (unsigned)child->cell_type,
+                             child->has_fingerprint ? "yes" : "no");
+        }
+    }
+}
+
+static bool cep_serialization_stage_ensure_child_capacity(cepSerializationStage* stage, size_t required) {
+    if (!stage)
+        return false;
+    if (required == 0u)
+        return true;
+    if (required <= stage->child_capacity && stage->children)
+        return true;
+
+    size_t new_capacity = stage->child_capacity ? stage->child_capacity : 4u;
+    while (new_capacity < required) {
+        size_t doubled = new_capacity << 1u;
+        if (doubled <= new_capacity) { /* overflow */
+            new_capacity = required;
+            break;
+        }
+        new_capacity = doubled;
+    }
+
+    size_t bytes = new_capacity * sizeof(*stage->children);
+    cepSerializationStageChild* grown = stage->children
+        ? cep_realloc(stage->children, bytes)
+        : cep_malloc(bytes);
+    if (!grown)
+        return false;
+
+    if (new_capacity > stage->child_capacity) {
+        size_t delta = new_capacity - stage->child_capacity;
+        memset(grown + stage->child_capacity, 0, delta * sizeof(*stage->children));
+    }
+
+    stage->children = grown;
+    stage->child_capacity = new_capacity;
+    return true;
+}
+#else
+static inline void cep_serialization_debug_dump_stage(const cepSerializationStage* stage, const char* label) {
+    (void)stage;
+    (void)label;
+}
+#endif
+
+static cepSerializationStageChild* cep_serialization_stage_find_child(cepSerializationStage* stage,
+                                                                      const cepDT* name,
+                                                                      bool require_position,
+                                                                      uint16_t position) {
+    if (!stage || !name || !stage->children)
+        return NULL;
+
+    bool positional = require_position && stage->organiser == SERIAL_ORGANISER_INSERTION;
+
+    for (size_t i = 0; i < stage->child_count; ++i) {
+        cepSerializationStageChild* child = &stage->children[i];
+        if (!child->descriptor_ready)
+            continue;
+        if (child->name.domain != name->domain ||
+            child->name.tag != name->tag ||
+            child->name.glob != name->glob) {
+            continue;
+        }
+        if (positional && child->position != position)
+            continue;
+        return child;
+    }
+    return NULL;
+}
+
+
 
 typedef struct {
     uint32_t                 id;
@@ -864,6 +3271,18 @@ static void cep_serialization_stage_data_dispose(cepSerializationStageData* data
         data->buffer = NULL;
     }
 
+    if (data->library_segments) {
+        cep_free(data->library_segments);
+        data->library_segments = NULL;
+    }
+    data->library_segment_count = 0u;
+
+    if (data->resource_segments) {
+        cep_free(data->resource_segments);
+        data->resource_segments = NULL;
+    }
+    data->resource_segment_count = 0u;
+
     memset(data, 0, sizeof(*data));
 }
 
@@ -890,6 +3309,14 @@ static void cep_serialization_stage_dispose(cepSerializationStage* stage) {
 
     cep_serialization_stage_data_dispose(&stage->data);
     cep_serialization_stage_proxy_dispose(&stage->proxy);
+    if (stage->store_metadata) {
+        cep_free(stage->store_metadata);
+        stage->store_metadata = NULL;
+    }
+    if (stage->children) {
+        cep_free(stage->children);
+        stage->children = NULL;
+    }
     memset(stage, 0, sizeof(*stage));
 }
 
@@ -1042,99 +3469,64 @@ static cepSerializationTxState* cep_serialization_reader_get_tx(cepSerialization
     return state;
 }
 
+static bool cep_serialization_reader_record_manifest_base(cepSerializationReader* reader,
+                                                          cepSerializationTxState* tx,
+                                                          uint32_t transaction,
+                                                          const uint8_t* payload,
+                                                          size_t payload_size);
+
+static bool cep_serialization_reader_record_manifest_children(cepSerializationReader* reader,
+                                                              cepSerializationTxState* tx,
+                                                              const uint8_t* payload,
+                                                              size_t payload_size);
+
+static bool cep_serialization_reader_record_manifest_delta(cepSerializationReader* reader,
+                                                           cepSerializationTxState* tx,
+                                                           const uint8_t* payload,
+                                                           size_t payload_size);
+
 static bool cep_serialization_reader_record_manifest(cepSerializationReader* reader,
                                                      cepSerializationTxState* tx,
                                                      uint32_t transaction,
                                                      const uint8_t* payload,
                                                      size_t payload_size) {
-    if (payload_size < 6u)
+    if (!payload || !payload_size)
         return false;
 
-    uint16_t segments = cep_serial_read_be16_buf(payload);
-    uint8_t cell_type = payload[2];
-    uint8_t manifest_flags = payload[3];
-    uint16_t reserved = cep_serial_read_be16_buf(payload + 4);
-    (void)reserved;
-
-    size_t expected_bytes = (size_t)segments * ((sizeof(uint64_t) * 2u) + sizeof(uint8_t));
-    if ((size_t)6u + expected_bytes > payload_size)
-        return false;
-
-    if (!segments)
-        return false;
-
-    if (!cep_serialization_reader_ensure_stage_capacity(reader, reader->stage_count + 1u))
-        return false;
-
-    cepSerializationStage* stage = &reader->stages[reader->stage_count++];
-    memset(stage, 0, sizeof(*stage));
-    stage->cell_type = cell_type;
-    stage->manifest_flags = manifest_flags;
-    stage->transaction = transaction;
-
-    size_t path_bytes = sizeof(cepPath) + (size_t)segments * sizeof(cepPast);
-    cepPath* path = cep_malloc(path_bytes);
-    if (!path)
-        return false;
-    path->length = segments;
-    path->capacity = segments;
-
-    const uint8_t* cursor = payload + 6u;
-    for (uint16_t i = 0; i < segments; ++i) {
-        cepPast* segment = &path->past[i];
-        segment->dt.domain = cep_serial_read_be64_buf(cursor);
-        cursor += sizeof(uint64_t);
-        segment->dt.tag = cep_serial_read_be64_buf(cursor);
-        cursor += sizeof(uint64_t);
-        segment->dt.glob = cursor[0] != 0u;
-        cursor += sizeof(uint8_t);
-        segment->timestamp = 0;
+    uint8_t record_type = payload[0];
+    switch (record_type) {
+      case SERIAL_RECORD_MANIFEST_BASE:
+        return cep_serialization_reader_record_manifest_base(reader,
+                                                             tx,
+                                                             transaction,
+                                                             payload,
+                                                             payload_size);
+      case SERIAL_RECORD_MANIFEST_CHILDREN:
+        return cep_serialization_reader_record_manifest_children(reader,
+                                                                 tx,
+                                                                 payload,
+                                                                 payload_size);
+      case SERIAL_RECORD_MANIFEST_DELTA:
+        return cep_serialization_reader_record_manifest_delta(reader,
+                                                              tx,
+                                                              payload,
+                                                              payload_size);
+      default:
+        break;
     }
-    stage->path = path;
-
-    bool wants_data = (manifest_flags & 0x08u) != 0u;
-    bool wants_proxy = (manifest_flags & 0x20u) != 0u;
-    if (wants_data && wants_proxy)
-        return false;
-
-    stage->proxy.needed = wants_proxy;
-    stage->proxy.complete = !wants_proxy;
-    stage->proxy.flags = 0;
-    stage->proxy.buffer = NULL;
-    stage->proxy.size = 0;
-
-    if (wants_data) {
-        stage->data.needed = true;
-        stage->data.dt.domain = 0;
-        stage->data.dt.tag = 0;
-        stage->data.dt.glob = 0;
-        stage->data.total_size = 0;
-        stage->data.hash = 0;
-        stage->data.buffer = NULL;
-        stage->data.size = 0;
-        stage->data.next_offset = 0;
-        stage->data.header_received = false;
-        stage->data.chunked = false;
-        stage->data.complete = false;
-        tx->pending_stage = stage;
-    } else {
-        stage->data.needed = false;
-        stage->data.complete = true;
-        if (wants_proxy)
-            tx->pending_stage = stage;
-        else
-            tx->pending_stage = NULL;
-    }
-
-    return true;
+    return false;
 }
 
 static bool cep_serialization_stage_allocate_buffer(cepSerializationStageData* data, size_t size) {
     if (!data)
         return false;
 
-    if (!size) {
+    if (data->buffer) {
+        cep_free(data->buffer);
         data->buffer = NULL;
+    }
+
+    if (!size) {
         data->size = 0;
         data->next_offset = 0;
         return true;
@@ -1157,30 +3549,93 @@ static bool cep_serialization_reader_record_data_header(cepSerializationStageDat
     if (!data || !payload)
         return false;
 
-    if (payload_size < (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u) + sizeof(uint8_t))
+    if (payload_size < 60u) {
+        cep_serialization_debug_log("[serialization][debug] reader_data_header short payload payload_size=%zu chunked_flag=%u\n",
+                                    payload_size,
+                                    data->flags);
         return false;
+    }
 
-    data->datatype = cep_serial_read_be16_buf(payload);
+    data->kind = payload[1u];
     data->flags = cep_serial_read_be16_buf(payload + 2u);
-    data->chunked = (data->flags & UINT16_C(0x0001)) != 0;
-    uint32_t inline_len = cep_serial_read_be32_buf(payload + 4u);
-    data->total_size = cep_serial_read_be64_buf(payload + 8u);
-    data->hash = cep_serial_read_be64_buf(payload + 16u);
-    data->dt.domain = cep_serial_read_be64_buf(payload + 24u);
-    data->dt.tag = cep_serial_read_be64_buf(payload + 32u);
-    data->dt.glob = payload[40u] != 0u;
+    data->chunked = (data->flags & UINT16_C(0x0001)) != 0u;
+    data->journal_beat = cep_serial_read_be64_buf(payload + 4u);
+    data->hash = cep_serial_read_be64_buf(payload + 12u);
+    data->datatype = cep_serial_read_be16_buf(payload + 20u);
+    data->legacy_flags = cep_serial_read_be16_buf(payload + 22u);
+    uint32_t inline_len = cep_serial_read_be32_buf(payload + 24u);
+    data->total_size = cep_serial_read_be64_buf(payload + 28u);
+    data->dt.domain = cep_serial_read_be64_buf(payload + 36u);
+    data->dt.tag = cep_serial_read_be64_buf(payload + 44u);
+    data->dt.glob = payload[52u] != 0u;
 
-    size_t header_bytes = (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u) + sizeof(uint8_t);
+    size_t header_bytes = 60u;
     size_t expected_inline = payload_size - header_bytes;
 
-    if (!data->chunked) {
+    char dt_dom_buf[64];
+    char dt_tag_buf[64];
+    cep_serialization_debug_log("[serialization][debug] reader_data_header payload_size=%zu inline_len=%u inline_size=%zu expected_inline=%zu chunked=%d total_size=%" PRIu64 " datatype=%u journal=%" PRIu64 " hash=%" PRIu64 " dt=%s/%s\n",
+                                payload_size,
+                                (unsigned)inline_len,
+                                inline_size,
+                                expected_inline,
+                                data->chunked ? 1 : 0,
+                                (uint64_t)data->total_size,
+                                (unsigned)data->datatype,
+                                (uint64_t)data->journal_beat,
+                                (uint64_t)data->hash,
+                                cep_serialization_id_desc(data->dt.domain, dt_dom_buf, sizeof dt_dom_buf),
+                                cep_serialization_id_desc(data->dt.tag, dt_tag_buf, sizeof dt_tag_buf));
+
+    if (data->datatype == CEP_DATATYPE_HANDLE || data->datatype == CEP_DATATYPE_STREAM) {
+        if (data->chunked)
+            return false;
+        if ((size_t)inline_len != inline_size || inline_size != expected_inline)
+            return false;
+        if (!inline_bytes || inline_size < 4u)
+            return false;
+        const uint8_t* cursor = inline_bytes;
+        size_t remaining = inline_size;
+        uint8_t meta_version = cursor[0];
+        uint8_t meta_flags = cursor[1];
+        cursor += 2u;
+        remaining -= 2u;
+        uint16_t reserved = cep_serial_read_be16_buf(cursor);
+        (void)reserved;
+        cursor += 2u;
+        remaining -= 2u;
+        if (meta_version != 0x01u)
+            return false;
+        if ((meta_flags & 0x01u) != 0u) {
+            if (!cep_serialization_reference_path_decode(&cursor,
+                                                         &remaining,
+                                                         &data->library_segments,
+                                                         &data->library_segment_count)) {
+                return false;
+            }
+        }
+        if ((meta_flags & 0x02u) != 0u) {
+            if (!cep_serialization_reference_path_decode(&cursor,
+                                                         &remaining,
+                                                         &data->resource_segments,
+                                                         &data->resource_segment_count)) {
+                return false;
+            }
+        }
+        if (remaining != 0u)
+            return false;
+        data->buffer = NULL;
+        data->size = 0u;
+        data->total_size = 0u;
+        data->complete = true;
+    } else if (!data->chunked) {
         if ((size_t)inline_len != inline_size || inline_size != expected_inline)
             return false;
         if ((uint64_t)inline_size != data->total_size)
             return false;
         if (!cep_serialization_stage_allocate_buffer(data, inline_size ? inline_size : 1u))
             return false;
-        if (inline_size)
+        if (inline_size && inline_bytes)
             memcpy(data->buffer, inline_bytes, inline_size);
         data->size = inline_size;
         data->complete = true;
@@ -1193,6 +3648,7 @@ static bool cep_serialization_reader_record_data_header(cepSerializationStageDat
     }
 
     data->header_received = true;
+    data->next_offset = 0;
     return true;
 }
 
@@ -1234,6 +3690,8 @@ static bool cep_serialization_reader_record_data_chunk(cepSerializationStageData
 static bool cep_serialization_reader_check_hash(const cepSerializationStageData* data) {
     if (!data)
         return false;
+    if (data->datatype == CEP_DATATYPE_HANDLE || data->datatype == CEP_DATATYPE_STREAM)
+        return true;
     if (!data->hash)
         return true;
     if (data->total_size && !data->buffer)
@@ -1256,48 +3714,1229 @@ static bool cep_serialization_reader_check_hash(const cepSerializationStageData*
     return computed == data->hash;
 }
 
-static bool cep_serialization_reader_apply_stage(const cepSerializationReader* reader,
-                                                 cepSerializationStage* stage) {
-    if (!reader || !stage || !reader->root)
+typedef struct {
+    cepSerializationStageChild* child;
+    size_t                      index;
+} cepSerializationChildOrder;
+
+static int cep_serialization_child_order_cmp(const void* lhs_ptr, const void* rhs_ptr) {
+    const cepSerializationChildOrder* lhs = (const cepSerializationChildOrder*)lhs_ptr;
+    const cepSerializationChildOrder* rhs = (const cepSerializationChildOrder*)rhs_ptr;
+    uint16_t lhs_position = lhs->child ? lhs->child->position : 0u;
+    uint16_t rhs_position = rhs->child ? rhs->child->position : 0u;
+    if (lhs_position < rhs_position)
+        return -1;
+    if (lhs_position > rhs_position)
+        return 1;
+    if (lhs->index < rhs->index)
+        return -1;
+    if (lhs->index > rhs->index)
+        return 1;
+    return 0;
+}
+
+static int cep_serialization_manifest_child_cmp_name(const void* lhs_ptr,
+                                                     const void* rhs_ptr) {
+    const cepSerializationManifestChild* lhs =
+        (const cepSerializationManifestChild*)lhs_ptr;
+    const cepSerializationManifestChild* rhs =
+        (const cepSerializationManifestChild*)rhs_ptr;
+    if (lhs->name.domain < rhs->name.domain)
+        return -1;
+    if (lhs->name.domain > rhs->name.domain)
+        return 1;
+    if (lhs->name.tag < rhs->name.tag)
+        return -1;
+    if (lhs->name.tag > rhs->name.tag)
+        return 1;
+    if (lhs->name.glob != rhs->name.glob)
+        return lhs->name.glob ? 1 : -1;
+    if (lhs->position < rhs->position)
+        return -1;
+    if (lhs->position > rhs->position)
+        return 1;
+    return 0;
+}
+
+static bool cep_serialization_child_needs_materialization(const cepSerializationStageChild* child) {
+    if (!child)
+        return false;
+    if ((child->delta_flags & SERIAL_DELTA_FLAG_ADD) == 0u)
+        return false;
+    if ((child->flags & SERIAL_CHILD_FLAG_TOMBSTONE) != 0u)
+        return false;
+    uint8_t cell_type = child->cell_type ? child->cell_type : CEP_TYPE_NORMAL;
+    if (cell_type != CEP_TYPE_NORMAL)
+        return false;
+    return true;
+}
+
+static bool cep_serialization_child_resolve_descriptor(cepCell* parent,
+                                                       const cepSerializationStageChild* descriptor,
+                                                       bool positional,
+                                                       cepCell** out_child) {
+    if (!parent || !descriptor || !out_child)
         return false;
 
-    unsigned path_length = stage->path->length;
-    if (!path_length)
-        return false;
+    *out_child = NULL;
 
-    unsigned limit = path_length;
+    if (!cep_cell_is_normal(parent) || !cep_cell_has_store(parent))
+        return true;
 
-    if (stage->manifest_flags & 0x10u) {
-        if (limit == 0u)
-            return false;
-        limit--;
+    if (positional) {
+        size_t position = (size_t)descriptor->position;
+        size_t child_count = cep_cell_children(parent);
+        if (position >= child_count)
+            return true;
+        cepCell* slot = cep_cell_find_by_position(parent, position);
+        if (!slot)
+            return true;
+        cepCell* resolved = cep_link_pull(slot);
+        if (!resolved)
+            return true;
+        const cepDT* name = cep_cell_get_name(resolved);
+        if (!name)
+            return true;
+        if (name->domain != descriptor->name.domain ||
+            name->tag != descriptor->name.tag ||
+            name->glob != descriptor->name.glob)
+            return true;
+        *out_child = resolved;
+        return true;
     }
 
-    if (stage->data.needed) {
-        if (limit == 0u)
+    cepDT lookup = cep_dt_make(descriptor->name.domain, descriptor->name.tag);
+    cepCell* counterpart = cep_cell_find_by_name_all(parent, &lookup);
+    if (!counterpart)
+        return true;
+    cepCell* resolved = cep_link_pull(counterpart);
+    if (!resolved)
+        return true;
+    const cepDT* name = cep_cell_get_name(resolved);
+    if (!name)
+        return true;
+    if (name->domain != descriptor->name.domain ||
+        name->tag != descriptor->name.tag ||
+        name->glob != descriptor->name.glob)
+        return true;
+    *out_child = resolved;
+    return true;
+}
+
+static cepCell* cep_serialization_child_add(cepCell* parent,
+                                            cepSerializationStageChild* descriptor,
+                                            size_t insert_at) {
+    if (!parent || !descriptor)
+        return NULL;
+    if (!cep_cell_is_normal(parent) || !cep_cell_has_store(parent))
+        return NULL;
+    cepDT name = descriptor->name;
+    uint8_t cell_type = descriptor->cell_type ? descriptor->cell_type : CEP_TYPE_NORMAL;
+    cepCell* inserted = NULL;
+
+    switch (cell_type) {
+      case CEP_TYPE_NORMAL:
+        inserted = cep_cell_add_empty(parent, &name, insert_at);
+        break;
+      default:
+        return NULL;
+    }
+
+    if (!inserted)
+        return NULL;
+
+    inserted->metacell.veiled = (descriptor->flags & SERIAL_CHILD_FLAG_VEILED) ? 1u : 0u;
+#ifdef CEP_ENABLE_DEBUG
+    cepDT cleaned = cep_dt_clean(&descriptor->name);
+    char dom_buf[64];
+    char tag_buf[64];
+    const char* parent_dom = "<anon>";
+    const char* parent_tag = "<anon>";
+    if (parent) {
+        char parent_dom_buf[64];
+        char parent_tag_buf[64];
+        const cepDT* parent_name = cep_cell_get_name(parent);
+        if (parent_name) {
+            parent_dom = cep_serialization_id_desc(parent_name->domain, parent_dom_buf, sizeof parent_dom_buf);
+            parent_tag = cep_serialization_id_desc(parent_name->tag, parent_tag_buf, sizeof parent_tag_buf);
+        }
+    }
+    CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][child_add] parent=%p (%s/%s) inserted=%p name=%s/%s type=%u insert_at=%zu\n",
+                     (void*)parent,
+                     parent_dom,
+                     parent_tag,
+                     (void*)inserted,
+                     cep_serialization_id_desc(cleaned.domain, dom_buf, sizeof dom_buf),
+                     cep_serialization_id_desc(cleaned.tag, tag_buf, sizeof tag_buf),
+                     (unsigned)cell_type,
+                     insert_at);
+#endif
+    return inserted;
+}
+
+static bool cep_serialization_reader_materialize_child_additions(cepSerializationStage* stage,
+                                                                 cepCell* current) {
+    if (!stage || !current || !stage->child_count || !stage->children)
+        return true;
+
+    bool positional = (stage->organiser == SERIAL_ORGANISER_INSERTION);
+    bool name_ordered = (stage->organiser == SERIAL_ORGANISER_NAME);
+
+    if (!cep_cell_is_normal(current) || !cep_cell_has_store(current))
+        return true;
+
+    cepSerializationChildOrder* order = NULL;
+    if (stage->child_count) {
+        order = cep_malloc(stage->child_count * sizeof(*order));
+        if (!order)
             return false;
-        const cepPast* data_segment = &stage->path->past[limit - 1u];
-        if (stage->data.dt.domain && stage->data.dt.tag) {
-            if (stage->data.dt.domain != data_segment->dt.domain ||
-                stage->data.dt.tag != data_segment->dt.tag) {
+        for (size_t i = 0; i < stage->child_count; ++i) {
+            order[i].child = &stage->children[i];
+            order[i].index = i;
+        }
+        qsort(order, stage->child_count, sizeof(*order), cep_serialization_child_order_cmp);
+    }
+
+    cepDT debug_link_tgt = *CEP_DTAW("CEP", "link_tgt");
+#ifdef CEP_ENABLE_DEBUG
+    char parent_dom_buf[64];
+    char parent_tag_buf[64];
+    const char* parent_dom = "<anon>";
+    const char* parent_tag = "<anon>";
+    const cepDT* parent_name = cep_cell_get_name(current);
+    if (parent_name) {
+        parent_dom = cep_serialization_id_desc(parent_name->domain, parent_dom_buf, sizeof parent_dom_buf);
+        parent_tag = cep_serialization_id_desc(parent_name->tag, parent_tag_buf, sizeof parent_tag_buf);
+    }
+#endif
+
+    for (size_t i = 0; i < stage->child_count; ++i) {
+        cepSerializationStageChild* descriptor = order ? order[i].child : &stage->children[i];
+        if (descriptor && descriptor->cell_type == 0u)
+            descriptor->cell_type = CEP_TYPE_NORMAL;
+        bool needs_creation = cep_serialization_child_needs_materialization(descriptor);
+        bool descriptor_tombstone = (descriptor->flags & SERIAL_CHILD_FLAG_TOMBSTONE) != 0u;
+        bool descriptor_delete = (descriptor->delta_flags & SERIAL_DELTA_FLAG_DELETE) != 0u;
+        bool needs_tombstone = descriptor_tombstone || (name_ordered && descriptor_delete);
+#ifdef CEP_ENABLE_DEBUG
+        cepDT descriptor_name_clean = cep_dt_clean(&descriptor->name);
+        if (descriptor_name_clean.domain == debug_link_tgt.domain &&
+            descriptor_name_clean.tag == debug_link_tgt.tag) {
+            char child_dom_buf[64];
+            char child_tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][materialize][link_tgt] name=%s/%s needs_creation=%d needs_tombstone=%d flags=0x%02x delta=0x%02x\n",
+                             cep_serialization_id_desc(descriptor_name_clean.domain, child_dom_buf, sizeof child_dom_buf),
+                             cep_serialization_id_desc(descriptor_name_clean.tag, child_tag_buf, sizeof child_tag_buf),
+                             needs_creation ? 1 : 0,
+                             needs_tombstone ? 1 : 0,
+                             (unsigned)descriptor->flags,
+                             (unsigned)descriptor->delta_flags);
+        }
+#endif
+        if (!needs_creation && !needs_tombstone)
+            continue;
+
+        cepCell* existing = NULL;
+        if (!cep_serialization_child_resolve_descriptor(current, descriptor, positional, &existing)) {
+            if (order)
+                cep_free(order);
+            return false;
+        }
+        bool exists = existing != NULL;
+#ifdef CEP_ENABLE_DEBUG
+        if (needs_tombstone) {
+            char child_dom_buf[64];
+            char child_tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][materialize] tombstone descriptor parent=%s/%s name=%s/%s exists=%d pos=%u delta=0x%02x\n",
+                             parent_dom,
+                             parent_tag,
+                             cep_serialization_id_desc(descriptor->name.domain, child_dom_buf, sizeof child_dom_buf),
+                             cep_serialization_id_desc(descriptor->name.tag, child_tag_buf, sizeof child_tag_buf),
+                             exists ? 1 : 0,
+                             (unsigned)descriptor->position,
+                             (unsigned)descriptor->delta_flags);
+        }
+#endif
+        if (needs_tombstone) {
+            if (exists) {
+                cepCell* resolved_existing = cep_link_pull(existing);
+                if (resolved_existing && !cep_cell_is_deleted(resolved_existing)) {
+                    cep_cell_delete(resolved_existing);
+#ifdef CEP_ENABLE_DEBUG
+                    cepDT cleaned = cep_dt_clean(&descriptor->name);
+                    char dom_buf[64];
+                    char tag_buf[64];
+                    CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][materialize] tombstone applied to existing child parent=%p (%s/%s) child=%p name=%s/%s\n",
+                                     (void*)current,
+                                     parent_dom,
+                                     parent_tag,
+                                     (void*)resolved_existing,
+                                     cep_serialization_id_desc(cleaned.domain, dom_buf, sizeof dom_buf),
+                                     cep_serialization_id_desc(cleaned.tag, tag_buf, sizeof tag_buf));
+#endif
+                }
+                continue;
+            }
+
+            size_t insert_at = positional ? (size_t)descriptor->position : cep_cell_children(current);
+            if (positional) {
+                size_t child_count = cep_cell_children(current);
+                if (insert_at > child_count)
+                    insert_at = child_count;
+            }
+
+            cepCell* inserted = cep_serialization_child_add(current, descriptor, insert_at);
+            if (!inserted)
+                continue;
+
+            descriptor->freshly_materialized = true;
+            cep_cell_delete(inserted);
+#ifdef CEP_ENABLE_DEBUG
+            cepDT cleaned = cep_dt_clean(&descriptor->name);
+            char dom_buf[64];
+            char tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][materialize] tombstone node created parent=%p (%s/%s) child=%p pos=%zu name=%s/%s\n",
+                             (void*)current,
+                             parent_dom,
+                             parent_tag,
+                             (void*)inserted,
+                             insert_at,
+                             cep_serialization_id_desc(cleaned.domain, dom_buf, sizeof dom_buf),
+                             cep_serialization_id_desc(cleaned.tag, tag_buf, sizeof tag_buf));
+#endif
+            continue;
+        }
+
+        if (!needs_creation)
+            continue;
+
+        if (exists)
+            continue;
+
+        size_t insert_at = positional ? (size_t)descriptor->position : cep_cell_children(current);
+        if (positional) {
+            size_t child_count = cep_cell_children(current);
+            if (insert_at > child_count)
+                insert_at = child_count;
+        }
+
+        cepCell* inserted = cep_serialization_child_add(current, descriptor, insert_at);
+        if (!inserted)
+            continue;
+        descriptor->freshly_materialized = true;
+#ifdef CEP_ENABLE_DEBUG
+        cepDT cleaned = cep_dt_clean(&descriptor->name);
+        char dom_buf[64];
+        char tag_buf[64];
+        CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][materialize] child retained parent=%p (%s/%s) child=%p pos=%zu name=%s/%s\n",
+                         (void*)current,
+                         parent_dom,
+                         parent_tag,
+                         (void*)inserted,
+                         insert_at,
+                         cep_serialization_id_desc(cleaned.domain, dom_buf, sizeof dom_buf),
+                         cep_serialization_id_desc(cleaned.tag, tag_buf, sizeof tag_buf));
+#endif
+    }
+
+    if (order)
+        cep_free(order);
+    return true;
+}
+
+
+static bool cep_serialization_reader_validate_manifest_children(const cepSerializationReader* reader,
+                                                                cepSerializationStage* stage,
+                                                                cepCell* current) {
+    (void)reader;
+    if (!stage || !current)
+        return false;
+
+    bool positional = (stage->organiser == SERIAL_ORGANISER_INSERTION);
+#ifdef CEP_ENABLE_DEBUG
+    char parent_dom_buf[64];
+    char parent_tag_buf[64];
+    const char* parent_dom = "<anon>";
+    const char* parent_tag = "<anon>";
+    const cepDT* parent_name = cep_cell_get_name(current);
+    if (parent_name) {
+        parent_dom = cep_serialization_id_desc(parent_name->domain, parent_dom_buf, sizeof parent_dom_buf);
+        parent_tag = cep_serialization_id_desc(parent_name->tag, parent_tag_buf, sizeof parent_tag_buf);
+    }
+#endif
+
+    typedef struct {
+        cepCell*        cell;
+        const cepDT*    name;
+        size_t          position;
+        bool            matched;
+        bool            deleted;
+        bool            veiled;
+        uint8_t         type;
+        bool            fingerprint_valid;
+        uint64_t        fingerprint;
+    } ValidationChild;
+
+    ValidationChild* actual_children = NULL;
+    size_t actual_len = 0u;
+    size_t actual_capacity = 0u;
+
+    for (size_t i = 0; i < stage->child_count; ++i)
+        stage->children[i].matched = false;
+
+    if (positional) {
+        actual_capacity = stage->child_count ? stage->child_count : 4u;
+        if (actual_capacity)
+            actual_children = cep_malloc(sizeof(*actual_children) * actual_capacity);
+        if (actual_capacity && !actual_children)
+            return false;
+
+        size_t position_index = 0u;
+        for (cepCell* child = cep_cell_first_all(current); child; child = cep_cell_next_all(current, child)) {
+            cepCell* resolved = cep_link_pull(child);
+            if (!resolved || !cep_cell_is_normal(resolved))
+                continue;
+            const cepDT* name = cep_cell_get_name(resolved);
+            if (!name)
+                continue;
+
+            if (actual_len >= actual_capacity) {
+                size_t new_capacity = actual_capacity ? actual_capacity * 2u : 4u;
+                ValidationChild* grown = cep_realloc(actual_children, sizeof(*actual_children) * new_capacity);
+                if (!grown) {
+                    if (actual_children)
+                        cep_free(actual_children);
+                    return false;
+                }
+                actual_children = grown;
+                actual_capacity = new_capacity;
+            }
+
+            actual_children[actual_len++] = (ValidationChild){
+                .cell = resolved,
+                .name = name,
+                .position = position_index,
+                .matched = false,
+                .deleted = cep_cell_is_deleted(resolved),
+                .veiled = resolved->metacell.veiled != 0u,
+                .type = (uint8_t)resolved->metacell.type,
+                .fingerprint_valid = false,
+                .fingerprint = 0u,
+            };
+            position_index++;
+        }
+    }
+
+    if (positional) {
+        for (size_t i = 0; i < stage->child_count; ++i) {
+            cepSerializationStageChild* descriptor = &stage->children[i];
+            bool expect_tombstone = (descriptor->flags & SERIAL_CHILD_FLAG_TOMBSTONE) != 0u;
+
+            if (expect_tombstone) {
+                ValidationChild* entry = NULL;
+                for (size_t j = 0; j < actual_len; ++j) {
+                    ValidationChild* candidate = &actual_children[j];
+                    if (candidate->matched)
+                        continue;
+                    if (candidate->position != (size_t)descriptor->position)
+                        continue;
+                    entry = candidate;
+                    break;
+                }
+            if (entry && !entry->deleted) {
+#ifdef CEP_ENABLE_DEBUG
+                    char desc_dom_buf[64];
+                    char desc_tag_buf[64];
+                    CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=tombstone_not_deleted pos=%u name=%s/%s\n",
+                                     parent_dom,
+                                     parent_tag,
+                                     (unsigned)descriptor->position,
+                                     cep_serialization_id_desc(descriptor->name.domain, desc_dom_buf, sizeof desc_dom_buf),
+                                     cep_serialization_id_desc(descriptor->name.tag, desc_tag_buf, sizeof desc_tag_buf));
+#endif
+                if (actual_children)
+                    cep_free(actual_children);
+                return false;
+            }
+                if (entry)
+                    entry->matched = true;
+                descriptor->matched = true;
+                continue;
+            }
+
+            ValidationChild* candidate = NULL;
+            for (size_t j = 0; j < actual_len; ++j) {
+                ValidationChild* entry = &actual_children[j];
+                if (entry->matched)
+                    continue;
+                if (entry->position != (size_t)descriptor->position)
+                    continue;
+                candidate = entry;
+                break;
+            }
+
+            if ((descriptor->delta_flags & SERIAL_DELTA_FLAG_ADD) != 0u) {
+                if (candidate)
+                    candidate->matched = true;
+                descriptor->matched = true;
+                continue;
+            }
+
+            if (!candidate || candidate->deleted) {
+#ifdef CEP_ENABLE_DEBUG
+                char desc_dom_buf[64];
+                char desc_tag_buf[64];
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=missing_candidate pos=%u deleted=%d name=%s/%s\n",
+                                 parent_dom,
+                                 parent_tag,
+                                 (unsigned)descriptor->position,
+                                 candidate ? candidate->deleted : -1,
+                                 cep_serialization_id_desc(descriptor->name.domain, desc_dom_buf, sizeof desc_dom_buf),
+                                 cep_serialization_id_desc(descriptor->name.tag, desc_tag_buf, sizeof desc_tag_buf));
+#endif
+                if (actual_children)
+                    cep_free(actual_children);
+                return false;
+            }
+
+            if (candidate->name->domain != descriptor->name.domain ||
+                candidate->name->tag != descriptor->name.tag ||
+                candidate->name->glob != descriptor->name.glob) {
+#ifdef CEP_ENABLE_DEBUG
+                char desc_dom_buf[64];
+                char desc_tag_buf[64];
+                char cand_dom_buf[64];
+                char cand_tag_buf[64];
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=name pos=%u expected=%s/%s actual=%s/%s\n",
+                                 parent_dom,
+                                 parent_tag,
+                                 (unsigned)descriptor->position,
+                                 cep_serialization_id_desc(descriptor->name.domain, desc_dom_buf, sizeof desc_dom_buf),
+                                 cep_serialization_id_desc(descriptor->name.tag, desc_tag_buf, sizeof desc_tag_buf),
+                                 cep_serialization_id_desc(candidate->name->domain, cand_dom_buf, sizeof cand_dom_buf),
+                                 cep_serialization_id_desc(candidate->name->tag, cand_tag_buf, sizeof cand_tag_buf));
+#endif
+                if (actual_children)
+                    cep_free(actual_children);
+                return false;
+            }
+
+            if (descriptor->cell_type && candidate->type != descriptor->cell_type) {
+#ifdef CEP_ENABLE_DEBUG
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=type pos=%u expected=%u actual=%u\n",
+                                 parent_dom,
+                                 parent_tag,
+                                 (unsigned)descriptor->position,
+                                 (unsigned)descriptor->cell_type,
+                                 (unsigned)candidate->type);
+#endif
+                if (actual_children)
+                    cep_free(actual_children);
+                return false;
+            }
+
+            bool expected_veiled = (descriptor->flags & SERIAL_CHILD_FLAG_VEILED) != 0u;
+            if (candidate->veiled != expected_veiled) {
+#ifdef CEP_ENABLE_DEBUG
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=veiled pos=%u expected=%d actual=%d\n",
+                                 parent_dom,
+                                 parent_tag,
+                                 (unsigned)descriptor->position,
+                                 expected_veiled ? 1 : 0,
+                                 candidate->veiled ? 1 : 0);
+#endif
+                if (actual_children)
+                    cep_free(actual_children);
+                return false;
+            }
+
+            if (descriptor->has_fingerprint && !descriptor->freshly_materialized) {
+                if (!candidate->fingerprint_valid) {
+                    if (!cep_serialization_compute_cell_fingerprint(candidate->cell, &candidate->fingerprint)) {
+                        if (actual_children)
+                            cep_free(actual_children);
+                        return false;
+                    }
+                    candidate->fingerprint_valid = true;
+                }
+                if (candidate->fingerprint != descriptor->fingerprint) {
+#ifdef CEP_ENABLE_DEBUG
+                    CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=fingerprint pos=%u expected=0x%016" PRIx64 " actual=0x%016" PRIx64 "\n",
+                                     parent_dom,
+                                     parent_tag,
+                                     (unsigned)descriptor->position,
+                                     descriptor->fingerprint,
+                                     candidate->fingerprint);
+#endif
+                    if (actual_children)
+                        cep_free(actual_children);
+                    return false;
+                }
+            }
+
+            candidate->matched = true;
+            descriptor->matched = true;
+        }
+
+        for (size_t j = 0; j < actual_len; ++j) {
+            ValidationChild* entry = &actual_children[j];
+            if (!entry->matched && !entry->deleted) {
+#ifdef CEP_ENABLE_DEBUG
+                char cand_dom_buf[64];
+                char cand_tag_buf[64];
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=extra_child pos=%zu name=%s/%s\n",
+                                 parent_dom,
+                                 parent_tag,
+                                 entry->position,
+                                 entry->name ? cep_serialization_id_desc(entry->name->domain, cand_dom_buf, sizeof cand_dom_buf) : "<unknown>",
+                                 entry->name ? cep_serialization_id_desc(entry->name->tag, cand_tag_buf, sizeof cand_tag_buf) : "<unknown>");
+#endif
+                if (actual_children)
+                    cep_free(actual_children);
                 return false;
             }
         }
-        limit--;
+
+        if (actual_children)
+            cep_free(actual_children);
+        return true;
     }
 
-    if (limit == 0u)
+    for (size_t i = 0; i < stage->child_count; ++i) {
+        cepSerializationStageChild* descriptor = &stage->children[i];
+        cepDT name = cep_dt_make(descriptor->name.domain, descriptor->name.tag);
+        cepCell* counterpart = cep_cell_find_by_name_all(current, &name);
+
+        if ((descriptor->flags & SERIAL_CHILD_FLAG_TOMBSTONE) != 0u) {
+            if (counterpart) {
+                cepCell* resolved = cep_link_pull(counterpart);
+                if (resolved && !cep_cell_is_deleted(resolved)) {
+#ifdef CEP_ENABLE_DEBUG
+                    char desc_dom_buf[64];
+                    char desc_tag_buf[64];
+                    CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=name_tombstone_not_deleted name=%s/%s\n",
+                                     parent_dom,
+                                     parent_tag,
+                                     cep_serialization_id_desc(descriptor->name.domain, desc_dom_buf, sizeof desc_dom_buf),
+                                     cep_serialization_id_desc(descriptor->name.tag, desc_tag_buf, sizeof desc_tag_buf));
+#endif
+                    return false;
+                }
+            }
+            descriptor->matched = true;
+            continue;
+        }
+
+        if (!counterpart) {
+            if ((descriptor->delta_flags & SERIAL_DELTA_FLAG_ADD) != 0u) {
+                descriptor->matched = true;
+                continue;
+            }
+#ifdef CEP_ENABLE_DEBUG
+            char desc_dom_buf[64];
+            char desc_tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=missing_counterpart name=%s/%s\n",
+                             parent_dom,
+                             parent_tag,
+                             cep_serialization_id_desc(descriptor->name.domain, desc_dom_buf, sizeof desc_dom_buf),
+                             cep_serialization_id_desc(descriptor->name.tag, desc_tag_buf, sizeof desc_tag_buf));
+#endif
+            return false;
+        }
+
+        cepCell* resolved = cep_link_pull(counterpart);
+        if (!resolved) {
+#ifdef CEP_ENABLE_DEBUG
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=counterpart_resolve\n",
+                             parent_dom,
+                             parent_tag);
+#endif
+            return false;
+        }
+
+        const cepDT* resolved_name = cep_cell_get_name(resolved);
+        if (!resolved_name) {
+#ifdef CEP_ENABLE_DEBUG
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=counterpart_name\n",
+                             parent_dom,
+                             parent_tag);
+#endif
+            return false;
+        }
+        if (resolved_name->domain != descriptor->name.domain ||
+            resolved_name->tag != descriptor->name.tag ||
+            resolved_name->glob != descriptor->name.glob) {
+#ifdef CEP_ENABLE_DEBUG
+            char desc_dom_buf[64];
+            char desc_tag_buf[64];
+            char cand_dom_buf[64];
+            char cand_tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=name expected=%s/%s actual=%s/%s\n",
+                             parent_dom,
+                             parent_tag,
+                             cep_serialization_id_desc(descriptor->name.domain, desc_dom_buf, sizeof desc_dom_buf),
+                             cep_serialization_id_desc(descriptor->name.tag, desc_tag_buf, sizeof desc_tag_buf),
+                             cep_serialization_id_desc(resolved_name->domain, cand_dom_buf, sizeof cand_dom_buf),
+                             cep_serialization_id_desc(resolved_name->tag, cand_tag_buf, sizeof cand_tag_buf));
+#endif
+            return false;
+        }
+
+        if (descriptor->cell_type && (uint8_t)resolved->metacell.type != descriptor->cell_type) {
+#ifdef CEP_ENABLE_DEBUG
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=type expected=%u actual=%u\n",
+                             parent_dom,
+                             parent_tag,
+                             (unsigned)descriptor->cell_type,
+                             (unsigned)resolved->metacell.type);
+#endif
+            return false;
+        }
+
+        bool expected_veiled = (descriptor->flags & SERIAL_CHILD_FLAG_VEILED) != 0u;
+        if ((resolved->metacell.veiled != 0u) != expected_veiled) {
+#ifdef CEP_ENABLE_DEBUG
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=veiled expected=%d actual=%d\n",
+                             parent_dom,
+                             parent_tag,
+                             expected_veiled ? 1 : 0,
+                             resolved->metacell.veiled ? 1 : 0);
+#endif
+            return false;
+        }
+
+        if (descriptor->has_fingerprint && !descriptor->freshly_materialized) {
+            uint64_t fingerprint = 0u;
+            if (!cep_serialization_compute_cell_fingerprint(resolved, &fingerprint)) {
+#ifdef CEP_ENABLE_DEBUG
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=fingerprint_compute\n",
+                                 parent_dom,
+                                 parent_tag);
+#endif
+                return false;
+            }
+            if (fingerprint != descriptor->fingerprint) {
+#ifdef CEP_ENABLE_DEBUG
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=fingerprint expected=0x%016" PRIx64 " actual=0x%016" PRIx64 "\n",
+                                 parent_dom,
+                                 parent_tag,
+                                 descriptor->fingerprint,
+                                 fingerprint);
+#endif
+                return false;
+            }
+        }
+
+        if (cep_cell_is_deleted(resolved)) {
+#ifdef CEP_ENABLE_DEBUG
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=unexpected_deletion name=%s/%s\n",
+                             parent_dom,
+                             parent_tag,
+                             parent_dom,
+                             parent_tag);
+#endif
+            return false;
+        }
+
+        descriptor->matched = true;
+    }
+
+    for (cepCell* child = cep_cell_first_all(current); child; child = cep_cell_next_all(current, child)) {
+        cepCell* resolved = cep_link_pull(child);
+        if (!resolved || !cep_cell_is_normal(resolved))
+            continue;
+        const cepDT* name = cep_cell_get_name(resolved);
+        if (!name)
+            continue;
+
+        const cepSerializationStageChild* descriptor = cep_serialization_stage_find_child(stage,
+                                                                                         name,
+                                                                                         false,
+                                                                                         0u);
+        if (!descriptor) {
+#ifdef CEP_ENABLE_DEBUG
+            char child_dom_buf[64];
+            char child_tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=unexpected_child name=%s/%s\n",
+                             parent_dom,
+                             parent_tag,
+                             cep_serialization_id_desc(name->domain, child_dom_buf, sizeof child_dom_buf),
+                             cep_serialization_id_desc(name->tag, child_tag_buf, sizeof child_tag_buf));
+#endif
+            return false;
+        }
+
+        if ((descriptor->flags & SERIAL_CHILD_FLAG_TOMBSTONE) != 0u) {
+            if (!cep_cell_is_deleted(resolved)) {
+#ifdef CEP_ENABLE_DEBUG
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=tombstone_unexpected_live name=%s/%s\n",
+                                 parent_dom,
+                                 parent_tag,
+                                 parent_dom,
+                                 parent_tag);
+#endif
+                return false;
+            }
+            continue;
+        }
+
+        if (cep_cell_is_deleted(resolved)) {
+#ifdef CEP_ENABLE_DEBUG
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][validate] parent=%s/%s mismatch=child_deleted name=%s/%s\n",
+                             parent_dom,
+                             parent_tag,
+                             parent_dom,
+                             parent_tag);
+#endif
+            return false;
+        }
+    }
+
+    return true;
+}
+
+
+static unsigned cep_serialization_index_from_organiser(uint8_t organiser) {
+    switch (organiser) {
+      case SERIAL_ORGANISER_INSERTION:
+        return CEP_INDEX_BY_INSERTION;
+      case SERIAL_ORGANISER_NAME:
+        return CEP_INDEX_BY_NAME;
+      case SERIAL_ORGANISER_HASH:
+        return CEP_INDEX_BY_HASH;
+      case SERIAL_ORGANISER_FUNCTION:
+      case SERIAL_ORGANISER_FUNCTION_OCTREE:
+        return CEP_INDEX_BY_FUNCTION;
+      default:
+        return CEP_INDEX_BY_NAME;
+    }
+}
+
+static unsigned cep_serialization_storage_from_hint(uint8_t hint, unsigned index) {
+    uint8_t code = hint & (uint8_t)~SERIAL_STORAGE_FLAG_METADATA;
+    switch (code) {
+      case 0x01u:
+        return CEP_STORAGE_LINKED_LIST;
+      case 0x02u:
+        return CEP_STORAGE_RED_BLACK_T;
+      case 0x03u:
+        return CEP_STORAGE_ARRAY;
+      case 0x04u:
+        return CEP_STORAGE_PACKED_QUEUE;
+      case 0x05u:
+        return CEP_STORAGE_HASH_TABLE;
+      case 0x06u:
+        return CEP_STORAGE_OCTREE;
+      default:
+        break;
+    }
+    switch (index) {
+      case CEP_INDEX_BY_INSERTION:
+        return CEP_STORAGE_LINKED_LIST;
+      case CEP_INDEX_BY_FUNCTION:
+        return CEP_STORAGE_RED_BLACK_T;
+      case CEP_INDEX_BY_HASH:
+        return CEP_STORAGE_HASH_TABLE;
+      case CEP_INDEX_BY_NAME:
+      default:
+        return CEP_STORAGE_RED_BLACK_T;
+    }
+}
+
+static bool cep_serialization_reader_configure_store(cepCell* current,
+                                                     uint8_t organiser,
+                                                     uint8_t storage_hint,
+                                                     const cepDT* store_dt,
+                                                     const uint8_t* store_meta,
+                                                     size_t store_meta_size) {
+    if (!current || !cep_cell_is_normal(current))
         return false;
+
+    unsigned desired_index = cep_serialization_index_from_organiser(organiser);
+    unsigned desired_storage = cep_serialization_storage_from_hint(storage_hint, desired_index);
+
+    cepStore* existing = current->store;
+    cepSerializationStoreMeta meta = {0};
+    if (store_meta && store_meta_size) {
+        if (!cep_serialization_parse_store_metadata(store_meta, store_meta_size, &meta))
+            return false;
+    }
+    size_t layout_capacity = 0u;
+    if (meta.has_layout && meta.layout_storage == desired_storage)
+        layout_capacity = (size_t)meta.layout_capacity;
+    cepDT configured = {0};
+    if (meta.has_type)
+        configured = cep_dt_clean(&meta.type);
+    else if (store_dt && cep_dt_is_valid(store_dt))
+        configured = cep_dt_clean(store_dt);
+
+#ifdef CEP_ENABLE_DEBUG
+    cepDT configured_snapshot = configured;
+    const cepDT* existing_dt = (existing && cep_dt_is_valid(&existing->dt)) ? &existing->dt : NULL;
+    char configured_dom_buf[64];
+    char configured_tag_buf[64];
+    char existing_dom_buf[64];
+    char existing_tag_buf[64];
+    CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][store_config] node=%p organiser=0x%02x storage_hint=0x%02x desired_index=%u desired_storage=%u has_store=%d current_index=%u current_storage=%u manageable=%d configured_dt=%s/%s existing_dt=%s/%s\n",
+                     (void*)current,
+                     (unsigned)organiser,
+                     (unsigned)storage_hint,
+                     desired_index,
+                     desired_storage,
+                     existing ? 1 : 0,
+                     existing ? existing->indexing : 0u,
+                     existing ? existing->storage : 0u,
+                     (desired_index == CEP_INDEX_BY_INSERTION || desired_index == CEP_INDEX_BY_NAME) ? 1 : 0,
+                     cep_serialization_id_desc(configured_snapshot.domain, configured_dom_buf, sizeof configured_dom_buf),
+                     cep_serialization_id_desc(configured_snapshot.tag, configured_tag_buf, sizeof configured_tag_buf),
+                     existing_dt ? cep_serialization_id_desc(existing_dt->domain, existing_dom_buf, sizeof existing_dom_buf) : "<none>",
+                     existing_dt ? cep_serialization_id_desc(existing_dt->tag, existing_tag_buf, sizeof existing_tag_buf) : "<none>");
+#endif
+
+    size_t existing_children = existing ? cep_cell_children(current) : 0u;
+    bool requires_replacement = true;
+    if (existing &&
+        existing->indexing == desired_index &&
+        existing->storage == desired_storage) {
+        requires_replacement = false;
+        if (meta.has_comparator) {
+            cepCompareInfo current_info = {0};
+            if (!existing->compare) {
+                cepCompare comparator = cep_comparator_registry_lookup(&meta.comparator);
+                if (!comparator)
+                    return false;
+                existing->compare = comparator;
+            } else if (!cep_compare_identity(existing->compare, &current_info) ||
+                       !cep_compare_info_equal(&current_info, &meta.comparator)) {
+                return false;
+            }
+        }
+        if (cep_dt_is_valid(&configured))
+            existing->dt = configured;
+        if (existing->storage == CEP_STORAGE_ARRAY || existing->storage == CEP_STORAGE_PACKED_QUEUE ||
+            existing->storage == CEP_STORAGE_HASH_TABLE) {
+            existing->writable = 1u;
+        }
+    }
+
+    if (existing && requires_replacement && existing_children > 0u &&
+        existing->indexing == CEP_INDEX_BY_INSERTION) {
+#ifdef CEP_ENABLE_DEBUG
+        cepDT name_snapshot = {0};
+        const cepDT* name = cep_cell_get_name(current);
+        if (name)
+            name_snapshot = *name;
+        char dom_buf[64];
+        char tag_buf[64];
+        CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][store_config][preserve] node=%p name=%s/%s"
+                         " existing_index=%u existing_storage=%u desired_index=%u desired_storage=%u children=%zu\n",
+                         (void*)current,
+                         cep_serialization_id_desc(name_snapshot.domain, dom_buf, sizeof dom_buf),
+                         cep_serialization_id_desc(name_snapshot.tag, tag_buf, sizeof tag_buf),
+                         (unsigned)existing->indexing,
+                         (unsigned)existing->storage,
+                         desired_index,
+                         desired_storage,
+                         existing_children);
+#endif
+        requires_replacement = false;
+    }
+
+    if (!requires_replacement)
+        return true;
+
+    if (!cep_dt_is_valid(&configured)) {
+        if (existing && cep_dt_is_valid(&existing->dt)) {
+            configured = cep_dt_clean(&existing->dt);
+        } else if (desired_index == CEP_INDEX_BY_INSERTION) {
+            configured = *dt_list_type_default();
+        } else {
+            configured = *dt_dictionary_type();
+        }
+    }
+
+    cepStore* replacement = NULL;
+    bool needs_compare = (desired_index == CEP_INDEX_BY_FUNCTION || desired_index == CEP_INDEX_BY_HASH);
+    cepCompare comparator = NULL;
+    if (needs_compare) {
+        if (meta.has_comparator) {
+            comparator = cep_comparator_registry_lookup(&meta.comparator);
+            if (!comparator) {
+                cep_serialization_emit_failure("serialization.store.comparator_unknown",
+                                               current,
+                                               "missing comparator entry domain=%016" PRIx64 " tag=%016" PRIx64 " version=%u flags=0x%08x",
+                                               (uint64_t)meta.comparator.identifier.domain,
+                                               (uint64_t)meta.comparator.identifier.tag,
+                                               meta.comparator.version,
+                                               meta.comparator.flags);
+                return false;
+            }
+        } else if (desired_storage == CEP_STORAGE_OCTREE) {
+            comparator = cep_serialization_octree_compare_stub;
+        } else {
+            comparator = cep_serialization_default_compare;
+        }
+    }
+
+    if (desired_storage == CEP_STORAGE_OCTREE) {
+        float center[3] = {0};
+        float subwide = 0.0f;
+        uint16_t max_depth = 0u;
+        uint16_t max_per_node = 0u;
+        float min_subwide = 0.0f;
+        if (!meta.has_octree ||
+            !cep_serialization_parse_octree_metadata(meta.octree_payload,
+                                                     meta.octree_payload_size,
+                                                     center,
+                                                     &subwide,
+                                                     &max_depth,
+                                                     &max_per_node,
+                                                     &min_subwide)) {
+            return false;
+        }
+        double bound = (double)subwide;
+        if (bound <= 0.0)
+            bound = 1.0;
+        cepCompare octree_compare = comparator ? comparator : cep_serialization_octree_compare_stub;
+        replacement = cep_store_new(&configured,
+                                    desired_storage,
+                                    desired_index,
+                                    center,
+                                    bound,
+                                    octree_compare);
+        if (!replacement)
+            return false;
+        cepOctree* octree = (cepOctree*)replacement;
+        octree_set_policy(octree, max_depth, max_per_node, min_subwide);
+    } else if (desired_storage == CEP_STORAGE_ARRAY) {
+        size_t capacity_hint = layout_capacity ? layout_capacity : 8u;
+        replacement = cep_store_new(&configured, desired_storage, desired_index, capacity_hint);
+    } else if (desired_storage == CEP_STORAGE_PACKED_QUEUE) {
+        size_t capacity_hint = layout_capacity ? layout_capacity : 8u;
+        replacement = cep_store_new(&configured, desired_storage, desired_index, capacity_hint);
+    } else if (desired_storage == CEP_STORAGE_HASH_TABLE) {
+        size_t capacity_hint = layout_capacity ? layout_capacity : 16u;
+        cepCompare selected = comparator ? comparator : cep_serialization_default_compare;
+        replacement = cep_store_new(&configured, desired_storage, desired_index, capacity_hint, selected);
+    } else if (needs_compare) {
+        cepCompare selected = comparator ? comparator : cep_serialization_default_compare;
+        replacement = cep_store_new(&configured, desired_storage, desired_index, selected);
+    } else {
+        replacement = cep_store_new(&configured, desired_storage, desired_index);
+    }
+    if (!replacement)
+        return false;
+    replacement->owner = current;
+    replacement->writable = 1u;
+
+    if (existing) {
+        cep_store_delete_children_hard(existing);
+        cep_store_del(existing);
+    }
+
+    current->store = replacement;
+    return true;
+}
+
+
+static bool cep_serialization_reader_apply_stage(const cepSerializationReader* reader,
+                                                 cepSerializationStage* stage) {
+    const char* fail_reason = NULL;
+    unsigned path_length = 0u;
+    unsigned limit = 0u;
+    if (!reader || !stage || !reader->root) {
+        fail_reason = "invalid_args";
+        goto fail;
+    }
+
+    path_length = stage->path ? stage->path->length : 0u;
+    if (!path_length) {
+        fail_reason = "empty_path";
+        goto fail;
+    }
+
+    limit = path_length;
+
+    bool child_flag = (stage->base_flags & SERIAL_BASE_FLAG_CHILDREN) != 0u;
+    bool store_meta_present = stage->store_metadata && stage->store_metadata_size;
+    bool has_storage_hint = stage->storage_hint != 0u;
+    bool configure_store = child_flag || store_meta_present || has_storage_hint;
+    if ((stage->base_flags & SERIAL_BASE_FLAG_CHILDREN_SPLIT) != 0u) {
+        if (!stage->descriptor_spans_expected ||
+            stage->descriptor_spans_seen < stage->descriptor_spans_expected ||
+            (stage->child_target && stage->child_count < stage->child_target)) {
+            fail_reason = "descriptor_pending";
+            goto fail;
+        }
+    }
+
+    if (child_flag && limit == 0u) {
+        fail_reason = "limit_children_zero";
+        goto fail;
+    }
+
+    if (stage->data.needed) {
+        if (limit == 0u) {
+            fail_reason = "limit_data_zero";
+            goto fail;
+        }
+        const cepPast* data_segment = &stage->path->past[limit - 1u];
+        bool dt_valid = stage->data.dt.domain || stage->data.dt.tag || stage->data.dt.glob;
+        bool payload_segment = false;
+        if (dt_valid) {
+            payload_segment = (stage->data.dt.domain == data_segment->dt.domain) &&
+                              (stage->data.dt.tag == data_segment->dt.tag) &&
+                              ((stage->data.dt.glob != 0u) == (data_segment->dt.glob != 0u));
+        }
+        if (payload_segment) {
+            limit--;
+        } else if (dt_valid) {
+#ifdef CEP_ENABLE_DEBUG
+            char data_dom_buf[64];
+            char data_tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][apply_stage] payload path sentinel missing; treating full path as structural "
+                             "path_len=%u data_dt=%s/%s\n",
+                             (unsigned)path_length,
+                             cep_serialization_id_desc(stage->data.dt.domain, data_dom_buf, sizeof data_dom_buf),
+                             cep_serialization_id_desc(stage->data.dt.tag, data_tag_buf, sizeof data_tag_buf));
+#endif
+        }
+    }
+
+    if (limit == 0u) {
+        fail_reason = "limit_zero";
+        goto fail;
+    }
+#ifdef CEP_ENABLE_DEBUG
+    CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][apply_stage] path_len=%u limit=%u base_flags=0x%02x children=%zu organiser=0x%02x storage_hint=0x%02x child_target=%zu\n",
+                     (unsigned)path_length,
+                     (unsigned)limit,
+                     (unsigned)stage->base_flags,
+                     (size_t)stage->child_count,
+                     (unsigned)stage->organiser,
+                     (unsigned)stage->storage_hint,
+                     stage->child_target);
+    if (stage->path && stage->path->length <= 5u) {
+        CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][apply_stage] path segments:");
+        for (unsigned idx = 0; idx < stage->path->length; ++idx) {
+            cepDT cleaned = cep_dt_clean(&stage->path->past[idx].dt);
+            char dom_buf[64];
+            char tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("  [%u]=%s/%s%s",
+                             idx,
+                             cep_serialization_id_desc(cleaned.domain, dom_buf, sizeof dom_buf),
+                             cep_serialization_id_desc(cleaned.tag, tag_buf, sizeof tag_buf),
+                             cleaned.glob ? "*" : "");
+        }
+    }
+#endif
+
+#ifdef CEP_ENABLE_DEBUG
+    cepDT debug_link_tgt = *CEP_DTAW("CEP", "link_tgt");
+    cepDT debug_poc = *CEP_DTAW("CEP", "poc");
+    if (stage->path && path_length) {
+        bool contains_link_tgt = false;
+        bool contains_poc = false;
+        for (unsigned idx = 0; idx < path_length; ++idx) {
+            cepDT cleaned = cep_dt_clean(&stage->path->past[idx].dt);
+            if (cleaned.domain == debug_link_tgt.domain &&
+                cleaned.tag == debug_link_tgt.tag) {
+                contains_link_tgt = true;
+            }
+            if (cleaned.domain == debug_poc.domain &&
+                cleaned.tag == debug_poc.tag) {
+                contains_poc = true;
+            }
+        }
+        if (contains_link_tgt) {
+        CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][apply_stage][link_tgt] children=%zu base_flags=0x%02x organiser=0x%02x storage_hint=0x%02x\n",
+                         (size_t)stage->child_count,
+                         (unsigned)stage->base_flags,
+                         (unsigned)stage->organiser,
+                         (unsigned)stage->storage_hint);
+        for (size_t idx = 0; idx < stage->child_count; ++idx) {
+            const cepSerializationStageChild* child = &stage->children[idx];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][link_tgt_child] idx=%zu flags=0x%02x delta=0x%02x pos=%u type=%u fingerprint=%s\n",
+                             idx,
+                             (unsigned)child->flags,
+                             (unsigned)child->delta_flags,
+                             (unsigned)child->position,
+                             (unsigned)child->cell_type,
+                             child->has_fingerprint ? "yes" : "no");
+        }
+        }
+        if (contains_poc) {
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][apply_stage][poc] children=%zu base_flags=0x%02x organiser=0x%02x storage_hint=0x%02x\n",
+                             (size_t)stage->child_count,
+                             (unsigned)stage->base_flags,
+                             (unsigned)stage->organiser,
+                             (unsigned)stage->storage_hint);
+            for (size_t idx = 0; idx < stage->child_count; ++idx) {
+                const cepSerializationStageChild* child = &stage->children[idx];
+                char dom_buf[64];
+                char tag_buf[64];
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][poc_child] idx=%zu name=%s/%s%s flags=0x%02x delta=0x%02x pos=%u\n",
+                                 idx,
+                                 cep_serialization_id_desc(child->name.domain, dom_buf, sizeof dom_buf),
+                                 cep_serialization_id_desc(child->name.tag, tag_buf, sizeof tag_buf),
+                                 child->name.glob ? "*" : "",
+                                 (unsigned)child->flags,
+                                 (unsigned)child->delta_flags,
+                                 (unsigned)child->position);
+            }
+        }
+    }
+#endif
+
+    const cepDT* store_dt = NULL;
+    if (configure_store && path_length) {
+        store_dt = &stage->path->past[path_length - 1u].dt;
+    }
 
     cepCell* current = reader->root;
     for (unsigned idx = 0; idx < limit; ++idx) {
         const cepPast* segment = &stage->path->past[idx];
         cepDT name = cep_dt_make(segment->dt.domain, segment->dt.tag);
-        cepCell* child = cep_cell_find_by_name(current, &name);
+        bool positional_segment = segment->timestamp != 0u;
+        bool allow_name_fallback = !positional_segment;
+        size_t positional_index = positional_segment && segment->timestamp > 0u
+                                      ? (size_t)(segment->timestamp - 1u)
+                                      : 0u;
+        cepCell* child = NULL;
+        if (positional_segment) {
+            child = cep_cell_find_by_position(current, positional_index);
+            if (child) {
+                cepCell* resolved_child = cep_link_pull(child);
+                if (!resolved_child) {
+                    child = NULL;
+                } else {
+                    const cepDT* resolved_name = cep_cell_get_name(resolved_child);
+                    if (!resolved_name ||
+                        resolved_name->domain != name.domain ||
+                        resolved_name->tag != name.tag) {
+                        child = NULL;
+                    }
+                }
+            }
+#ifdef CEP_ENABLE_DEBUG
+            char dom_buf[64];
+            char tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][apply_path_meta] idx=%u position=%zu dom=%s tag=%s found=%p\n",
+                             idx,
+                             positional_index,
+                             cep_serialization_id_desc(name.domain, dom_buf, sizeof dom_buf),
+                             cep_serialization_id_desc(name.tag, tag_buf, sizeof tag_buf),
+                             (void*)child);
+#endif
+        }
+        if (!child && allow_name_fallback)
+            child = cep_cell_find_by_name(current, &name);
         if (!child) {
             bool final_segment = (idx + 1u == limit);
-            if (final_segment && stage->cell_type == CEP_TYPE_PROXY)
-                return false;
+            if (final_segment && stage->cell_type == CEP_TYPE_PROXY) {
+                fail_reason = "proxy_missing";
+                goto fail;
+            }
 
             if (!final_segment) {
                 cepDT dict_type = *dt_dictionary_type();
@@ -1307,37 +4946,59 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
                                                 &dict_type,
                                                 CEP_STORAGE_RED_BLACK_T);
             } else {
-                child = cep_cell_add_empty(current, &name, 0);
+                size_t insert_at = 0u;
+                if (positional_segment && cep_cell_has_store(current)) {
+                    size_t child_count = cep_cell_children(current);
+                    insert_at = positional_index <= child_count ? positional_index : child_count;
+                }
+                child = cep_cell_add_empty(current, &name, insert_at);
+#ifdef CEP_ENABLE_DEBUG
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][insert_child] idx=%u insert_at=%zu parent_children=%zu parent=%p child=%p\n",
+                                 idx,
+                                 insert_at,
+                                 cep_cell_children(current),
+                                 (void*)current,
+                                 (void*)child);
+#endif
             }
         }
-        if (!child)
-            return false;
+        if (!child) {
+            fail_reason = "child_create";
+            goto fail;
+        }
         current = cep_link_pull(child);
     }
 
-    if (!current)
-        return false;
+    if (!current) {
+        fail_reason = "current_null";
+        goto fail;
+    }
 
-    if ((uint8_t)current->metacell.type != stage->cell_type)
-        return false;
+    if ((uint8_t)current->metacell.type != stage->cell_type) {
+        fail_reason = "type_mismatch";
+        goto fail;
+    }
 
-    current->metacell.veiled = (stage->manifest_flags & 0x01u) ? 1u : 0u;
+    current->metacell.veiled = (stage->base_flags & SERIAL_BASE_FLAG_VEILED) ? 1u : 0u;
+
+    cepData* pending_payload = NULL;
+    cepData* previous_payload = NULL;
 
     if (stage->data.needed) {
-        if (!stage->data.complete)
-            return false;
-        if (!cep_serialization_reader_check_hash(&stage->data))
-            return false;
-
-        if (current->data) {
-            cep_data_del(current->data);
-            current->data = NULL;
+        if (!stage->data.complete) {
+            fail_reason = "data_incomplete";
+            goto fail;
+        }
+        if (!cep_serialization_reader_check_hash(&stage->data)) {
+            fail_reason = "hash_mismatch";
+            goto fail;
         }
 
-        size_t size = (size_t)stage->data.total_size;
-        size_t capacity = size ? size : 1u;
+        previous_payload = current->data;
         cepData* payload = NULL;
         if (stage->data.datatype == CEP_DATATYPE_VALUE) {
+            size_t size = (size_t)stage->data.total_size;
+            size_t capacity = size ? size : 1u;
             payload = cep_data_new(&stage->data.dt,
                                    CEP_DATATYPE_VALUE,
                                    true,
@@ -1345,13 +5006,31 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
                                    stage->data.buffer,
                                    size,
                                    capacity);
-            if (!payload)
-                return false;
+            if (!payload) {
+                fail_reason = "payload_value_alloc";
+                goto fail;
+            }
+            if (stage->data.buffer) {
+                cep_free(stage->data.buffer);
+                stage->data.buffer = NULL;
+            }
+            cep_serialization_normalize_stream_outcome(payload);
         } else if (stage->data.datatype == CEP_DATATYPE_DATA) {
+            size_t size = (size_t)stage->data.total_size;
+            size_t capacity = size ? size : 1u;
             uint8_t* owned = NULL;
+            uint8_t* staged_buffer = stage->data.buffer;
             if (size) {
                 owned = cep_malloc(size);
-                memcpy(owned, stage->data.buffer, size);
+                if (!owned) {
+                    fail_reason = "payload_data_alloc";
+                    goto fail;
+                }
+                memcpy(owned, staged_buffer, size);
+            }
+            if (staged_buffer) {
+                cep_free(staged_buffer);
+                stage->data.buffer = NULL;
             }
             payload = cep_data_new(&stage->data.dt,
                                    CEP_DATATYPE_DATA,
@@ -1364,21 +5043,53 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
             if (!payload) {
                 if (owned)
                     cep_free(owned);
-                return false;
+                fail_reason = "payload_data_new";
+                goto fail;
             }
-            stage->data.buffer = NULL;
+            cep_serialization_normalize_stream_outcome(payload);
+        } else if (stage->data.datatype == CEP_DATATYPE_HANDLE || stage->data.datatype == CEP_DATATYPE_STREAM) {
+            if (!stage->data.library_segment_count || !stage->data.resource_segment_count) {
+                fail_reason = "handle_segments_missing";
+                goto fail;
+            }
+            cepCell* library = cep_serialization_resolve_segments(reader->root,
+                                                                  stage->data.library_segments,
+                                                                  stage->data.library_segment_count);
+            cepCell* resource = cep_serialization_resolve_segments(reader->root,
+                                                                   stage->data.resource_segments,
+                                                                   stage->data.resource_segment_count);
+            if (!library || !resource) {
+                fail_reason = "handle_resolve";
+                goto fail;
+            }
+            payload = cep_data_new(&stage->data.dt,
+                                   stage->data.datatype,
+                                   true,
+                                   NULL,
+                                   NULL,
+                                   resource,
+                                   library);
+            if (!payload) {
+                fail_reason = "handle_payload_new";
+                goto fail;
+            }
         } else {
-            return false;
+            fail_reason = "datatype_unknown";
+            goto fail;
         }
 
-        current->data = payload;
+        pending_payload = payload;
     }
 
     if (stage->proxy.needed) {
-        if (!stage->proxy.complete)
-            return false;
-        if (!cep_cell_is_proxy(current))
-            return false;
+        if (!stage->proxy.complete) {
+            fail_reason = "proxy_incomplete";
+            goto fail;
+        }
+        if (!cep_cell_is_proxy(current)) {
+            fail_reason = "proxy_expected";
+            goto fail;
+        }
 
         cepProxySnapshot snapshot = {
             .payload = stage->proxy.buffer,
@@ -1387,11 +5098,112 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
             .ticket = NULL,
         };
 
-        if (!cep_proxy_restore(current, &snapshot))
-            return false;
+        if (!cep_proxy_restore(current, &snapshot)) {
+            fail_reason = "proxy_restore";
+            goto fail;
+        }
+    }
+
+    if (configure_store) {
+        if (!cep_serialization_reader_configure_store(current,
+                                                      stage->organiser,
+                                                      stage->storage_hint,
+                                                      store_dt,
+                                                      stage->store_metadata,
+                                                      stage->store_metadata_size)) {
+            fail_reason = "store_config";
+            goto fail;
+        }
+    }
+
+    if (!cep_serialization_reader_materialize_child_additions(stage, current)) {
+        fail_reason = "child_materialize";
+        goto fail;
+    }
+
+    if (!cep_serialization_reader_validate_manifest_children(reader, stage, current)) {
+        fail_reason = "child_validation";
+        
+        goto fail;
+    }
+
+    if (pending_payload) {
+        if (previous_payload)
+            cep_data_del(previous_payload);
+        current->data = pending_payload;
+        pending_payload = NULL;
     }
 
     return true;
+
+fail:
+    if (pending_payload) {
+        cep_data_del(pending_payload);
+        pending_payload = NULL;
+    }
+    if (fail_reason && strcmp(fail_reason, "child_validation") == 0) {
+        cep_serialization_debug_dump_stage(stage, "child_validation");
+        if (current) {
+            const cepDT* current_name = cep_cell_get_name(current);
+            if (current_name) {
+                char dom_buf[64];
+                char tag_buf[64];
+                CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][child_validation] current=%s/%s%s\n",
+                                 cep_serialization_id_desc(current_name->domain, dom_buf, sizeof dom_buf),
+                                 cep_serialization_id_desc(current_name->tag, tag_buf, sizeof tag_buf),
+                                 current_name->glob ? "*" : "");
+            }
+        }
+    }
+    if (cep_serialization_debug_logging_enabled()) {
+        cep_serialization_debug_log("[serialization][apply] fail reason=%s path_len=%u limit=%u data_needed=%u data_complete=%u delta=%zu/%zu cell_type=%u tx=%u\n",
+                                    fail_reason ? fail_reason : "unknown",
+                                    (unsigned)path_length,
+                                    (unsigned)limit,
+                                    stage ? (unsigned)(stage->data.needed ? 1u : 0u) : 0u,
+                                    stage ? (unsigned)(stage->data.complete ? 1u : 0u) : 0u,
+                                    stage ? stage->delta_seen : 0u,
+                                    stage ? stage->delta_expected : 0u,
+                                    stage ? (unsigned)stage->cell_type : 0u,
+                                    stage ? stage->transaction : 0u);
+        if (stage && stage->path) {
+            cep_serialization_debug_log("[serialization][apply] path:");
+            for (unsigned i = 0; i < stage->path->length; ++i) {
+                const cepPast* segment = &stage->path->past[i];
+                char dom_buf[64];
+                char tag_buf[64];
+                cep_serialization_debug_log(" [%u]=%s/%s%s",
+                                            i,
+                                            cep_serialization_id_desc(segment->dt.domain, dom_buf, sizeof dom_buf),
+                                            cep_serialization_id_desc(segment->dt.tag, tag_buf, sizeof tag_buf),
+                                            segment->dt.glob ? "*" : "");
+            }
+            cep_serialization_debug_log("\n");
+        }
+    }
+    fflush(stderr);
+    return false;
+}
+
+typedef struct {
+    cepSerializationStage* stage;
+    size_t                 index;
+} cepSerializationStageOrder;
+
+static int cep_serialization_stage_order_cmp(const void* lhs_ptr, const void* rhs_ptr) {
+    const cepSerializationStageOrder* lhs = (const cepSerializationStageOrder*)lhs_ptr;
+    const cepSerializationStageOrder* rhs = (const cepSerializationStageOrder*)rhs_ptr;
+    size_t lhs_len = (lhs->stage && lhs->stage->path) ? lhs->stage->path->length : 0u;
+    size_t rhs_len = (rhs->stage && rhs->stage->path) ? rhs->stage->path->length : 0u;
+    if (lhs_len < rhs_len)
+        return -1;
+    if (lhs_len > rhs_len)
+        return 1;
+    if (lhs->index < rhs->index)
+        return -1;
+    if (lhs->index > rhs->index)
+        return 1;
+    return 0;
 }
 
 static void cep_serialization_reader_fail(cepSerializationReader* reader) {
@@ -1421,6 +5233,129 @@ static bool cep_serialization_reader_fail_with_note(cepSerializationReader* read
     }
     cep_serialization_reader_fail(reader);
     return false;
+}
+
+static bool cep_serialization_reader_consume_namepool_map(cepSerializationReader* reader,
+                                                          const uint8_t* payload,
+                                                          size_t payload_size) {
+    if (!reader || !payload)
+        return false;
+
+    if (payload_size < 4u) {
+        return cep_serialization_reader_fail_with_note(reader,
+                                                       "serialization.replay.namepool",
+                                                       "namepool map chunk too small (size=%zu)",
+                                                       payload_size);
+    }
+
+    uint8_t record = payload[0u];
+    if (record != SERIAL_RECORD_NAMEPOOL_MAP) {
+        return cep_serialization_reader_fail_with_note(reader,
+                                                       "serialization.replay.namepool",
+                                                       "unexpected namepool record type=%u",
+                                                       (unsigned)record);
+    }
+
+    uint8_t flags = payload[1u];
+    if ((flags & ~SERIAL_NAMEPOOL_FLAG_MORE) != 0u) {
+        return cep_serialization_reader_fail_with_note(reader,
+                                                       "serialization.replay.namepool",
+                                                       "unsupported namepool flags=0x%02x",
+                                                       (unsigned)flags);
+    }
+
+    uint16_t count = cep_serial_read_be16_buf(payload + 2u);
+    size_t offset = 4u;
+
+    for (uint16_t i = 0; i < count; ++i) {
+        size_t remaining = (offset <= payload_size) ? (payload_size - offset) : 0u;
+        size_t header_bytes = sizeof(uint64_t) + sizeof(uint16_t) + sizeof(uint8_t);
+        if (remaining < header_bytes) {
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.namepool",
+                                                           "namepool entry truncated (idx=%u remaining=%zu)",
+                                                           (unsigned)i,
+                                                           remaining);
+        }
+
+        uint64_t id_raw = cep_serial_read_be64_buf(payload + offset);
+        cepID entry_id = (cepID)id_raw;
+        offset += sizeof(uint64_t);
+
+        uint16_t text_len = cep_serial_read_be16_buf(payload + offset);
+        offset += sizeof(uint16_t);
+
+        uint8_t entry_flags = payload[offset];
+        if ((entry_flags & ~SERIAL_NAMEPOOL_FLAG_GLOB) != 0u) {
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.namepool",
+                                                           "unsupported namepool entry flags=0x%02x",
+                                                           (unsigned)entry_flags);
+        }
+        offset += sizeof(uint8_t);
+
+        remaining = (offset <= payload_size) ? (payload_size - offset) : 0u;
+        if (remaining < text_len) {
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.namepool",
+                                                           "namepool text truncated (idx=%u need=%u have=%zu)",
+                                                           (unsigned)i,
+                                                           (unsigned)text_len,
+                                                           remaining);
+        }
+
+        if (text_len == 0u) {
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.namepool",
+                                                           "empty namepool text not supported (id=%016" PRIx64 ")",
+                                                           id_raw);
+        }
+
+        const char* text = (const char*)(payload + offset);
+        size_t text_size = (size_t)text_len;
+        size_t existing_len = 0u;
+        const char* existing = cep_namepool_lookup(entry_id, &existing_len);
+        if (existing) {
+            if (text_size != existing_len ||
+                memcmp(existing, text, text_size) != 0) {
+                return cep_serialization_reader_fail_with_note(reader,
+                                                               "serialization.replay.namepool",
+                                                               "conflicting namepool text for id=%016" PRIx64,
+                                                               id_raw);
+            }
+        } else {
+            cepID interned = 0;
+            if ((entry_flags & SERIAL_NAMEPOOL_FLAG_GLOB) != 0u) {
+                interned = cep_namepool_intern_pattern(text, text_size);
+            } else {
+                interned = cep_namepool_intern(text, text_size);
+            }
+            if (!interned) {
+                return cep_serialization_reader_fail_with_note(reader,
+                                                               "serialization.replay.namepool",
+                                                               "failed to intern namepool entry id=%016" PRIx64,
+                                                               id_raw);
+            }
+            if (interned != entry_id) {
+                return cep_serialization_reader_fail_with_note(reader,
+                                                               "serialization.replay.namepool",
+                                                               "interned id mismatch expected=%016" PRIx64 " got=%016" PRIx64,
+                                                               id_raw,
+                                                               (uint64_t)interned);
+            }
+        }
+
+        offset += text_size;
+    }
+
+    if (offset != payload_size) {
+        return cep_serialization_reader_fail_with_note(reader,
+                                                       "serialization.replay.namepool",
+                                                       "namepool payload trailing bytes=%zu",
+                                                       payload_size - offset);
+    }
+
+    return true;
 }
 
 /** Feed a serialisation chunk into the reader state machine, staging work until
@@ -1453,6 +5388,18 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
             return cep_serialization_reader_fail_with_note(reader,
                                                            "serialization.replay.header",
                                                            "failed to parse control header");
+        uint16_t required_caps = CEP_SERIALIZATION_CAP_HISTORY_MANIFEST |
+                                 CEP_SERIALIZATION_CAP_MANIFEST_DELTAS  |
+                                 CEP_SERIALIZATION_CAP_PAYLOAD_HASH     |
+                                 CEP_SERIALIZATION_CAP_PROXY_ENVELOPE   |
+                                 CEP_SERIALIZATION_CAP_DIGEST_TRAILER;
+        if (!reader->header.capabilities_present ||
+            (reader->header.capabilities & required_caps) != required_caps) {
+            return cep_serialization_reader_fail_with_note(reader,
+                                                           "serialization.replay.capability",
+                                                           "required serialization capabilities missing (caps=0x%04x)",
+                                                           reader->header.capabilities);
+        }
         cep_serialization_reader_clear_stages(reader);
         cep_serialization_reader_clear_transactions(reader);
         reader->header_seen = true;
@@ -1496,25 +5443,24 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
 
     switch (chunk_class) {
       case CEP_CHUNK_CLASS_STRUCTURE: {
-        if (!tx->pending_stage || tx->pending_stage->data.header_received) {
-            if (!cep_serialization_reader_record_manifest(reader, tx, transaction, payload, payload_size)) {
-                return cep_serialization_reader_fail_with_note(reader,
-                                                               "serialization.replay.manifest",
-                                                               "manifest parse failed (tx=%u seq=%u)",
-                                                               transaction,
-                                                               sequence);
-            }
-        } else {
-            size_t header_bytes = (sizeof(uint16_t) * 2u) + sizeof(uint32_t) + (sizeof(uint64_t) * 4u) + sizeof(uint8_t);
+        cepSerializationStage* pending_stage = tx->pending_stage;
+        bool expecting_data_header = pending_stage &&
+                                     pending_stage->data.needed &&
+                                     !pending_stage->data.header_received &&
+                                     (pending_stage->delta_seen >= pending_stage->delta_expected);
+
+        if (expecting_data_header) {
+            size_t header_bytes = 60u;
             if (payload_size < header_bytes) {
                 return cep_serialization_reader_fail_with_note(reader,
                                                                "serialization.replay.data_header",
                                                                "inline data header too small (payload=%zu)",
                                                                payload_size);
             }
-            size_t inline_size = payload_size - header_bytes;
-            const uint8_t* inline_bytes = payload + header_bytes;
-            if (!cep_serialization_reader_record_data_header(&tx->pending_stage->data,
+
+            size_t inline_size = payload_size > header_bytes ? payload_size - header_bytes : 0u;
+            const uint8_t* inline_bytes = inline_size ? payload + header_bytes : NULL;
+            if (!cep_serialization_reader_record_data_header(&pending_stage->data,
                                                              payload,
                                                              payload_size,
                                                              inline_bytes,
@@ -1525,8 +5471,19 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
                                                                transaction,
                                                                sequence);
             }
-            if (tx->pending_stage->data.complete)
+
+            if (!pending_stage->data.chunked && !pending_stage->proxy.needed)
                 tx->pending_stage = NULL;
+            else
+                tx->pending_stage = pending_stage;
+        } else {
+            if (!cep_serialization_reader_record_manifest(reader, tx, transaction, payload, payload_size)) {
+                return cep_serialization_reader_fail_with_note(reader,
+                                                               "serialization.replay.manifest",
+                                                               "manifest parse failed (tx=%u seq=%u)",
+                                                               transaction,
+                                                               sequence);
+            }
         }
         break;
       }
@@ -1550,6 +5507,11 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
         break;
       }
       case CEP_CHUNK_CLASS_CONTROL: {
+        if (payload_size && payload[0u] == SERIAL_RECORD_NAMEPOOL_MAP) {
+            if (!cep_serialization_reader_consume_namepool_map(reader, payload, payload_size))
+                return false;
+            break;
+        }
         reader->pending_commit = true;
         break;
       }
@@ -1569,42 +5531,62 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
                                                            sequence);
         }
 
-        size_t header_bytes = sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint64_t);
-        if (payload_size < header_bytes) {
+        if (payload_size < 16u) {
             return cep_serialization_reader_fail_with_note(reader,
                                                            "serialization.replay.proxy",
                                                            "proxy header smaller than minimum (payload=%zu)",
                                                            payload_size);
         }
 
-        uint32_t flags = cep_serial_read_be32_buf(payload);
-        uint64_t size = cep_serial_read_be64_buf(payload + sizeof(uint32_t) + sizeof(uint32_t));
+        uint8_t version = payload[0u];
+        (void)version;
+        uint8_t kind = payload[1u];
+        uint8_t envelope_flags = payload[2u];
+        uint32_t ticket_len = cep_serial_read_be32_buf(payload + 4u);
+        uint64_t payload_len = cep_serial_read_be64_buf(payload + 8u);
 
-        size_t remaining = payload_size - header_bytes;
-        if (size > SIZE_MAX) {
+        if (ticket_len != 0u) {
             return cep_serialization_reader_fail_with_note(reader,
                                                            "serialization.replay.proxy",
-                                                           "proxy size overflow (size=%" PRIu64 ")",
-                                                           size);
+                                                           "ticket-based proxy snapshots unsupported (len=%u)",
+                                                           ticket_len);
         }
-        if ((uint64_t)remaining != size) {
+
+        size_t inline_size = payload_size - 16u;
+        bool has_inline = (envelope_flags & 0x01u) != 0u;
+        if (payload_len > SIZE_MAX) {
             return cep_serialization_reader_fail_with_note(reader,
                                                            "serialization.replay.proxy",
-                                                           "proxy payload mismatch (expected=%" PRIu64 " got=%zu)",
-                                                           size,
-                                                           remaining);
+                                                           "proxy payload overflow (size=%" PRIu64 ")",
+                                                           payload_len);
+        }
+        if (has_inline) {
+            if ((uint64_t)inline_size != payload_len) {
+                return cep_serialization_reader_fail_with_note(reader,
+                                                               "serialization.replay.proxy",
+                                                               "proxy payload mismatch (expected=%" PRIu64 " got=%zu)",
+                                                               payload_len,
+                                                               inline_size);
+            }
+        } else {
+            if (payload_len != 0u || inline_size != 0u) {
+                return cep_serialization_reader_fail_with_note(reader,
+                                                               "serialization.replay.proxy",
+                                                               "proxy payload expected empty inline section");
+            }
         }
 
         cepSerializationStage* stage = tx->pending_stage;
-        stage->proxy.flags = flags;
-        stage->proxy.size = (size_t)size;
-
         if (stage->proxy.buffer) {
             cep_free(stage->proxy.buffer);
             stage->proxy.buffer = NULL;
         }
 
-        if (stage->proxy.size) {
+        stage->proxy.flags = envelope_flags;
+        stage->proxy.kind = kind;
+        stage->proxy.size = (size_t)payload_len;
+
+        if (has_inline && stage->proxy.size) {
             stage->proxy.buffer = cep_malloc(stage->proxy.size);
             if (!stage->proxy.buffer) {
                 return cep_serialization_reader_fail_with_note(reader,
@@ -1612,10 +5594,11 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
                                                                "proxy buffer allocation failed (size=%zu)",
                                                                stage->proxy.size);
             }
-            memcpy(stage->proxy.buffer, payload + header_bytes, stage->proxy.size);
+            memcpy(stage->proxy.buffer, payload + 16u, stage->proxy.size);
         }
 
         stage->proxy.complete = true;
+        stage->proxy.needed = true;
         tx->pending_stage = NULL;
         break;
       }
@@ -1634,21 +5617,38 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
 /** Apply staged chunks to the target tree, materialising payloads and proxy
     state. */
 bool cep_serialization_reader_commit(cepSerializationReader* reader) {
-    if (!reader)
-        return false;
-    if (reader->error)
-        return false;
-    if (!reader->pending_commit)
-        return false;
+    bool replay_scope_entered = cep_serialization_replay_scope_enter();
+    bool result = false;
+    cepSerializationStageOrder* order = NULL;
+
+    if (!reader || reader->error || !reader->pending_commit)
+        goto exit;
+
+    if (reader->stage_count) {
+        order = cep_malloc(reader->stage_count * sizeof(*order));
+        if (!order) {
+            cep_serialization_reader_fail_with_note(reader,
+                                                    "serialization.replay.commit",
+                                                    "failed to allocate stage ordering buffer");
+            goto exit;
+        }
+        for (size_t i = 0; i < reader->stage_count; ++i) {
+            order[i].stage = &reader->stages[i];
+            order[i].index = i;
+        }
+        qsort(order, reader->stage_count, sizeof(*order), cep_serialization_stage_order_cmp);
+    }
 
     for (size_t i = 0; i < reader->stage_count; ++i) {
-        cepSerializationStage* stage = &reader->stages[i];
-        if (!cep_serialization_reader_apply_stage(reader, stage))
-            return cep_serialization_reader_fail_with_note(reader,
-                                                           "serialization.replay.commit",
-                                                           "apply stage failed (index=%zu tx=%u)",
-                                                           i,
-                                                           stage->transaction);
+        cepSerializationStage* stage = order ? order[i].stage : &reader->stages[i];
+        if (!cep_serialization_reader_apply_stage(reader, stage)) {
+            cep_serialization_reader_fail_with_note(reader,
+                                                    "serialization.replay.commit",
+                                                    "apply stage failed (index=%zu tx=%u)",
+                                                    i,
+                                                    stage->transaction);
+            goto exit;
+        }
         cep_serialization_stage_dispose(stage);
     }
 
@@ -1657,7 +5657,13 @@ bool cep_serialization_reader_commit(cepSerializationReader* reader) {
     reader->transaction_count = 0;
     if (reader->transactions)
         memset(reader->transactions, 0, reader->transaction_capacity * sizeof(*reader->transactions));
-    return true;
+    result = true;
+
+exit:
+    if (order)
+        cep_free(order);
+    cep_serialization_replay_scope_exit(replay_scope_entered);
+    return result;
 }
 
 /** Return true when the reader has staged work that still needs committing. */
@@ -1665,4 +5671,412 @@ bool cep_serialization_reader_pending(const cepSerializationReader* reader) {
     if (!reader)
         return false;
     return reader->pending_commit;
+}
+static bool cep_serialization_reader_record_manifest_base(cepSerializationReader* reader,
+                                                          cepSerializationTxState* tx,
+                                                          uint32_t transaction,
+                                                          const uint8_t* payload,
+                                                          size_t payload_size) {
+    if (!reader || !tx || !payload || payload_size < 9u)
+        return false;
+
+    uint8_t organiser = payload[1];
+    uint8_t storage_hint = payload[2];
+    bool store_meta_present = (storage_hint & SERIAL_STORAGE_FLAG_METADATA) != 0u;
+    if (store_meta_present)
+        storage_hint &= (uint8_t)~SERIAL_STORAGE_FLAG_METADATA;
+    uint8_t base_flags = payload[3];
+    uint8_t cell_type = payload[4];
+    uint16_t segment_count = cep_serial_read_be16_buf(payload + 5u);
+    uint16_t child_count = cep_serial_read_be16_buf(payload + 7u);
+    uint16_t descriptor_spans = cep_serial_read_be16_buf(payload + 9u);
+
+    size_t segments_bytes = (size_t)segment_count * ((sizeof(uint64_t) * 2u) + 4u);
+    size_t header_bytes = 11u + segments_bytes;
+    if (segment_count == 0u || payload_size < header_bytes)
+        return false;
+
+    if (!cep_serialization_reader_ensure_stage_capacity(reader, reader->stage_count + 1u))
+        return false;
+
+    cepSerializationStage* stage = &reader->stages[reader->stage_count];
+    memset(stage, 0, sizeof(*stage));
+    stage->transaction = transaction;
+    stage->cell_type = cell_type;
+    stage->organiser = organiser;
+    stage->storage_hint = storage_hint;
+    stage->base_flags = base_flags;
+
+    size_t path_bytes = sizeof(cepPath) + (size_t)segment_count * sizeof(cepPast);
+    cepPath* path = cep_malloc(path_bytes);
+    if (!path)
+        goto fail;
+    path->length = segment_count;
+    path->capacity = segment_count;
+    stage->path = path;
+
+    cep_serialization_debug_log("[serialization][debug] manifest_base path_len=%u children=%u flags=0x%02x tx=%u\n",
+                                (unsigned)segment_count,
+                                (unsigned)child_count,
+                                (unsigned)base_flags,
+                                transaction);
+
+    const uint8_t* cursor = payload + 11u;
+    for (uint16_t i = 0; i < segment_count; ++i) {
+        cepPast* segment = &path->past[i];
+        segment->dt.domain = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        segment->dt.tag = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        uint8_t glob = cursor[0];
+        uint8_t meta = cursor[1];
+        uint16_t position = cep_serial_read_be16_buf(cursor + 2u);
+        cursor += sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t);
+        segment->dt.glob = glob != 0u;
+        segment->timestamp = 0u;
+        if ((meta & SERIAL_PATH_FLAG_POSITION) != 0u) {
+            segment->timestamp = (cepOpCount)position + 1u;
+#ifdef CEP_ENABLE_DEBUG
+            char dom_buf[64];
+            char tag_buf[64];
+            CEP_SERIALIZATION_DEBUG_PRINTF("[serialization][decode_path_meta] idx=%u position=%u dom=%s tag=%s\n",
+                             (unsigned)i,
+                             (unsigned)position,
+                             cep_serialization_id_desc(segment->dt.domain, dom_buf, sizeof dom_buf),
+                             cep_serialization_id_desc(segment->dt.tag, tag_buf, sizeof tag_buf));
+#endif
+        }
+    }
+
+#ifdef CEP_ENABLE_DEBUG
+    if (segment_count && cep_serialization_debug_logging_enabled()) {
+        cep_serialization_debug_log("[serialization][debug] manifest_path tx=%u", transaction);
+        for (uint16_t idx = 0; idx < segment_count; ++idx) {
+            const cepPast* segment = &path->past[idx];
+            char dom_buf[64];
+            char tag_buf[64];
+            cep_serialization_debug_log(" [%u]=%s/%s%s",
+                                        idx,
+                                        cep_serialization_id_desc(segment->dt.domain, dom_buf, sizeof dom_buf),
+                                        cep_serialization_id_desc(segment->dt.tag, tag_buf, sizeof tag_buf),
+                                        segment->dt.glob ? "*" : "");
+        }
+        cep_serialization_debug_log("\n");
+    }
+#endif
+
+    size_t remaining = payload_size - (cursor - payload);
+    bool split_children = (base_flags & SERIAL_BASE_FLAG_CHILDREN_SPLIT) != 0u;
+    if (child_count) {
+        if (split_children && descriptor_spans == 0u)
+            goto fail;
+        if (!cep_serialization_stage_ensure_child_capacity(stage, child_count))
+            goto fail;
+    }
+    stage->child_target = child_count;
+    stage->child_count = split_children ? 0u : child_count;
+    stage->descriptor_spans_expected = split_children ? descriptor_spans : 0u;
+    stage->descriptor_spans_seen = split_children ? 0u : descriptor_spans;
+    stage->delta_expected = child_count;
+    stage->delta_seen = 0u;
+
+    if (child_count && !split_children) {
+        for (uint16_t i = 0; i < child_count; ++i) {
+            size_t descriptor_base = (sizeof(uint64_t) * 2u) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint32_t);
+            if (remaining < descriptor_base)
+                goto fail;
+
+            cepSerializationStageChild* child = &stage->children[i];
+            child->name.domain = cep_serial_read_be64_buf(cursor);
+            cursor += sizeof(uint64_t);
+            child->name.tag = cep_serial_read_be64_buf(cursor);
+            cursor += sizeof(uint64_t);
+            child->name.glob = cursor[0] != 0u;
+            uint8_t child_flags = cursor[1];
+            uint16_t position = cep_serial_read_be16_buf(cursor + 2u);
+            cursor += sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t);
+            cursor += sizeof(uint32_t); /* reserved */
+            remaining -= descriptor_base;
+
+            child->flags = child_flags;
+            child->position = position;
+            child->delta_flags = SERIAL_DELTA_FLAG_ADD;
+            child->cell_type = 0u;
+            child->has_fingerprint = false;
+            child->fingerprint = 0u;
+            child->descriptor_ready = true;
+            child->freshly_materialized = false;
+
+            if ((child_flags & SERIAL_CHILD_FLAG_FINGERPRINT) != 0u) {
+                if (remaining < sizeof(uint64_t))
+                    goto fail;
+                child->fingerprint = cep_serial_read_be64_buf(cursor);
+                cursor += sizeof(uint64_t);
+                remaining -= sizeof(uint64_t);
+                child->has_fingerprint = true;
+            }
+        }
+    }
+
+    if (store_meta_present) {
+        if (remaining < sizeof(uint16_t))
+            goto fail;
+        uint16_t meta_size = cep_serial_read_be16_buf(cursor);
+        cursor += sizeof(uint16_t);
+        remaining -= sizeof(uint16_t);
+        if (meta_size) {
+            if (remaining < meta_size)
+                goto fail;
+            uint8_t* meta = cep_malloc(meta_size);
+            if (!meta)
+                goto fail;
+            memcpy(meta, cursor, meta_size);
+            cursor += meta_size;
+            remaining -= meta_size;
+            stage->store_metadata = meta;
+            stage->store_metadata_size = meta_size;
+        }
+    }
+
+    bool wants_proxy = (cell_type == CEP_TYPE_PROXY);
+    bool wants_data = ((base_flags & SERIAL_BASE_FLAG_PAYLOAD) != 0u) && !wants_proxy;
+
+    stage->proxy.needed = wants_proxy;
+    stage->proxy.complete = !wants_proxy;
+    stage->proxy.flags = 0;
+    stage->proxy.buffer = NULL;
+    stage->proxy.size = 0;
+
+    stage->data.needed = wants_data;
+    stage->data.header_received = false;
+    stage->data.chunked = false;
+    stage->data.complete = !wants_data;
+    stage->data.buffer = NULL;
+    stage->data.size = 0;
+    stage->data.next_offset = 0;
+    stage->data.total_size = 0;
+    stage->data.hash = 0;
+    stage->data.kind = wants_data ? 0u : 0u;
+    stage->data.journal_beat = 0u;
+    stage->data.legacy_flags = 0u;
+
+    tx->pending_stage = stage;
+    reader->stage_count++;
+    return true;
+
+fail:
+    if (stage->children) {
+        cep_free(stage->children);
+        stage->children = NULL;
+    }
+    if (stage->path) {
+        cep_free(stage->path);
+        stage->path = NULL;
+    }
+    stage->child_count = 0u;
+    stage->child_capacity = 0u;
+    stage->child_target = 0u;
+    memset(stage, 0, sizeof(*stage));
+    return false;
+}
+
+static bool cep_serialization_reader_record_manifest_children(cepSerializationReader* reader,
+                                                              cepSerializationTxState* tx,
+                                                              const uint8_t* payload,
+                                                              size_t payload_size) {
+    if (!reader || !tx || !payload || payload_size < 10u)
+        return false;
+
+    cepSerializationStage* stage = tx->pending_stage;
+    if (!stage && reader->stage_count)
+        stage = &reader->stages[reader->stage_count - 1u];
+    if (!stage || stage->transaction != tx->id)
+        return false;
+
+    if ((stage->base_flags & SERIAL_BASE_FLAG_CHILDREN_SPLIT) == 0u)
+        return false;
+    if (!stage->children || !stage->child_capacity)
+        return false;
+
+    uint16_t span_index = cep_serial_read_be16_buf(payload + 2u);
+    uint16_t descriptor_offset = cep_serial_read_be16_buf(payload + 4u);
+    uint16_t descriptor_count = cep_serial_read_be16_buf(payload + 6u);
+    uint16_t segment_count = cep_serial_read_be16_buf(payload + 8u);
+
+    if (!descriptor_count || !segment_count)
+        return false;
+    size_t target_end = (size_t)descriptor_offset + descriptor_count;
+    if (stage->child_target && target_end > stage->child_target)
+        return false;
+    if (!cep_serialization_stage_ensure_child_capacity(stage, target_end))
+        return false;
+    if (stage->descriptor_spans_expected &&
+        stage->descriptor_spans_seen >= stage->descriptor_spans_expected)
+        return false;
+    if (stage->descriptor_spans_expected &&
+        span_index != stage->descriptor_spans_seen)
+        return false;
+
+    size_t segments_bytes = (size_t)segment_count * ((sizeof(uint64_t) * 2u) + 4u);
+    size_t header_bytes = 10u + segments_bytes;
+    if (payload_size < header_bytes)
+        return false;
+
+    const uint8_t* cursor = payload + 10u;
+    for (uint16_t i = 0; i < segment_count; ++i) {
+        uint64_t domain = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        uint64_t tag = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        bool glob = cursor[0] != 0u;
+        uint8_t meta = cursor[1];
+        (void)meta;
+        cursor += sizeof(uint8_t);
+        cursor += sizeof(uint8_t) + sizeof(uint16_t);
+        if (!stage->path || i >= stage->path->length)
+            return false;
+        const cepPast* segment = &stage->path->past[i];
+        if (segment->dt.domain != domain ||
+            segment->dt.tag != tag ||
+            (segment->dt.glob != 0u) != glob) {
+            return false;
+        }
+    }
+
+    size_t remaining = payload_size - (cursor - payload);
+    for (uint16_t i = 0; i < descriptor_count; ++i) {
+        size_t descriptor_base = (sizeof(uint64_t) * 2u) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint32_t);
+        if (remaining < descriptor_base)
+            return false;
+
+        size_t target_index = (size_t)descriptor_offset + i;
+        cepSerializationStageChild* child = &stage->children[target_index];
+        if (child->descriptor_ready)
+            return false;
+
+        child->name.domain = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        child->name.tag = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        child->name.glob = cursor[0] != 0u;
+        uint8_t child_flags = cursor[1];
+        uint16_t position = cep_serial_read_be16_buf(cursor + 2u);
+        cursor += sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t);
+        cursor += sizeof(uint32_t);
+        remaining -= descriptor_base;
+
+        child->flags = child_flags;
+        child->position = position;
+        child->delta_flags = SERIAL_DELTA_FLAG_ADD;
+        child->cell_type = 0u;
+        child->has_fingerprint = false;
+        child->fingerprint = 0u;
+        child->descriptor_ready = true;
+        child->freshly_materialized = false;
+
+        if ((child_flags & SERIAL_CHILD_FLAG_FINGERPRINT) != 0u) {
+            if (remaining < sizeof(uint64_t))
+                return false;
+            child->fingerprint = cep_serial_read_be64_buf(cursor);
+            cursor += sizeof(uint64_t);
+            remaining -= sizeof(uint64_t);
+            child->has_fingerprint = true;
+        }
+    }
+
+    size_t new_count = (size_t)descriptor_offset + descriptor_count;
+    if (stage->child_count < new_count)
+        stage->child_count = new_count;
+
+    stage->descriptor_spans_seen += 1u;
+    return true;
+}
+
+static bool cep_serialization_reader_record_manifest_delta(cepSerializationReader* reader,
+                                                           cepSerializationTxState* tx,
+                                                           const uint8_t* payload,
+                                                           size_t payload_size) {
+    if (!reader || !tx || !payload || payload_size < 8u + (sizeof(uint64_t) * 2u))
+        return false;
+
+    cepSerializationStage* stage = tx->pending_stage;
+    if (!stage && reader->stage_count)
+        stage = &reader->stages[reader->stage_count - 1u];
+    if (!stage || stage->transaction != tx->id)
+        return false;
+
+    uint8_t delta_flags = payload[1];
+    uint16_t segment_count = cep_serial_read_be16_buf(payload + 4u);
+    uint8_t child_type = payload[6u];
+
+    size_t segments_bytes = (size_t)segment_count * ((sizeof(uint64_t) * 2u) + 4u);
+    size_t header_bytes = 24u + segments_bytes;
+    if (payload_size < header_bytes)
+        return false;
+
+    const uint8_t* cursor = payload + 24u;
+    for (uint16_t i = 0; i < segment_count; ++i) {
+        uint64_t domain = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        uint64_t tag = cep_serial_read_be64_buf(cursor);
+        cursor += sizeof(uint64_t);
+        bool glob = cursor[0] != 0u;
+        cursor += sizeof(uint8_t);
+        cursor += 3u;
+        if (!stage->path || i >= stage->path->length)
+            continue;
+        const cepPast* segment = &stage->path->past[i];
+        if (segment->dt.domain != domain ||
+            segment->dt.tag != tag ||
+            (segment->dt.glob != 0u) != glob) {
+            return false;
+        }
+    }
+
+    size_t remaining = payload_size - (cursor - payload);
+    size_t descriptor_base = (sizeof(uint64_t) * 2u) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint32_t);
+    if (remaining < descriptor_base)
+        return false;
+
+    cepDT child_name = {
+        .domain = cep_serial_read_be64_buf(cursor),
+        .tag = cep_serial_read_be64_buf(cursor + sizeof(uint64_t)),
+        .glob = ((cursor[sizeof(uint64_t) * 2u]) != 0u),
+    };
+    uint8_t child_flags = cursor[sizeof(uint64_t) * 2u + 1u];
+    uint16_t position = cep_serial_read_be16_buf(cursor + sizeof(uint64_t) * 2u + 2u);
+    cursor += descriptor_base;
+    remaining -= descriptor_base;
+
+    bool require_position = (stage->organiser == SERIAL_ORGANISER_INSERTION);
+    cepSerializationStageChild* child = cep_serialization_stage_find_child(stage,
+                                                                           &child_name,
+                                                                           require_position,
+                                                                           position);
+    if (!child)
+        return false;
+
+    child->flags = child_flags;
+    child->position = position;
+    child->delta_flags = delta_flags;
+    child->cell_type = child_type;
+
+    if ((child_flags & SERIAL_CHILD_FLAG_FINGERPRINT) != 0u) {
+        if (remaining < sizeof(uint64_t))
+            return false;
+        child->fingerprint = cep_serial_read_be64_buf(cursor);
+        child->has_fingerprint = true;
+        cursor += sizeof(uint64_t);
+        remaining -= sizeof(uint64_t);
+    }
+
+    if (!stage->data.needed && !stage->proxy.needed)
+        tx->pending_stage = NULL;
+    else
+        tx->pending_stage = stage;
+
+    if (stage->delta_seen < stage->delta_expected)
+        stage->delta_seen += 1u;
+
+    return true;
 }

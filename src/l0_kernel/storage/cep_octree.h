@@ -169,7 +169,7 @@ static inline int octree_choose_child(cepOctreeNode* onode, unsigned index, cons
     (void)onode;
     (void)index;
     // Comparator contract: positive value means the cell fits inside the bound.
-    return compare(&entry->cell, (const cepCell*)(const void*)bound, context);
+    return compare(&entry->cell, (const cepCell*)(const void*)bound, context, NULL);
 }
 
 static inline cepOctreeNode* octree_ensure_child(cepOctreeNode* onode, unsigned index, const cepOctreeBound* bound) {
@@ -410,7 +410,7 @@ static inline cepCell* octree_find_by_key(cepOctree* octree, cepCell* key, cepCo
     assert(octree && key && compare);
 
     for (cepCell* cell = octree_first(octree); cell; cell = octree_next(cell)) {
-        if (compare(key, cell, context) == 0)
+        if (compare(key, cell, context, NULL) == 0)
             return cell;
     }
     return NULL;

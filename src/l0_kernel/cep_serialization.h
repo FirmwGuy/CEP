@@ -24,7 +24,7 @@ typedef struct cepSerializationReader cepSerializationReader;
 typedef struct _cepCell cepCell;
 
 #define CEP_SERIALIZATION_MAGIC   UINT64_C(0x4345503000000000)
-#define CEP_SERIALIZATION_VERSION UINT16_C(0x0001)
+#define CEP_SERIALIZATION_VERSION UINT16_C(0x0002)
 
 #define CEP_SERIALIZATION_CHUNK_OVERHEAD 16u
 #define CEP_SERIALIZATION_HEADER_BASE    16u
@@ -62,7 +62,21 @@ typedef struct {
     uint64_t     journal_beat;
     bool         journal_metadata_present;
     bool         journal_decision_replay;
+    uint16_t     capabilities;
+    bool         capabilities_present;
 } cepSerializationHeader;
+
+#define CEP_SERIALIZATION_FLAG_CAPABILITIES 0x01u
+
+enum {
+    CEP_SERIALIZATION_CAP_HISTORY_MANIFEST = 0x0001u,
+    CEP_SERIALIZATION_CAP_MANIFEST_DELTAS  = 0x0002u,
+    CEP_SERIALIZATION_CAP_PAYLOAD_HASH     = 0x0004u,
+    CEP_SERIALIZATION_CAP_PROXY_ENVELOPE   = 0x0008u,
+    CEP_SERIALIZATION_CAP_DIGEST_TRAILER   = 0x0010u,
+    CEP_SERIALIZATION_CAP_NAMEPOOL_MAP     = 0x0020u,
+    CEP_SERIALIZATION_CAP_SPLIT_DESCRIPTORS = 0x0040u,
+};
 
 static inline uint64_t cep_serialization_chunk_id(uint16_t chunk_class, uint32_t transaction, uint16_t sequence) {
     return ((uint64_t)chunk_class << 48) | ((uint64_t)transaction << 16) | sequence;
@@ -101,6 +115,7 @@ void cep_serialization_reader_reset(cepSerializationReader* reader);
 bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8_t* chunk, size_t size);
 bool cep_serialization_reader_commit(cepSerializationReader* reader);
 bool cep_serialization_reader_pending(const cepSerializationReader* reader);
+bool cep_serialization_is_busy(void);
 
 #ifdef __cplusplus
 }

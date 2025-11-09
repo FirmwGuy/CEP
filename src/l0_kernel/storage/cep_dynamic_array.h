@@ -12,6 +12,24 @@ typedef struct {
     cepCell*    cell;           /**< Children Cell */
 } cepArray;
 
+typedef struct {
+    cepCompare compare;
+    void*      context;
+} cepArraySortCtx;
+
+#if defined(_WIN32)
+static int cep_array_sort_cmp_win(void* ctx, const void* lhs, const void* rhs) {
+    const cepArraySortCtx* sort_ctx = (const cepArraySortCtx*)ctx;
+    return sort_ctx->compare((const cepCell*)lhs, (const cepCell*)rhs, sort_ctx->context, NULL);
+}
+#elif defined(_GNU_SOURCE)
+static int cep_array_sort_cmp_gnu(const void* lhs, const void* rhs, void* ctx) {
+    const cepArraySortCtx* sort_ctx = (const cepArraySortCtx*)ctx;
+    return sort_ctx->compare((const cepCell*)lhs, (const cepCell*)rhs, sort_ctx->context, NULL);
+}
+#else
+#error qsort_r/qsort_s not available on this platform!
+#endif
 
 
 
@@ -268,14 +286,21 @@ static inline bool array_traverse(cepArray* array, cepTraverse func, void* conte
 
 
 static inline void array_sort(cepArray* array, cepCompare compare, void* context) {
-  #if defined(_WIN32)
-    qsort_s
-  #elif defined(_GNU_SOURCE)
-    qsort_r
-  #else
-    #error qsort_r not available on this platform!
-  #endif
-        (array->cell, array->store.chdCount, sizeof(cepCell), (cepFunc) compare, context);
+#if defined(_WIN32)
+    cepArraySortCtx sort_ctx = {.compare = compare, .context = context};
+    qsort_s(array->cell,
+            array->store.chdCount,
+            sizeof(cepCell),
+            cep_array_sort_cmp_win,
+            &sort_ctx);
+#elif defined(_GNU_SOURCE)
+    cepArraySortCtx sort_ctx = {.compare = compare, .context = context};
+    qsort_r(array->cell,
+            array->store.chdCount,
+            sizeof(cepCell),
+            cep_array_sort_cmp_gnu,
+            &sort_ctx);
+#endif
 
     array_update_children_parent_ptr(array->cell, &array->cell[array->store.chdCount - 1]);
     for (size_t i = 0; i < array->store.chdCount; i++)

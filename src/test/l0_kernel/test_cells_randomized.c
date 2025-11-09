@@ -18,6 +18,7 @@
 
 #include "cep_cell.h"
 #include "cep_namepool.h"
+#include "cep_runtime.h"
 
 #include <inttypes.h>
 #include <math.h>
@@ -47,6 +48,8 @@ typedef struct {
     TestWatchdog* watchdog;
     cepCell       root;
     cepID         next_numeric;
+    cepRuntime*   runtime;
+    cepRuntime*   previous_runtime;
 } CellRandomFixture;
 
 typedef struct {
@@ -191,8 +194,12 @@ static size_t collect_value_nodes(cepCell* node, cepCell** out, size_t capacity,
  *  fit entirely inside the box report success while anything straddling the
  *  boundary forces the caller to stay at the current node.
  */
-static int octree_point_compare(const cepCell* cell, const cepCell* bound_cell, void* context) {
+static int octree_point_compare(const cepCell* cell, const cepCell* bound_cell, void* context, cepCompareInfo* info) {
     (void)context;
+    if (CEP_RARELY_PTR(info)) {
+        cep_compare_info_set(info, CEP_DTAW("CEP", "cmp:t_oct"), 1u, 0u);
+        return 0;
+    }
     const OctreePoint* point = cep_cell_data(cell);
     const cepOctreeBound* bound = (const cepOctreeBound*)(const void*)bound_cell;
     if (!point || !bound)
@@ -204,6 +211,10 @@ static int octree_point_compare(const cepCell* cell, const cepCell* bound_cell, 
             return 0;
     }
     return 1;
+}
+
+static void test_cells_register_comparators(void) {
+    (void)cep_comparator_registry_record(octree_point_compare);
 }
 
 static unsigned node_depth(const cepCell* node) {
@@ -556,7 +567,12 @@ void* test_cells_randomized_setup(const MunitParameter params[], void* user_data
     unsigned timeout = test_watchdog_resolve_timeout(params, TEST_TIMEOUT_SECONDS);
     fix->watchdog = test_watchdog_create(timeout ? timeout : TEST_TIMEOUT_SECONDS);
 
+    fix->runtime = cep_runtime_create();
+    munit_assert_not_null(fix->runtime);
+    fix->previous_runtime = cep_runtime_set_active(fix->runtime);
+
     cep_cell_system_initiate();
+    test_cells_register_comparators();
     CEP_0(&fix->root);
 
     cepDT root_name = *CEP_DTAW("CEP", "sys_root");
@@ -586,7 +602,10 @@ void test_cells_randomized_tear_down(void* fixture) {
 
     dismantle_tree(&fix->root);
     cep_cell_finalize_hard(&fix->root);
+    cep_comparator_registry_reset_active();
     cep_cell_system_shutdown();
+    cep_runtime_set_active(fix->previous_runtime);
+    cep_runtime_destroy(fix->runtime);
 
     test_watchdog_destroy(fix->watchdog);
     free(fix);
@@ -610,8 +629,14 @@ MunitResult test_cells_randomized(const MunitParameter params[], void* fixture) 
 MunitResult test_cells_naming(const MunitParameter params[], void* fixture) {
     (void)params;
     (void)fixture;
+    cepRuntime* runtime = cep_runtime_create();
+    munit_assert_not_null(runtime);
+    cepRuntime* previous_runtime = cep_runtime_set_active(runtime);
     cep_cell_system_initiate();
     verify_inline_naming();
+    cep_comparator_registry_reset_active();
     cep_cell_system_shutdown();
+    cep_runtime_set_active(previous_runtime);
+    cep_runtime_destroy(runtime);
     return MUNIT_OK;
 }

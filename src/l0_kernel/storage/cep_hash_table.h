@@ -107,7 +107,7 @@ static inline void hash_table_order_link(cepHashTable* table, cepHashNode* node,
         if (node->hash < iter->hash)
             break;
         if (node->hash == iter->hash && compare) {
-            int cmp = compare(&node->cell, &iter->cell, context);
+            int cmp = compare(&node->cell, &iter->cell, context, NULL);
             if (cmp < 0)
                 break;
         }
@@ -273,7 +273,7 @@ static inline cepCell* hash_table_find_by_key(cepHashTable* table, cepCell* key,
     for (cepHashNode* node = table->buckets[index]; node; node = node->bucketNext) {
         if (node->hash != hash)
             continue;
-        if (compare(key, &node->cell, context) == 0)
+        if (compare(key, &node->cell, context, NULL) == 0)
             return &node->cell;
     }
     return NULL;

@@ -113,11 +113,28 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
 - Use the emergency Makefile under `unix/Makefile`.
   - Build dir is isolated at `build-make/` to avoid clobbering the Meson build.
   - Build: `make -C unix`
-  - Run: `../build-make/bin/cep_tests --log-visible debug`
-  - Clean: `make -C unix clean`
-  - Notes: This fallback compiles the core library sources into the test executable.
-## Notes
-- Optional sanitizers: `meson setup build -Dasan=true` (best with Clang on MSYS2 UCRT64).
+- Run: `../build-make/bin/cep_tests --log-visible debug`
+- Clean: `make -C unix clean`
+- Notes: This fallback compiles the core library sources into the test executable.
+
+## Sanitizer Builds
+
+- Create a dedicated build directory so the sanitized compiler flags never leak into your everyday build:
+  ```bash
+  meson setup build-asan -Dasan=true
+  meson compile -C build-asan
+  ASAN_OPTIONS="detect_leaks=1" meson test -C build-asan --no-rebuild
+  ```
+  Use Clang when possible—its sanitizer runtimes are more complete, especially on MSYS2/Windows.
+
+## Valgrind Runs
+
+- You can reuse the regular (non-ASAN) build and wrap the test harness:
+  ```bash
+  MESON_TEST_WRAPPER="valgrind --leak-check=full --show-leak-kinds=definite --error-exitcode=1 \
+    --suppressions=tools/valgrind.supp" meson test -C build --no-rebuild
+  ```
+  The suppression file is intentionally minimal; keep it in sync with upstream toolchain updates and add entries only for false positives.
 
 ## Debug Instrumentation
 

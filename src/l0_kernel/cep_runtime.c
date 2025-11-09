@@ -1,3 +1,8 @@
+/* Copyright (c) 2025 Victor M. Barrientos (https://github.com/FirmwGuy/CEP) */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 #include "cep_runtime.h"
 
 #include "cep_cell.h"
@@ -498,6 +503,14 @@ cep_runtime_shutdown(cepRuntime* runtime)
         cep_federation_state_destroy(runtime->federation_state);
         runtime->federation_state = NULL;
     }
+
+    if (runtime->serialization_state.comparator_registry.entries) {
+        cep_free(runtime->serialization_state.comparator_registry.entries);
+        runtime->serialization_state.comparator_registry.entries = NULL;
+    }
+    runtime->serialization_state.comparator_registry.count = 0;
+    runtime->serialization_state.comparator_registry.capacity = 0;
+    runtime->serialization_state.comparators_initialized = false;
 
     runtime->heartbeat_initialised = false;
     runtime->l0_bootstrap_done = false;

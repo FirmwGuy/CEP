@@ -24,10 +24,26 @@ typedef struct _cepData       cepData;
 typedef struct _cepStore      cepStore;
 typedef struct _cepCell       cepCell;
 typedef struct _cepProxy      cepProxy;
+typedef struct cepCompareInfo cepCompareInfo;
 
 cepCell*    cep_root(void);
 
-typedef int (*cepCompare)(const cepCell* restrict, const cepCell* restrict, void*);
+typedef int (*cepCompare)(const cepCell* restrict,
+                          const cepCell* restrict,
+                          void*,
+                          cepCompareInfo*);
+
+bool        cep_compare_identity_query(cepCompare comparator, cepCompareInfo* info);
+static inline bool cep_compare_identity(cepCompare comparator, cepCompareInfo* info) {
+    if (!comparator || !info)
+        return false;
+    return cep_compare_identity_query(comparator, info);
+}
+
+bool        cep_comparator_registry_record(cepCompare comparator);
+cepCompare  cep_comparator_registry_lookup(const cepCompareInfo* info);
+void        cep_comparator_registry_reset_active(void);
+void        cep_comparator_registry_reset_default(void);
 
 typedef uint64_t  cepOpCount;         // CEP per-cell operation id number.
 
@@ -109,6 +125,23 @@ static inline int cep_dt_compare(const cepDT* restrict key, const cepDT* restric
         return -1;
     
     return 0;
+}
+
+struct cepCompareInfo {
+    cepDT       identifier;
+    uint32_t    version;
+    uint32_t    flags;
+};
+
+static inline void cep_compare_info_set(cepCompareInfo* info,
+                                        const cepDT* identifier,
+                                        uint32_t version,
+                                        uint32_t flags) {
+    if (!info || !identifier)
+        return;
+    info->identifier = cep_dt_clean(identifier);
+    info->version = version;
+    info->flags = flags;
 }
 
 
@@ -500,6 +533,8 @@ static inline cepDT cep_dt_make(cepID domain, cepID tag) {
         return &value;                                                        \
     }
 
+CEP_DEFINE_STATIC_DT(dt_compare_order, CEP_ACRO("CEP"), CEP_WORD("cmp:order"));
+
 cepID  cep_text_to_acronym(const char *s);
 
 cepID  cep_text_to_word(const char *s);
@@ -531,6 +566,7 @@ struct _cepEnzymeBinding {
 };
 
 typedef struct _cepDataNode  cepDataNode;
+typedef struct cepLibraryBinding cepLibraryBinding;
 
 #define CEP_DATA_NODE_MEMBERS                                              \
     cepOpCount          modified;   /**< Beat when payload changed. */     \
@@ -546,10 +582,12 @@ typedef struct _cepDataNode  cepDataNode;
         };                                                                 \
         struct {                                                          \
             union {                                                       \
-                cepCell*    handle; /**< HANDLE payload target cell. */   \
-                cepCell*    stream; /**< STREAM payload target cell. */   \
+                cepCell*           handle;  /**< HANDLE payload target. */\
+                cepCell*           stream;  /**< STREAM payload target. */\
             };                                                            \
-            cepCell*      library;  /**< Owning library binding. */       \
+            cepCell*               library; /**< Owning library cell. */  \
+            cepLibraryBinding*     binding; /**< Retained library binding. */ \
+            void*                  proxy_ctx; /**< Cached proxy context for HANDLE/STREAM payloads. */ \
         };                                                                \
         uint8_t         value[2 * sizeof(void*)]; /**< Inline VALUE bytes. */ \
     }
@@ -572,7 +610,8 @@ struct _cepData {
         struct {
           cepID         writable:   1,  /**< If data can be updated. */
                         lock:       1,  /**< Lock on data content. */
-                        _reserved:  3,
+                        binding_released: 1, /**< Adapter release already notified for HANDLE/STREAM payload. */
+                        _reserved:  2,
                         glob:       1,  /**< Glob character present. */
                         
                         tag:        CEP_NAME_BITS;
@@ -709,8 +748,6 @@ enum {
     CEP_PROXY_SNAPSHOT_EXTERNAL = 1u << 1,   /**< Payload references external state that must be refetched. */
 };
 
-typedef struct cepLibraryBinding cepLibraryBinding;
-
 typedef struct {
     bool (*handle_retain)(const cepLibraryBinding* binding, cepCell* handle);
     void (*handle_release)(const cepLibraryBinding* binding, cepCell* handle);
@@ -728,6 +765,12 @@ typedef struct {
 struct cepLibraryBinding {
     const cepLibraryOps* ops;   /**< Adapter vtable registered by the foreign library. */
     void*                ctx;   /**< Library defined context passed back on every invocation. */
+    unsigned             refcount; /**< Reference count guarded by library + dependent handles. */
+    unsigned             flags; /**< Bitmask describing binding lifecycle state (see helpers). */
+};
+
+enum {
+    CEP_LIBRARY_BINDING_FLAG_DESTROYING = 1u << 0, /**< Set once the library cell begins teardown. */
 };
 
 
@@ -750,6 +793,10 @@ void     cep_data_history_clear(cepData* data);
 
 void  cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* ops, void* context);
 const cepLibraryBinding* cep_library_binding(const cepCell* library);
+void  cep_library_binding_retain(const cepLibraryBinding* binding);
+void  cep_library_binding_release(const cepLibraryBinding* binding);
+void  cep_library_binding_mark_destroying(cepLibraryBinding* binding);
+bool  cep_library_binding_is_destroying(const cepLibraryBinding* binding);
 void* cep_library_context(const cepCell* library);
 void  cep_library_set_context(cepCell* library, void* context);
 bool  cep_cell_stream_read(cepCell* cell, uint64_t offset, void* dst, size_t size, size_t* out_read);
@@ -1142,7 +1189,7 @@ static inline int cep_cell_order_compare(const cepCell* lhs, const cepCell* rhs)
 }
 
 static inline int cep_store_compare_cells(const cepCell* lhs, const cepCell* rhs, cepCompare compare, void* context) {
-    int cmp = compare? compare(lhs, rhs, context): 0;
+    int cmp = compare ? compare(lhs, rhs, context, NULL) : 0;
     if (!cmp && lhs && rhs && !cep_cell_is_void(lhs) && !cep_cell_is_void(rhs)) {
         if (lhs->parent && lhs->parent == rhs->parent)
             cmp = cep_cell_order_compare(lhs, rhs);

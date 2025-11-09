@@ -1,3 +1,9 @@
+/* To the extent possible under law, the authors have dedicated this
+ * work to the public domain by waiving all rights to the work worldwide
+ * under CC0 1.0. You can copy, modify, distribute, and perform this work,
+ * even for commercial purposes, without asking permission.
+ * See https://creativecommons.org/publicdomain/zero/1.0/. */
+
 /* Federation transport manager exercises: these tests drive the stub transport providers
    to ensure capability negotiation, upd_latest coalescing, and inbound delivery work
    without relying on real network I/O. */
@@ -659,6 +665,8 @@ static void fed_dual_runtime_configure_requests(FedDualRuntimeCtx* ctx,
     mirror_bundle = fed_test_require_dictionary(mirror_bundle);
     fed_test_write_u32(mirror_bundle, "beat_window", 1u);
     fed_test_write_u16(mirror_bundle, "max_infl", 1u);
+    fed_test_write_bool(mirror_bundle, "hist_cap", true);
+    fed_test_write_bool(mirror_bundle, "delta_cap", true);
     cepPath* mirror_path = NULL;
     munit_assert_true(cep_cell_path(mirror_request, &mirror_path));
     int mirror_rc = cep_fed_mirror_validator(NULL, mirror_path);
@@ -733,7 +741,10 @@ static void fed_dual_runtime_prepare_pair(FedDualRuntimePair* pair,
     fed_test_bootstrap_runtime();
 
     pair->initial_scope = cep_runtime_active();
-    pair->runtime_a = cep_runtime_default();
+    /* FIXME: The federation transport harness still leans on the legacy default
+       runtime context; migrate peer A to a scoped runtime so comparator/state
+       cleanup no longer depends on global resets. */
+    pair->runtime_a = test_runtime_legacy_default_context();
     pair->runtime_b = cep_runtime_create();
     munit_assert_not_null(pair->runtime_b);
 
@@ -852,9 +863,7 @@ static void fed_dual_runtime_cleanup_pair(FedDualRuntimePair* pair,
         return;
     }
 
-    fed_dual_runtime_teardown(ctx_a);
-    fed_dual_runtime_teardown(ctx_b);
-
+    /* Release link/mirror/invoke mounts while the transport managers are still alive. */
     cepRuntime* previous = cep_runtime_set_active(pair->runtime_b);
     if (mounts_b && mounts_b->link_path) {
         (void)cep_fed_link_destructor(NULL, mounts_b->link_path);
@@ -865,9 +874,7 @@ static void fed_dual_runtime_cleanup_pair(FedDualRuntimePair* pair,
     if (mounts_b && mounts_b->invoke_path) {
         (void)cep_fed_invoke_destructor(NULL, mounts_b->invoke_path);
     }
-    cep_runtime_shutdown(pair->runtime_b);
     cep_runtime_restore_active(previous);
-    cep_runtime_destroy(pair->runtime_b);
 
     previous = cep_runtime_set_active(pair->runtime_a);
     if (mounts_a && mounts_a->link_path) {
@@ -879,9 +886,17 @@ static void fed_dual_runtime_cleanup_pair(FedDualRuntimePair* pair,
     if (mounts_a && mounts_a->invoke_path) {
         (void)cep_fed_invoke_destructor(NULL, mounts_a->invoke_path);
     }
+    cep_runtime_restore_active(previous);
+
+    fed_dual_runtime_teardown(ctx_a);
+    fed_dual_runtime_teardown(ctx_b);
+
+    previous = cep_runtime_set_active(pair->runtime_b);
+    cep_runtime_shutdown(pair->runtime_b);
     cep_l0_bootstrap_reset();
     munit_assert_true(cep_l0_bootstrap());
     cep_runtime_restore_active(previous);
+    cep_runtime_destroy(pair->runtime_b);
 
     cep_runtime_restore_active(pair->initial_scope);
     test_runtime_shutdown();
@@ -2070,6 +2085,8 @@ MunitResult test_fed_mirror_validator_success(const MunitParameter params[], voi
     bundle = fed_test_require_dictionary(bundle);
     fed_test_write_u32(bundle, "beat_window", 2u);
     fed_test_write_u16(bundle, "max_infl", 2u);
+    fed_test_write_bool(bundle, "hist_cap", true);
+    fed_test_write_bool(bundle, "delta_cap", true);
     (void)cep_cell_put_text(bundle, CEP_DTAW("CEP","commit_mode"), "stream");
 
     cepPath* request_path = NULL;
@@ -2146,6 +2163,8 @@ MunitResult test_fed_mirror_validator_conflict(const MunitParameter params[], vo
     first_bundle = fed_test_require_dictionary(first_bundle);
     fed_test_write_u32(first_bundle, "beat_window", 1u);
     fed_test_write_u16(first_bundle, "max_infl", 1u);
+    fed_test_write_bool(first_bundle, "hist_cap", true);
+    fed_test_write_bool(first_bundle, "delta_cap", true);
     (void)cep_cell_put_text(first_bundle, CEP_DTAW("CEP","commit_mode"), "batch");
 
     cepPath* first_path = NULL;
@@ -2167,6 +2186,8 @@ MunitResult test_fed_mirror_validator_conflict(const MunitParameter params[], vo
     second_bundle = fed_test_require_dictionary(second_bundle);
     fed_test_write_u32(second_bundle, "beat_window", 1u);
     fed_test_write_u16(second_bundle, "max_infl", 1u);
+    fed_test_write_bool(second_bundle, "hist_cap", true);
+    fed_test_write_bool(second_bundle, "delta_cap", true);
 
     cepPath* second_path = NULL;
     munit_assert_true(cep_cell_path(second, &second_path));
@@ -2227,6 +2248,8 @@ MunitResult test_fed_mirror_validator_deadline(const MunitParameter params[], vo
     bundle = fed_test_require_dictionary(bundle);
     fed_test_write_u32(bundle, "beat_window", 1u);
     fed_test_write_u16(bundle, "max_infl", 1u);
+    fed_test_write_bool(bundle, "hist_cap", true);
+    fed_test_write_bool(bundle, "delta_cap", true);
     (void)cep_cell_put_text(bundle, CEP_DTAW("CEP","commit_mode"), "manual");
 
     (void)cep_heartbeat_current();

@@ -7,12 +7,16 @@
 #include "cep_stream_internal.h"
 #include "cep_heartbeat.h"
 
+#include <inttypes.h>
 #include <string.h>
 
 CEP_DEFINE_STATIC_DT(dt_intent_name,   CEP_ACRO("CEP"), CEP_WORD("intent"));
 CEP_DEFINE_STATIC_DT(dt_outcome_name,  CEP_ACRO("CEP"), CEP_WORD("outcome"));
 CEP_DEFINE_STATIC_DT(dt_entry_name,    CEP_ACRO("CEP"), CEP_WORD("entry"));
 CEP_DEFINE_STATIC_DT(dt_list_type,     CEP_ACRO("CEP"), CEP_WORD("list"));
+
+_Static_assert(offsetof(cepStreamOutcomeEntry, resulting_hash) == 32,
+               "cepStreamOutcomeEntry.resulting_hash layout changed");
 
 typedef struct cepStreamWriteIntent {
     cepCell*   stream;
@@ -82,12 +86,17 @@ static void cep_stream_append_outcome(cepCell* owner, const cepStreamOutcomeEntr
         return;
     cepDT entry_name = *dt_entry_name();
     cepDT outcome_type = *dt_outcome_name();
-    cep_cell_append_value(list,
-                          &entry_name,
-                          &outcome_type,
-                          (void*)entry,
-                          sizeof *entry,
-                          sizeof *entry);
+    cepCell* appended = cep_cell_append_value(list,
+                                              &entry_name,
+                                              &outcome_type,
+                                              (void*)entry,
+                                              sizeof *entry,
+                                              sizeof *entry);
+    if (appended) {
+        cepStreamOutcomeEntry* stored = (cepStreamOutcomeEntry*)cep_cell_data(appended);
+        if (stored)
+            memcpy(stored, entry, sizeof *entry);
+    }
 }
 
 static void cep_stream_remove_intent_list_if_empty(cepCell* owner) {
@@ -213,6 +222,14 @@ static void cep_stream_record_outcome(cepStreamWriteIntent* intent, bool committ
     }
 
     cep_stream_append_outcome(intent->stream, &outcome);
+    CEP_DEBUG_PRINTF_STDOUT("[stream][record] offset=%" PRIu64 " len=%" PRIu64
+                            " payload=%" PRIu64 " expected=%" PRIu64 " result=%" PRIu64 " flags=0x%x",
+                            outcome.offset,
+                            outcome.length,
+                            outcome.payload_hash,
+                            outcome.expected_hash,
+                            outcome.resulting_hash,
+                            outcome.flags);
 
     if (intent->intent_cell) {
         cep_stream_dispose_intent_entry(intent->intent_cell);
@@ -254,15 +271,25 @@ bool cep_stream_commit_pending(void) {
             ok = false;
         }
 
+        bool committed = ok && written == intent->size;
+        if (committed && resulting_hash == 0 && intent->payload_hash) {
+            CEP_DEBUG_PRINTF_STDOUT("[stream][warn] committed stream write lost payload hash offset=%" PRIu64
+                                    " size=%zu payload=%" PRIu64 " written=%zu",
+                                    intent->offset,
+                                    intent->size,
+                                    intent->payload_hash,
+                                    written);
+        }
+
         cep_stream_journal(intent->stream,
-                          ok ? (CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_COMMIT)
-                             : (CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_ERROR),
+                          committed ? (CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_COMMIT)
+                                    : (CEP_STREAM_JOURNAL_WRITE | CEP_STREAM_JOURNAL_ERROR),
                           intent->offset,
                           intent->size,
-                          ok ? written : 0,
-                          ok ? intent->payload_hash : 0);
+                          committed ? written : 0,
+                          committed ? intent->payload_hash : 0);
 
-        cep_stream_record_outcome(intent, ok && written == intent->size, written, resulting_hash);
+        cep_stream_record_outcome(intent, committed, written, resulting_hash);
         cep_free(intent->payload);
         intent->payload = NULL;
         cep_stream_remove_intent_list_if_empty(intent->stream);

@@ -46,7 +46,11 @@ static inline cepStreamBinding cep_stream_binding_prepare(const cepData* data) {
 }
 
 static inline bool cep_stream_binding_ready(const cepStreamBinding* binding) {
-    return binding && binding->library && binding->library->ops && binding->resource;
+    return binding
+        && binding->library
+        && !cep_library_binding_is_destroying(binding->library)
+        && binding->library->ops
+        && binding->resource;
 }
 
 static cepCell* cep_stream_journal_node(cepCell* owner) {
@@ -89,6 +93,7 @@ typedef struct {
 
 static const cepLibraryBinding* cep_library_binding_const(const cepCell* library);
 static cepLibraryBinding*       cep_library_binding_mut(cepCell* library);
+static void                     cep_library_binding_payload_destroy(void* payload);
 
 
 /** Seed a library cell with an adapter binding so HANDLE/STREAM payloads can
@@ -101,6 +106,8 @@ void cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* 
     cepLibraryBinding* binding = cep_malloc0(sizeof *binding);
     binding->ops = ops;
     binding->ctx = context;
+    binding->refcount = 1u;
+    binding->flags = 0u;
 
     cepDT library_type = *dt_library_type();
     cep_cell_initialize_data(library,
@@ -109,7 +116,7 @@ void cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* 
                              binding,
                              sizeof *binding,
                              sizeof *binding,
-                             cep_free);
+                             cep_library_binding_payload_destroy);
 }
 
 
@@ -159,6 +166,53 @@ static const cepLibraryBinding* cep_library_binding_const(const cepCell* library
 
 static cepLibraryBinding* cep_library_binding_mut(cepCell* library) {
     return (cepLibraryBinding*) cep_library_binding_const(library);
+}
+
+static void cep_library_binding_payload_destroy(void* payload) {
+    if (!payload)
+        return;
+
+    cepLibraryBinding* binding = payload;
+    cep_library_binding_mark_destroying(binding);
+    cep_library_binding_release(binding);
+}
+
+
+void cep_library_binding_retain(const cepLibraryBinding* binding) {
+    if (!binding)
+        return;
+
+    cepLibraryBinding* mutable_binding = (cepLibraryBinding*)binding;
+    mutable_binding->refcount += 1u;
+}
+
+
+void cep_library_binding_release(const cepLibraryBinding* binding) {
+    if (!binding)
+        return;
+
+    cepLibraryBinding* mutable_binding = (cepLibraryBinding*)binding;
+    if (mutable_binding->refcount == 0u)
+        return;
+
+    mutable_binding->refcount -= 1u;
+
+    if (mutable_binding->refcount == 0u) {
+        cep_free(mutable_binding);
+    }
+}
+
+
+void cep_library_binding_mark_destroying(cepLibraryBinding* binding) {
+    if (!binding)
+        return;
+
+    binding->flags |= CEP_LIBRARY_BINDING_FLAG_DESTROYING;
+}
+
+
+bool cep_library_binding_is_destroying(const cepLibraryBinding* binding) {
+    return binding && (binding->flags & CEP_LIBRARY_BINDING_FLAG_DESTROYING);
 }
 
 

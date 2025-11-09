@@ -22,7 +22,7 @@
 
 
 extern cepCell* tech_catalog_insert(cepCell* catalog, cepID name, int32_t value);
-extern int      tech_catalog_compare(const cepCell* key, const cepCell* cell, void* unused);
+extern int      tech_catalog_compare(const cepCell* key, const cepCell* cell, void* unused, cepCompareInfo* info);
 
 
 #define TEST_TIMEOUT_SECONDS  20u

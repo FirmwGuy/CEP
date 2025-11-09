@@ -57,6 +57,13 @@ void*       test_ovh_watchdog_setup(const MunitParameter params[], void* user_da
 void        test_ovh_watchdog_tear_down(void* fixture);
 MunitResult test_serialization(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization_proxy(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_serialization_proxy_release_single(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_serialization_manifest_history(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_serialization_manifest_split_child_capacity(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_serialization_manifest_positional_add(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_serialization_manifest_fingerprint_corruption(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_serialization_manifest_delta_fingerprint_corruption(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_serialization_header_capability_mismatch(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_fixture);
 #ifdef CEP_HAS_LIBZIP
 MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fixture);
@@ -129,9 +136,19 @@ static inline void test_runtime_shutdown(void) {
     cepRuntime* runtime = cep_runtime_active();
     (void)cep_runtime_shutdown(runtime);
     if (runtime == cep_runtime_default()) {
+        /* FIXME: Legacy suites still depend on the global default runtime; migrate
+           those fixtures to scoped runtimes so this branch can disappear. */
         cep_cell_system_shutdown();
         cep_l0_bootstrap_reset();
     }
+}
+
+static inline cepRuntime* test_runtime_legacy_default_context(void) {
+    /* FIXME: Temporary shim for the handful of suites that still execute against
+       the custom default runtime context; replace with fixture-owned runtimes so
+       comparator registries and serialization state stay per-instance. */
+    cep_comparator_registry_reset_default();
+    return cep_runtime_default();
 }
 
 #define TEST_BOOT_CYCLE_FRESH       "fresh"

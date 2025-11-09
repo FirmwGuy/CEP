@@ -1,3 +1,9 @@
+/* To the extent possible under law, the authors have dedicated this
+ * work to the public domain by waiving all rights to the work worldwide
+ * under CC0 1.0. You can copy, modify, distribute, and perform this work,
+ * even for commercial purposes, without asking permission.
+ * See https://creativecommons.org/publicdomain/zero/1.0/. */
+
 /* Organ Validation Harness (OVH) dossier tests confirm constructors and destructors emit their
  * heartbeat operations, reusing a fixture organ so we can observe `op/ct` and
  * `op/dt` timelines alongside validator dossiers. Each test bootstraps the

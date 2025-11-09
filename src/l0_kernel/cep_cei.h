@@ -1,3 +1,8 @@
+/* Copyright (c) 2025 Victor M. Barrientos (https://github.com/FirmwGuy/CEP) */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 /* Common Error Interface (CEI) public API for Layer 0 helpers. The helper
    builds structured Error Facts, routes them through mailboxes and heartbeat
    impulses, and updates OPS dossiers so severe faults become visible without

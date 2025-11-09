@@ -11,6 +11,7 @@
 #include "cep_executor.h"
 #include "cep_ep.h"
 #include "cep_namepool.h"
+#include "cep_serialization.h"
 #include "../enzymes/cep_cell_operations.h"
 #include "../enzymes/cep_l0_organs.h"
 #include "cep_mailbox.h"
@@ -57,6 +58,22 @@ static const cepDT* dt_signal_op_tmo(void);
 static const cepDT* dt_allow_signal_cei(void);
 static const cepDT* dt_paused_field(void);
 static const cepDT* dt_view_horizon_field(void);
+static void cep_control_emit_guard_cei(cepControlOpState* op, const char* reason);
+
+static bool
+cep_control_ensure_serialization_idle(cepControlOpState* op,
+                                      const char* verb_label,
+                                      const char* guard_reason)
+{
+    if (!cep_serialization_is_busy())
+        return true;
+    if (!op)
+        return false;
+    if (!cep_dt_is_valid(&op->verb_dt) && verb_label)
+        op->verb_dt = cep_ops_make_dt(verb_label);
+    cep_control_emit_guard_cei(op, guard_reason ? guard_reason : "serialization active");
+    return false;
+}
 static const cepDT* dt_ops_rt_name(void);
 static void cep_heartbeat_dispatch_cache_destroy(cepHeartbeatScratch* scratch);
 #if defined(CEP_ENABLE_DEBUG)
@@ -5694,6 +5711,14 @@ cep_control_debug_snapshot("runtime_rollback-enter", &CEP_CONTROL_STATE.rollback
                                  info);
             }
         }
+        result = false;
+        goto exit;
+    }
+
+    if (!CEP_CONTROL_STATE.rollback.started &&
+        !cep_control_ensure_serialization_idle(&CEP_CONTROL_STATE.rollback,
+                                               "op/rollback",
+                                               "serialization active")) {
         result = false;
         goto exit;
     }
