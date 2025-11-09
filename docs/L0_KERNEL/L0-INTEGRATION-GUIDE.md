@@ -221,6 +221,7 @@ cep_cell_finalize(&branch);
 
 - Keep staging nodes floating (`cep_cell_is_floating`) until you graft them. Use `cep_cell_initialize_*` helpers to prepare dictionaries, lists, or value nodes without touching the live tree.
 - Populate children with the dictionary/list APIs (`cep_dict_add_value`, `cep_dict_add_dictionary`, `cep_cell_copy_children`, …). If any step fails, call `cep_cell_finalize`/`cep_cell_finalize_hard` before returning; no visible state was changed yet.
+- Only attempt `cep_cell_add` while running in an RW-capable episode or thread. The helper calls `cep_ep_require_rw()` and rejects the mutation when no lease is active, immediately finalizing the scratch/floating child so you do not leak partially built nodes. A successful add also copies the parent store’s `modified` beat into the child’s `created` timestamp when the parent is already published, keeping ancestry timelines consistent.
 - When the branch is ready, attach it with `cep_cell_add`, `cep_dict_add`, or the append helpers. Make sure the destination already exposes a writable store (`cep_cell_ensure_dictionary_child` is the usual guard) so append-only guarantees stay intact.
 - Replacing or removing anchored nodes must go through the store helpers (`cep_cell_remove_hard`, `cep_store_replace_child`). Never keep raw child pointers across mutations—look them up again by path.
 - References: the append-only rules live in `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md`.
@@ -386,6 +387,7 @@ When you emit derived facts it helps to record “came from these parents” and
 **Technical details**
 
 - `cep_cell_add_parents(derived, parents, count)` ensures there is a `meta/parents` list, clears previous entries, and appends link cells to every parent you pass. Null entries are skipped; errors surface as `-1`.
+- The helper refuses immutable targets and insists that the derived cell is a normal node (not a proxy or HANDLE/STREAM adapter). If you need to annotate immutable structures, emit a fresh mutable metadata node, populate `meta/parents` there, then link it to the sealed branch.
 - `cep_cell_content_hash(cell)` recomputes the payload hash (using the kernel’s FNV‑1a) and stores it on the live `cepData` node, returning the 64-bit value for logs.
 - `cep_cell_set_content_hash(cell, hash)` lets you stamp an externally computed checksum without touching the payload.
 - Both helpers follow links to canonical cells and refuse to operate on proxies/handles where a value hash would be meaningless.
@@ -400,7 +402,7 @@ When construction fails or you intentionally prune branches, these routines perf
 - `void cep_cell_delete_data_hard(cepCell* cell)` clears the payload history and releases buffers so the node becomes data-less without waiting for GC.
 - `void cep_cell_delete_store(cepCell* cell)` marks the store timeline as deleted; `void cep_cell_delete_store_hard(cepCell* cell)` also frees the store engine immediately.
 - `void cep_cell_dispose(cepCell* cell)` and `void cep_cell_dispose_hard(cepCell* cell)` shut down both data and store sides of a cell (soft vs hard), making it safe to recycle structs from object pools.
-- `void cep_cell_initialize_clone(cepCell* clone, const cepCell* source)` copies the structural metadata from `source` into `clone` so you can duplicate nodes without re-running every individual `initialize` call.
+- `void cep_cell_initialize_clone(cepCell* clone, const cepCell* source)` copies the structural metadata from `source` into `clone` so you can duplicate nodes without re-running every individual `initialize` call. Source cells must be “template shells” that carry no payloads or child stores; cloning richer nodes still requires the regular deep-copy helpers.
 - `void cep_cell_replace(cepCell* cell, cepCell* replacement)` swaps a live node out for a prepared replacement, preserving parent pointers.
 - `int cep_cell_set_data(cepCell* cell, cepData* data)` and `int cep_cell_set_store(cepCell* cell, cepStore* store)` rebind payloads/stores that you constructed out-of-band.
 - `void cep_cell_timestamp_reset(cepCell* cell)` rewinds the created/modified timestamps—useful in tests that need deterministic snapshots after rebuilding a branch.

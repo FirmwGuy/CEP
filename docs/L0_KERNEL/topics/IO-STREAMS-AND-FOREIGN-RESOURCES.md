@@ -113,6 +113,7 @@ This section sketches how the above maps onto existing headers without binding t
 - `cep_library_initialize(cepCell *library, cepDT *name, const cepLibraryOps *ops, void *ctx)`
   - Wrap a library cell with the adapter vtable and opaque context so HANDLE/STREAM payloads can delegate back into the integration.
   - `cep_library_binding/cep_library_context/cep_library_set_context` expose or update the binding without letting callers poke into internals.
+  - Library bindings live as DATA payloads tagged with a `library` DT. Their destructor first marks the adapter “destroying” (so adapters can short-circuit new retain attempts) before releasing the opaque context, ensuring refcounted resources unwind deterministically.
 
 - `cep_cell_update(...)`
   - VALUE/DATA only. For HANDLE/STREAM, return NULL or assert in debug; updates go through stream write APIs.
@@ -121,6 +122,7 @@ This section sketches how the above maps onto existing headers without binding t
   - `cep_cell_stream_read(cell, off, dst, n, out_read)` handles VALUE/DATA copies directly and calls the library adapter for HANDLE/STREAM resources. Every call appends a `CEP/stream-log` entry under `CEP/journal` recording requested/actual byte counts and an FNV-1a hash of the bytes read.
   - `cep_cell_stream_write(cell, off, src, n, out_written)` mirrors the read flow, updating VALUE/DATA hashes and timestamps while delegating to adapters for external resources. Successful commits journal a matching entry; failed writes log an error event without modifying state.
   - `cep_cell_stream_map(cell, off, n, access, view)` exposes an optional zero-copy window. VALUE/DATA mappings keep a copy-on-write snapshot so `cep_cell_stream_unmap(..., commit=false)` restores the original bytes. Committed writes refresh hashes, timestamps, and journal entries; adapters supply their own map/unmap handling for HANDLE/STREAM cells.
+  - Stream-log entries live inside a lazily created `journal/stream-log/` list on the owning resource. Each record stores offsets, requested and actual byte counts, adapter flags, the payload hash, and the beat-derived Unix timestamp so forensic tooling can replay I/O exactly where it happened.
 
 - Library vtable
   - The library cell referenced by `data->library` exports function pointers for HANDLE/STREAM ops. L0 routes calls to it.
