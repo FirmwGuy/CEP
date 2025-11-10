@@ -164,6 +164,15 @@ static bool cep_serialization_flat_mode_enabled(void) {
     return cached == 1;
 }
 
+static cepFlatCompressionAlgorithm cep_serialization_flat_compression_mode(void) {
+    const char* value = getenv("CEP_SERIALIZATION_FLAT_COMPRESSION");
+    if (!value || !*value)
+        return CEP_FLAT_COMPRESSION_NONE;
+    if (strcasecmp(value, "deflate") == 0)
+        return CEP_FLAT_COMPRESSION_DEFLATE;
+    return CEP_FLAT_COMPRESSION_NONE;
+}
+
 static void cep_serialization_debug_log(const char* fmt, ...) {
     if (!cep_serialization_debug_logging_enabled())
         return;
@@ -198,6 +207,8 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
         .apply_mode = CEP_FLAT_APPLY_INSERT_ONLY,
         .capability_flags = 0u,
         .hash_algorithm = CEP_FLAT_HASH_BLAKE3_256,
+        .compression_algorithm = cep_serialization_flat_compression_mode(),
+        .checksum_algorithm = CEP_FLAT_CHECKSUM_CRC32,
     };
 
     if (!cep_flat_serializer_begin(serializer, &config))
@@ -292,25 +303,36 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
         size_t chunk_body_size = 0u;
         size_t chunk_offset = 0u;
         uint64_t chunk_ordinal = 0u;
+        size_t expected_chunk_offset = 0u;
+        uint64_t expected_chunk_ordinal = 0u;
 
         while (chunk_offset < payload_size) {
+            if (chunk_offset != expected_chunk_offset || chunk_ordinal != expected_chunk_ordinal) {
+                cep_serialization_debug_log("[serialization][flat] chunk ordering violated (%zu!=%zu or %" PRIu64 "!=%" PRIu64 ")\n",
+                                            chunk_offset,
+                                            expected_chunk_offset,
+                                            chunk_ordinal,
+                                            expected_chunk_ordinal);
+                goto exit;
+            }
+
             size_t remaining = payload_size - chunk_offset;
             size_t chunk_size = remaining < chunk_limit ? remaining : chunk_limit;
 
-        if (!cep_serialization_build_payload_chunk_key(canonical, chunk_ordinal, &names, &chunk_key, &chunk_key_size))
-            goto exit;
-        if (!cep_serialization_build_payload_chunk_body(data,
-                                                        payload_fp,
-                                                        payload_bytes,
-                                                        payload_size,
-                                                        chunk_offset,
-                                                        chunk_size,
-                                                        &names,
-                                                        &chunk_body,
-                                                        &chunk_body_size)) {
-            cep_free(chunk_key);
-            goto exit;
-        }
+            if (!cep_serialization_build_payload_chunk_key(canonical, chunk_ordinal, &names, &chunk_key, &chunk_key_size))
+                goto exit;
+            if (!cep_serialization_build_payload_chunk_body(data,
+                                                            payload_fp,
+                                                            payload_bytes,
+                                                            payload_size,
+                                                            chunk_offset,
+                                                            chunk_size,
+                                                            &names,
+                                                            &chunk_body,
+                                                            &chunk_body_size)) {
+                cep_free(chunk_key);
+                goto exit;
+            }
 
             cepFlatRecordSpec chunk_record = {
                 .type = CEP_FLAT_RECORD_PAYLOAD_CHUNK,
@@ -336,8 +358,19 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
             cep_free(chunk_body);
             chunk_key = NULL;
             chunk_body = NULL;
+
             chunk_offset += chunk_size;
             chunk_ordinal++;
+            expected_chunk_offset += chunk_size;
+            expected_chunk_ordinal++;
+        }
+
+        if (expected_chunk_offset != payload_size || chunk_offset != payload_size) {
+            cep_serialization_debug_log("[serialization][flat] chunk ordering completion mismatch (%zu/%zu vs %zu)\n",
+                                        expected_chunk_offset,
+                                        payload_size,
+                                        chunk_offset);
+            goto exit;
         }
     }
 

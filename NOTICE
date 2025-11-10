@@ -19,6 +19,13 @@ Third-party components used by the core library:
   only when a system zlib is unavailable or the build is configured with
   `-Dzlib_provider=bundled`.
 
+- libsodium subset (Frank Denis et al.) — ISC License. A trimmed copy of the
+  libsodium sources lives in `src/third_party/libsodium/` and provides the
+  ChaCha20-Poly1305/XChaCha20-Poly1305 AEAD helpers plus their dependencies.
+  Builds prefer linking against a system libsodium via `-Dlibsodium_provider=system`;
+  the bundled subset is compiled only when no system library is available or the user
+  explicitly selects `-Dlibsodium_provider=bundled`.
+
 Notes:
 - Test sources other than `munit.*` are dedicated to the public domain (CC0 1.0).
 - The installed library and headers do not contain munit; it is only compiled into test binaries.

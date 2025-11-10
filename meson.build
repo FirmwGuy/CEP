@@ -159,7 +159,70 @@ endif
 if use_bundled_zlib
   inc_paths += ['src/third_party/zlib']
   add_project_arguments(['-DCEP_ZLIB_BUNDLED=1', '-DZLIB_INTERNAL=1'], language: 'c')
-  l0_srcs += files('src/third_party/zlib/crc32.c')
+  l0_srcs += files(
+    'src/third_party/zlib/adler32.c',
+    'src/third_party/zlib/compress.c',
+    'src/third_party/zlib/crc32.c',
+    'src/third_party/zlib/deflate.c',
+    'src/third_party/zlib/gzclose.c',
+    'src/third_party/zlib/gzlib.c',
+    'src/third_party/zlib/gzread.c',
+    'src/third_party/zlib/gzwrite.c',
+    'src/third_party/zlib/infback.c',
+    'src/third_party/zlib/inffast.c',
+    'src/third_party/zlib/inflate.c',
+    'src/third_party/zlib/inftrees.c',
+    'src/third_party/zlib/trees.c',
+    'src/third_party/zlib/uncompr.c',
+    'src/third_party/zlib/zutil.c',
+  )
+endif
+
+libsodium_provider = get_option('libsodium_provider')
+libsodium_dep = dependency('libsodium', required: false)
+use_bundled_libsodium = libsodium_provider == 'bundled'
+if not use_bundled_libsodium
+  if libsodium_dep.found()
+    add_project_arguments('-DCEP_LIBSODIUM_SYSTEM=1', language: 'c')
+    lib_dependencies += [libsodium_dep]
+  else
+    if libsodium_provider == 'system'
+      error('libsodium_provider=system but system libsodium was not found.')
+    endif
+    use_bundled_libsodium = true
+  endif
+endif
+
+if use_bundled_libsodium
+  inc_paths += [
+    'src/third_party/libsodium/src/libsodium/include',
+    'src/third_party/libsodium/src/libsodium/include/sodium',
+    'src/third_party/libsodium/src/libsodium',
+  ]
+  add_project_arguments([
+    '-DCEP_LIBSODIUM_BUNDLED=1',
+    '-DCONFIGURED=1',
+    '-DDEV_MODE=0',
+    '-DSODIUM_STATIC=1',
+  ], language: 'c')
+  libsodium_sources = files(
+    'src/third_party/libsodium/src/libsodium/crypto_aead/chacha20poly1305/aead_chacha20poly1305.c',
+    'src/third_party/libsodium/src/libsodium/crypto_aead/xchacha20poly1305/aead_xchacha20poly1305.c',
+    'src/third_party/libsodium/src/libsodium/crypto_core/hchacha20/core_hchacha20.c',
+    'src/third_party/libsodium/src/libsodium/crypto_onetimeauth/poly1305/onetimeauth_poly1305.c',
+    'src/third_party/libsodium/src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna.c',
+    'src/third_party/libsodium/src/libsodium/crypto_stream/chacha20/stream_chacha20.c',
+    'src/third_party/libsodium/src/libsodium/crypto_stream/chacha20/ref/chacha20_ref.c',
+    'src/third_party/libsodium/src/libsodium/crypto_verify/verify.c',
+    'src/third_party/libsodium/src/libsodium/randombytes/randombytes.c',
+    'src/third_party/libsodium/src/libsodium/randombytes/sysrandom/randombytes_sysrandom.c',
+    'src/third_party/libsodium/src/libsodium/randombytes/internal/randombytes_internal_random.c',
+  )
+  l0_srcs += libsodium_sources
+  l0_srcs += files(
+    'src/third_party/libsodium_shims.c',
+    'src/third_party/libsodium_runtime_stubs.c',
+  )
 endif
 
 inc = include_directories(inc_paths)

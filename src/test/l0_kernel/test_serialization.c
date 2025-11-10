@@ -1505,6 +1505,8 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
 
     const char* prev = getenv("CEP_SERIALIZATION_USE_FLAT");
     char* prev_copy = prev ? strdup(prev) : NULL;
+    const char* prev_comp = getenv("CEP_SERIALIZATION_FLAT_COMPRESSION");
+    char* prev_comp_copy = prev_comp ? strdup(prev_comp) : NULL;
     munit_assert_true(setenv("CEP_SERIALIZATION_USE_FLAT", "1", 1) == 0);
 
     uint8_t payload[96];
@@ -1539,6 +1541,8 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
 
     size_t offset = 0u;
     unsigned chunk_records = 0u;
+    uint64_t expected_chunk_offset = 0u;
+
     while (offset < frame_size) {
         if (frame_size - offset < 4u)
             break;
@@ -1554,16 +1558,77 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
         munit_assert_true(flat_read_varint(frame, frame_size, &offset, &body_len));
         munit_assert_size(offset + key_len + body_len + sizeof(uint32_t), <=, frame_size);
         offset += key_len;
+        const uint8_t* body_ptr = frame + offset;
         offset += body_len;
         offset += sizeof(uint32_t); /* skip CRC */
 
         if (type == CEP_FLAT_RECORD_PAYLOAD_CHUNK &&
             version == CEP_FLAT_SERIALIZER_VERSION) {
+            size_t body_off = 0u;
+            munit_assert_size(body_len, >, 0u);
+            munit_assert_uint8(body_ptr[body_off++], ==, CEP_DATATYPE_VALUE);
+
+            uint64_t total_size = 0u;
+            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &total_size));
+            munit_assert_uint64(total_size, ==, sizeof payload);
+
+            uint64_t chunk_offset_val = 0u;
+            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &chunk_offset_val));
+            uint64_t chunk_size_val = 0u;
+            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &chunk_size_val));
+            munit_assert_uint64(chunk_offset_val, ==, expected_chunk_offset);
+            expected_chunk_offset += chunk_size_val;
+
+            uint64_t fp_len = 0u;
+            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &fp_len));
+            munit_assert_size(body_off + fp_len, <=, body_len);
+            body_off += (size_t)fp_len;
+            munit_assert_size(body_off, <, body_len);
+
+            /* Skip AEAD scaffolding (mode + nonce + aad hash) */
+            uint8_t aead_mode = body_ptr[body_off++];
+            (void)aead_mode;
+            uint64_t nonce_len = 0u;
+            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &nonce_len));
+            munit_assert_size(body_off + nonce_len, <=, body_len);
+            body_off += (size_t)nonce_len;
+            munit_assert_size(body_off + 32u, <=, body_len);
+            body_off += 32u;
+            munit_assert_size(body_off, <, body_len);
+
             chunk_records++;
         }
     }
 
     munit_assert_uint(chunk_records, >=, 2u);
+    munit_assert_uint64(expected_chunk_offset, ==, sizeof payload);
+
+    serialization_capture_clear(&capture);
+
+    munit_assert_true(setenv("CEP_SERIALIZATION_FLAT_COMPRESSION", "deflate", 1) == 0);
+    munit_assert_true(cep_serialization_emit_cell(&cell,
+                                                  NULL,
+                                                  serialization_capture_sink,
+                                                  &capture,
+                                                  chunk_limit));
+    munit_assert_size(capture.count, ==, 1u);
+    const uint8_t* compressed_frame = capture.chunks[0].data;
+    munit_assert_size(capture.chunks[0].size, >, 0u);
+    munit_assert_uint8(compressed_frame[0], ==, 'C');
+    munit_assert_uint8(compressed_frame[1], ==, 'F');
+    munit_assert_uint8(compressed_frame[2], ==, 'L');
+    munit_assert_uint8(compressed_frame[3], ==, 'T');
+
+    cepFlatReader* reader = cep_flat_reader_create();
+    munit_assert_not_null(reader);
+    munit_assert_true(cep_flat_reader_feed(reader,
+                                           compressed_frame,
+                                           capture.chunks[0].size));
+    munit_assert_true(cep_flat_reader_commit(reader));
+    const cepFlatFrameConfig* frame_cfg = cep_flat_reader_frame(reader);
+    munit_assert_uint(frame_cfg->compression_algorithm, ==, CEP_FLAT_COMPRESSION_DEFLATE);
+    munit_assert_uint(frame_cfg->checksum_algorithm, ==, CEP_FLAT_CHECKSUM_CRC32);
+    cep_flat_reader_destroy(reader);
 
     serialization_capture_clear(&capture);
     if (prev_copy) {
@@ -1571,6 +1636,12 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
         free(prev_copy);
     } else {
         unsetenv("CEP_SERIALIZATION_USE_FLAT");
+    }
+    if (prev_comp_copy) {
+        setenv("CEP_SERIALIZATION_FLAT_COMPRESSION", prev_comp_copy, 1);
+        free(prev_comp_copy);
+    } else {
+        unsetenv("CEP_SERIALIZATION_FLAT_COMPRESSION");
     }
     return MUNIT_OK;
 }

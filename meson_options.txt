@@ -7,3 +7,4 @@ option('both_libs', type: 'boolean', value: false, description: 'Build both stat
 option('zip', type: 'feature', value: 'auto', description: 'Enable libzip-backed stream adapter')
 option('executor_backend', type: 'combo', choices: ['stub', 'threaded'], value: 'stub', description: 'Select executor backend implementation')
 option('zlib_provider', type: 'combo', choices: ['auto', 'system', 'bundled'], value: 'auto', description: 'Prefer system zlib when available; fall back to bundled CRC32 copy')
+option('libsodium_provider', type: 'combo', choices: ['auto', 'system', 'bundled'], value: 'auto', description: 'Prefer system libsodium when available; fall back to a bundled subset')

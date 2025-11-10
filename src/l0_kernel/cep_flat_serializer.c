@@ -7,13 +7,17 @@
 #include "cep_molecule.h"
 #include "cep_crc32c.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <zlib.h>
 
 #define CEP_FLAT_MAGIC UINT32_C(0x43455046)
+#define CEP_FLAT_CONTAINER_MAGIC  UINT32_C(0x43464C54) /* 'CFLT' */
+#define CEP_FLAT_CONTAINER_VERSION 1u
 
 typedef struct {
     uint8_t* data;
@@ -34,6 +38,16 @@ typedef struct {
     size_t         key_size;
     uint8_t        hash[CEP_FLAT_HASH_SIZE];
 } cepFlatDigestLeaf;
+
+typedef struct {
+    uint32_t magic;
+    uint8_t  version;
+    uint8_t  compression;
+    uint8_t  checksum;
+    uint8_t  reserved;
+    uint64_t uncompressed_size;
+    uint64_t compressed_size;
+} cepFlatContainerHeader;
 
 struct cepFlatSerializer {
     cepFlatFrameConfig config;
@@ -71,6 +85,8 @@ static bool cep_flat_reader_parse(cepFlatReader* reader);
 static bool cep_flat_reader_parse_trailer(cepFlatReader* reader,
                                           const uint8_t* body,
                                           size_t body_size);
+static bool cep_flat_serializer_apply_compression(cepFlatSerializer* serializer);
+static bool cep_flat_reader_prepare_buffer(cepFlatReader* reader);
 
 
 static size_t cep_flat_varint_length(uint64_t value);
@@ -121,6 +137,17 @@ bool cep_flat_serializer_begin(cepFlatSerializer* serializer, const cepFlatFrame
     serializer->config.beat_number = config ? config->beat_number : 0u;
     serializer->config.capability_flags = config ? config->capability_flags : 0u;
     serializer->config.hash_algorithm = config ? config->hash_algorithm : CEP_FLAT_HASH_BLAKE3_256;
+    serializer->config.compression_algorithm = config ? config->compression_algorithm : CEP_FLAT_COMPRESSION_NONE;
+    serializer->config.checksum_algorithm = config ? config->checksum_algorithm : CEP_FLAT_CHECKSUM_CRC32;
+
+    if (serializer->config.hash_algorithm != CEP_FLAT_HASH_BLAKE3_256)
+        return false;
+    if (serializer->config.checksum_algorithm != CEP_FLAT_CHECKSUM_CRC32)
+        return false;
+    if (serializer->config.compression_algorithm != CEP_FLAT_COMPRESSION_NONE &&
+        serializer->config.compression_algorithm != CEP_FLAT_COMPRESSION_DEFLATE)
+        return false;
+
     return true;
 }
 
@@ -141,10 +168,16 @@ bool cep_flat_serializer_finish(cepFlatSerializer* serializer,
     if (!serializer || !serializer->frame_open)
         return false;
 
+    if (serializer->config.compression_algorithm != CEP_FLAT_COMPRESSION_NONE)
+        serializer->config.capability_flags |= CEP_FLAT_CAP_FRAME_COMPRESSION;
+
     uint8_t merkle_root[CEP_FLAT_HASH_SIZE];
     cep_flat_compute_merkle(serializer, merkle_root);
 
     if (!cep_flat_emit_trailer(serializer, merkle_root))
+        return false;
+
+    if (!cep_flat_serializer_apply_compression(serializer))
         return false;
 
     serializer->frame_open = false;
@@ -297,6 +330,141 @@ static bool cep_flat_reader_record_reserve(cepFlatReader* reader) {
     return true;
 }
 
+static size_t cep_flat_container_header_size(void) {
+    return sizeof(uint32_t) + 4u + sizeof(uint64_t) * 2u;
+}
+
+static void cep_flat_container_write_header(uint8_t* dst,
+                                            cepFlatCompressionAlgorithm compression,
+                                            cepFlatChecksumAlgorithm checksum,
+                                            uint64_t raw_size,
+                                            uint64_t compressed_size) {
+    uint32_t magic = CEP_FLAT_CONTAINER_MAGIC;
+    memcpy(dst, &magic, sizeof magic);
+    dst += sizeof magic;
+    *dst++ = CEP_FLAT_CONTAINER_VERSION;
+    *dst++ = (uint8_t)compression;
+    *dst++ = (uint8_t)checksum;
+    *dst++ = 0u;
+    memcpy(dst, &raw_size, sizeof raw_size);
+    dst += sizeof raw_size;
+    memcpy(dst, &compressed_size, sizeof compressed_size);
+}
+
+static bool cep_flat_serializer_apply_deflate(cepFlatSerializer* serializer) {
+    size_t raw_size = serializer->frame.size;
+    size_t header_size = cep_flat_container_header_size();
+    cepFlatBuffer container = {0};
+
+    if (!cep_flat_buffer_reserve(&container, header_size))
+        return false;
+    container.size = header_size;
+
+    uLongf max_size = compressBound((uLong)raw_size);
+    if (!cep_flat_buffer_reserve(&container, max_size))
+        goto fail;
+
+    uLongf compressed_len = max_size;
+    int rc = compress2(container.data + header_size,
+                       &compressed_len,
+                       serializer->frame.data,
+                       (uLong)raw_size,
+                       Z_BEST_SPEED);
+    if (rc != Z_OK)
+        goto fail;
+
+    container.size = header_size + (size_t)compressed_len;
+    cep_flat_container_write_header(container.data,
+                                    serializer->config.compression_algorithm,
+                                    serializer->config.checksum_algorithm,
+                                    (uint64_t)raw_size,
+                                    (uint64_t)compressed_len);
+
+    cep_free(serializer->frame.data);
+    serializer->frame = container;
+    return true;
+
+fail:
+    cep_free(container.data);
+    return false;
+}
+
+static bool cep_flat_serializer_apply_compression(cepFlatSerializer* serializer) {
+    if (!serializer)
+        return false;
+    switch (serializer->config.compression_algorithm) {
+      case CEP_FLAT_COMPRESSION_NONE:
+        return true;
+      case CEP_FLAT_COMPRESSION_DEFLATE:
+        return cep_flat_serializer_apply_deflate(serializer);
+      default:
+        return false;
+    }
+}
+
+static bool cep_flat_reader_prepare_buffer(cepFlatReader* reader) {
+    if (!reader)
+        return false;
+
+    size_t header_size = cep_flat_container_header_size();
+    if (reader->buffer.size < header_size)
+        return true;
+
+    const uint8_t* base = reader->buffer.data;
+    uint32_t magic = 0u;
+    memcpy(&magic, base, sizeof magic);
+    if (magic != CEP_FLAT_CONTAINER_MAGIC)
+        return true;
+
+    const uint8_t* cursor = base + sizeof magic;
+    uint8_t version = *cursor++;
+    uint8_t compression = *cursor++;
+    uint8_t checksum = *cursor++;
+    cursor++; /* reserved */
+
+    uint64_t raw_size = 0u;
+    uint64_t compressed_size = 0u;
+    memcpy(&raw_size, cursor, sizeof raw_size);
+    cursor += sizeof raw_size;
+    memcpy(&compressed_size, cursor, sizeof compressed_size);
+
+    if (version != CEP_FLAT_CONTAINER_VERSION)
+        return false;
+    if (compression != CEP_FLAT_COMPRESSION_DEFLATE)
+        return false;
+    if (checksum != CEP_FLAT_CHECKSUM_CRC32)
+        return false;
+    if (raw_size > SIZE_MAX || compressed_size > SIZE_MAX)
+        return false;
+
+    size_t total_needed = header_size + (size_t)compressed_size;
+    if (reader->buffer.size < total_needed)
+        return false;
+
+    cepFlatBuffer decompressed = {0};
+    if (!cep_flat_buffer_reserve(&decompressed, (size_t)raw_size)) {
+        cep_free(decompressed.data);
+        return false;
+    }
+    decompressed.size = (size_t)raw_size;
+
+    uLongf dest_len = (uLongf)raw_size;
+    int rc = uncompress(decompressed.data,
+                        &dest_len,
+                        base + header_size,
+                        (uLongf)compressed_size);
+    if (rc != Z_OK || dest_len != raw_size) {
+        cep_free(decompressed.data);
+        return false;
+    }
+
+    cep_free(reader->buffer.data);
+    reader->buffer = decompressed;
+    reader->frame.compression_algorithm = (cepFlatCompressionAlgorithm)compression;
+    reader->frame.checksum_algorithm = (cepFlatChecksumAlgorithm)checksum;
+    return true;
+}
+
 static bool cep_flat_append_record(cepFlatSerializer* serializer,
                                    const cepFlatRecordSpec* spec,
                                    bool track_digest) {
@@ -378,6 +546,8 @@ static bool cep_flat_emit_trailer(cepFlatSerializer* serializer,
     cursor = cep_flat_write_varint(serializer->record_count, cursor);
     *cursor++ = (uint8_t)serializer->config.apply_mode;
     *cursor++ = (uint8_t)serializer->config.hash_algorithm;
+    *cursor++ = (uint8_t)serializer->config.compression_algorithm;
+    *cursor++ = (uint8_t)serializer->config.checksum_algorithm;
     cursor = cep_flat_write_varint(CEP_FLAT_HASH_SIZE, cursor);
     memcpy(cursor, merkle_root, CEP_FLAT_HASH_SIZE);
     cursor += CEP_FLAT_HASH_SIZE;
@@ -509,7 +679,12 @@ void cep_flat_reader_reset(cepFlatReader* reader) {
     reader->trailer_verified = false;
     reader->trailer_record_count = 0u;
     memset(reader->trailer_merkle, 0, sizeof reader->trailer_merkle);
-    memset(&reader->frame, 0, sizeof reader->frame);
+    reader->frame.beat_number = 0u;
+    reader->frame.apply_mode = CEP_FLAT_APPLY_INSERT_ONLY;
+    reader->frame.capability_flags = 0u;
+    reader->frame.hash_algorithm = CEP_FLAT_HASH_BLAKE3_256;
+    reader->frame.compression_algorithm = CEP_FLAT_COMPRESSION_NONE;
+    reader->frame.checksum_algorithm = CEP_FLAT_CHECKSUM_CRC32;
 }
 
 bool cep_flat_reader_feed(cepFlatReader* reader, const uint8_t* chunk, size_t size) {
@@ -560,6 +735,9 @@ const uint8_t* cep_flat_reader_merkle_root(const cepFlatReader* reader) {
 
 static bool cep_flat_reader_parse(cepFlatReader* reader) {
     if (!reader)
+        return false;
+
+    if (!cep_flat_reader_prepare_buffer(reader))
         return false;
 
     size_t offset = 0u;
@@ -713,6 +891,21 @@ static bool cep_flat_reader_parse_trailer(cepFlatReader* reader, const uint8_t* 
     uint8_t hash_alg = body[offset++];
     if (hash_alg != CEP_FLAT_HASH_BLAKE3_256)
         return false;
+    if (body_size - offset < 1u)
+        return false;
+    uint8_t compression = body[offset++];
+    if (compression > CEP_FLAT_COMPRESSION_DEFLATE)
+        return false;
+    if (reader->frame.compression_algorithm != CEP_FLAT_COMPRESSION_NONE &&
+        reader->frame.compression_algorithm != compression)
+        return false;
+    reader->frame.compression_algorithm = (cepFlatCompressionAlgorithm)compression;
+    if (body_size - offset < 1u)
+        return false;
+    uint8_t checksum = body[offset++];
+    if (checksum != CEP_FLAT_CHECKSUM_CRC32)
+        return false;
+    reader->frame.checksum_algorithm = (cepFlatChecksumAlgorithm)checksum;
 
     uint64_t root_len = 0u;
     if (!cep_flat_read_varint(body, body_size, &offset, &root_len))

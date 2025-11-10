@@ -29,11 +29,22 @@ typedef enum {
 } cepFlatHashAlgorithm;
 
 typedef enum {
+    CEP_FLAT_COMPRESSION_NONE    = 0u,
+    CEP_FLAT_COMPRESSION_DEFLATE = 1u,
+} cepFlatCompressionAlgorithm;
+
+typedef enum {
+    CEP_FLAT_CHECKSUM_CRC32  = 0u,
+    CEP_FLAT_CHECKSUM_CRC32C = 1u,
+} cepFlatChecksumAlgorithm;
+
+typedef enum {
     CEP_FLAT_CAP_SPLIT_DESC     = 0x00000001u,
     CEP_FLAT_CAP_NAMEPOOL_MAP   = 0x00000002u,
     CEP_FLAT_CAP_PAYLOAD_FP     = 0x00000004u,
     CEP_FLAT_CAP_PAGED_CHILDSET = 0x00000008u,
     CEP_FLAT_CAP_PAGED_ORDER    = 0x00000010u,
+    CEP_FLAT_CAP_FRAME_COMPRESSION = 0x00000020u,
 } cepFlatCapabilityFlag;
 
 typedef enum {
@@ -64,10 +75,12 @@ typedef struct {
 } cepFlatRecordView;
 
 typedef struct {
-    uint64_t              beat_number;
-    cepFlatApplyMode      apply_mode;
-    uint32_t              capability_flags;
-    cepFlatHashAlgorithm  hash_algorithm;
+    uint64_t                   beat_number;
+    cepFlatApplyMode           apply_mode;
+    uint32_t                   capability_flags;
+    cepFlatHashAlgorithm       hash_algorithm;
+    cepFlatCompressionAlgorithm compression_algorithm;
+    cepFlatChecksumAlgorithm    checksum_algorithm;
 } cepFlatFrameConfig;
 
 typedef struct cepFlatSerializer cepFlatSerializer;

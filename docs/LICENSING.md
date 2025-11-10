@@ -16,6 +16,18 @@ while most test code is dedicated to the public domain for friction‑free reuse
     `-Dzlib_provider=bundled` is selected), the vendored CRC32 sources under
     `src/third_party/zlib/` are built into the library under the zlib/libpng license.
   - The upstream license text ships in `src/third_party/zlib/LICENSE`.
+- BLAKE3 reference implementation: Apache 2.0 or CC0 1.0
+  - Record hashing and Merkle roots rely on the official BLAKE3 C backend vendored
+    under `src/third_party/blake3/`. The directory contains both license variants
+    (`LICENSE_A2`, `LICENSE_CC0`); CEP consumes the Apache 2.0 path for smoother MPL‑2.0
+    compatibility.
+- libsodium subset (ChaCha20-Poly1305): ISC License
+  - AEAD routines use either the system `libsodium` (detected via pkg-config) or a
+    trimmed subset of the upstream sources under `src/third_party/libsodium/`.
+    Select the provider with `-Dlibsodium_provider={auto,system,bundled}`; by
+    default the build links against the system shared library when available and
+    falls back to the bundled subset otherwise.
+  - The upstream license text ships in `src/third_party/libsodium/LICENSE`.
 - Test sources (except `munit.*`): Public domain (CC0 1.0)
   - All files under `src/test/` excluding the vendored munit runner
     are dedicated to the public domain using the CC0 1.0 Universal dedication.
