@@ -459,6 +459,22 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/serialization/flat_multi_chunk",
+        test_serialization_flat_multi_chunk,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/serialization/flat_round_trip",
+        test_flat_serializer_round_trip,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/stream/episode_guard",
         test_ep_stream_access,
         NULL,

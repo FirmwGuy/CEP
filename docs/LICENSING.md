@@ -11,12 +11,18 @@ while most test code is dedicated to the public domain for friction‑free reuse
 - Core library (production code): MPL‑2.0
   - All sources under `src/l0_kernel/` (and subfolders) are covered by MPL‑2.0.
   - The top‑level `LICENSE` file contains the full text of the MPL‑2.0.
+- CRC32 fallback (zlib): zlib License
+  - CEP prefers linking against the system `zlib`. When unavailable (or when
+    `-Dzlib_provider=bundled` is selected), the vendored CRC32 sources under
+    `src/third_party/zlib/` are built into the library under the zlib/libpng license.
+  - The upstream license text ships in `src/third_party/zlib/LICENSE`.
 - Test sources (except `munit.*`): Public domain (CC0 1.0)
-  - All files under `src/test/` excluding `src/test/munit.c` and `src/test/munit.h`
+  - All files under `src/test/` excluding the vendored munit runner
     are dedicated to the public domain using the CC0 1.0 Universal dedication.
   - This allows you to copy test scaffolding into your own projects without attribution.
 - munit (test harness only): MIT
-  - We provide the µnit Testing Framework (`src/test/munit.c`, `src/test/munit.h`) for
+  - We provide the µnit Testing Framework (`src/third_party/munit/munit.c`,
+    `src/third_party/munit/munit.h`) for
     building and running tests. These files are MIT‑licensed by their author(s) and
     retain their original license headers.
   - The library build does not install or ship munit; it is used only for test binaries.
@@ -48,4 +54,3 @@ Distribution notes:
 - How are contributions licensed?
   - Unless explicitly stated otherwise, contributions are accepted under MPL‑2.0 for the core.
     Test code contributions (excluding `munit.*`) are dedicated to the public domain (CC0 1.0).
-

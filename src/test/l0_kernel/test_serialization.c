@@ -7,9 +7,11 @@
 #include "test.h"
 
 #include "cep_serialization.h"
+#include "cep_flat_serializer.h"
 #include "cep_cell.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
@@ -315,6 +317,29 @@ static void serialization_capture_clear(SerializationCapture* capture) {
         capture->chunks[i].size = 0;
     }
     capture->count = 0;
+}
+
+static bool flat_read_varint(const uint8_t* data, size_t size, size_t* offset, uint64_t* out_value) {
+    if (!data || !offset || !out_value)
+        return false;
+
+    uint64_t value = 0u;
+    unsigned shift = 0u;
+    size_t cursor = *offset;
+    while (cursor < size) {
+        uint8_t byte = data[cursor++];
+        value |= ((uint64_t)(byte & 0x7Fu)) << shift;
+        if ((byte & 0x80u) == 0u)
+            break;
+        shift += 7u;
+        if (shift >= 64u)
+            return false;
+    }
+    if (cursor > size)
+        return false;
+    *offset = cursor;
+    *out_value = value;
+    return true;
 }
 
 typedef struct {
@@ -1471,5 +1496,81 @@ MunitResult test_serialization_header_capability_mismatch(const MunitParameter p
     serialization_capture_clear(&capture);
     cep_cell_finalize_hard(&cell);
     cep_cell_system_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+    (void)user_data_or_fixture;
+
+    const char* prev = getenv("CEP_SERIALIZATION_USE_FLAT");
+    char* prev_copy = prev ? strdup(prev) : NULL;
+    munit_assert_true(setenv("CEP_SERIALIZATION_USE_FLAT", "1", 1) == 0);
+
+    uint8_t payload[96];
+    for (size_t i = 0; i < sizeof payload; ++i)
+        payload[i] = (uint8_t)(i & 0xFFu);
+
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP", "flat_multi"),
+                                      payload,
+                                      sizeof payload);
+
+    cepCell cell;
+    CEP_0(&cell);
+    cep_cell_initialize(&cell,
+                        CEP_TYPE_NORMAL,
+                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("flat_test")),
+                        data,
+                        NULL);
+
+    SerializationCapture capture = {0};
+    const size_t chunk_limit = 32u;
+    munit_assert_true(cep_serialization_emit_cell(&cell,
+                                                  NULL,
+                                                  serialization_capture_sink,
+                                                  &capture,
+                                                  chunk_limit));
+
+    munit_assert_size(capture.count, ==, 1u);
+    const uint8_t* frame = capture.chunks[0].data;
+    size_t frame_size = capture.chunks[0].size;
+    munit_assert_not_null(frame);
+    munit_assert_size(frame_size, >, 0u);
+
+    size_t offset = 0u;
+    unsigned chunk_records = 0u;
+    while (offset < frame_size) {
+        if (frame_size - offset < 4u)
+            break;
+        uint8_t type = frame[offset++];
+        uint8_t version = frame[offset++];
+        uint16_t flags = (uint16_t)(frame[offset] | (frame[offset + 1u] << 8));
+        offset += 2u;
+        (void)flags;
+
+        uint64_t key_len = 0u;
+        uint64_t body_len = 0u;
+        munit_assert_true(flat_read_varint(frame, frame_size, &offset, &key_len));
+        munit_assert_true(flat_read_varint(frame, frame_size, &offset, &body_len));
+        munit_assert_size(offset + key_len + body_len + sizeof(uint32_t), <=, frame_size);
+        offset += key_len;
+        offset += body_len;
+        offset += sizeof(uint32_t); /* skip CRC */
+
+        if (type == CEP_FLAT_RECORD_PAYLOAD_CHUNK &&
+            version == CEP_FLAT_SERIALIZER_VERSION) {
+            chunk_records++;
+        }
+    }
+
+    munit_assert_uint(chunk_records, >=, 2u);
+
+    serialization_capture_clear(&capture);
+    if (prev_copy) {
+        setenv("CEP_SERIALIZATION_USE_FLAT", prev_copy, 1);
+        free(prev_copy);
+    } else {
+        unsetenv("CEP_SERIALIZATION_USE_FLAT");
+    }
     return MUNIT_OK;
 }

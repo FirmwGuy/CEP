@@ -4,8 +4,20 @@ https://github.com/FirmwGuy/CEP
 
 Third-party components used for test builds only:
 - µnit Testing Framework (munit) — Copyright (c) 2013–2017 Evan Nemerson — MIT License.
-  Vendored in `src/test/munit.c` and `src/test/munit.h` for unit tests only.
+  Vendored in `src/third_party/munit/munit.c` and `src/third_party/munit/munit.h`.
   See the license header in those files for the full MIT license text.
+
+- BLAKE3 reference implementation — Copyright (c) 2019–2024
+  Samuel Neves, Jack O'Connor, Jean-Philippe Aumasson, Luke Malinowski, and
+  the BLAKE3 contributors — dual-licensed Apache 2.0 or CC0. Vendored C/assembly
+  backend lives in `src/third_party/blake3/`; see `LICENSE_A2` and `LICENSE_CC0`
+  in that directory for the full terms.
+
+Third-party components used by the core library:
+- zlib CRC32 (Mark Adler et al.) — zlib License. The fallback CRC32 source lives in
+  `src/third_party/zlib/` (files `crc32.c`, `zlib.h`, `zconf.h`, `zutil.h`) and is used
+  only when a system zlib is unavailable or the build is configured with
+  `-Dzlib_provider=bundled`.
 
 Notes:
 - Test sources other than `munit.*` are dedicated to the public domain (CC0 1.0).

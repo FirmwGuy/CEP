@@ -11,9 +11,18 @@ project('CEP', 'c',
 cc = meson.get_compiler('c')
 fs = import('fs')
 python_mod = import('python')
+buildtype = get_option('buildtype')
+host_cpu = host_machine.cpu_family()
 
-# Includes
-inc = include_directories('src/l0_kernel', 'src/test', 'src/enzymes')
+inc_paths = [
+  'src/l0_kernel',
+  'src/test',
+  'src/enzymes',
+  'src/third_party/blake3',
+  'src/third_party/munit',
+]
+
+lib_dependencies = []
 
 # Global compile args to mirror Makefile
 common_args = []
@@ -59,6 +68,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
   'src/l0_kernel/cep_cell_stream.c',
   'src/l0_kernel/cep_cell_system.c',
+  'src/l0_kernel/cep_flat_helpers.c',
   'src/l0_kernel/cep_runtime.c',
   'src/l0_kernel/cep_l0.c',
   'src/l0_kernel/cep_identifier.c',
@@ -68,6 +78,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_organ.c',
   'src/l0_kernel/cep_ep.c',
   'src/l0_kernel/cep_executor.c',
+  'src/l0_kernel/cep_crc32c.c',
   'src/l0_kernel/cep_sync.c',
   'src/enzymes/cep_l0_organs.c',
   'src/enzymes/cep_cell_operations.c',
@@ -78,6 +89,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_enzyme.c',
   'src/l0_kernel/cep_heartbeat.c',
   'src/l0_kernel/cep_namepool.c',
+  'src/l0_kernel/cep_flat_serializer.c',
   'src/l0_kernel/cep_serialization.c',
   'src/enzymes/fed_transport.c',
   'src/enzymes/fed_pack.c',
@@ -88,7 +100,69 @@ l0_srcs = files(
   'src/enzymes/fed_transport_providers.c',
 )
 
-lib_dependencies = []
+blake3_sources = files(
+  'src/third_party/blake3/blake3.c',
+  'src/third_party/blake3/blake3_dispatch.c',
+  'src/third_party/blake3/blake3_portable.c',
+)
+
+blake3_disable_args = []
+if host_cpu != 'x86_64' or buildtype == 'debug'
+  blake3_disable_args += [
+    '-DBLAKE3_NO_SSE2',
+    '-DBLAKE3_NO_SSE41',
+    '-DBLAKE3_NO_AVX2',
+    '-DBLAKE3_NO_AVX512',
+  ]
+endif
+
+if buildtype == 'debug'
+  if host_cpu == 'aarch64'
+    blake3_disable_args += ['-DBLAKE3_USE_NEON=0']
+  endif
+else
+  if host_cpu == 'x86_64'
+    blake3_sources += files(
+      'src/third_party/blake3/blake3_sse2_x86-64_unix.S',
+      'src/third_party/blake3/blake3_sse41_x86-64_unix.S',
+      'src/third_party/blake3/blake3_avx2_x86-64_unix.S',
+      'src/third_party/blake3/blake3_avx512_x86-64_unix.S',
+    )
+  elif host_cpu == 'aarch64'
+    blake3_sources += files('src/third_party/blake3/blake3_neon.c')
+  endif
+endif
+
+if blake3_disable_args.length() > 0
+  add_project_arguments(blake3_disable_args, language: 'c')
+endif
+
+l0_srcs += blake3_sources
+
+zlib_provider = get_option('zlib_provider')
+use_bundled_zlib = zlib_provider == 'bundled'
+zlib_dep = dependency('zlib', required: false, method: 'pkg-config', allow_fallback: true)
+
+if not use_bundled_zlib
+  if zlib_dep.found()
+    add_project_arguments('-DCEP_ZLIB_SYSTEM=1', language: 'c')
+    lib_dependencies += [zlib_dep]
+  else
+    if zlib_provider == 'system'
+      error('zlib_provider=system but system zlib was not found.')
+    endif
+    message('System zlib not found; falling back to bundled CRC32 implementation.')
+    use_bundled_zlib = true
+  endif
+endif
+
+if use_bundled_zlib
+  inc_paths += ['src/third_party/zlib']
+  add_project_arguments(['-DCEP_ZLIB_BUNDLED=1', '-DZLIB_INTERNAL=1'], language: 'c')
+  l0_srcs += files('src/third_party/zlib/crc32.c')
+endif
+
+inc = include_directories(inc_paths)
 host_sys = host_machine.system()
 
 if zip_dep.found()
@@ -134,7 +208,7 @@ cep_lib = library('cep', l0_srcs,
 
 if get_option('tests').enabled()
   test_srcs = files(
-    'src/test/munit.c',
+    'src/third_party/munit/munit.c',
     'src/test/test.c',
     'src/test/watchdog.c',
     'src/test/l0_kernel/test_cell.c',
@@ -154,6 +228,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_episode.c',
     'src/test/federation/test_fed_transport.c',
     'src/test/l0_kernel/test_serialization.c',
+    'src/test/l0_kernel/test_flat_serializer.c',
     'src/test/l0_kernel/test_locking.c',
     'src/test/l0_kernel/test_cells_randomized.c',
     'src/test/l0_kernel/test_locking_randomized.c',
