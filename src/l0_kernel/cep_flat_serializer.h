@@ -14,6 +14,8 @@ extern "C" {
 
 #define CEP_FLAT_SERIALIZER_VERSION 1u
 #define CEP_FLAT_HASH_SIZE          32u
+#define CEP_FLAT_CONTAINER_MAGIC    UINT32_C(0x43464C54)
+#define CEP_FLAT_CONTAINER_VERSION  1u
 
 typedef enum {
     CEP_FLAT_RECORD_CELL_DESC       = 0x01u,
@@ -21,8 +23,17 @@ typedef enum {
     CEP_FLAT_RECORD_MANIFEST_DELTA  = 0x03u,
     CEP_FLAT_RECORD_ORDER_DELTA     = 0x04u,
     CEP_FLAT_RECORD_NAMEPOOL_DELTA  = 0x05u,
+    CEP_FLAT_RECORD_PAYLOAD_HISTORY = 0x06u,
+    CEP_FLAT_RECORD_MANIFEST_HISTORY = 0x07u,
     CEP_FLAT_RECORD_FRAME_TRAILER   = 0xFFu,
 } cepFlatRecordType;
+
+typedef enum {
+    CEP_FLAT_AEAD_NONE                    = 0u,
+    CEP_FLAT_AEAD_AES_GCM                 = 1u,
+    CEP_FLAT_AEAD_CHACHA20_POLY1305       = 2u,
+    CEP_FLAT_AEAD_XCHACHA20_POLY1305      = 3u,
+} cepFlatAeadMode;
 
 typedef enum {
     CEP_FLAT_HASH_BLAKE3_256 = 1u,
@@ -45,6 +56,8 @@ typedef enum {
     CEP_FLAT_CAP_PAGED_CHILDSET = 0x00000008u,
     CEP_FLAT_CAP_PAGED_ORDER    = 0x00000010u,
     CEP_FLAT_CAP_FRAME_COMPRESSION = 0x00000020u,
+    CEP_FLAT_CAP_PAYLOAD_HISTORY = 0x00000040u,
+    CEP_FLAT_CAP_MANIFEST_HISTORY = 0x00000080u,
 } cepFlatCapabilityFlag;
 
 typedef enum {
@@ -81,6 +94,8 @@ typedef struct {
     cepFlatHashAlgorithm       hash_algorithm;
     cepFlatCompressionAlgorithm compression_algorithm;
     cepFlatChecksumAlgorithm    checksum_algorithm;
+    uint32_t                   payload_history_beats;
+    uint32_t                   manifest_history_beats;
 } cepFlatFrameConfig;
 
 typedef struct cepFlatSerializer cepFlatSerializer;

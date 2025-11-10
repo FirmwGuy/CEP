@@ -14,10 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <zlib.h>
+#include <sodium.h>
 
 #define CEP_FLAT_MAGIC UINT32_C(0x43455046)
-#define CEP_FLAT_CONTAINER_MAGIC  UINT32_C(0x43464C54) /* 'CFLT' */
-#define CEP_FLAT_CONTAINER_VERSION 1u
 
 typedef struct {
     uint8_t* data;
@@ -49,6 +48,16 @@ typedef struct {
     uint64_t compressed_size;
 } cepFlatContainerHeader;
 
+typedef struct {
+    uint8_t* key;
+    size_t   key_size;
+    uint64_t expected_offset;
+    uint64_t expected_ordinal;
+    uint64_t total_size;
+    bool     total_set;
+    bool     sealed;
+} cepFlatChunkTracker;
+
 struct cepFlatSerializer {
     cepFlatFrameConfig config;
     cepFlatBuffer      frame;
@@ -68,6 +77,9 @@ struct cepFlatReader {
     cepFlatDigestEntry* digests;
     size_t              digest_count;
     size_t              digest_capacity;
+    cepFlatChunkTracker* chunk_trackers;
+    size_t chunk_tracker_count;
+    size_t chunk_tracker_capacity;
     bool                committed;
     bool                trailer_verified;
     uint8_t             trailer_merkle[CEP_FLAT_HASH_SIZE];
@@ -87,11 +99,226 @@ static bool cep_flat_reader_parse_trailer(cepFlatReader* reader,
                                           size_t body_size);
 static bool cep_flat_serializer_apply_compression(cepFlatSerializer* serializer);
 static bool cep_flat_reader_prepare_buffer(cepFlatReader* reader);
+static bool cep_flat_reader_decode_chunk_key(const uint8_t* key,
+                                             size_t key_size,
+                                             size_t* base_size,
+                                             uint64_t* ordinal);
+static bool cep_flat_reader_validate_chunk(cepFlatReader* reader,
+                                           const uint8_t* key,
+                                           size_t key_size,
+                                           const uint8_t* body,
+                                           size_t body_size);
+static bool cep_flat_reader_finalize_chunks(cepFlatReader* reader);
+static void cep_flat_reader_clear_chunks(cepFlatReader* reader);
+static bool cep_flat_reader_validate_chunk(cepFlatReader* reader,
+                                           const uint8_t* key,
+                                           size_t key_size,
+                                           const uint8_t* body,
+                                           size_t body_size);
+static bool cep_flat_reader_finalize_chunks(cepFlatReader* reader);
+static void cep_flat_reader_clear_chunks(cepFlatReader* reader);
 
 
 static size_t cep_flat_varint_length(uint64_t value);
 static uint8_t* cep_flat_write_varint(uint64_t value, uint8_t* dst);
 static bool cep_flat_read_varint(const uint8_t* data, size_t size, size_t* offset, uint64_t* out_value);
+
+static bool cep_flat_reader_decode_chunk_key(const uint8_t* key,
+                                             size_t key_size,
+                                             size_t* base_size,
+                                             uint64_t* ordinal) {
+    if (!key || !key_size)
+        return false;
+    size_t idx = key_size;
+    uint64_t value = 0u;
+    unsigned shift = 0u;
+    while (idx > 0u) {
+        uint8_t byte = key[--idx];
+        value |= ((uint64_t)(byte & 0x7Fu)) << shift;
+        if ((byte & 0x80u) == 0u) {
+            if (base_size)
+                *base_size = idx;
+            if (ordinal)
+                *ordinal = value;
+            return true;
+        }
+        shift += 7u;
+        if (shift >= 64u)
+            return false;
+    }
+    return false;
+}
+
+static void cep_flat_reader_clear_chunks(cepFlatReader* reader) {
+    if (!reader)
+        return;
+    if (reader->chunk_trackers) {
+        for (size_t i = 0; i < reader->chunk_tracker_count; ++i)
+            cep_free(reader->chunk_trackers[i].key);
+        cep_free(reader->chunk_trackers);
+    }
+    reader->chunk_trackers = NULL;
+    reader->chunk_tracker_count = 0u;
+    reader->chunk_tracker_capacity = 0u;
+}
+
+static cepFlatChunkTracker* cep_flat_reader_chunk_tracker_get(cepFlatReader* reader,
+                                                              const uint8_t* base_key,
+                                                              size_t base_key_size) {
+    if (!reader || !base_key || !base_key_size)
+        return NULL;
+    for (size_t i = 0; i < reader->chunk_tracker_count; ++i) {
+        cepFlatChunkTracker* tracker = &reader->chunk_trackers[i];
+        if (tracker->key_size == base_key_size &&
+            memcmp(tracker->key, base_key, base_key_size) == 0)
+            return tracker;
+    }
+    if (reader->chunk_tracker_count == reader->chunk_tracker_capacity) {
+        size_t new_cap = reader->chunk_tracker_capacity ? reader->chunk_tracker_capacity << 1u : 8u;
+        cepFlatChunkTracker* grown = cep_realloc(reader->chunk_trackers, new_cap * sizeof *grown);
+        if (!grown)
+            return NULL;
+        reader->chunk_trackers = grown;
+        reader->chunk_tracker_capacity = new_cap;
+    }
+    cepFlatChunkTracker* tracker = &reader->chunk_trackers[reader->chunk_tracker_count++];
+    memset(tracker, 0, sizeof *tracker);
+    tracker->key = cep_malloc(base_key_size);
+    if (!tracker->key) {
+        reader->chunk_tracker_count--;
+        return NULL;
+    }
+    memcpy(tracker->key, base_key, base_key_size);
+    tracker->key_size = base_key_size;
+    tracker->expected_offset = 0u;
+    tracker->expected_ordinal = 0u;
+    tracker->total_set = false;
+    tracker->sealed = false;
+    return tracker;
+}
+
+static bool cep_flat_reader_validate_chunk(cepFlatReader* reader,
+                                           const uint8_t* key,
+                                           size_t key_size,
+                                           const uint8_t* body,
+                                           size_t body_size) {
+    if (!reader || !key || !body)
+        return false;
+
+    size_t base_size = 0u;
+    uint64_t ordinal = 0u;
+    if (!cep_flat_reader_decode_chunk_key(key, key_size, &base_size, &ordinal))
+        return false;
+    if (base_size == 0u)
+        return false;
+
+    cepFlatChunkTracker* tracker = cep_flat_reader_chunk_tracker_get(reader, key, base_size);
+    if (!tracker)
+        return false;
+    if (tracker->sealed)
+        return false;
+
+    size_t offset = 0u;
+    if (body_size < 1u)
+        return false;
+    uint8_t payload_kind = body[offset++];
+    (void)payload_kind;
+
+    uint64_t total_size = 0u;
+    if (!cep_flat_read_varint(body, body_size, &offset, &total_size))
+        return false;
+    uint64_t chunk_offset = 0u;
+    if (!cep_flat_read_varint(body, body_size, &offset, &chunk_offset))
+        return false;
+    uint64_t chunk_size = 0u;
+    if (!cep_flat_read_varint(body, body_size, &offset, &chunk_size))
+        return false;
+    if (chunk_size == 0u)
+        return false;
+    if (chunk_offset > total_size)
+        return false;
+    if (chunk_offset + chunk_size > total_size)
+        return false;
+
+    uint64_t fp_len = 0u;
+    if (!cep_flat_read_varint(body, body_size, &offset, &fp_len))
+        return false;
+    if (body_size - offset < fp_len)
+        return false;
+    offset += (size_t)fp_len;
+
+    if (body_size - offset < 1u)
+        return false;
+    uint8_t aead_mode = body[offset++];
+    if (aead_mode > CEP_FLAT_AEAD_XCHACHA20_POLY1305)
+        return false;
+
+    uint64_t nonce_len = 0u;
+    if (!cep_flat_read_varint(body, body_size, &offset, &nonce_len))
+        return false;
+    if (aead_mode == CEP_FLAT_AEAD_NONE) {
+        if (nonce_len != 0u)
+            return false;
+    } else if (aead_mode == CEP_FLAT_AEAD_CHACHA20_POLY1305) {
+        if (nonce_len != crypto_aead_chacha20poly1305_ietf_NPUBBYTES)
+            return false;
+    } else if (aead_mode == CEP_FLAT_AEAD_XCHACHA20_POLY1305) {
+        if (nonce_len != crypto_aead_xchacha20poly1305_ietf_NPUBBYTES)
+            return false;
+    }
+    if (body_size - offset < nonce_len + CEP_FLAT_HASH_SIZE)
+        return false;
+    offset += (size_t)nonce_len;
+    offset += CEP_FLAT_HASH_SIZE;
+    if (body_size - offset == 0u)
+        return false;
+    size_t remaining = body_size - offset;
+    size_t expected_payload = (size_t)chunk_size;
+    if (aead_mode == CEP_FLAT_AEAD_NONE) {
+        if (remaining != expected_payload)
+            return false;
+    } else {
+        size_t overhead = (aead_mode == CEP_FLAT_AEAD_CHACHA20_POLY1305)
+                              ? crypto_aead_chacha20poly1305_ietf_ABYTES
+                              : crypto_aead_xchacha20poly1305_ietf_ABYTES;
+        if (remaining != expected_payload + overhead)
+            return false;
+    }
+
+    if (!tracker->total_set) {
+        tracker->total_size = total_size;
+        tracker->total_set = true;
+    } else if (tracker->total_size != total_size) {
+        return false;
+    }
+
+    if (ordinal != tracker->expected_ordinal)
+        return false;
+    if (chunk_offset != tracker->expected_offset)
+        return false;
+
+    tracker->expected_ordinal += 1u;
+    tracker->expected_offset += chunk_size;
+    if (tracker->expected_offset > tracker->total_size)
+        return false;
+    if (tracker->expected_offset == tracker->total_size)
+        tracker->sealed = true;
+
+    return true;
+}
+
+static bool cep_flat_reader_finalize_chunks(cepFlatReader* reader) {
+    if (!reader)
+        return false;
+    for (size_t i = 0; i < reader->chunk_tracker_count; ++i) {
+        const cepFlatChunkTracker* tracker = &reader->chunk_trackers[i];
+        if (!tracker->total_set)
+            continue;
+        if (!tracker->sealed)
+            return false;
+    }
+    return true;
+}
 
 cepFlatSerializer* cep_flat_serializer_create(void) {
     cepFlatSerializer* serializer = cep_malloc0(sizeof *serializer);
@@ -139,6 +366,8 @@ bool cep_flat_serializer_begin(cepFlatSerializer* serializer, const cepFlatFrame
     serializer->config.hash_algorithm = config ? config->hash_algorithm : CEP_FLAT_HASH_BLAKE3_256;
     serializer->config.compression_algorithm = config ? config->compression_algorithm : CEP_FLAT_COMPRESSION_NONE;
     serializer->config.checksum_algorithm = config ? config->checksum_algorithm : CEP_FLAT_CHECKSUM_CRC32;
+    serializer->config.payload_history_beats = config ? config->payload_history_beats : 0u;
+    serializer->config.manifest_history_beats = config ? config->manifest_history_beats : 0u;
 
     if (serializer->config.hash_algorithm != CEP_FLAT_HASH_BLAKE3_256)
         return false;
@@ -552,6 +781,8 @@ static bool cep_flat_emit_trailer(cepFlatSerializer* serializer,
     memcpy(cursor, merkle_root, CEP_FLAT_HASH_SIZE);
     cursor += CEP_FLAT_HASH_SIZE;
     cursor = cep_flat_write_varint(0u, cursor); /* mini_toc_count */
+    cursor = cep_flat_write_varint(serializer->config.payload_history_beats, cursor);
+    cursor = cep_flat_write_varint(serializer->config.manifest_history_beats, cursor);
 
     uint32_t caps = serializer->config.capability_flags;
     memcpy(cursor, &caps, sizeof caps);
@@ -666,6 +897,7 @@ void cep_flat_reader_destroy(cepFlatReader* reader) {
     cep_free(reader->buffer.data);
     cep_free(reader->records);
     cep_free(reader->digests);
+    cep_flat_reader_clear_chunks(reader);
     cep_free(reader);
 }
 
@@ -675,6 +907,7 @@ void cep_flat_reader_reset(cepFlatReader* reader) {
     reader->buffer.size = 0u;
     reader->record_count = 0u;
     reader->digest_count = 0u;
+    cep_flat_reader_clear_chunks(reader);
     reader->committed = false;
     reader->trailer_verified = false;
     reader->trailer_record_count = 0u;
@@ -685,6 +918,8 @@ void cep_flat_reader_reset(cepFlatReader* reader) {
     reader->frame.hash_algorithm = CEP_FLAT_HASH_BLAKE3_256;
     reader->frame.compression_algorithm = CEP_FLAT_COMPRESSION_NONE;
     reader->frame.checksum_algorithm = CEP_FLAT_CHECKSUM_CRC32;
+    reader->frame.payload_history_beats = 0u;
+    reader->frame.manifest_history_beats = 0u;
 }
 
 bool cep_flat_reader_feed(cepFlatReader* reader, const uint8_t* chunk, size_t size) {
@@ -808,6 +1043,11 @@ static bool cep_flat_reader_parse(cepFlatReader* reader) {
             break;
         }
 
+        if (type == CEP_FLAT_RECORD_PAYLOAD_CHUNK) {
+            if (!cep_flat_reader_validate_chunk(reader, key_ptr, key_length, body_ptr, body_length))
+                return false;
+        }
+
         if (!cep_flat_reader_record_reserve(reader))
             return false;
         if (!cep_flat_reader_digest_reserve(reader))
@@ -837,6 +1077,8 @@ static bool cep_flat_reader_parse(cepFlatReader* reader) {
         return false;
 
     if (reader->digest_count != reader->trailer_record_count)
+        return false;
+    if (!cep_flat_reader_finalize_chunks(reader))
         return false;
 
     uint8_t merkle[CEP_FLAT_HASH_SIZE];
@@ -935,6 +1177,20 @@ static bool cep_flat_reader_parse_trailer(cepFlatReader* reader, const uint8_t* 
             return false;
         (void)first_offset;
     }
+
+    uint64_t payload_history = 0u;
+    if (!cep_flat_read_varint(body, body_size, &offset, &payload_history))
+        return false;
+    if (payload_history > UINT32_MAX)
+        return false;
+    reader->frame.payload_history_beats = (uint32_t)payload_history;
+
+    uint64_t manifest_history = 0u;
+    if (!cep_flat_read_varint(body, body_size, &offset, &manifest_history))
+        return false;
+    if (manifest_history > UINT32_MAX)
+        return false;
+    reader->frame.manifest_history_beats = (uint32_t)manifest_history;
 
     if (body_size - offset < sizeof(uint32_t))
         return false;

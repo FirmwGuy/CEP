@@ -21,9 +21,9 @@ while most test code is dedicated to the public domain for friction‑free reuse
     under `src/third_party/blake3/`. The directory contains both license variants
     (`LICENSE_A2`, `LICENSE_CC0`); CEP consumes the Apache 2.0 path for smoother MPL‑2.0
     compatibility.
-- libsodium subset (ChaCha20-Poly1305): ISC License
+- libsodium (ChaCha20-Poly1305): ISC License
   - AEAD routines use either the system `libsodium` (detected via pkg-config) or a
-    trimmed subset of the upstream sources under `src/third_party/libsodium/`.
+    verbatim copy of the upstream sources under `src/third_party/libsodium/`.
     Select the provider with `-Dlibsodium_provider={auto,system,bundled}`; by
     default the build links against the system shared library when available and
     falls back to the bundled subset otherwise.

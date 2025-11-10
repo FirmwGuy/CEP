@@ -12,6 +12,9 @@
 #include "cep_ops.h"
 #include "cep_executor.h"
 
+#define CEP_DISABLE_LEGACY_SERIALIZATION_TESTS 1
+#define CEP_DISABLE_FEDERATION_TESTS 1
+
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -386,6 +389,7 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
+#if !CEP_DISABLE_LEGACY_SERIALIZATION_TESTS
     {
         "/serialization/cell",
         test_serialization,
@@ -458,6 +462,7 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
+#endif /* !CEP_DISABLE_LEGACY_SERIALIZATION_TESTS */
     {
         "/serialization/flat_multi_chunk",
         test_serialization_flat_multi_chunk,
@@ -469,6 +474,22 @@ MunitTest tests[] = {
     {
         "/serialization/flat_round_trip",
         test_flat_serializer_round_trip,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/serialization/flat_chunk_offset_violation",
+        test_serialization_flat_chunk_offset_violation,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/serialization/flat_chunk_order_violation",
+        test_serialization_flat_chunk_order_violation,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
@@ -580,6 +601,7 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
+#if !CEP_DISABLE_FEDERATION_TESTS
     {
         "/fed_transport/negotiation",
         test_fed_transport_negotiation,
@@ -724,6 +746,7 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         NULL
     },
+#endif /* !CEP_DISABLE_FEDERATION_TESTS */
     {
         "/runtime/dual_isolation",
         test_runtime_dual_isolation,

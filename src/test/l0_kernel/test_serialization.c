@@ -8,7 +8,9 @@
 
 #include "cep_serialization.h"
 #include "cep_flat_serializer.h"
+#include "cep_crc32c.h"
 #include "cep_cell.h"
+#include "blake3.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,7 @@
 #include <inttypes.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sodium.h>
 
 
 typedef struct {
@@ -340,6 +343,365 @@ static bool flat_read_varint(const uint8_t* data, size_t size, size_t* offset, u
     *offset = cursor;
     *out_value = value;
     return true;
+}
+
+static bool flat_hex_decode(const char* hex, uint8_t* out, size_t expected_len) {
+    if (!hex || !out)
+        return false;
+    size_t len = strlen(hex);
+    if (len != expected_len * 2u)
+        return false;
+    for (size_t i = 0; i < expected_len; ++i) {
+        int hi = hex[i * 2u];
+        int lo = hex[i * 2u + 1u];
+        if (hi >= '0' && hi <= '9')
+            hi -= '0';
+        else if (hi >= 'a' && hi <= 'f')
+            hi = 10 + (hi - 'a');
+        else if (hi >= 'A' && hi <= 'F')
+            hi = 10 + (hi - 'A');
+        else
+            return false;
+        if (lo >= '0' && lo <= '9')
+            lo -= '0';
+        else if (lo >= 'a' && lo <= 'f')
+            lo = 10 + (lo - 'a');
+        else if (lo >= 'A' && lo <= 'F')
+            lo = 10 + (lo - 'A');
+        else
+            return false;
+        out[i] = (uint8_t)((hi << 4u) | lo);
+    }
+    return true;
+}
+
+static size_t flat_varint_length_u64(uint64_t value) {
+    size_t len = 1u;
+    while (value >= 0x80u) {
+        value >>= 7u;
+        len++;
+    }
+    return len;
+}
+
+static bool flat_write_varint_fixed(uint8_t* dst, size_t len, uint64_t value) {
+    size_t needed = flat_varint_length_u64(value);
+    if (needed != len)
+        return false;
+    for (size_t i = 0; i < len; ++i) {
+        uint8_t byte = (uint8_t)(value & 0x7Fu);
+        value >>= 7u;
+        if (value)
+            byte |= 0x80u;
+        dst[i] = byte;
+    }
+    return true;
+}
+
+static uint32_t flat_recompute_crc(const uint8_t* payload, size_t payload_size) {
+    return cep_crc32c(payload, payload_size, 0u);
+}
+static void flat_compute_aad_hash(const uint8_t* key_ptr,
+                                  size_t key_len,
+                                  uint8_t out_hash[CEP_FLAT_HASH_SIZE]) {
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    if (key_ptr && key_len)
+        blake3_hasher_update(&hasher, key_ptr, key_len);
+    blake3_hasher_finalize(&hasher, out_hash, CEP_FLAT_HASH_SIZE);
+}
+
+static void flat_assert_chunk_records(const uint8_t* frame,
+                                      size_t frame_size,
+                                      const uint8_t* expected_payload,
+                                      size_t expected_payload_size,
+                                      bool expect_encrypted,
+                                      const uint8_t* aead_key,
+                                      size_t aead_key_len) {
+    size_t offset = 0u;
+    unsigned chunk_records = 0u;
+    uint64_t expected_chunk_offset = 0u;
+    uint8_t nonce_buf[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES] = {0};
+
+    while (offset < frame_size) {
+        if (frame_size - offset < 4u)
+            break;
+        uint8_t type = frame[offset++];
+        uint8_t version = frame[offset++];
+        uint16_t flags = (uint16_t)(frame[offset] | (frame[offset + 1u] << 8));
+        offset += 2u;
+        (void)flags;
+
+        uint64_t key_len_u64 = 0u;
+        uint64_t body_len_u64 = 0u;
+        munit_assert_true(flat_read_varint(frame, frame_size, &offset, &key_len_u64));
+        munit_assert_true(flat_read_varint(frame, frame_size, &offset, &body_len_u64));
+        munit_assert_uint64(key_len_u64, <=, SIZE_MAX);
+        munit_assert_uint64(body_len_u64, <=, SIZE_MAX);
+        size_t key_len = (size_t)key_len_u64;
+        size_t body_len = (size_t)body_len_u64;
+        munit_assert_size(offset + key_len + body_len + sizeof(uint32_t), <=, frame_size);
+        const uint8_t* key_ptr = frame + offset;
+        offset += key_len;
+
+        const uint8_t* body_ptr = frame + offset;
+        offset += body_len;
+        offset += sizeof(uint32_t);
+
+        if (type == CEP_FLAT_RECORD_PAYLOAD_CHUNK &&
+            version == CEP_FLAT_SERIALIZER_VERSION) {
+            size_t body_off = 0u;
+            munit_assert_size(body_len, >, 0u);
+            munit_assert_uint8(body_ptr[body_off++], ==, CEP_DATATYPE_VALUE);
+
+            uint64_t total_size = 0u;
+            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &total_size));
+            munit_assert_uint64(total_size, ==, expected_payload_size);
+
+            uint64_t chunk_offset = 0u;
+            uint64_t chunk_size = 0u;
+            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &chunk_offset));
+            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &chunk_size));
+            munit_assert_uint64(chunk_offset, ==, expected_chunk_offset);
+            expected_chunk_offset += chunk_size;
+
+            uint64_t fp_len = 0u;
+            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &fp_len));
+            munit_assert_size(body_off + fp_len, <=, body_len);
+            body_off += (size_t)fp_len;
+            munit_assert_size(body_off, <, body_len);
+
+            uint8_t aead_mode = body_ptr[body_off++];
+            if (expect_encrypted)
+                munit_assert_uint8(aead_mode, ==, CEP_FLAT_AEAD_XCHACHA20_POLY1305);
+            else
+                munit_assert_uint8(aead_mode, ==, CEP_FLAT_AEAD_NONE);
+
+            uint64_t nonce_len_u64 = 0u;
+            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &nonce_len_u64));
+            munit_assert_uint64(nonce_len_u64, <=, sizeof nonce_buf);
+            size_t nonce_len = (size_t)nonce_len_u64;
+            munit_assert_size(body_off + nonce_len, <=, body_len);
+            memcpy(nonce_buf, body_ptr + body_off, nonce_len);
+            body_off += nonce_len;
+
+            uint8_t stored_aad[CEP_FLAT_HASH_SIZE];
+            munit_assert_size(body_off + sizeof stored_aad, <=, body_len);
+            memcpy(stored_aad, body_ptr + body_off, sizeof stored_aad);
+            body_off += sizeof stored_aad;
+
+            uint8_t expected_aad[CEP_FLAT_HASH_SIZE];
+            flat_compute_aad_hash(key_ptr, key_len, expected_aad);
+            munit_assert_memory_equal(sizeof stored_aad, stored_aad, expected_aad);
+
+            size_t remaining = body_len - body_off;
+            const uint8_t* chunk_payload = expected_payload + chunk_offset;
+            if (!expect_encrypted) {
+                munit_assert_size(nonce_len, ==, 0u);
+                munit_assert_size(remaining, ==, (size_t)chunk_size);
+                munit_assert_memory_equal((size_t)chunk_size, body_ptr + body_off, chunk_payload);
+            } else {
+                munit_assert_size(nonce_len, ==, crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+                size_t expected_cipher = (size_t)chunk_size + crypto_aead_xchacha20poly1305_ietf_ABYTES;
+                munit_assert_size(remaining, ==, expected_cipher);
+                munit_assert_not_null(aead_key);
+                munit_assert_size(aead_key_len, ==, crypto_aead_xchacha20poly1305_ietf_KEYBYTES);
+                uint8_t* decrypted = malloc((size_t)chunk_size);
+                munit_assert_not_null(decrypted);
+                unsigned long long plain_len = 0u;
+                int rc = crypto_aead_xchacha20poly1305_ietf_decrypt(decrypted,
+                                                                    &plain_len,
+                                                                    NULL,
+                                                                    body_ptr + body_off,
+                                                                    (unsigned long long)remaining,
+                                                                    key_ptr,
+                                                                    (unsigned long long)key_len,
+                                                                    nonce_buf,
+                                                                    aead_key);
+                munit_assert_int(rc, ==, 0);
+                munit_assert_uint64(plain_len, ==, chunk_size);
+                munit_assert_memory_equal((size_t)chunk_size, decrypted, chunk_payload);
+                sodium_memzero(decrypted, (size_t)plain_len);
+                free(decrypted);
+            }
+
+            chunk_records++;
+        }
+    }
+
+    munit_assert_uint(chunk_records, >=, 2u);
+    munit_assert_uint64(expected_chunk_offset, ==, expected_payload_size);
+}
+
+typedef struct {
+    uint8_t* record_ptr;
+    size_t   payload_size;
+    uint8_t* body_ptr;
+    size_t   body_size;
+} FlatChunkRecord;
+
+static bool flat_locate_chunk_record(uint8_t* frame,
+                                     size_t frame_size,
+                                     unsigned target_chunk,
+                                     FlatChunkRecord* out) {
+    size_t offset = 0u;
+    unsigned chunk_index = 0u;
+    while (offset < frame_size) {
+        if (frame_size - offset < 4u)
+            return false;
+        size_t record_start = offset;
+        uint8_t type = frame[offset++];
+        offset++; /* version */
+        offset += sizeof(uint16_t); /* flags */
+
+        uint64_t key_len = 0u;
+        if (!flat_read_varint(frame, frame_size, &offset, &key_len))
+            return false;
+        uint64_t body_len = 0u;
+        if (!flat_read_varint(frame, frame_size, &offset, &body_len))
+            return false;
+        if (frame_size - offset < key_len + body_len + sizeof(uint32_t))
+            return false;
+
+        uint8_t* key_ptr = frame + offset;
+        (void)key_ptr;
+        offset += (size_t)key_len;
+        uint8_t* body_ptr = frame + offset;
+        offset += (size_t)body_len;
+        size_t payload_size = offset - record_start;
+        uint8_t* record_ptr = frame + record_start;
+
+        offset += sizeof(uint32_t); /* CRC */
+        if (offset > frame_size)
+            return false;
+
+        if (type == CEP_FLAT_RECORD_PAYLOAD_CHUNK) {
+            if (chunk_index == target_chunk) {
+                if (out) {
+                    out->record_ptr = record_ptr;
+                    out->payload_size = payload_size;
+                    out->body_ptr = body_ptr;
+                    out->body_size = (size_t)body_len;
+                }
+                return true;
+            }
+            chunk_index++;
+        }
+    }
+    return false;
+}
+
+static bool flat_mutate_chunk_offset(uint8_t* frame,
+                                     size_t frame_size,
+                                     unsigned target_chunk,
+                                     uint64_t new_offset) {
+    FlatChunkRecord record = {0};
+    if (!flat_locate_chunk_record(frame, frame_size, target_chunk, &record))
+        return false;
+    uint8_t* cursor = record.body_ptr;
+    size_t remaining = record.body_size;
+    if (!remaining)
+        return false;
+    cursor++; /* payload_kind */
+    remaining--;
+    size_t total_offset = cursor - record.body_ptr;
+    (void)total_offset;
+    uint64_t total_size = 0u;
+    size_t total_cursor = cursor - record.body_ptr;
+    if (!flat_read_varint(record.body_ptr, record.body_size, &total_cursor, &total_size))
+        return false;
+    size_t chunk_offset_pos = total_cursor;
+    uint64_t chunk_offset = 0u;
+    size_t chunk_offset_cursor = chunk_offset_pos;
+    if (!flat_read_varint(record.body_ptr, record.body_size, &chunk_offset_cursor, &chunk_offset))
+        return false;
+    size_t chunk_offset_len = chunk_offset_cursor - chunk_offset_pos;
+    if (flat_varint_length_u64(new_offset) != chunk_offset_len)
+        return false;
+    if (!flat_write_varint_fixed(record.body_ptr + chunk_offset_pos, chunk_offset_len, new_offset))
+        return false;
+
+    uint32_t crc = flat_recompute_crc(record.record_ptr, record.payload_size);
+    memcpy(record.record_ptr + record.payload_size, &crc, sizeof crc);
+    return true;
+}
+
+static bool flat_swap_chunk_records(uint8_t* frame,
+                                    size_t frame_size,
+                                    unsigned chunk_a,
+                                    unsigned chunk_b) {
+    if (chunk_a == chunk_b)
+        return true;
+    const size_t max_records = 128u;
+    size_t record_starts[128];
+    size_t record_sizes[128];
+    uint8_t record_types[128];
+    unsigned chunk_map[64];
+    size_t record_count = 0u;
+    unsigned chunk_count = 0u;
+
+    size_t offset = 0u;
+    while (offset < frame_size && record_count < max_records) {
+        record_starts[record_count] = offset;
+        if (frame_size - offset < 4u)
+            return false;
+        uint8_t type = frame[offset++];
+        offset++; /* version */
+        offset += sizeof(uint16_t);
+        uint64_t key_len = 0u;
+        if (!flat_read_varint(frame, frame_size, &offset, &key_len))
+            return false;
+        uint64_t body_len = 0u;
+        if (!flat_read_varint(frame, frame_size, &offset, &body_len))
+            return false;
+        if (frame_size - offset < key_len + body_len + sizeof(uint32_t))
+            return false;
+        offset += (size_t)key_len + (size_t)body_len + sizeof(uint32_t);
+        if (offset > frame_size)
+            return false;
+        record_sizes[record_count] = offset - record_starts[record_count];
+        record_types[record_count] = type;
+        if (type == CEP_FLAT_RECORD_PAYLOAD_CHUNK && chunk_count < cep_lengthof(chunk_map))
+            chunk_map[chunk_count++] = record_count;
+        record_count++;
+    }
+
+    if (chunk_a >= chunk_count || chunk_b >= chunk_count)
+        return false;
+    unsigned record_idx_a = chunk_map[chunk_a];
+    unsigned record_idx_b = chunk_map[chunk_b];
+
+    uint8_t* temp = cep_malloc(frame_size);
+    if (!temp)
+        return false;
+
+    size_t out = 0u;
+    for (size_t i = 0; i < record_count; ++i) {
+        size_t source_index = i;
+        if (i == record_idx_a)
+            source_index = record_idx_b;
+        else if (i == record_idx_b)
+            source_index = record_idx_a;
+        memcpy(temp + out,
+               frame + record_starts[source_index],
+               record_sizes[source_index]);
+        out += record_sizes[source_index];
+    }
+    bool ok = (out == frame_size);
+    if (ok)
+        memcpy(frame, temp, frame_size);
+    cep_free(temp);
+    return ok;
+}
+
+static bool flat_reader_expect_failure(uint8_t* frame, size_t frame_size) {
+    cepFlatReader* reader = cep_flat_reader_create();
+    if (!reader)
+        return false;
+    bool ok = cep_flat_reader_feed(reader, frame, frame_size) &&
+              !cep_flat_reader_commit(reader);
+    cep_flat_reader_destroy(reader);
+    return ok;
 }
 
 typedef struct {
@@ -1508,6 +1870,13 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
     const char* prev_comp = getenv("CEP_SERIALIZATION_FLAT_COMPRESSION");
     char* prev_comp_copy = prev_comp ? strdup(prev_comp) : NULL;
     munit_assert_true(setenv("CEP_SERIALIZATION_USE_FLAT", "1", 1) == 0);
+    const char* prev_aead_mode = getenv("CEP_SERIALIZATION_FLAT_AEAD_MODE");
+    char* prev_aead_mode_copy = prev_aead_mode ? strdup(prev_aead_mode) : NULL;
+    const char* prev_aead_key = getenv("CEP_SERIALIZATION_FLAT_AEAD_KEY");
+    char* prev_aead_key_copy = prev_aead_key ? strdup(prev_aead_key) : NULL;
+    munit_assert_int(unsetenv("CEP_SERIALIZATION_FLAT_AEAD_MODE"), ==, 0);
+    munit_assert_int(unsetenv("CEP_SERIALIZATION_FLAT_AEAD_KEY"), ==, 0);
+    munit_assert_int(sodium_init(), >=, 0);
 
     uint8_t payload[96];
     for (size_t i = 0; i < sizeof payload; ++i)
@@ -1532,6 +1901,9 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
                                                   serialization_capture_sink,
                                                   &capture,
                                                   chunk_limit));
+    const uint8_t* expected_payload = (const uint8_t*)cep_data_payload(cell.data);
+    munit_assert_not_null(expected_payload);
+    size_t expected_payload_size = cell.data ? cell.data->size : 0u;
 
     munit_assert_size(capture.count, ==, 1u);
     const uint8_t* frame = capture.chunks[0].data;
@@ -1539,69 +1911,40 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
     munit_assert_not_null(frame);
     munit_assert_size(frame_size, >, 0u);
 
-    size_t offset = 0u;
-    unsigned chunk_records = 0u;
-    uint64_t expected_chunk_offset = 0u;
+    flat_assert_chunk_records(frame,
+                              frame_size,
+                              expected_payload,
+                              expected_payload_size,
+                              false,
+                              NULL,
+                              0u);
 
-    while (offset < frame_size) {
-        if (frame_size - offset < 4u)
-            break;
-        uint8_t type = frame[offset++];
-        uint8_t version = frame[offset++];
-        uint16_t flags = (uint16_t)(frame[offset] | (frame[offset + 1u] << 8));
-        offset += 2u;
-        (void)flags;
+    serialization_capture_clear(&capture);
 
-        uint64_t key_len = 0u;
-        uint64_t body_len = 0u;
-        munit_assert_true(flat_read_varint(frame, frame_size, &offset, &key_len));
-        munit_assert_true(flat_read_varint(frame, frame_size, &offset, &body_len));
-        munit_assert_size(offset + key_len + body_len + sizeof(uint32_t), <=, frame_size);
-        offset += key_len;
-        const uint8_t* body_ptr = frame + offset;
-        offset += body_len;
-        offset += sizeof(uint32_t); /* skip CRC */
+    static const char kFlatAeadKeyHex[] =
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    uint8_t aead_key_bytes[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+    munit_assert_true(flat_hex_decode(kFlatAeadKeyHex, aead_key_bytes, sizeof aead_key_bytes));
+    munit_assert_true(setenv("CEP_SERIALIZATION_FLAT_AEAD_MODE", "xchacha20", 1) == 0);
+    munit_assert_true(setenv("CEP_SERIALIZATION_FLAT_AEAD_KEY", kFlatAeadKeyHex, 1) == 0);
+    munit_assert_true(cep_serialization_emit_cell(&cell,
+                                                  NULL,
+                                                  serialization_capture_sink,
+                                                  &capture,
+                                                  chunk_limit));
+    munit_assert_size(capture.count, ==, 1u);
+    frame = capture.chunks[0].data;
+    frame_size = capture.chunks[0].size;
+    munit_assert_not_null(frame);
+    munit_assert_size(frame_size, >, 0u);
 
-        if (type == CEP_FLAT_RECORD_PAYLOAD_CHUNK &&
-            version == CEP_FLAT_SERIALIZER_VERSION) {
-            size_t body_off = 0u;
-            munit_assert_size(body_len, >, 0u);
-            munit_assert_uint8(body_ptr[body_off++], ==, CEP_DATATYPE_VALUE);
-
-            uint64_t total_size = 0u;
-            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &total_size));
-            munit_assert_uint64(total_size, ==, sizeof payload);
-
-            uint64_t chunk_offset_val = 0u;
-            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &chunk_offset_val));
-            uint64_t chunk_size_val = 0u;
-            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &chunk_size_val));
-            munit_assert_uint64(chunk_offset_val, ==, expected_chunk_offset);
-            expected_chunk_offset += chunk_size_val;
-
-            uint64_t fp_len = 0u;
-            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &fp_len));
-            munit_assert_size(body_off + fp_len, <=, body_len);
-            body_off += (size_t)fp_len;
-            munit_assert_size(body_off, <, body_len);
-
-            /* Skip AEAD scaffolding (mode + nonce + aad hash) */
-            uint8_t aead_mode = body_ptr[body_off++];
-            (void)aead_mode;
-            uint64_t nonce_len = 0u;
-            munit_assert_true(flat_read_varint(body_ptr, body_len, &body_off, &nonce_len));
-            munit_assert_size(body_off + nonce_len, <=, body_len);
-            body_off += (size_t)nonce_len;
-            munit_assert_size(body_off + 32u, <=, body_len);
-            body_off += 32u;
-            munit_assert_size(body_off, <, body_len);
-
-            chunk_records++;
-        }
-    }
-
-    munit_assert_uint(chunk_records, >=, 2u);
-    munit_assert_uint64(expected_chunk_offset, ==, sizeof payload);
+    flat_assert_chunk_records(frame,
+                              frame_size,
+                              expected_payload,
+                              expected_payload_size,
+                              true,
+                              aead_key_bytes,
+                              sizeof aead_key_bytes);
 
     serialization_capture_clear(&capture);
 
@@ -1614,10 +1957,9 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
     munit_assert_size(capture.count, ==, 1u);
     const uint8_t* compressed_frame = capture.chunks[0].data;
     munit_assert_size(capture.chunks[0].size, >, 0u);
-    munit_assert_uint8(compressed_frame[0], ==, 'C');
-    munit_assert_uint8(compressed_frame[1], ==, 'F');
-    munit_assert_uint8(compressed_frame[2], ==, 'L');
-    munit_assert_uint8(compressed_frame[3], ==, 'T');
+    uint32_t container_magic = 0u;
+    memcpy(&container_magic, compressed_frame, sizeof container_magic);
+    munit_assert_uint32(container_magic, ==, CEP_FLAT_CONTAINER_MAGIC);
 
     cepFlatReader* reader = cep_flat_reader_create();
     munit_assert_not_null(reader);
@@ -1642,6 +1984,122 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
         free(prev_comp_copy);
     } else {
         unsetenv("CEP_SERIALIZATION_FLAT_COMPRESSION");
+    }
+    if (prev_aead_mode_copy) {
+        setenv("CEP_SERIALIZATION_FLAT_AEAD_MODE", prev_aead_mode_copy, 1);
+        free(prev_aead_mode_copy);
+    } else {
+        unsetenv("CEP_SERIALIZATION_FLAT_AEAD_MODE");
+    }
+    if (prev_aead_key_copy) {
+        setenv("CEP_SERIALIZATION_FLAT_AEAD_KEY", prev_aead_key_copy, 1);
+        free(prev_aead_key_copy);
+    } else {
+        unsetenv("CEP_SERIALIZATION_FLAT_AEAD_KEY");
+    }
+    return MUNIT_OK;
+}
+
+MunitResult test_serialization_flat_chunk_offset_violation(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+    (void)user_data_or_fixture;
+
+    const char* prev = getenv("CEP_SERIALIZATION_USE_FLAT");
+    char* prev_copy = prev ? strdup(prev) : NULL;
+    munit_assert_true(setenv("CEP_SERIALIZATION_USE_FLAT", "1", 1) == 0);
+
+    uint8_t payload[96];
+    for (size_t i = 0; i < sizeof payload; ++i)
+        payload[i] = (uint8_t)(i & 0xFFu);
+
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP", "flat_chunk_offset"),
+                                      payload,
+                                      sizeof payload);
+    munit_assert_not_null(data);
+
+    cepCell cell;
+    CEP_0(&cell);
+    cep_cell_initialize(&cell,
+                        CEP_TYPE_NORMAL,
+                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("flat_chunk_offset")),
+                        data,
+                        NULL);
+
+    SerializationCapture capture = {0};
+    const size_t chunk_limit = 32u;
+    munit_assert_true(cep_serialization_emit_cell(&cell,
+                                                  NULL,
+                                                  serialization_capture_sink,
+                                                  &capture,
+                                                  chunk_limit));
+    munit_assert_size(capture.count, ==, 1u);
+    uint8_t* mutated = malloc(capture.chunks[0].size);
+    munit_assert_not_null(mutated);
+    memcpy(mutated, capture.chunks[0].data, capture.chunks[0].size);
+    munit_assert_true(flat_mutate_chunk_offset(mutated, capture.chunks[0].size, 1u, 0u));
+    munit_assert_true(flat_reader_expect_failure(mutated, capture.chunks[0].size));
+    free(mutated);
+
+    serialization_capture_clear(&capture);
+    cep_cell_finalize_hard(&cell);
+
+    if (prev_copy) {
+        setenv("CEP_SERIALIZATION_USE_FLAT", prev_copy, 1);
+        free(prev_copy);
+    } else {
+        unsetenv("CEP_SERIALIZATION_USE_FLAT");
+    }
+    return MUNIT_OK;
+}
+
+MunitResult test_serialization_flat_chunk_order_violation(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+    (void)user_data_or_fixture;
+
+    const char* prev = getenv("CEP_SERIALIZATION_USE_FLAT");
+    char* prev_copy = prev ? strdup(prev) : NULL;
+    munit_assert_true(setenv("CEP_SERIALIZATION_USE_FLAT", "1", 1) == 0);
+
+    uint8_t payload[96];
+    for (size_t i = 0; i < sizeof payload; ++i)
+        payload[i] = (uint8_t)(i & 0xFFu);
+
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP", "flat_chunk_order"),
+                                      payload,
+                                      sizeof payload);
+    munit_assert_not_null(data);
+
+    cepCell cell;
+    CEP_0(&cell);
+    cep_cell_initialize(&cell,
+                        CEP_TYPE_NORMAL,
+                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("flat_chunk_order")),
+                        data,
+                        NULL);
+
+    SerializationCapture capture = {0};
+    const size_t chunk_limit = 32u;
+    munit_assert_true(cep_serialization_emit_cell(&cell,
+                                                  NULL,
+                                                  serialization_capture_sink,
+                                                  &capture,
+                                                  chunk_limit));
+    munit_assert_size(capture.count, ==, 1u);
+    uint8_t* mutated = malloc(capture.chunks[0].size);
+    munit_assert_not_null(mutated);
+    memcpy(mutated, capture.chunks[0].data, capture.chunks[0].size);
+    munit_assert_true(flat_swap_chunk_records(mutated, capture.chunks[0].size, 0u, 1u));
+    munit_assert_true(flat_reader_expect_failure(mutated, capture.chunks[0].size));
+    free(mutated);
+
+    serialization_capture_clear(&capture);
+    cep_cell_finalize_hard(&cell);
+
+    if (prev_copy) {
+        setenv("CEP_SERIALIZATION_USE_FLAT", prev_copy, 1);
+        free(prev_copy);
+    } else {
+        unsetenv("CEP_SERIALIZATION_USE_FLAT");
     }
     return MUNIT_OK;
 }

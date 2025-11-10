@@ -66,6 +66,8 @@ MunitResult test_serialization_manifest_delta_fingerprint_corruption(const Munit
 MunitResult test_serialization_header_capability_mismatch(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_flat_serializer_round_trip(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_serialization_flat_chunk_offset_violation(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_serialization_flat_chunk_order_violation(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_stream_stdio(const MunitParameter params[], void* user_data_or_fixture);
 #ifdef CEP_HAS_LIBZIP
 MunitResult test_stream_zip(const MunitParameter params[], void* user_data_or_fixture);

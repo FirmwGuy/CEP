@@ -16,6 +16,7 @@
 #include "storage/cep_octree.h"
 #include "stream/cep_stream_internal.h"
 #include <stdlib.h>
+#include <sodium.h>
 
 /* Storage backends expose inline helpers that depend on internal Layer 0
    symbols such as `cep_shadow_rebind_links` and `cell_compare_by_name`. This
@@ -51,6 +52,7 @@ static int cell_compare_by_name(const cepCell* restrict key,
 #include "storage/cep_packed_queue.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -60,7 +62,95 @@ static int cell_compare_by_name(const cepCell* restrict key,
 
 #define CEP_FLAT_CELL_META_TOMBSTONE 0x0001u
 #define CEP_FLAT_CELL_META_VEILED    0x0002u
+#define CEP_FLAT_ORGANISER_HASH      0x04u
+#define CEP_SERIALIZATION_HISTORY_PAGE_LIMIT 64u
 
+typedef enum {
+    CEP_SERIALIZATION_AEAD_MODE_NONE = CEP_FLAT_AEAD_NONE,
+    CEP_SERIALIZATION_AEAD_MODE_AES_GCM = CEP_FLAT_AEAD_AES_GCM,
+    CEP_SERIALIZATION_AEAD_MODE_CHACHA20 = CEP_FLAT_AEAD_CHACHA20_POLY1305,
+    CEP_SERIALIZATION_AEAD_MODE_XCHACHA20 = CEP_FLAT_AEAD_XCHACHA20_POLY1305,
+} cepSerializationAeadMode;
+
+typedef struct {
+    bool                     parsed;
+    bool                     enabled;
+    cepSerializationAeadMode mode;
+    size_t                   key_len;
+    size_t                   nonce_len;
+    size_t                   tag_len;
+    uint8_t                  key[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
+    char                     mode_token[32];
+    uint8_t                  key_fingerprint[CEP_FLAT_HASH_SIZE];
+} cepSerializationAeadConfig;
+
+static cepSerializationAeadConfig cep_serialization_aead_config;
+
+static bool cep_serialization_build_payload_chunk_body(const cepData* data,
+                                                       uint64_t payload_fp,
+                                                       const void* payload_bytes,
+                                                       size_t total_size,
+                                                       size_t chunk_offset,
+                                                       size_t chunk_size,
+                                                       const uint8_t* chunk_key,
+                                                       size_t chunk_key_size,
+                                                       cepFlatNamepoolCollector* names,
+                                                       uint8_t** out_body,
+                                                       size_t* out_body_size);
+static bool cep_serialization_collect_children_snapshot(const cepCell* parent,
+                                                        cepOpCount snapshot,
+                                                        cepFlatChildDescriptor** out_children,
+                                                        size_t* out_count,
+                                                        uint8_t* organiser);
+static bool cep_serialization_emit_manifest_history(const cepCell* cell,
+                                                    cepFlatSerializer* serializer,
+                                                    cepFlatNamepoolCollector* names,
+                                                    uint32_t history_window,
+                                                    cepOpCount frame_beat);
+static bool cep_serialization_emit_manifest_history_page(cepFlatSerializer* serializer,
+                                                         const cepCell* parent,
+                                                         cepOpCount snapshot,
+                                                         const cepFlatChildDescriptor* children,
+                                                         size_t child_count,
+                                                         const cepFlatChildDescriptor* next_child,
+                                                         uint8_t organiser,
+                                                         cepFlatNamepoolCollector* names,
+                                                         uint64_t page_id);
+static void cep_serialization_history_revision(const cepCell* cell,
+                                               cepOpCount snapshot,
+                                               uint64_t page_id,
+                                               uint8_t out[16]);
+static bool cep_serialization_key_append_bytes(uint8_t** key,
+                                               size_t* key_size,
+                                               const void* bytes,
+                                               size_t len);
+static bool cep_serialization_key_append_varint(uint8_t** key,
+                                                size_t* key_size,
+                                                uint64_t value);
+
+static cepSerializationAeadMode cep_serialization_aead_mode(void);
+static void cep_serialization_aead_refresh(void);
+static bool cep_serialization_aead_ready(void);
+static bool cep_serialization_aead_encrypt_chunk(const uint8_t* chunk_key,
+                                                 size_t chunk_key_size,
+                                                 uint64_t payload_fp,
+                                                 size_t chunk_offset,
+                                                 size_t chunk_size,
+                                                 size_t total_size,
+                                                 const uint8_t* plaintext,
+                                                 uint8_t** out_ciphertext,
+                                                 size_t* out_ciphertext_size,
+                                                 uint8_t* nonce_out,
+                                                 size_t* nonce_len_out,
+                                                 uint8_t aad_hash[CEP_FLAT_HASH_SIZE]);
+static void cep_serialization_compute_aad_hash(const uint8_t* chunk_key,
+                                               size_t chunk_key_size,
+                                               uint8_t aad_hash[CEP_FLAT_HASH_SIZE]);
+static bool cep_serialization_hex_decode(const char* hex, uint8_t* out, size_t expected_len);
+static int cep_serialization_hex_nibble(char c);
+static void cep_serialization_hash_string(const char* value, uint8_t out[CEP_FLAT_HASH_SIZE]);
+static cepSerializationAeadMode cep_serialization_aead_parse_mode(const char* value);
+static size_t cep_serialization_aead_expected_keybytes(cepSerializationAeadMode mode);
 
 static bool cep_serialization_emit_cell_flat(const cepCell* cell,
                                              const cepSerializationHeader* header,
@@ -80,15 +170,11 @@ static bool cep_serialization_build_payload_chunk_key(const cepCell* cell,
                                                       cepFlatNamepoolCollector* names,
                                                       uint8_t** out_key,
                                                       size_t* out_key_size);
-static bool cep_serialization_build_payload_chunk_body(const cepData* data,
-                                                       uint64_t payload_fp,
-                                                       const void* payload_bytes,
-                                                       size_t total_size,
-                                                       size_t chunk_offset,
-                                                       size_t chunk_size,
-                                                       cepFlatNamepoolCollector* names,
-                                                       uint8_t** out_body,
-                                                       size_t* out_body_size);
+static bool cep_serialization_emit_payload_history(const cepCell* cell,
+                                                   cepFlatSerializer* serializer,
+                                                   cepFlatNamepoolCollector* names,
+                                                   size_t chunk_limit,
+                                                   uint32_t history_window);
 static size_t cep_serialization_varint_length(uint64_t value);
 static uint8_t* cep_serialization_write_varint(uint64_t value, uint8_t* dst);
 static bool cep_serialization_body_reserve(uint8_t** buffer,
@@ -146,6 +232,8 @@ static bool cep_serialization_env_flag_enabled(const char* name) {
     return true;
 }
 
+static void cep_serialization_debug_log(const char* fmt, ...);
+
 static bool cep_serialization_debug_logging_enabled(void) {
     static int cached = -1;
     if (cached < 0) {
@@ -157,11 +245,7 @@ static bool cep_serialization_debug_logging_enabled(void) {
 }
 
 static bool cep_serialization_flat_mode_enabled(void) {
-    static int cached = -1;
-    if (cached < 0) {
-        cached = cep_serialization_env_flag_enabled("CEP_SERIALIZATION_USE_FLAT") ? 1 : 0;
-    }
-    return cached == 1;
+    return cep_serialization_env_flag_enabled("CEP_SERIALIZATION_USE_FLAT");
 }
 
 static cepFlatCompressionAlgorithm cep_serialization_flat_compression_mode(void) {
@@ -173,6 +257,32 @@ static cepFlatCompressionAlgorithm cep_serialization_flat_compression_mode(void)
     return CEP_FLAT_COMPRESSION_NONE;
 }
 
+static uint32_t cep_serialization_env_history_beats(const char* name) {
+    const char* value = getenv(name);
+    if (!value || !*value)
+        return 0u;
+    errno = 0;
+    char* end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || (end && *end)) {
+        cep_serialization_debug_log("[serialization][flat] ignoring %s=%s (invalid integer)\n",
+                                    name,
+                                    value);
+        return 0u;
+    }
+    if (parsed > UINT32_MAX)
+        parsed = UINT32_MAX;
+    return (uint32_t)parsed;
+}
+
+static uint32_t cep_serialization_flat_payload_history_beats(void) {
+    return cep_serialization_env_history_beats("CEP_SERIALIZATION_FLAT_PAYLOAD_HISTORY_BEATS");
+}
+
+static uint32_t cep_serialization_flat_manifest_history_beats(void) {
+    return cep_serialization_env_history_beats("CEP_SERIALIZATION_FLAT_MANIFEST_HISTORY_BEATS");
+}
+
 static void cep_serialization_debug_log(const char* fmt, ...) {
     if (!cep_serialization_debug_logging_enabled())
         return;
@@ -181,6 +291,250 @@ static void cep_serialization_debug_log(const char* fmt, ...) {
     vfprintf(stderr, fmt, args);
     va_end(args);
     fflush(stderr);
+}
+
+static void cep_serialization_hash_string(const char* value, uint8_t out[CEP_FLAT_HASH_SIZE]) {
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    if (value && *value) {
+        size_t len = strlen(value);
+        blake3_hasher_update(&hasher, value, len);
+    }
+    blake3_hasher_finalize(&hasher, out, CEP_FLAT_HASH_SIZE);
+}
+
+static int cep_serialization_hex_nibble(char c) {
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F')
+        return 10 + (c - 'A');
+    return -1;
+}
+
+static bool cep_serialization_hex_decode(const char* hex, uint8_t* out, size_t expected_len) {
+    if (!hex || !out)
+        return false;
+    size_t len = strlen(hex);
+    if (len != expected_len * 2u)
+        return false;
+    for (size_t i = 0; i < expected_len; ++i) {
+        int hi = cep_serialization_hex_nibble(hex[i * 2u]);
+        int lo = cep_serialization_hex_nibble(hex[i * 2u + 1u]);
+        if (hi < 0 || lo < 0)
+            return false;
+        out[i] = (uint8_t)((hi << 4u) | lo);
+    }
+    return true;
+}
+
+static size_t cep_serialization_aead_expected_keybytes(cepSerializationAeadMode mode) {
+    switch (mode) {
+        case CEP_SERIALIZATION_AEAD_MODE_CHACHA20:
+            return crypto_aead_chacha20poly1305_ietf_KEYBYTES;
+        case CEP_SERIALIZATION_AEAD_MODE_XCHACHA20:
+            return crypto_aead_xchacha20poly1305_ietf_KEYBYTES;
+        case CEP_SERIALIZATION_AEAD_MODE_AES_GCM:
+            return 32u;
+        default:
+            return 0u;
+    }
+}
+
+static cepSerializationAeadMode cep_serialization_aead_parse_mode(const char* value) {
+    if (!value || !*value)
+        return CEP_SERIALIZATION_AEAD_MODE_NONE;
+    if (strcasecmp(value, "none") == 0 || strcmp(value, "0") == 0)
+        return CEP_SERIALIZATION_AEAD_MODE_NONE;
+    if (strcasecmp(value, "aes-gcm") == 0 || strcasecmp(value, "aesgcm") == 0)
+        return CEP_SERIALIZATION_AEAD_MODE_AES_GCM;
+    if (strcasecmp(value, "chacha20") == 0 || strcasecmp(value, "chacha20-poly1305") == 0)
+        return CEP_SERIALIZATION_AEAD_MODE_CHACHA20;
+    if (strcasecmp(value, "xchacha20") == 0 || strcasecmp(value, "xchacha20-poly1305") == 0)
+        return CEP_SERIALIZATION_AEAD_MODE_XCHACHA20;
+    return CEP_SERIALIZATION_AEAD_MODE_NONE;
+}
+
+static void cep_serialization_aead_refresh(void) {
+    const char* mode_env = getenv("CEP_SERIALIZATION_FLAT_AEAD_MODE");
+    const char* key_env = getenv("CEP_SERIALIZATION_FLAT_AEAD_KEY");
+
+    char mode_value[sizeof cep_serialization_aead_config.mode_token];
+    if (mode_env && *mode_env) {
+        size_t len = strlen(mode_env);
+        if (len >= sizeof mode_value)
+            len = sizeof mode_value - 1u;
+        memcpy(mode_value, mode_env, len);
+        mode_value[len] = '\0';
+    } else {
+        mode_value[0] = '\0';
+    }
+
+    uint8_t key_fingerprint[CEP_FLAT_HASH_SIZE];
+    cep_serialization_hash_string(key_env ? key_env : "", key_fingerprint);
+
+    bool needs_parse = !cep_serialization_aead_config.parsed ||
+                       strcmp(cep_serialization_aead_config.mode_token, mode_value) != 0 ||
+                       memcmp(cep_serialization_aead_config.key_fingerprint,
+                              key_fingerprint,
+                              CEP_FLAT_HASH_SIZE) != 0;
+    if (!needs_parse)
+        return;
+
+    cep_serialization_aead_config.parsed = true;
+    cep_serialization_aead_config.enabled = false;
+    cep_serialization_aead_config.mode = CEP_SERIALIZATION_AEAD_MODE_NONE;
+    cep_serialization_aead_config.key_len = 0u;
+    cep_serialization_aead_config.nonce_len = 0u;
+    cep_serialization_aead_config.tag_len = 0u;
+    memset(cep_serialization_aead_config.key, 0, sizeof cep_serialization_aead_config.key);
+    memcpy(cep_serialization_aead_config.mode_token, mode_value, sizeof mode_value);
+    memcpy(cep_serialization_aead_config.key_fingerprint, key_fingerprint, CEP_FLAT_HASH_SIZE);
+
+    cepSerializationAeadMode mode = cep_serialization_aead_parse_mode(mode_env);
+    if (mode == CEP_SERIALIZATION_AEAD_MODE_NONE)
+        return;
+    if (mode == CEP_SERIALIZATION_AEAD_MODE_AES_GCM) {
+        cep_serialization_debug_log("[serialization][flat] AES-GCM mode is not implemented; disabling AEAD\n");
+        return;
+    }
+
+    size_t expected_key = cep_serialization_aead_expected_keybytes(mode);
+    if (!key_env || !*key_env) {
+        cep_serialization_debug_log("[serialization][flat] AEAD mode requires CEP_SERIALIZATION_FLAT_AEAD_KEY\n");
+        return;
+    }
+    size_t key_hex_len = strlen(key_env);
+    if (key_hex_len != expected_key * 2u) {
+        cep_serialization_debug_log("[serialization][flat] AEAD key length mismatch (wanted %zu hex chars, saw %zu)\n",
+                                    expected_key * 2u,
+                                    key_hex_len);
+        return;
+    }
+    if (!cep_serialization_hex_decode(key_env, cep_serialization_aead_config.key, expected_key)) {
+        cep_serialization_debug_log("[serialization][flat] AEAD key contains invalid hex characters\n");
+        return;
+    }
+    if (sodium_init() < 0) {
+        cep_serialization_debug_log("[serialization][flat] sodium_init failed; disabling AEAD\n");
+        sodium_memzero(cep_serialization_aead_config.key, sizeof cep_serialization_aead_config.key);
+        return;
+    }
+
+    cep_serialization_aead_config.enabled = true;
+    cep_serialization_aead_config.mode = mode;
+    cep_serialization_aead_config.key_len = expected_key;
+    cep_serialization_aead_config.nonce_len = (mode == CEP_SERIALIZATION_AEAD_MODE_CHACHA20)
+                                                  ? crypto_aead_chacha20poly1305_ietf_NPUBBYTES
+                                                  : crypto_aead_xchacha20poly1305_ietf_NPUBBYTES;
+    cep_serialization_aead_config.tag_len = (mode == CEP_SERIALIZATION_AEAD_MODE_CHACHA20)
+                                                ? crypto_aead_chacha20poly1305_ietf_ABYTES
+                                                : crypto_aead_xchacha20poly1305_ietf_ABYTES;
+}
+
+static cepSerializationAeadMode cep_serialization_aead_mode(void) {
+    cep_serialization_aead_refresh();
+    return cep_serialization_aead_config.mode;
+}
+
+static bool cep_serialization_aead_ready(void) {
+    cep_serialization_aead_refresh();
+    return cep_serialization_aead_config.enabled;
+}
+
+static void cep_serialization_compute_aad_hash(const uint8_t* chunk_key,
+                                               size_t chunk_key_size,
+                                               uint8_t aad_hash[CEP_FLAT_HASH_SIZE]) {
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    if (chunk_key && chunk_key_size)
+        blake3_hasher_update(&hasher, chunk_key, chunk_key_size);
+    blake3_hasher_finalize(&hasher, aad_hash, CEP_FLAT_HASH_SIZE);
+}
+
+static bool cep_serialization_aead_encrypt_chunk(const uint8_t* chunk_key,
+                                                 size_t chunk_key_size,
+                                                 uint64_t payload_fp,
+                                                 size_t chunk_offset,
+                                                 size_t chunk_size,
+                                                 size_t total_size,
+                                                 const uint8_t* plaintext,
+                                                 uint8_t** out_ciphertext,
+                                                 size_t* out_ciphertext_size,
+                                                 uint8_t* nonce_out,
+                                                 size_t* nonce_len_out,
+                                                 uint8_t aad_hash[CEP_FLAT_HASH_SIZE]) {
+    if (!chunk_key || !chunk_key_size || !plaintext || !chunk_size ||
+        !out_ciphertext || !out_ciphertext_size || !nonce_out || !nonce_len_out || !aad_hash)
+        return false;
+    if (!cep_serialization_aead_ready())
+        return false;
+
+    cepSerializationAeadMode mode = cep_serialization_aead_mode();
+    if (mode == CEP_SERIALIZATION_AEAD_MODE_NONE)
+        return false;
+
+    cep_serialization_compute_aad_hash(chunk_key, chunk_key_size, aad_hash);
+
+    uint8_t nonce_buf[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES] = {0};
+    blake3_hasher hasher;
+    blake3_hasher_init_keyed(&hasher, cep_serialization_aead_config.key);
+    blake3_hasher_update(&hasher, chunk_key, chunk_key_size);
+    struct {
+        uint64_t payload_fp;
+        uint64_t chunk_offset;
+        uint64_t chunk_size;
+        uint64_t total_size;
+    } nonce_material = {
+        .payload_fp = payload_fp,
+        .chunk_offset = chunk_offset,
+        .chunk_size = chunk_size,
+        .total_size = total_size,
+    };
+    blake3_hasher_update(&hasher, &nonce_material, sizeof nonce_material);
+    blake3_hasher_finalize(&hasher, nonce_buf, sizeof nonce_buf);
+    size_t nonce_len = cep_serialization_aead_config.nonce_len;
+
+    size_t cipher_len = chunk_size + cep_serialization_aead_config.tag_len;
+    uint8_t* cipher = cep_malloc(cipher_len);
+    if (!cipher)
+        return false;
+
+    unsigned long long written = 0u;
+    int rc = 0;
+    if (mode == CEP_SERIALIZATION_AEAD_MODE_CHACHA20) {
+        rc = crypto_aead_chacha20poly1305_ietf_encrypt(cipher,
+                                                       &written,
+                                                       plaintext,
+                                                       (unsigned long long)chunk_size,
+                                                       chunk_key,
+                                                       (unsigned long long)chunk_key_size,
+                                                       NULL,
+                                                       nonce_buf,
+                                                       cep_serialization_aead_config.key);
+    } else {
+        rc = crypto_aead_xchacha20poly1305_ietf_encrypt(cipher,
+                                                        &written,
+                                                        plaintext,
+                                                        (unsigned long long)chunk_size,
+                                                        chunk_key,
+                                                        (unsigned long long)chunk_key_size,
+                                                        NULL,
+                                                        nonce_buf,
+                                                        cep_serialization_aead_config.key);
+    }
+    if (rc != 0) {
+        sodium_memzero(cipher, cipher_len);
+        cep_free(cipher);
+        return false;
+    }
+
+    memcpy(nonce_out, nonce_buf, nonce_len);
+    *nonce_len_out = nonce_len;
+    *out_ciphertext = cipher;
+    *out_ciphertext_size = (size_t)written;
+    return true;
 }
 
 static bool cep_serialization_emit_cell_flat(const cepCell* cell,
@@ -202,6 +556,8 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
         return false;
 
     bool ok = false;
+    uint32_t payload_history_window = cep_serialization_flat_payload_history_beats();
+    uint32_t manifest_history_window = cep_serialization_flat_manifest_history_beats();
     cepFlatFrameConfig config = {
         .beat_number = cep_beat_index(),
         .apply_mode = CEP_FLAT_APPLY_INSERT_ONLY,
@@ -209,6 +565,8 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
         .hash_algorithm = CEP_FLAT_HASH_BLAKE3_256,
         .compression_algorithm = cep_serialization_flat_compression_mode(),
         .checksum_algorithm = CEP_FLAT_CHECKSUM_CRC32,
+        .payload_history_beats = payload_history_window,
+        .manifest_history_beats = manifest_history_window,
     };
 
     if (!cep_flat_serializer_begin(serializer, &config))
@@ -224,6 +582,9 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
     bool inline_allowed = data && data->datatype == CEP_DATATYPE_VALUE && payload_size && payload_size <= 64u;
     size_t inline_len = inline_allowed ? payload_size : 0u;
     uint64_t payload_fp = data ? cep_data_compute_hash(data) : 0u;
+    size_t chunk_limit = blob_payload_bytes ? blob_payload_bytes : CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD;
+    if (!chunk_limit)
+        chunk_limit = CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD;
 
     uint8_t* key_bytes = NULL;
     size_t key_size = 0u;
@@ -293,10 +654,6 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
     }
 
     if (payload_size > inline_len && payload_bytes) {
-        size_t chunk_limit = blob_payload_bytes ? blob_payload_bytes : CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD;
-        if (!chunk_limit)
-            chunk_limit = CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD;
-
         uint8_t* chunk_key = NULL;
         uint8_t* chunk_body = NULL;
         size_t chunk_key_size = 0u;
@@ -327,6 +684,8 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
                                                             payload_size,
                                                             chunk_offset,
                                                             chunk_size,
+                                                            chunk_key,
+                                                            chunk_key_size,
                                                             &names,
                                                             &chunk_body,
                                                             &chunk_body_size)) {
@@ -373,6 +732,22 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
             goto exit;
         }
     }
+
+    if (manifest_history_window) {
+        if (!cep_serialization_emit_manifest_history(canonical,
+                                                     serializer,
+                                                     &names,
+                                                     manifest_history_window,
+                                                     config.beat_number))
+            goto exit;
+    }
+
+    if (!cep_serialization_emit_payload_history(canonical,
+                                                serializer,
+                                                &names,
+                                                chunk_limit,
+                                                payload_history_window))
+        goto exit;
 
     if (!cep_flat_namepool_emit(&names, serializer))
         goto exit;
@@ -603,6 +978,8 @@ static bool cep_serialization_build_payload_chunk_body(const cepData* data,
                                                        size_t total_size,
                                                        size_t chunk_offset,
                                                        size_t chunk_size,
+                                                       const uint8_t* chunk_key,
+                                                       size_t chunk_key_size,
                                                        cepFlatNamepoolCollector* names,
                                                        uint8_t** out_body,
                                                        size_t* out_body_size) {
@@ -664,15 +1041,52 @@ static bool cep_serialization_build_payload_chunk_body(const cepData* data,
         BODY_APPEND_VARINT(0u);
     }
 
-    /* TODO(FLAT-AEAD): stitch in real AEAD metadata once encrypted payloads
-       are implemented; these placeholders keep the wire schema stable. */
-    BODY_APPEND_U8(0u);       /* aead_mode */
-    BODY_APPEND_VARINT(0u);   /* aead_nonce_sz */
-    uint8_t aad_zero[32] = {0};
-    BODY_APPEND_BYTES(aad_zero, sizeof aad_zero);
+    uint8_t aad_hash[CEP_FLAT_HASH_SIZE];
+    uint8_t nonce_buf[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES] = {0};
+    size_t nonce_len = 0u;
+    uint8_t aead_mode = (uint8_t)CEP_FLAT_AEAD_NONE;
+    uint8_t* encrypted = NULL;
+    size_t encrypted_len = 0u;
 
     const uint8_t* chunk_ptr = (const uint8_t*)payload_bytes + chunk_offset;
-    BODY_APPEND_BYTES(chunk_ptr, chunk_size);
+    bool encrypt = chunk_key && chunk_key_size &&
+                   cep_serialization_aead_ready() &&
+                   cep_serialization_aead_mode() != CEP_SERIALIZATION_AEAD_MODE_NONE;
+
+    if (encrypt) {
+        if (!cep_serialization_aead_encrypt_chunk(chunk_key,
+                                                  chunk_key_size,
+                                                  payload_fp,
+                                                  chunk_offset,
+                                                  chunk_size,
+                                                  total_size,
+                                                  chunk_ptr,
+                                                  &encrypted,
+                                                  &encrypted_len,
+                                                  nonce_buf,
+                                                  &nonce_len,
+                                                  aad_hash)) {
+            goto exit;
+        }
+        aead_mode = (uint8_t)cep_serialization_aead_mode();
+    } else {
+        cep_serialization_compute_aad_hash(chunk_key, chunk_key_size, aad_hash);
+    }
+
+    BODY_APPEND_U8(aead_mode);
+    BODY_APPEND_VARINT(nonce_len);
+    if (nonce_len)
+        BODY_APPEND_BYTES(nonce_buf, nonce_len);
+    BODY_APPEND_BYTES(aad_hash, sizeof aad_hash);
+
+    if (encrypted) {
+        BODY_APPEND_BYTES(encrypted, encrypted_len);
+        sodium_memzero(encrypted, encrypted_len);
+        cep_free(encrypted);
+        encrypted = NULL;
+    } else {
+        BODY_APPEND_BYTES(chunk_ptr, chunk_size);
+    }
 
     *out_body = body;
     *out_body_size = size;
@@ -681,6 +1095,10 @@ static bool cep_serialization_build_payload_chunk_body(const cepData* data,
 exit:
     if (!ok && body)
         cep_free(body);
+    if (encrypted) {
+        sodium_memzero(encrypted, encrypted_len);
+        cep_free(encrypted);
+    }
 
 #undef BODY_RESERVE
 #undef BODY_APPEND_U8
@@ -688,6 +1106,500 @@ exit:
 #undef BODY_APPEND_BYTES
 
     return ok;
+}
+
+static bool cep_serialization_key_append_bytes(uint8_t** key,
+                                               size_t* key_size,
+                                               const void* bytes,
+                                               size_t len) {
+    if (!key || !key_size || !bytes || !len)
+        return true;
+    uint8_t* grown = cep_realloc(*key, *key_size + len);
+    if (!grown)
+        return false;
+    memcpy(grown + *key_size, bytes, len);
+    *key = grown;
+    *key_size += len;
+    return true;
+}
+
+static bool cep_serialization_key_append_varint(uint8_t** key,
+                                                size_t* key_size,
+                                                uint64_t value) {
+    if (!key || !key_size)
+        return false;
+    size_t len = cep_serialization_varint_length(value);
+    uint8_t* grown = cep_realloc(*key, *key_size + len);
+    if (!grown)
+        return false;
+    cep_serialization_write_varint(value, grown + *key_size);
+    *key = grown;
+    *key_size += len;
+    return true;
+}
+
+static void cep_serialization_history_revision(const cepCell* cell,
+                                               cepOpCount snapshot,
+                                               uint64_t page_id,
+                                               uint8_t out[16]) {
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    if (cell) {
+        const cepDT* name = cep_cell_get_name(cell);
+        if (name)
+            blake3_hasher_update(&hasher, name, sizeof *name);
+    }
+    blake3_hasher_update(&hasher, &snapshot, sizeof snapshot);
+    blake3_hasher_update(&hasher, &page_id, sizeof page_id);
+    blake3_hasher_finalize(&hasher, out, 16);
+}
+
+static void cep_serialization_write_name_bytes(uint8_t* dst, const cepDT* name) {
+    if (!dst)
+        return;
+    cepDT clean = name ? cep_dt_clean(name) : (cepDT){0};
+    uint64_t domain = clean.domain;
+    uint64_t tag = clean.tag;
+    memcpy(dst, &domain, sizeof domain);
+    memcpy(dst + sizeof domain, &tag, sizeof tag);
+    dst[16] = clean.glob ? 1u : 0u;
+}
+
+static uint8_t cep_serialization_range_kind(uint8_t organiser) {
+    return organiser == CEP_FLAT_ORGANISER_HASH ? 1u : 0u;
+}
+
+static bool cep_serialization_collect_children_snapshot(const cepCell* parent,
+                                                        cepOpCount snapshot,
+                                                        cepFlatChildDescriptor** out_children,
+                                                        size_t* out_count,
+                                                        uint8_t* organiser) {
+    if (!out_children || !out_count)
+        return false;
+    *out_children = NULL;
+    *out_count = 0u;
+    if (organiser)
+        *organiser = 0u;
+
+    if (!parent)
+        return true;
+
+    cepCell* canonical = cep_link_pull((cepCell*)parent);
+    if (!canonical || !canonical->store)
+        return true;
+
+    size_t capacity = canonical->store->chdCount ? canonical->store->chdCount : 4u;
+    cepFlatChildDescriptor* children = NULL;
+    size_t count = 0u;
+
+    for (cepCell* child = cep_cell_first_past(canonical, snapshot);
+         child;
+         child = cep_cell_next_past(canonical, child, snapshot)) {
+        cepCell* resolved = cep_link_pull(child);
+        if (!resolved)
+            continue;
+        const cepDT* name = cep_cell_get_name(resolved);
+        if (!name)
+            continue;
+        if (!children) {
+            children = cep_malloc(capacity * sizeof *children);
+            if (!children)
+                return false;
+        } else if (count == capacity) {
+            size_t new_cap = capacity ? capacity << 1u : 8u;
+            cepFlatChildDescriptor* grown = cep_realloc(children, new_cap * sizeof *children);
+            if (!grown) {
+                cep_free(children);
+                return false;
+            }
+            children = grown;
+            capacity = new_cap;
+        }
+
+        cepFlatChildDescriptor desc = {
+            .name = *name,
+            .flags = 0u,
+            .position = (uint16_t)((count > UINT16_MAX) ? UINT16_MAX : count),
+            .has_fingerprint = false,
+            .fingerprint = 0u,
+            .cell_type = (uint8_t)resolved->metacell.type,
+            .delta_flags = 0u,
+        };
+        children[count++] = desc;
+    }
+
+    if (!count) {
+        if (children)
+            cep_free(children);
+        return true;
+    }
+
+    *out_children = children;
+    *out_count = count;
+    if (organiser)
+        *organiser = (uint8_t)(cep_flat_store_descriptor(canonical) >> 8);
+    return true;
+}
+
+static bool cep_serialization_emit_manifest_history_page(cepFlatSerializer* serializer,
+                                                         const cepCell* parent,
+                                                         cepOpCount snapshot,
+                                                         const cepFlatChildDescriptor* children,
+                                                         size_t child_count,
+                                                         const cepFlatChildDescriptor* next_child,
+                                                         uint8_t organiser,
+                                                         cepFlatNamepoolCollector* names,
+                                                         uint64_t page_id) {
+    if (!serializer || !parent || !children || !child_count)
+        return false;
+
+    uint8_t* key = NULL;
+    size_t key_size = 0u;
+    if (!cep_flat_build_key(parent, CEP_FLAT_RECORD_MANIFEST_HISTORY, names, &key, &key_size))
+        return false;
+    if (!cep_serialization_key_append_varint(&key, &key_size, page_id)) {
+        cep_free(key);
+        return false;
+    }
+
+    uint8_t revision[16];
+    cep_serialization_history_revision(parent, snapshot, page_id, revision);
+    if (!cep_serialization_key_append_bytes(&key, &key_size, revision, sizeof revision)) {
+        cep_free(key);
+        return false;
+    }
+
+    uint8_t* body = NULL;
+    size_t capacity = 0u;
+    size_t size = 0u;
+    bool ok = false;
+
+#define MAN_BODY_RESERVE(extra) \
+    do { \
+        if (!cep_serialization_body_reserve(&body, &capacity, size + (extra))) \
+            goto manifest_history_cleanup; \
+    } while (0)
+#define MAN_BODY_APPEND_U8(value) \
+    do { MAN_BODY_RESERVE(1u); body[size++] = (uint8_t)(value); } while (0)
+#define MAN_BODY_APPEND_U16(value) \
+    do { uint16_t v__ = (uint16_t)(value); MAN_BODY_RESERVE(sizeof v__); memcpy(body + size, &v__, sizeof v__); size += sizeof v__; } while (0)
+#define MAN_BODY_APPEND_VARINT(value) \
+    do { size_t len__ = cep_serialization_varint_length((uint64_t)(value)); MAN_BODY_RESERVE(len__); cep_serialization_write_varint((uint64_t)(value), body + size); size += len__; } while (0)
+#define MAN_BODY_APPEND_BYTES(ptr, len) \
+    do { size_t len__ = (size_t)(len); if (len__) { MAN_BODY_RESERVE(len__); memcpy(body + size, (ptr), len__); size += len__; } } while (0)
+
+    MAN_BODY_APPEND_VARINT(snapshot);
+    MAN_BODY_APPEND_U8(cep_serialization_range_kind(organiser));
+
+    uint8_t range_min[17] = {0};
+    size_t range_min_len = 0u;
+    if (child_count) {
+        cep_serialization_write_name_bytes(range_min, &children[0].name);
+        range_min_len = sizeof range_min;
+        if (names) {
+            (void)cep_flat_namepool_register_id(names, children[0].name.domain);
+            (void)cep_flat_namepool_register_id(names, children[0].name.tag);
+        }
+    }
+    MAN_BODY_APPEND_VARINT(range_min_len);
+    MAN_BODY_APPEND_BYTES(range_min, range_min_len);
+
+    uint8_t range_max[17] = {0};
+    size_t range_max_len = 0u;
+    if (next_child) {
+        cep_serialization_write_name_bytes(range_max, &next_child->name);
+        range_max_len = sizeof range_max;
+        if (names) {
+            (void)cep_flat_namepool_register_id(names, next_child->name.domain);
+            (void)cep_flat_namepool_register_id(names, next_child->name.tag);
+        }
+    }
+    MAN_BODY_APPEND_VARINT(range_max_len);
+    MAN_BODY_APPEND_BYTES(range_max, range_max_len);
+
+    MAN_BODY_APPEND_VARINT(child_count);
+
+    for (size_t i = 0; i < child_count; ++i) {
+        const cepFlatChildDescriptor* child = &children[i];
+        if (names) {
+            (void)cep_flat_namepool_register_id(names, child->name.domain);
+            (void)cep_flat_namepool_register_id(names, child->name.tag);
+        }
+        MAN_BODY_APPEND_U8(1u); /* snapshot uses ADD opcode */
+        uint8_t name_bytes[17];
+        cep_serialization_write_name_bytes(name_bytes, &child->name);
+        MAN_BODY_APPEND_BYTES(name_bytes, sizeof name_bytes);
+        MAN_BODY_APPEND_U16(0u);
+        uint8_t child_revision[16] = {0};
+        if (child->has_fingerprint)
+            memcpy(child_revision, &child->fingerprint, sizeof child->fingerprint);
+        MAN_BODY_APPEND_BYTES(child_revision, sizeof child_revision);
+    }
+
+    {
+        cepFlatRecordSpec record = {
+            .type = CEP_FLAT_RECORD_MANIFEST_HISTORY,
+            .version = CEP_FLAT_SERIALIZER_VERSION,
+            .flags = 0u,
+            .key = {.data = key, .size = key_size},
+            .body = {.data = body, .size = size},
+        };
+        ok = cep_flat_serializer_emit(serializer, &record);
+    }
+
+manifest_history_cleanup:
+    if (!ok && body)
+        cep_free(body);
+    if (key)
+        cep_free(key);
+
+#undef MAN_BODY_RESERVE
+#undef MAN_BODY_APPEND_U8
+#undef MAN_BODY_APPEND_U16
+#undef MAN_BODY_APPEND_VARINT
+#undef MAN_BODY_APPEND_BYTES
+
+    return ok;
+}
+
+static bool cep_serialization_emit_manifest_history(const cepCell* cell,
+                                                    cepFlatSerializer* serializer,
+                                                    cepFlatNamepoolCollector* names,
+                                                    uint32_t history_window,
+                                                    cepOpCount frame_beat) {
+    if (!cell || !serializer || !history_window)
+        return true;
+
+    cepCell* canonical = cep_link_pull((cepCell*)cell);
+    if (!canonical || !canonical->store || !canonical->store->chdCount)
+        return true;
+
+    cepOpCount current = frame_beat ? frame_beat : cep_beat_index();
+    bool emitted = false;
+
+    for (uint32_t offset = 1u; offset <= history_window; ++offset) {
+        if (current < offset)
+            break;
+        cepOpCount snapshot = current - offset;
+
+        cepFlatChildDescriptor* snapshot_children = NULL;
+        size_t child_count = 0u;
+        uint8_t organiser = 0u;
+        if (!cep_serialization_collect_children_snapshot(canonical,
+                                                         snapshot,
+                                                         &snapshot_children,
+                                                         &child_count,
+                                                         &organiser)) {
+            return false;
+        }
+        if (!child_count) {
+            if (snapshot_children)
+                cep_free(snapshot_children);
+            continue;
+        }
+
+        size_t page_limit = CEP_SERIALIZATION_HISTORY_PAGE_LIMIT
+                                ? CEP_SERIALIZATION_HISTORY_PAGE_LIMIT
+                                : child_count;
+        size_t idx = 0u;
+        uint64_t page_id = 0u;
+        while (idx < child_count) {
+            size_t page_count = child_count - idx;
+            if (page_count > page_limit)
+                page_count = page_limit;
+            const cepFlatChildDescriptor* next_child = (idx + page_count < child_count)
+                                                           ? &snapshot_children[idx + page_count]
+                                                           : NULL;
+            if (!cep_serialization_emit_manifest_history_page(serializer,
+                                                              canonical,
+                                                              snapshot,
+                                                              snapshot_children + idx,
+                                                              page_count,
+                                                              next_child,
+                                                              organiser,
+                                                              names,
+                                                              page_id)) {
+                cep_free(snapshot_children);
+                return false;
+            }
+            idx += page_count;
+            page_id++;
+        }
+
+        cep_free(snapshot_children);
+        emitted = true;
+    }
+
+    if (emitted)
+        cep_flat_serializer_add_caps(serializer, CEP_FLAT_CAP_MANIFEST_HISTORY);
+    return true;
+}
+
+static bool cep_serialization_emit_payload_history(const cepCell* cell,
+                                                   cepFlatSerializer* serializer,
+                                                   cepFlatNamepoolCollector* names,
+                                                   size_t chunk_limit,
+                                                   uint32_t history_window) {
+    if (!cell || !serializer || !history_window)
+        return true;
+    cell = cep_link_pull((cepCell*)cell);
+    if (!cell || !cell->data)
+        return true;
+
+    const cepData* data = cell->data;
+    const cepDataNode* node = data->past;
+    if (!node)
+        return true;
+
+    if (!chunk_limit)
+        chunk_limit = CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD;
+
+    cepOpCount beat_now = cep_beat_index();
+    cepOpCount cutoff = (history_window >= beat_now) ? 0u : (beat_now - history_window);
+
+    uint16_t store_descriptor = cep_flat_store_descriptor(cell);
+    uint16_t meta_mask = 0u;
+    if (cep_cell_is_deleted(cell))
+        meta_mask |= CEP_FLAT_CELL_META_TOMBSTONE;
+    if (cep_cell_is_veiled(cell))
+        meta_mask |= CEP_FLAT_CELL_META_VEILED;
+
+    bool emitted = false;
+
+    for (const cepDataNode* cursor = node; cursor; cursor = cursor->past) {
+        cepOpCount modified = cursor->modified;
+        if (modified < cutoff)
+            break;
+        if (!cursor->size)
+            continue;
+        if (data->datatype != CEP_DATATYPE_VALUE && data->datatype != CEP_DATATYPE_DATA)
+            continue;
+
+        const uint8_t* payload_bytes = NULL;
+        if (data->datatype == CEP_DATATYPE_VALUE)
+            payload_bytes = cursor->value;
+        else if (data->datatype == CEP_DATATYPE_DATA)
+            payload_bytes = cursor->data ? (const uint8_t*)cursor->data : NULL;
+        if (!payload_bytes && cursor->size)
+            continue;
+
+        const void* inline_payload = NULL;
+        size_t inline_length = 0u;
+        if (data->datatype == CEP_DATATYPE_VALUE && cursor->size && cursor->size <= 64u) {
+            inline_payload = cursor->value;
+            inline_length = cursor->size;
+        }
+
+        uint8_t revision[16] = {0};
+        cep_flat_compute_revision_id(cell,
+                                     data,
+                                     store_descriptor,
+                                     meta_mask,
+                                     cursor->hash,
+                                     inline_payload,
+                                     inline_length,
+                                     revision);
+
+        uint8_t* base_key = NULL;
+        size_t base_key_size = 0u;
+        if (!cep_flat_build_key(cell, CEP_FLAT_RECORD_PAYLOAD_HISTORY, names, &base_key, &base_key_size))
+            return false;
+
+        size_t revision_key_size = base_key_size + sizeof revision;
+        uint8_t* revision_key = cep_malloc(revision_key_size);
+        if (!revision_key) {
+            cep_free(base_key);
+            return false;
+        }
+        memcpy(revision_key, base_key, base_key_size);
+        memcpy(revision_key + base_key_size, revision, sizeof revision);
+        cep_free(base_key);
+
+        size_t chunk_offset = 0u;
+        uint64_t chunk_ordinal = 0u;
+        while (chunk_offset < cursor->size) {
+            size_t chunk_size = cursor->size - chunk_offset;
+            if (chunk_size > chunk_limit)
+                chunk_size = chunk_limit;
+
+            size_t ordinal_len = cep_serialization_varint_length(chunk_ordinal);
+            size_t chunk_key_size = revision_key_size + ordinal_len;
+            uint8_t* chunk_key = cep_malloc(chunk_key_size);
+            if (!chunk_key) {
+                cep_free(revision_key);
+                return false;
+            }
+            memcpy(chunk_key, revision_key, revision_key_size);
+            cep_serialization_write_varint(chunk_ordinal, chunk_key + revision_key_size);
+
+            uint8_t* chunk_body = NULL;
+            size_t chunk_body_size = 0u;
+            if (!cep_serialization_build_payload_chunk_body(data,
+                                                            cursor->hash,
+                                                            payload_bytes,
+                                                            cursor->size,
+                                                            chunk_offset,
+                                                            chunk_size,
+                                                            chunk_key,
+                                                            chunk_key_size,
+                                                            names,
+                                                            &chunk_body,
+                                                            &chunk_body_size)) {
+                cep_free(chunk_key);
+                cep_free(revision_key);
+                return false;
+            }
+
+            size_t beat_len = cep_serialization_varint_length(modified);
+            uint8_t* history_body = cep_malloc(beat_len + chunk_body_size);
+            if (!history_body) {
+                cep_free(chunk_body);
+                cep_free(chunk_key);
+                cep_free(revision_key);
+                return false;
+            }
+            uint8_t* cursor_ptr = history_body;
+            cursor_ptr = cep_serialization_write_varint(modified, cursor_ptr);
+            memcpy(cursor_ptr, chunk_body, chunk_body_size);
+
+            cep_free(chunk_body);
+
+            cepFlatRecordSpec record = {
+                .type = CEP_FLAT_RECORD_PAYLOAD_HISTORY,
+                .version = CEP_FLAT_SERIALIZER_VERSION,
+                .flags = 0u,
+                .key = {
+                    .data = chunk_key,
+                    .size = chunk_key_size,
+                },
+                .body = {
+                    .data = history_body,
+                    .size = beat_len + chunk_body_size,
+                },
+            };
+
+            if (!cep_flat_serializer_emit(serializer, &record)) {
+                cep_free(chunk_key);
+                cep_free(history_body);
+                cep_free(revision_key);
+                return false;
+            }
+
+            cep_free(chunk_key);
+            cep_free(history_body);
+
+            chunk_offset += chunk_size;
+            chunk_ordinal++;
+        }
+
+        cep_free(revision_key);
+        emitted = true;
+    }
+
+    if (emitted)
+        cep_flat_serializer_add_caps(serializer, CEP_FLAT_CAP_PAYLOAD_HISTORY);
+
+    return true;
 }
 
 
@@ -5658,10 +6570,18 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
 
     if (stage->proxy.needed) {
         if (!stage->proxy.complete) {
+            if (pending_payload) {
+                cep_data_del(pending_payload);
+                pending_payload = NULL;
+            }
             fail_reason = "proxy_incomplete";
             goto fail;
         }
         if (!cep_cell_is_proxy(current)) {
+            if (pending_payload) {
+                cep_data_del(pending_payload);
+                pending_payload = NULL;
+            }
             fail_reason = "proxy_expected";
             goto fail;
         }
@@ -5712,10 +6632,7 @@ static bool cep_serialization_reader_apply_stage(const cepSerializationReader* r
     return true;
 
 fail:
-    if (pending_payload) {
-        cep_data_del(pending_payload);
-        pending_payload = NULL;
-    }
+    (void)pending_payload;
     if (fail_reason && strcmp(fail_reason, "child_validation") == 0) {
         cep_serialization_debug_dump_stage(stage, "child_validation");
         if (current) {
