@@ -36,6 +36,7 @@ The Meson project defines these switches (see `meson_options.txt`):
 | `server` | feature | `disabled` | Build the standalone CEP server (requires `src/server/main.c`). |
 | `both_libs` | boolean | `false` | Produce both static and shared `libcep`. |
 | `zip` | feature | `auto` | Toggle the libzip-backed stream adapter (`enabled`, `disabled`, `auto`). |
+| `zlib_provider` | combo (`auto`, `system`, `bundled`) | `auto` | Prefer the system zlib; fall back to the bundled CRC32/Deflate snapshot when unavailable. |
 | `executor_backend` | combo (`stub`, `threaded`) | `stub` | Select the episodic executor backend. The threaded backend spins a worker pool on POSIX/Windows platforms; wasm/emscripten builds automatically fall back to `stub`. |
 
 Set options during `meson setup` or after the fact with `meson configure`:
@@ -45,6 +46,16 @@ meson setup build -Dasan=true -Dtests=enabled
 # …or later
 meson configure build -Dcode_map=true
 ```
+
+### Compression / CRC provider
+
+CEP’s flat serializer, CRC helpers, and optional Deflate container all rely on zlib.
+
+- `-Dzlib_provider=auto` (default) discovers a system zlib via pkg-config. If it exists, CEP links against it and defines `CEP_ZLIB_SYSTEM`.
+- If no system zlib is detected (or you pass `-Dzlib_provider=bundled`), Meson compiles the vendored snapshot under `src/third_party/zlib/` (upstream zlib **1.3.1.1**) and defines `CEP_ZLIB_BUNDLED`.
+- `-Dzlib_provider=system` is strict: configuration fails when pkg-config cannot locate zlib.
+
+The bundled copy ships the full upstream sources (crc32, deflate/inflate, gz* utilities) so the build stays reproducible on platforms without a native package. See `NOTICE` and `docs/LICENSING.md` for the zlib license text and provenance expectations.
 
 ## Developer Details
 

@@ -6,6 +6,7 @@
 #include "cep_flat_serializer.h"
 #include "cep_molecule.h"
 #include "cep_crc32c.h"
+#include "blake3.h"
 
 #include <limits.h>
 #include <stdbool.h>
@@ -486,22 +487,12 @@ static bool cep_flat_read_varint(const uint8_t* data, size_t size, size_t* offse
     return true;
 }
 
-/* TODO: replace this FNV-derived hash with a true BLAKE3 implementation once
-   the dependency lands; the placeholder keeps record hashing deterministic so
-   Merkle scaffolding can evolve in parallel. */
 static void cep_flat_hash_bytes(const uint8_t* bytes, size_t size, uint8_t out[CEP_FLAT_HASH_SIZE]) {
-    uint64_t acc = UINT64_C(0x6D5A56DA1F4F3D9B);
-    for (size_t i = 0; i < size; ++i) {
-        acc ^= bytes[i];
-        acc *= UINT64_C(0x100000001B3);
-    }
-
-    for (size_t lane = 0; lane < CEP_FLAT_HASH_SIZE / sizeof(uint64_t); ++lane) {
-        uint64_t word = acc + lane * UINT64_C(0x9E3779B185EBCA87);
-        memcpy(out + lane * sizeof(uint64_t), &word, sizeof word);
-        acc ^= word;
-        acc *= UINT64_C(0x100000001B3);
-    }
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    if (bytes && size)
+        blake3_hasher_update(&hasher, bytes, size);
+    blake3_hasher_finalize(&hasher, out, CEP_FLAT_HASH_SIZE);
 }
 
 static void cep_flat_hash_pair(const uint8_t* lhs, const uint8_t* rhs, uint8_t out[CEP_FLAT_HASH_SIZE]) {

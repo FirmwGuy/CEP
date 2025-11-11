@@ -29,6 +29,14 @@ CEP_DEFINE_STATIC_DT(dt_caps_name,             CEP_ACRO("CEP"), CEP_WORD("caps")
 CEP_DEFINE_STATIC_DT(dt_required_caps_name,    CEP_ACRO("CEP"), CEP_WORD("required"));
 CEP_DEFINE_STATIC_DT(dt_preferred_caps_name,   CEP_ACRO("CEP"), CEP_WORD("preferred"));
 CEP_DEFINE_STATIC_DT(dt_deadline_field_name,   CEP_ACRO("CEP"), CEP_WORD("deadline"));
+CEP_DEFINE_STATIC_DT(dt_serializer_name,       CEP_ACRO("CEP"), CEP_WORD("serializer"));
+CEP_DEFINE_STATIC_DT(dt_ser_crc32c_ok_name,    CEP_ACRO("CEP"), CEP_WORD("crc32c_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_deflate_ok_name,   CEP_ACRO("CEP"), CEP_WORD("deflate_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_aead_ok_name,      CEP_ACRO("CEP"), CEP_WORD("aead_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_warn_down_name,    CEP_ACRO("CEP"), CEP_WORD("warn_down"));
+CEP_DEFINE_STATIC_DT(dt_ser_cmpmax_name,       CEP_ACRO("CEP"), CEP_WORD("cmp_max_ver"));
+CEP_DEFINE_STATIC_DT(dt_ser_pay_hist_name,     CEP_ACRO("CEP"), CEP_WORD("pay_hist_bt"));
+CEP_DEFINE_STATIC_DT(dt_ser_man_hist_name,     CEP_ACRO("CEP"), CEP_WORD("man_hist_bt"));
 
 CEP_DEFINE_STATIC_DT(dt_cap_reliable_name,     CEP_ACRO("CEP"), CEP_WORD("reliable"));
 CEP_DEFINE_STATIC_DT(dt_cap_ordered_name,      CEP_ACRO("CEP"), CEP_WORD("ordered"));
@@ -53,6 +61,9 @@ typedef struct cepFedInvokeRequest {
     bool                           allow_upd_latest;
     bool                           has_deadline;
     uint64_t                       deadline;
+    cepFedTransportFlatPolicy      flat_policy;
+    uint32_t                       payload_history_beats;
+    uint32_t                       manifest_history_beats;
 } cepFedInvokeRequest;
 
 typedef struct cepFedInvokePending {
@@ -87,15 +98,6 @@ enum {
     CEP_FED_INVOKE_ID_KIND_NUMERIC   = 4u,
 };
 
-typedef struct {
-    uint8_t  kind;
-    uint8_t  status;
-    uint16_t signal_segments;
-    uint16_t target_segments;
-    uint16_t reserved;
-    uint64_t invocation_id;
-} cepFedInvokeFrameHeader;
-
 enum {
     CEP_FED_INVOKE_FRAME_REQUEST  = 0x01,
     CEP_FED_INVOKE_FRAME_RESPONSE = 0x02,
@@ -121,6 +123,8 @@ static const char* const CEP_FED_INVOKE_SCHEMA_NOTE     = "invoke request deadli
 static const char* const CEP_FED_INVOKE_INVALID_PEER_NOTE = "invoke request peer identifier exceeds CEP word limits";
 static const char* const CEP_FED_INVOKE_INVALID_MOUNT_NOTE = "invoke request mount identifier exceeds CEP word limits";
 static const char* const CEP_FED_INVOKE_INVALID_NODE_NOTE = "invoke request local_node exceeds CEP word limits";
+static const char* const CEP_FED_INVOKE_NOTE_SHORT_FRAME = "invoke frame shorter than header";
+static const char* const CEP_FED_INVOKE_NOTE_MODE        = "invoke frame unsupported mode";
 
 typedef struct {
     const cepDT* (*dt)(void);
@@ -749,6 +753,25 @@ cep_fed_invoke_pending_remove(cepFedInvokePending* victim,
     cep_free(victim);
 }
 
+bool
+cep_fed_invoke_validate_frame_contract(const uint8_t* payload,
+                                       size_t payload_len,
+                                       cepFedFrameMode mode,
+                                       const char** failure_note)
+{
+    if (!payload || payload_len < sizeof(cepFedInvokeFrameHeader)) {
+        if (failure_note)
+            *failure_note = CEP_FED_INVOKE_NOTE_SHORT_FRAME;
+        return false;
+    }
+    if (mode != CEP_FED_FRAME_MODE_DATA) {
+        if (failure_note)
+            *failure_note = CEP_FED_INVOKE_NOTE_MODE;
+        return false;
+    }
+    return true;
+}
+
 static bool
 cep_fed_invoke_on_frame(void* user_ctx,
                         cepFedTransportManagerMount* mount,
@@ -757,13 +780,21 @@ cep_fed_invoke_on_frame(void* user_ctx,
                         cepFedFrameMode mode)
 {
     (void)mount;
-    if (!user_ctx) {
+    cepFedInvokeRequest* ctx = (cepFedInvokeRequest*)user_ctx;
+    if (!ctx) {
         return false;
     }
-    cep_fed_invoke_process_frame((cepFedInvokeRequest*)user_ctx,
-                                 payload,
-                                 payload_len,
-                                 mode);
+    const char* failure_note = NULL;
+    if (!cep_fed_invoke_validate_frame_contract(payload,
+                                                payload_len,
+                                                mode,
+                                                &failure_note)) {
+        cep_fed_invoke_emit_issue(ctx,
+                                  CEP_FED_INVOKE_TOPIC_REJECT,
+                                  failure_note ? failure_note : "invoke frame invalid");
+        return false;
+    }
+    cep_fed_invoke_process_frame(ctx, payload, payload_len, mode);
     return true;
 }
 
@@ -821,6 +852,119 @@ cep_fed_invoke_read_text(cepCell* request_cell,
     memcpy(buffer, cep_data_payload(data), len);
     buffer[len] = '\0';
     return true;
+}
+
+static bool
+cep_fed_invoke_read_bool(cepCell* parent,
+                         const cepDT* field,
+                         bool* out_value)
+{
+    if (!parent || !field || !out_value) {
+        return false;
+    }
+    cepCell* node = cep_cell_find_by_name(parent, field);
+    if (!node) {
+        return false;
+    }
+    node = cep_cell_resolve(node);
+    if (!node) {
+        return false;
+    }
+    cepData* data = NULL;
+    if (!cep_cell_require_data(&node, &data)) {
+        return false;
+    }
+    cepDT expected = cep_ops_make_dt("val/bool");
+    if (cep_dt_compare(&data->dt, &expected) != 0 || data->size != sizeof(uint8_t)) {
+        return false;
+    }
+    const uint8_t* payload = (const uint8_t*)cep_data_payload(data);
+    if (!payload) {
+        return false;
+    }
+    *out_value = (*payload != 0u);
+    return true;
+}
+
+static bool
+cep_fed_invoke_read_u32(cepCell* parent,
+                        const cepDT* field,
+                        bool required,
+                        uint32_t* out_value)
+{
+    if (!parent || !field || !out_value) {
+        return false;
+    }
+    cepCell* node = cep_cell_find_by_name(parent, field);
+    if (!node) {
+        return !required;
+    }
+    node = cep_cell_resolve(node);
+    if (!node) {
+        return false;
+    }
+    cepData* data = NULL;
+    if (!cep_cell_require_data(&node, &data)) {
+        return false;
+    }
+    cepDT expected = cep_ops_make_dt("val/u32");
+    if (cep_dt_compare(&data->dt, &expected) != 0 || data->size != sizeof(uint32_t)) {
+        return false;
+    }
+    const uint32_t* payload = (const uint32_t*)cep_data_payload(data);
+    if (!payload) {
+        return false;
+    }
+    *out_value = *payload;
+    return true;
+}
+
+static void
+cep_fed_invoke_read_serializer_caps(cepCell* request_cell,
+                                    cepFedTransportFlatPolicy* policy,
+                                    uint32_t* payload_history_beats,
+                                    uint32_t* manifest_history_beats)
+{
+    if (!request_cell || !policy) {
+        return;
+    }
+    cepCell* serializer = cep_cell_find_by_name(request_cell, dt_serializer_name());
+    if (!serializer) {
+        return;
+    }
+    serializer = cep_cell_resolve(serializer);
+    if (!serializer || !cep_cell_require_dictionary_store(&serializer)) {
+        return;
+    }
+    bool bool_value = false;
+    if (cep_fed_invoke_read_bool(serializer, dt_ser_crc32c_ok_name(), &bool_value)) {
+        policy->allow_crc32c = bool_value;
+    }
+    if (cep_fed_invoke_read_bool(serializer, dt_ser_deflate_ok_name(), &bool_value)) {
+        policy->allow_deflate = bool_value;
+    }
+    if (cep_fed_invoke_read_bool(serializer, dt_ser_aead_ok_name(), &bool_value)) {
+        policy->allow_aead = bool_value;
+    }
+    if (cep_fed_invoke_read_bool(serializer, dt_ser_warn_down_name(), &bool_value)) {
+        policy->warn_on_downgrade = bool_value;
+    }
+    uint32_t cmp_max = policy->comparator_max_version;
+    if (cep_fed_invoke_read_u32(serializer, dt_ser_cmpmax_name(), false, &cmp_max)) {
+        policy->comparator_max_version = cmp_max;
+    }
+    if (payload_history_beats) {
+        uint32_t beats = *payload_history_beats;
+        if (cep_fed_invoke_read_u32(serializer, dt_ser_pay_hist_name(), false, &beats)) {
+            *payload_history_beats = beats;
+        }
+    }
+    if (manifest_history_beats) {
+        uint32_t beats = *manifest_history_beats;
+        if (cep_fed_invoke_read_u32(serializer, dt_ser_man_hist_name(), false, &beats)) {
+            *manifest_history_beats = beats;
+        }
+    }
 }
 
 static bool
@@ -990,6 +1134,13 @@ cep_fed_invoke_validator(const cepPath* signal_path,
     char mount[64] = {0};
     char local_node[64] = {0};
     char preferred_provider[64] = {0};
+    cepFedTransportFlatPolicy flat_policy = {
+        .allow_crc32c = true,
+        .allow_deflate = true,
+        .allow_aead = true,
+        .warn_on_downgrade = true,
+        .comparator_max_version = UINT32_MAX,
+    };
 
     if (!cep_fed_invoke_read_text(request_cell, dt_peer_field_name(), true, peer, sizeof peer) ||
         !cep_fed_invoke_read_text(request_cell, dt_mount_field_name(), true, mount, sizeof mount) ||
@@ -1022,6 +1173,12 @@ cep_fed_invoke_validator(const cepPath* signal_path,
                                    false,
                                    preferred_provider,
                                    sizeof preferred_provider);
+    uint32_t payload_history_beats = 0u;
+    uint32_t manifest_history_beats = 0u;
+    cep_fed_invoke_read_serializer_caps(request_cell,
+                                        &flat_policy,
+                                        &payload_history_beats,
+                                        &manifest_history_beats);
 
     cepFedTransportCaps required_caps = CEP_FED_TRANSPORT_CAP_RELIABLE |
                                         CEP_FED_TRANSPORT_CAP_ORDERED;
@@ -1144,6 +1301,9 @@ cep_fed_invoke_validator(const cepPath* signal_path,
     ctx->allow_upd_latest = false;
     ctx->deadline = deadline;
     ctx->has_deadline = deadline_present;
+    ctx->flat_policy = flat_policy;
+    ctx->payload_history_beats = payload_history_beats;
+    ctx->manifest_history_beats = manifest_history_beats;
 
     if (!cep_fed_invoke_copy_request_path(ctx)) {
             cep_fed_invoke_emit_issue(ctx, CEP_FED_INVOKE_TOPIC_REJECT, "unable to capture invoke request path");
@@ -1188,6 +1348,10 @@ cep_fed_invoke_validator(const cepPath* signal_path,
         }
 
     ctx->mount = mount_ptr;
+    cep_fed_transport_manager_mount_set_flat_policy(mount_ptr, &flat_policy);
+    cep_fed_transport_manager_mount_set_flat_history(mount_ptr,
+                                                     ctx->payload_history_beats,
+                                                     ctx->manifest_history_beats);
     cep_fed_invoke_publish_state(request_cell,
                                  "active",
                                  NULL,
@@ -1390,6 +1554,37 @@ cep_fed_invoke_process_frame(cepFedInvokeRequest* request,
             node = node->next;
         }
     }
+}
+
+bool
+cep_fed_invoke_emit_cell(const char* peer_id,
+                         const char* mount_id,
+                         const cepCell* cell,
+                         const cepSerializationHeader* header,
+                         size_t blob_payload_bytes,
+                         cepFedFrameMode mode,
+                         uint64_t deadline_beat)
+{
+    if (!peer_id || !mount_id || !cell) {
+        return false;
+    }
+    if (!g_invoke_manager) {
+        return false;
+    }
+    if (mode != CEP_FED_FRAME_MODE_DATA) {
+        return false;
+    }
+    cepFedInvokeRequest* ctx = cep_fed_invoke_find_ctx_by_mount(peer_id, mount_id);
+    if (!ctx || !ctx->mount) {
+        return false;
+    }
+    return cep_fed_transport_manager_send_cell(g_invoke_manager,
+                                               ctx->mount,
+                                               cell,
+                                               header,
+                                               blob_payload_bytes,
+                                               mode,
+                                               deadline_beat);
 }
 
 int

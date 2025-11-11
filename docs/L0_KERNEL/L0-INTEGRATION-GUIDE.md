@@ -388,7 +388,7 @@ When you emit derived facts it helps to record “came from these parents” and
 
 - `cep_cell_add_parents(derived, parents, count)` ensures there is a `meta/parents` list, clears previous entries, and appends link cells to every parent you pass. Null entries are skipped; errors surface as `-1`.
 - The helper refuses immutable targets and insists that the derived cell is a normal node (not a proxy or HANDLE/STREAM adapter). If you need to annotate immutable structures, emit a fresh mutable metadata node, populate `meta/parents` there, then link it to the sealed branch.
-- `cep_cell_content_hash(cell)` recomputes the payload hash (using the kernel’s FNV‑1a) and stores it on the live `cepData` node, returning the 64-bit value for logs.
+- `cep_cell_content_hash(cell)` recomputes the payload hash (using the kernel’s BLAKE3-backed `cep_hash_bytes`, truncated to 64 bits) and stores it on the live `cepData` node, returning the value for logs. The legacy serializer still reports the historical FNV‑1a hash until Stage 3 removes it.
 - `cep_cell_set_content_hash(cell, hash)` lets you stamp an externally computed checksum without touching the payload.
 - Both helpers follow links to canonical cells and refuse to operate on proxies/handles where a value hash would be meaningless.
 

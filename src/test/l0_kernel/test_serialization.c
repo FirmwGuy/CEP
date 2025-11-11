@@ -107,7 +107,7 @@ static void serialization_dump_payload_blob(const uint8_t* payload, size_t size,
 }
 
 static uint64_t serialization_digest_mix(uint64_t seed, uint64_t chunk_id, const uint8_t* payload, size_t payload_size) {
-    uint64_t payload_hash = payload_size ? cep_hash_bytes(payload, payload_size) : UINT64_C(0);
+    uint64_t payload_hash = payload_size ? cep_hash_bytes_fnv1a(payload, payload_size) : UINT64_C(0);
     struct {
         uint64_t seed;
         uint64_t id;
@@ -117,7 +117,7 @@ static uint64_t serialization_digest_mix(uint64_t seed, uint64_t chunk_id, const
         .id = chunk_id,
         .payload = payload_hash,
     };
-    return cep_hash_bytes(&block, sizeof block);
+    return cep_hash_bytes_fnv1a(&block, sizeof block);
 }
 
 #define SERIAL_CHILD_FLAG_TOMBSTONE    0x01u
@@ -1865,11 +1865,8 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
     (void)params;
     (void)user_data_or_fixture;
 
-    const char* prev = getenv("CEP_SERIALIZATION_USE_FLAT");
-    char* prev_copy = prev ? strdup(prev) : NULL;
     const char* prev_comp = getenv("CEP_SERIALIZATION_FLAT_COMPRESSION");
     char* prev_comp_copy = prev_comp ? strdup(prev_comp) : NULL;
-    munit_assert_true(setenv("CEP_SERIALIZATION_USE_FLAT", "1", 1) == 0);
     const char* prev_aead_mode = getenv("CEP_SERIALIZATION_FLAT_AEAD_MODE");
     char* prev_aead_mode_copy = prev_aead_mode ? strdup(prev_aead_mode) : NULL;
     const char* prev_aead_key = getenv("CEP_SERIALIZATION_FLAT_AEAD_KEY");
@@ -1973,12 +1970,6 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
     cep_flat_reader_destroy(reader);
 
     serialization_capture_clear(&capture);
-    if (prev_copy) {
-        setenv("CEP_SERIALIZATION_USE_FLAT", prev_copy, 1);
-        free(prev_copy);
-    } else {
-        unsetenv("CEP_SERIALIZATION_USE_FLAT");
-    }
     if (prev_comp_copy) {
         setenv("CEP_SERIALIZATION_FLAT_COMPRESSION", prev_comp_copy, 1);
         free(prev_comp_copy);
@@ -2004,15 +1995,11 @@ MunitResult test_serialization_flat_chunk_offset_violation(const MunitParameter 
     (void)params;
     (void)user_data_or_fixture;
 
-    const char* prev = getenv("CEP_SERIALIZATION_USE_FLAT");
-    char* prev_copy = prev ? strdup(prev) : NULL;
-    munit_assert_true(setenv("CEP_SERIALIZATION_USE_FLAT", "1", 1) == 0);
-
     uint8_t payload[96];
     for (size_t i = 0; i < sizeof payload; ++i)
         payload[i] = (uint8_t)(i & 0xFFu);
 
-    cepData* data = cep_data_new_value(CEP_DTAW("CEP", "flat_chunk_offset"),
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP", "chunk_off"),
                                       payload,
                                       sizeof payload);
     munit_assert_not_null(data);
@@ -2021,7 +2008,7 @@ MunitResult test_serialization_flat_chunk_offset_violation(const MunitParameter 
     CEP_0(&cell);
     cep_cell_initialize(&cell,
                         CEP_TYPE_NORMAL,
-                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("flat_chunk_offset")),
+                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("chunk_off")),
                         data,
                         NULL);
 
@@ -2042,13 +2029,6 @@ MunitResult test_serialization_flat_chunk_offset_violation(const MunitParameter 
 
     serialization_capture_clear(&capture);
     cep_cell_finalize_hard(&cell);
-
-    if (prev_copy) {
-        setenv("CEP_SERIALIZATION_USE_FLAT", prev_copy, 1);
-        free(prev_copy);
-    } else {
-        unsetenv("CEP_SERIALIZATION_USE_FLAT");
-    }
     return MUNIT_OK;
 }
 
@@ -2056,24 +2036,20 @@ MunitResult test_serialization_flat_chunk_order_violation(const MunitParameter p
     (void)params;
     (void)user_data_or_fixture;
 
-    const char* prev = getenv("CEP_SERIALIZATION_USE_FLAT");
-    char* prev_copy = prev ? strdup(prev) : NULL;
-    munit_assert_true(setenv("CEP_SERIALIZATION_USE_FLAT", "1", 1) == 0);
-
     uint8_t payload[96];
     for (size_t i = 0; i < sizeof payload; ++i)
         payload[i] = (uint8_t)(i & 0xFFu);
 
-    cepData* data = cep_data_new_value(CEP_DTAW("CEP", "flat_chunk_order"),
-                                      payload,
-                                      sizeof payload);
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP", "chunk_ord"),
+                                       payload,
+                                       sizeof payload);
     munit_assert_not_null(data);
 
     cepCell cell;
     CEP_0(&cell);
     cep_cell_initialize(&cell,
                         CEP_TYPE_NORMAL,
-                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("flat_chunk_order")),
+                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("chunk_ord")),
                         data,
                         NULL);
 
@@ -2094,12 +2070,5 @@ MunitResult test_serialization_flat_chunk_order_violation(const MunitParameter p
 
     serialization_capture_clear(&capture);
     cep_cell_finalize_hard(&cell);
-
-    if (prev_copy) {
-        setenv("CEP_SERIALIZATION_USE_FLAT", prev_copy, 1);
-        free(prev_copy);
-    } else {
-        unsetenv("CEP_SERIALIZATION_USE_FLAT");
-    }
     return MUNIT_OK;
 }

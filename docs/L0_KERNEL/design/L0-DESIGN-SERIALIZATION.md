@@ -1,7 +1,7 @@
 # L0 Design: Serialization and Replay
 
 ## Nontechnical Summary
-Serialization is Layer 0’s shipping department. It turns a live tree into a stream of self-describing **flat records** so another process—or a later replay—can rebuild the exact same structure, payloads, and proxy states. The same machinery also ingests those records safely, staging them until every piece is present before touching the live tree. The goal: capture history faithfully, handle huge blobs without blocking, and keep proxies deterministic when they cross process boundaries.
+Serialization is Layer 0’s shipping department. It turns a live tree into a stream of self-describing **flat records** so another process—or a later replay—can rebuild the exact same structure, payloads, and proxy states. The same machinery also ingests those records safely, staging them until every piece is present before touching the live tree. The goal: capture history faithfully, handle huge blobs without blocking, and keep proxies deterministic when they cross process boundaries. Federation now consumes these flat frames end-to-end; the transport manager wraps every emit in `cep_fed_transport_manager_send_cell()`, so link/mirror/invoke never see (or rely on) the legacy chunk serializer.
 
 ## Decision Record
 - Manifest + payload separation keeps structural metadata small and allows large data blobs to stream with configurable window sizes.
@@ -29,7 +29,7 @@ Serialization is Layer 0’s shipping department. It turns a live tree into a 
 - Record manifest versions in monitoring dashboards; mismatches imply incompatible peers before failures escalate.
 - Surface fingerprint/capability faults as deployment blockers—those errors mean the stream was tampered with or produced by an incompatible peer.
 - Wrap ingestion in transactions when embedding into upper layers to guarantee the replay still honours beat boundaries.
-- When enabling hashes for large blob streams, monitor CPU impact; consider supplemental checksums if external requirements demand cryptographic guarantees.
+- When enabling hashes for large blob streams, monitor CPU impact; consider supplemental checksums if external requirements demand cryptographic guarantees. `CEP_CRC32C_MODE=castagnoli` opts the writer into hardware CRC32C (Castagnoli) when SSE4.2/ARM CRC32 instructions exist; emitters automatically fall back to IEEE CRC32 otherwise so the receiver never sees mixed algorithms without negotiation.
 
 ## Change Playbook
 1. Revisit this design doc and `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md`.
@@ -41,7 +41,7 @@ Serialization is Layer 0’s shipping department. It turns a live tree into a 
 
 ## S2 Upgrade Field Notes
 ### Nontechnical summary
-S2 hardens serialization so manifests carry their own history, readers reject malformed ordering immediately, and leak hunting stays reproducible. Think of this section as the field guide: it lists the hot code paths, the gaps we still need to close, and the guardrails that keep replay deterministic.
+S2 hardens serialization so manifests carry their own history, readers reject malformed ordering immediately, and leak hunting stays reproducible. Federation adoption is complete: every mount emits/ingests flat frames, and the integration POC is the only remaining consumer of the legacy chunk stream (it temporarily calls `cep_serialization_set_flat_mode_override(false)` until that test suite migrates). Think of this section as the field guide: it lists the hot code paths, the gaps we still need to close, and the guardrails that keep replay deterministic.
 
 ### Technical details
 - **Entry points worth bookmarking.**

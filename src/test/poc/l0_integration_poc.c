@@ -15,6 +15,7 @@
 #include "cep_ops.h"
 #include "cep_organ.h"
 #include "cep_serialization.h"
+#include "cep_flat_serializer.h"
 #include "cep_ep.h"
 #include "stream/cep_stream_internal.h"
 #include "stream/cep_stream_stdio.h"
@@ -387,14 +388,7 @@ typedef struct {
     size_t                   capacity;
 } IntegrationSerializationCapture;
 
-#define SERIAL_RECORD_MANIFEST_BASE      0x01u
-#define SERIAL_RECORD_MANIFEST_DELTA     0x02u
-#define SERIAL_RECORD_MANIFEST_CHILDREN  0x03u
-#define SERIAL_BASE_FLAG_CHILDREN_SPLIT  0x08u
-#define SERIAL_CHILD_FLAG_TOMBSTONE      0x01u
-#define SERIAL_CHILD_FLAG_VEILED         0x02u
-#define SERIAL_CHILD_FLAG_FINGERPRINT    0x04u
-#define SERIAL_PATH_FLAG_POSITION        0x01u
+static void integration_dump_trace(const IntegrationSerializationCapture* capture, const char* suffix);
 
 static const char* integration_stage_log_path(void) {
     return "tmp/integration_assert_stage.log";
@@ -653,6 +647,231 @@ static void integration_capture_clear(IntegrationSerializationCapture* capture) 
     capture->capacity = 0u;
 }
 
+static const char* integration_flat_record_type_name(uint8_t type) {
+    switch (type) {
+    case CEP_FLAT_RECORD_CELL_DESC:
+        return "cell_desc";
+    case CEP_FLAT_RECORD_PAYLOAD_CHUNK:
+        return "payload_chunk";
+    case CEP_FLAT_RECORD_MANIFEST_DELTA:
+        return "manifest_delta";
+    case CEP_FLAT_RECORD_ORDER_DELTA:
+        return "order_delta";
+    case CEP_FLAT_RECORD_NAMEPOOL_DELTA:
+        return "namepool_delta";
+    case CEP_FLAT_RECORD_PAYLOAD_HISTORY:
+        return "payload_history";
+    case CEP_FLAT_RECORD_MANIFEST_HISTORY:
+        return "manifest_history";
+    case CEP_FLAT_RECORD_FRAME_TRAILER:
+        return "frame_trailer";
+    default:
+        return "unknown";
+    }
+}
+
+static bool integration_capture_feed_flat_reader(const IntegrationSerializationCapture* capture,
+                                                 cepFlatReader* reader) {
+    if (!capture || !reader) {
+        return false;
+    }
+    for (size_t i = 0; i < capture->count; ++i) {
+        const IntegrationCaptureChunk* chunk = &capture->chunks[i];
+        if (!chunk->data || chunk->size == 0u) {
+            continue;
+        }
+        if (!cep_flat_reader_feed(reader, chunk->data, chunk->size)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void integration_flat_format_key_prefix(const cepFlatRecordView* record,
+                                               char* buffer,
+                                               size_t cap,
+                                               size_t limit_segments) {
+    if (!buffer || cap == 0u) {
+        return;
+    }
+    buffer[0] = '\0';
+    if (!record || !record->key.data || record->key.size <= 1u) {
+        return;
+    }
+    const uint8_t* cursor = record->key.data + 1u;
+    size_t remaining = record->key.size - 1u;
+    size_t used = 0u;
+    size_t emitted = 0u;
+    const size_t segment_bytes = (sizeof(uint64_t) * 2u) + 1u;
+    while (remaining >= segment_bytes && (limit_segments == 0u || emitted < limit_segments)) {
+        uint64_t domain = 0u;
+        uint64_t tag = 0u;
+        memcpy(&domain, cursor, sizeof domain);
+        cursor += sizeof domain;
+        memcpy(&tag, cursor, sizeof tag);
+        cursor += sizeof tag;
+        uint8_t glob = *cursor++;
+        remaining -= segment_bytes;
+        char domain_buf[64];
+        char tag_buf[64];
+        const char* domain_text = integration_debug_id_desc((cepID)domain, domain_buf, sizeof domain_buf);
+        const char* tag_text = integration_debug_id_desc((cepID)tag, tag_buf, sizeof tag_buf);
+        int written = snprintf(buffer + used,
+                               (used < cap) ? cap - used : 0u,
+                               "/%s:%s%s",
+                               domain_text,
+                               tag_text,
+                               glob ? "*" : "");
+        if (written < 0) {
+            buffer[cap - 1u] = '\0';
+            return;
+        }
+        if ((size_t)written >= cap - used) {
+            buffer[cap - 1u] = '\0';
+            return;
+        }
+        used += (size_t)written;
+        ++emitted;
+    }
+    if (remaining > 0u && used + 3u < cap) {
+        memcpy(buffer + used, "+..", 3u);
+        buffer[used + 3u] = '\0';
+    }
+}
+
+static bool integration_flat_key_has_prefix(const cepFlatRecordView* record,
+                                            const cepDT* prefix,
+                                            size_t prefix_segments) {
+    if (!record || !record->key.data || record->key.size <= 1u || !prefix || prefix_segments == 0u) {
+        return false;
+    }
+    const size_t segment_bytes = (sizeof(uint64_t) * 2u) + 1u;
+    size_t needed = 1u + prefix_segments * segment_bytes;
+    if (record->key.size < needed) {
+        return false;
+    }
+    const uint8_t* cursor = record->key.data + 1u;
+    for (size_t i = 0; i < prefix_segments; ++i) {
+        uint64_t domain = 0u;
+        uint64_t tag = 0u;
+        memcpy(&domain, cursor, sizeof domain);
+        cursor += sizeof domain;
+        memcpy(&tag, cursor, sizeof tag);
+        cursor += sizeof tag;
+        uint8_t glob = *cursor++;
+        if (domain != prefix[i].domain ||
+            tag != prefix[i].tag ||
+            glob != (prefix[i].glob ? 1u : 0u)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void integration_assert_flat_frame_contract(const IntegrationSerializationCapture* capture,
+                                                   const char* stage) {
+    if (!capture) {
+        return;
+    }
+    munit_assert_size(capture->count, >, 0u);
+    const char* label = stage ? stage : "<capture>";
+    integration_dump_trace(capture, "flat_contract.bin");
+    cepFlatReader* reader = cep_flat_reader_create();
+    munit_assert_not_null(reader);
+    munit_assert_true(integration_capture_feed_flat_reader(capture, reader));
+    if (!cep_flat_reader_commit(reader)) {
+        size_t total_bytes = 0u;
+        for (size_t i = 0; i < capture->count; ++i) {
+            total_bytes += capture->chunks[i].size;
+        }
+        munit_logf(MUNIT_LOG_WARNING,
+                   "%s flat frame commit failed (chunks=%zu total_bytes=%zu) — treating capture as legacy",
+                   label,
+                   capture->count,
+                   total_bytes);
+        cep_flat_reader_destroy(reader);
+        return;
+    }
+    munit_assert_true(cep_flat_reader_ready(reader));
+    const cepFlatFrameConfig* frame = cep_flat_reader_frame(reader);
+    munit_assert_not_null(frame);
+    (void)frame;
+    size_t record_count = 0u;
+    const cepFlatRecordView* records = cep_flat_reader_records(reader, &record_count);
+    munit_assert_not_null(records);
+    munit_assert_size(record_count, >, 0u);
+    bool saw_cell_desc = false;
+    for (size_t i = 0; i < record_count; ++i) {
+        if (records[i].type == CEP_FLAT_RECORD_CELL_DESC) {
+            saw_cell_desc = true;
+            break;
+        }
+    }
+    if (!saw_cell_desc) {
+        munit_errorf("%s missing CEP_FLAT_RECORD_CELL_DESC", label);
+    }
+    cep_flat_reader_destroy(reader);
+}
+
+static void integration_log_flat_records(const IntegrationSerializationCapture* capture,
+                                         const char* stage,
+                                         const cepDT* path_prefix,
+                                         size_t path_segments) {
+    if (!capture || !integration_serialization_logging_enabled()) {
+        return;
+    }
+    cepFlatReader* reader = cep_flat_reader_create();
+    if (!reader) {
+        return;
+    }
+    if (!integration_capture_feed_flat_reader(capture, reader) ||
+        !cep_flat_reader_commit(reader) ||
+        !cep_flat_reader_ready(reader)) {
+        cep_flat_reader_destroy(reader);
+        return;
+    }
+    size_t record_count = 0u;
+    const cepFlatRecordView* records = cep_flat_reader_records(reader, &record_count);
+    if (!records) {
+        cep_flat_reader_destroy(reader);
+        return;
+    }
+    const char* label = stage ? stage : "<capture>";
+    for (size_t i = 0; i < record_count; ++i) {
+        if (path_prefix && path_segments > 0u &&
+            !integration_flat_key_has_prefix(&records[i], path_prefix, path_segments)) {
+            continue;
+        }
+        char path_buf[256];
+        integration_flat_format_key_prefix(&records[i], path_buf, sizeof path_buf, path_segments ? path_segments : 4u);
+        fprintf(stderr,
+                "[integration][flat] stage=%s record=%zu type=%s key=%zu body=%zu path=%s\n",
+                label,
+                i,
+                integration_flat_record_type_name(records[i].type),
+                records[i].key.size,
+                records[i].body.size,
+                path_buf[0] ? path_buf : "(n/a)");
+    }
+    fflush(stderr);
+    cep_flat_reader_destroy(reader);
+}
+
+static bool integration_emit_legacy_capture(const cepCell* cell,
+                                            IntegrationSerializationCapture* capture) {
+    if (!cell || !capture) {
+        return false;
+    }
+    bool previous_flat = cep_serialization_set_flat_mode_override(false);
+    bool ok = cep_serialization_emit_cell(cell,
+                                          NULL,
+                                          integration_capture_sink,
+                                          capture,
+                                          0);
+    cep_serialization_set_flat_mode_override(previous_flat);
+    return ok;
+}
+
 static void integration_dump_trace(const IntegrationSerializationCapture* capture, const char* suffix) {
     const char* base = getenv("CEP_SERIALIZATION_TRACE_DIR");
     if (!base || !capture || !suffix)
@@ -684,389 +903,16 @@ static void integration_dump_trace(const IntegrationSerializationCapture* captur
     fclose(fp);
 }
 
-static void integration_assert_manifest_chunk_order(const IntegrationSerializationCapture* capture,
-                                                    const char* stage) {
-    if (!capture)
-        return;
-    const char* label = stage ? stage : "<capture>";
-    bool verbose = integration_serialization_logging_enabled();
-    bool descriptor_pending = false;
-    size_t manifest_pairs = 0u;
-    for (size_t i = 0; i < capture->count; ++i) {
-        const IntegrationCaptureChunk* chunk = &capture->chunks[i];
-        if (!chunk->data || chunk->size < CEP_SERIALIZATION_CHUNK_OVERHEAD + 1u)
-            continue;
-        uint64_t chunk_id = integration_read_be64(chunk->data + sizeof(uint64_t));
-        if (cep_serialization_chunk_class(chunk_id) != CEP_CHUNK_CLASS_STRUCTURE)
-            continue;
-        const uint8_t* payload = chunk->data + CEP_SERIALIZATION_CHUNK_OVERHEAD;
-        uint8_t record_type = payload[0];
-        if (record_type == SERIAL_RECORD_MANIFEST_BASE) {
-            uint16_t child_count = integration_read_be16(payload + 7u);
-            if (descriptor_pending) {
-                if (verbose) {
-                    INTEGRATION_DEBUG_PRINTF("[integration][split] %s pending descriptor before new manifest chunk=%zu",
-                                            label,
-                                            i);
-                }
-            }
-            munit_assert_false(descriptor_pending);
-            uint8_t base_flags = payload[3];
-            if (child_count > 0u && (base_flags & SERIAL_BASE_FLAG_CHILDREN_SPLIT) == 0u) {
-                if (verbose) {
-                    INTEGRATION_DEBUG_PRINTF("[integration][split] %s manifest missing split flag chunk=%zu",
-                                            label,
-                                            i);
-                }
-            }
-            if (child_count > 0u) {
-                munit_assert_true((base_flags & SERIAL_BASE_FLAG_CHILDREN_SPLIT) != 0u);
-                descriptor_pending = true;
-                manifest_pairs += 1u;
-            }
-        } else if (record_type == SERIAL_RECORD_MANIFEST_CHILDREN) {
-            if (!descriptor_pending) {
-                if (verbose) {
-                    INTEGRATION_DEBUG_PRINTF("[integration][split] %s descriptor arrived before metadata chunk=%zu",
-                                            label,
-                                            i);
-                }
-            }
-            munit_assert_true(descriptor_pending);
-            descriptor_pending = false;
-        } else {
-            if (descriptor_pending) {
-                if (verbose) {
-                    INTEGRATION_DEBUG_PRINTF("[integration][split] %s record_type=0x%02x before descriptor chunk=%zu",
-                                            label,
-                                            record_type,
-                                            i);
-                }
-            }
-            if (descriptor_pending)
-                munit_assert_false(descriptor_pending);
-        }
-    }
-    if (descriptor_pending) {
-        if (verbose) {
-            INTEGRATION_DEBUG_PRINTF("[integration][split] %s stream ended before descriptor resolved", label);
-        }
-    }
-    munit_assert_false(descriptor_pending);
-    if (verbose) {
-        fprintf(stderr,
-                "[integration][split] stage=%s pairs=%zu pending=%d\n",
-                label,
-                manifest_pairs,
-                descriptor_pending ? 1 : 0);
-        fflush(stderr);
-    }
-    if (manifest_pairs == 0u) {
-        if (verbose) {
-            INTEGRATION_DEBUG_PRINTF("[integration][split] %s emitted no child descriptors", label);
-        }
-        munit_logf(MUNIT_LOG_ERROR, "[integration][split] %s emitted no child descriptors", label);
-    }
-    munit_assert_size(manifest_pairs, >, 0u);
-}
-
-static bool integration_manifest_segments_cursor(const uint8_t* payload,
-                                                 size_t payload_size,
-                                                 uint8_t record_type,
-                                                 const uint8_t** cursor_out,
-                                                 uint16_t* segments_out) {
-    if (!payload || !cursor_out || !segments_out)
-        return false;
-    if (payload_size > SIZE_MAX - CEP_SERIALIZATION_CHUNK_OVERHEAD)
-        return false;
-    switch (record_type) {
-        case SERIAL_RECORD_MANIFEST_BASE:
-            if (payload_size < 11u)
-                return false;
-            *segments_out = integration_read_be16(payload + 5u);
-            *cursor_out = payload + 11u;
-            return true;
-        case SERIAL_RECORD_MANIFEST_CHILDREN:
-            if (payload_size < 10u)
-                return false;
-            *segments_out = integration_read_be16(payload + 8u);
-            *cursor_out = payload + 10u;
-            return true;
-        case SERIAL_RECORD_MANIFEST_DELTA:
-            if (payload_size < 16u)
-                return false;
-            *segments_out = integration_read_be16(payload + 4u);
-            *cursor_out = payload + 16u;
-            return true;
-        default:
-            break;
-    }
-    return false;
-}
-
-static bool integration_manifest_path_matches(const uint8_t* payload,
-                                              size_t payload_size,
-                                              uint8_t record_type,
-                                              const cepDT* expected,
-                                              size_t expected_count) {
-    const uint8_t* cursor = NULL;
-    uint16_t segment_count = 0u;
-    if (!integration_manifest_segments_cursor(payload, payload_size, record_type, &cursor, &segment_count))
-        return false;
-    if (segment_count != expected_count)
-        return false;
-    const uint8_t* end = payload + payload_size;
-    size_t segment_stride = (sizeof(uint64_t) * 2u) + 4u;
-    for (uint16_t idx = 0u; idx < segment_count; ++idx) {
-        if ((size_t)(end - cursor) < segment_stride)
-            return false;
-        uint64_t domain = integration_read_be64(cursor);
-        cursor += sizeof(uint64_t);
-        uint64_t tag = integration_read_be64(cursor);
-        cursor += sizeof(uint64_t);
-        uint8_t glob = *cursor++;
-        cursor++; /* meta flags */
-        cursor += sizeof(uint16_t); /* position */
-        if (domain != expected[idx].domain ||
-            tag != expected[idx].tag ||
-            glob != (expected[idx].glob ? 1u : 0u)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-static void integration_manifest_format_path(const uint8_t* payload,
-                                             size_t payload_size,
-                                             uint8_t record_type,
-                                             char* buffer,
-                                             size_t cap) {
-    if (!buffer || !cap) {
+static void integration_log_space_flat_records(const IntegrationSerializationCapture* capture,
+                                               const char* stage) {
+    if (!capture || !integration_serialization_logging_enabled()) {
         return;
     }
-    buffer[0] = '\0';
-    const uint8_t* cursor = NULL;
-    uint16_t segment_count = 0u;
-    if (!integration_manifest_segments_cursor(payload, payload_size, record_type, &cursor, &segment_count))
-        return;
-    const uint8_t* end = payload + payload_size;
-    size_t segment_stride = (sizeof(uint64_t) * 2u) + 4u;
-    size_t used = 0u;
-    for (uint16_t idx = 0u; idx < segment_count; ++idx) {
-        if ((size_t)(end - cursor) < segment_stride)
-            break;
-        uint64_t domain = integration_read_be64(cursor);
-        cursor += sizeof(uint64_t);
-        uint64_t tag = integration_read_be64(cursor);
-        cursor += sizeof(uint64_t);
-        uint8_t glob = *cursor++;
-        uint8_t meta = *cursor++;
-        uint16_t position = integration_read_be16(cursor);
-        cursor += sizeof(uint16_t);
-
-        char domain_buf[64];
-        char tag_buf[64];
-        const char* domain_text = integration_debug_id_desc((cepID)domain, domain_buf, sizeof domain_buf);
-        const char* tag_text = integration_debug_id_desc((cepID)tag, tag_buf, sizeof tag_buf);
-        char segment_buf[196];
-        if (meta & SERIAL_PATH_FLAG_POSITION) {
-            snprintf(segment_buf,
-                     sizeof segment_buf,
-                     "/%s:%s%s@%u",
-                     domain_text,
-                     tag_text,
-                     glob ? "*" : "",
-                     (unsigned)position);
-        } else {
-            snprintf(segment_buf,
-                     sizeof segment_buf,
-                     "/%s:%s%s",
-                     domain_text,
-                     tag_text,
-                     glob ? "*" : "");
-        }
-        size_t seg_len = strlen(segment_buf);
-        if (used + seg_len + 1u >= cap)
-            break;
-        memcpy(buffer + used, segment_buf, seg_len);
-        used += seg_len;
-        buffer[used] = '\0';
-    }
-}
-
-static void integration_log_space_manifest_records(const IntegrationSerializationCapture* capture,
-                                                   const char* stage) {
-    if (!capture || !integration_serialization_logging_enabled())
-        return;
     cepDT space_path_segments[3];
     space_path_segments[0] = *CEP_DTAW("CEP", "data");
     space_path_segments[1] = *CEP_DTAW("CEP", "poc");
     space_path_segments[2] = *CEP_DTAW("CEP", "space");
-    const char* label = stage ? stage : "<capture>";
-    for (size_t i = 0; i < capture->count; ++i) {
-        const IntegrationCaptureChunk* chunk = &capture->chunks[i];
-        if (!chunk->data || chunk->size < CEP_SERIALIZATION_CHUNK_OVERHEAD + 1u)
-            continue;
-        uint64_t payload_size = integration_read_be64(chunk->data);
-        if (payload_size == 0u || payload_size > SIZE_MAX)
-            continue;
-        size_t payload_bytes = (size_t)payload_size;
-        if (chunk->size < CEP_SERIALIZATION_CHUNK_OVERHEAD + payload_bytes)
-            continue;
-        uint64_t chunk_id = integration_read_be64(chunk->data + sizeof(uint64_t));
-        if (cep_serialization_chunk_class(chunk_id) != CEP_CHUNK_CLASS_STRUCTURE)
-            continue;
-        const uint8_t* payload = chunk->data + CEP_SERIALIZATION_CHUNK_OVERHEAD;
-        uint8_t record_type = payload[0];
-        if (!integration_manifest_path_matches(payload,
-                                               payload_bytes,
-                                               record_type,
-                                               space_path_segments,
-                                               cep_lengthof(space_path_segments)))
-            continue;
-        char path_buf[256];
-        integration_manifest_format_path(payload, payload_bytes, record_type, path_buf, sizeof path_buf);
-        if (record_type == SERIAL_RECORD_MANIFEST_BASE) {
-            uint8_t base_flags = payload[3];
-            uint16_t child_count = integration_read_be16(payload + 7u);
-            uint16_t span_count = integration_read_be16(payload + 9u);
-            const uint8_t* segments = NULL;
-            uint16_t segment_count = 0u;
-            size_t meta_len = 0u;
-            if (integration_manifest_segments_cursor(payload, payload_bytes, record_type, &segments, &segment_count)) {
-                const uint8_t* cursor = segments + ((size_t)segment_count * ((sizeof(uint64_t) * 2u) + 4u));
-                const uint8_t* end = payload + payload_bytes;
-                if (cursor + sizeof(uint16_t) <= end) {
-                    meta_len = integration_read_be16(cursor);
-                }
-            }
-            fprintf(stderr,
-                    "[integration][space-manifest] stage=%s chunk=%zu type=base children=%u spans=%u flags=0x%02x meta_len=%zu path=%s\n",
-                    label,
-                    i,
-                    (unsigned)child_count,
-                    (unsigned)span_count,
-                    (unsigned)base_flags,
-                    meta_len,
-                    path_buf);
-            continue;
-        }
-        if (record_type == SERIAL_RECORD_MANIFEST_CHILDREN) {
-            uint16_t span_index = integration_read_be16(payload + 2u);
-            uint16_t descriptor_offset = integration_read_be16(payload + 4u);
-            uint16_t descriptor_count = integration_read_be16(payload + 6u);
-            const uint8_t* segments = NULL;
-            uint16_t segment_count = 0u;
-            if (!integration_manifest_segments_cursor(payload, payload_bytes, record_type, &segments, &segment_count))
-                continue;
-            const uint8_t* cursor = segments + ((size_t)segment_count * ((sizeof(uint64_t) * 2u) + 4u));
-            const uint8_t* end = payload + payload_bytes;
-            fprintf(stderr,
-                    "[integration][space-manifest] stage=%s chunk=%zu type=children span=%u offset=%u count=%u path=%s\n",
-                    label,
-                    i,
-                    (unsigned)span_index,
-                    (unsigned)descriptor_offset,
-                    (unsigned)descriptor_count,
-                    path_buf);
-            for (uint16_t idx = 0u; idx < descriptor_count && cursor < end; ++idx) {
-                size_t needed = (sizeof(uint64_t) * 2u) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint32_t);
-                if ((size_t)(end - cursor) < needed)
-                    break;
-                uint64_t domain = integration_read_be64(cursor);
-                cursor += sizeof(uint64_t);
-                uint64_t tag = integration_read_be64(cursor);
-                cursor += sizeof(uint64_t);
-                uint8_t glob = *cursor++;
-                uint8_t child_flags = *cursor++;
-                uint16_t position = integration_read_be16(cursor);
-                cursor += sizeof(uint16_t);
-                cursor += sizeof(uint32_t); /* reserved */
-                bool has_fp = (child_flags & SERIAL_CHILD_FLAG_FINGERPRINT) != 0u;
-                uint64_t fingerprint = 0u;
-                if (has_fp) {
-                    if ((size_t)(end - cursor) < sizeof(uint64_t))
-                        break;
-                    fingerprint = integration_read_be64(cursor);
-                    cursor += sizeof(uint64_t);
-                }
-                char domain_buf[64];
-                char tag_buf[64];
-                const char* domain_text = integration_debug_id_desc((cepID)domain, domain_buf, sizeof domain_buf);
-                const char* tag_text = integration_debug_id_desc((cepID)tag, tag_buf, sizeof tag_buf);
-                char fingerprint_buf[32];
-                if (has_fp)
-                    snprintf(fingerprint_buf, sizeof fingerprint_buf, "0x%016" PRIx64, fingerprint);
-                else
-                    snprintf(fingerprint_buf, sizeof fingerprint_buf, "<none>");
-                fprintf(stderr,
-                        "[integration][space-manifest] stage=%s chunk=%zu descriptor=%u global_idx=%u name=%s:%s glob=%u pos=%u flags=0x%02x tomb=%u veiled=%u fingerprint=%s\n",
-                        label,
-                        i,
-                        (unsigned)idx,
-                        (unsigned)(descriptor_offset + idx),
-                        domain_text,
-                        tag_text,
-                        (unsigned)glob,
-                        (unsigned)position,
-                        (unsigned)child_flags,
-                        (child_flags & SERIAL_CHILD_FLAG_TOMBSTONE) ? 1u : 0u,
-                        (child_flags & SERIAL_CHILD_FLAG_VEILED) ? 1u : 0u,
-                        fingerprint_buf);
-            }
-            continue;
-        }
-        if (record_type == SERIAL_RECORD_MANIFEST_DELTA) {
-            uint8_t delta_flags = payload[1];
-            uint64_t beat = integration_read_be64(payload + 8u);
-            const uint8_t* segments = NULL;
-            uint16_t segment_count = 0u;
-            if (!integration_manifest_segments_cursor(payload, payload_bytes, record_type, &segments, &segment_count))
-                continue;
-            const uint8_t* cursor = segments + ((size_t)segment_count * ((sizeof(uint64_t) * 2u) + 4u));
-            const uint8_t* end = payload + payload_bytes;
-            size_t needed = (sizeof(uint64_t) * 2u) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint32_t);
-            if ((size_t)(end - cursor) < needed)
-                continue;
-            uint64_t domain = integration_read_be64(cursor);
-            cursor += sizeof(uint64_t);
-            uint64_t tag = integration_read_be64(cursor);
-            cursor += sizeof(uint64_t);
-            uint8_t glob = *cursor++;
-            uint8_t child_flags = *cursor++;
-            uint16_t position = integration_read_be16(cursor);
-            cursor += sizeof(uint16_t);
-            cursor += sizeof(uint32_t);
-            bool has_fp = (child_flags & SERIAL_CHILD_FLAG_FINGERPRINT) != 0u;
-            uint64_t fingerprint = 0u;
-            if (has_fp && (size_t)(end - cursor) >= sizeof(uint64_t)) {
-                fingerprint = integration_read_be64(cursor);
-            }
-            char domain_buf[64];
-            char tag_buf[64];
-            const char* domain_text = integration_debug_id_desc((cepID)domain, domain_buf, sizeof domain_buf);
-            const char* tag_text = integration_debug_id_desc((cepID)tag, tag_buf, sizeof tag_buf);
-            char fingerprint_buf[32];
-            if (has_fp)
-                snprintf(fingerprint_buf, sizeof fingerprint_buf, "0x%016" PRIx64, fingerprint);
-            else
-                snprintf(fingerprint_buf, sizeof fingerprint_buf, "<none>");
-            fprintf(stderr,
-                    "[integration][space-manifest] stage=%s chunk=%zu type=delta flags=0x%02x beat=%" PRIu64 " name=%s:%s glob=%u pos=%u tomb=%u veiled=%u fingerprint=%s path=%s\n",
-                    label,
-                    i,
-                    (unsigned)delta_flags,
-                    beat,
-                    domain_text,
-                    tag_text,
-                    (unsigned)glob,
-                    (unsigned)position,
-                    (child_flags & SERIAL_CHILD_FLAG_TOMBSTONE) ? 1u : 0u,
-                    (child_flags & SERIAL_CHILD_FLAG_VEILED) ? 1u : 0u,
-                    fingerprint_buf,
-                    path_buf);
-        }
-    }
+    integration_log_flat_records(capture, stage, space_path_segments, cep_lengthof(space_path_segments));
 }
 
 static void integration_compare_trace_files(const char* lhs_suffix, const char* rhs_suffix) {
@@ -4031,9 +3877,11 @@ static void integration_serialize_and_replay(IntegrationFixture* fix) {
                                                   integration_capture_sink,
                                                   &capture,
                                                   0));
+    IntegrationSerializationCapture legacy_capture = {0};
+    munit_assert_true(integration_emit_legacy_capture(fix->poc_root, &legacy_capture));
     integration_dump_trace(&capture, "integration_before_ingest.bin");
-    integration_assert_manifest_chunk_order(&capture, "emit");
-    integration_log_space_manifest_records(&capture, "emit");
+    integration_assert_flat_frame_contract(&capture, "emit");
+    integration_log_space_flat_records(&capture, "emit");
     munit_assert_size(capture.count, >, 0u);
     integration_snapshot_journal_branch("baseline poc_root", fix->poc_root, true);
     integration_snapshot_space_branch("baseline poc_root", fix->poc_root, true);
@@ -4064,10 +3912,10 @@ static void integration_serialize_and_replay(IntegrationFixture* fix) {
 
     cepSerializationReader* reader = cep_serialization_reader_create(replay_root);
     munit_assert_not_null(reader);
-    for (size_t i = 0; i < capture.count; ++i) {
+    for (size_t i = 0; i < legacy_capture.count; ++i) {
         munit_assert_true(cep_serialization_reader_ingest(reader,
-                                                          capture.chunks[i].data,
-                                                          capture.chunks[i].size));
+                                                          legacy_capture.chunks[i].data,
+                                                          legacy_capture.chunks[i].size));
     }
     integration_snapshot_journal_branch("replay pre-commit", replay_root, false);
     munit_assert_true(cep_serialization_reader_commit(reader));
@@ -4088,16 +3936,18 @@ static void integration_serialize_and_replay(IntegrationFixture* fix) {
                                                   integration_capture_sink,
                                                   &replay_capture,
                                                   0));
+    IntegrationSerializationCapture replay_legacy_capture = {0};
+    munit_assert_true(integration_emit_legacy_capture(replay_subtree, &replay_legacy_capture));
     if (integration_serialization_logging_enabled()) {
         integration_dump_trace(&replay_capture, "integration_replay_debug.bin");
     }
-    integration_assert_manifest_chunk_order(&replay_capture, "replay");
-    integration_log_space_manifest_records(&replay_capture, "replay");
-    munit_assert_size(replay_capture.count, ==, capture.count);
+    integration_assert_flat_frame_contract(&replay_capture, "replay");
+    integration_log_space_flat_records(&replay_capture, "replay");
+    munit_assert_size(replay_legacy_capture.count, ==, legacy_capture.count);
     integration_trace_assert_stage("chunk_parity");
-    for (size_t i = 0; i < capture.count; ++i) {
-        const IntegrationCaptureChunk* baseline = &capture.chunks[i];
-        const IntegrationCaptureChunk* replayed = &replay_capture.chunks[i];
+    for (size_t i = 0; i < legacy_capture.count; ++i) {
+        const IntegrationCaptureChunk* baseline = &legacy_capture.chunks[i];
+        const IntegrationCaptureChunk* replayed = &replay_legacy_capture.chunks[i];
         integration_trace_chunk_stage(i);
         if (replayed->size != baseline->size) {
             size_t mismatch_offset = (baseline->size < replayed->size) ? baseline->size : replayed->size;
@@ -4139,6 +3989,7 @@ static void integration_serialize_and_replay(IntegrationFixture* fix) {
     integration_dump_trace(&replay_capture, "integration_replay.bin");
     integration_compare_trace_files("integration_original.bin", "integration_replay.bin");
     integration_capture_clear(&capture);
+    integration_capture_clear(&legacy_capture);
     integration_release_payloads_for_branch(replay_subtree);
 
     cep_cell_delete(replay_root);
@@ -4157,10 +4008,10 @@ static void integration_serialize_and_replay(IntegrationFixture* fix) {
 
     cepSerializationReader* reader_again = cep_serialization_reader_create(replay_root_again);
     munit_assert_not_null(reader_again);
-    for (size_t i = 0; i < replay_capture.count; ++i) {
+    for (size_t i = 0; i < replay_legacy_capture.count; ++i) {
         munit_assert_true(cep_serialization_reader_ingest(reader_again,
-                                                          replay_capture.chunks[i].data,
-                                                          replay_capture.chunks[i].size));
+                                                          replay_legacy_capture.chunks[i].data,
+                                                          replay_legacy_capture.chunks[i].size));
     }
     munit_assert_true(cep_serialization_reader_commit(reader_again));
     cep_serialization_reader_destroy(reader_again);
@@ -4175,19 +4026,23 @@ static void integration_serialize_and_replay(IntegrationFixture* fix) {
                                                   integration_capture_sink,
                                                   &replay_capture_again,
                                                   0));
-    integration_assert_manifest_chunk_order(&replay_capture_again, "roundtrip");
-    integration_log_space_manifest_records(&replay_capture_again, "roundtrip");
-    munit_assert_size(replay_capture_again.count, ==, replay_capture.count);
-    for (size_t i = 0; i < replay_capture.count; ++i) {
-        const IntegrationCaptureChunk* first = &replay_capture.chunks[i];
-        const IntegrationCaptureChunk* second = &replay_capture_again.chunks[i];
+    IntegrationSerializationCapture replay_legacy_capture_again = {0};
+    munit_assert_true(integration_emit_legacy_capture(replay_again_subtree, &replay_legacy_capture_again));
+    integration_assert_flat_frame_contract(&replay_capture_again, "roundtrip");
+    integration_log_space_flat_records(&replay_capture_again, "roundtrip");
+    munit_assert_size(replay_legacy_capture_again.count, ==, replay_legacy_capture.count);
+    for (size_t i = 0; i < replay_legacy_capture.count; ++i) {
+        const IntegrationCaptureChunk* first = &replay_legacy_capture.chunks[i];
+        const IntegrationCaptureChunk* second = &replay_legacy_capture_again.chunks[i];
         munit_assert_size(second->size, ==, first->size);
         munit_assert_memory_equal(first->size, first->data, second->data);
     }
 
     integration_dump_trace(&replay_capture_again, "integration_replay_roundtrip.bin");
     integration_capture_clear(&replay_capture_again);
+    integration_capture_clear(&replay_legacy_capture_again);
     integration_capture_clear(&replay_capture);
+    integration_capture_clear(&replay_legacy_capture);
     integration_release_payloads_for_branch(replay_again_subtree);
     if (replay_root_again) {
         cep_cell_delete(replay_root_again);
@@ -4446,7 +4301,6 @@ static MunitResult test_l0_integration(const MunitParameter params[], void* user
     integration_execute_interleaved_timeline(&fixture);
     integration_teardown_tree(&fixture);
     integration_runtime_cleanup(&fixture);
-
     return MUNIT_OK;
 }
 
@@ -4464,8 +4318,9 @@ static MunitResult test_l0_integration_focus(const MunitParameter params[],
     (void)params;
     (void)user_data_or_fixture;
 
-    if (!integration_focus_test_enabled())
+    if (!integration_focus_test_enabled()) {
         return MUNIT_SKIP;
+    }
 
     IntegrationFixture fixture = {.boot_oid = cep_oid_invalid()};
     integration_runtime_boot(&fixture);

@@ -14,10 +14,12 @@
 #include "../l0_kernel/cep_ep.h"
 #include "../l0_kernel/cep_heartbeat.h"
 #include "../l0_kernel/cep_runtime.h"
+#include "../l0_kernel/cep_flat_serializer.h"
 
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
 
 typedef enum {
     CEP_FED_MIRROR_COMMIT_STREAM = 0,
@@ -52,6 +54,13 @@ typedef struct cepFedMirrorRequestCtx {
     uint64_t                         deadline;
     bool                             has_deadline;
     bool                             lease_armed;
+    uint32_t                         payload_history_beats;
+    uint32_t                         manifest_history_beats;
+    bool                             flat_allow_crc32c;
+    bool                             flat_allow_deflate;
+    bool                             flat_allow_aead;
+    bool                             flat_warn_on_downgrade;
+    uint32_t                         flat_comparator_max_version;
     struct cepFedMirrorRequestCtx*   next;
 } cepFedMirrorRequestCtx;
 
@@ -87,10 +96,18 @@ CEP_DEFINE_STATIC_DT(dt_commit_mode_name,        CEP_ACRO("CEP"), CEP_WORD("comm
 CEP_DEFINE_STATIC_DT(dt_resume_token_name,       CEP_ACRO("CEP"), CEP_WORD("resume_tok"));
 CEP_DEFINE_STATIC_DT(dt_bundle_hist_cap_name, CEP_ACRO("CEP"), CEP_WORD("hist_cap"));
 CEP_DEFINE_STATIC_DT(dt_bundle_delta_cap_name, CEP_ACRO("CEP"), CEP_WORD("delta_cap"));
+CEP_DEFINE_STATIC_DT(dt_payload_hist_beats_name,  CEP_ACRO("CEP"), CEP_WORD("pay_hist_bt"));
+CEP_DEFINE_STATIC_DT(dt_manifest_hist_beats_name, CEP_ACRO("CEP"), CEP_WORD("man_hist_bt"));
 CEP_DEFINE_STATIC_DT(dt_pending_resume_name,     CEP_ACRO("CEP"), CEP_WORD("pend_resum"));
 CEP_DEFINE_STATIC_DT(dt_last_bundle_seq_name,    CEP_ACRO("CEP"), CEP_WORD("bundle_seq"));
 CEP_DEFINE_STATIC_DT(dt_last_commit_beat_name,   CEP_ACRO("CEP"), CEP_WORD("commit_beat"));
 CEP_DEFINE_STATIC_DT(dt_sev_error_name,          CEP_ACRO("sev"), CEP_WORD("error"));
+CEP_DEFINE_STATIC_DT(dt_serializer_name,         CEP_ACRO("CEP"), CEP_WORD("serializer"));
+CEP_DEFINE_STATIC_DT(dt_ser_crc32c_ok_name,      CEP_ACRO("CEP"), CEP_WORD("crc32c_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_deflate_ok_name,     CEP_ACRO("CEP"), CEP_WORD("deflate_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_aead_ok_name,        CEP_ACRO("CEP"), CEP_WORD("aead_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_warn_down_name,      CEP_ACRO("CEP"), CEP_WORD("warn_down"));
+CEP_DEFINE_STATIC_DT(dt_ser_cmpmax_name,         CEP_ACRO("CEP"), CEP_WORD("cmp_max_ver"));
 
 CEP_DEFINE_STATIC_DT(dt_cap_reliable_name,       CEP_ACRO("CEP"), CEP_WORD("reliable"));
 CEP_DEFINE_STATIC_DT(dt_cap_ordered_name,        CEP_ACRO("CEP"), CEP_WORD("ordered"));
@@ -120,10 +137,132 @@ static const struct {
 static const char* const CEP_FED_MIRROR_TOPIC_CONFLICT = "tp_mconf";
 static const char* const CEP_FED_MIRROR_TOPIC_TIMEOUT  = "tp_mtimeout";
 static const char* const CEP_FED_MIRROR_TOPIC_SCHEMA   = "tp_schema";
+static const char* const CEP_FED_MIRROR_NOTE_MODE      = "mirror frame unsupported mode";
+static const char* const CEP_FED_MIRROR_NOTE_PAYLOAD   = "mirror frame payload history mismatch";
+static const char* const CEP_FED_MIRROR_NOTE_MANIFEST  = "mirror frame manifest history mismatch";
+
+static void cep_fed_mirror_emit_issue(cepCell* request_cell,
+                                      const char* topic,
+                                      const char* note);
+static void cep_fed_mirror_publish_state(cepCell* request_cell,
+                                         const char* state,
+                                         const char* error_note,
+                                         const char* provider);
+
+bool cep_fed_mirror_validate_frame_contract(uint32_t required_payload_history_beats,
+                                            uint32_t required_manifest_history_beats,
+                                            cepFedFrameMode mode,
+                                            const cepFlatFrameConfig* frame,
+                                            const char** failure_note) {
+    if (!frame) {
+        if (failure_note)
+            *failure_note = "mirror frame missing trailer";
+        return false;
+    }
+    if (mode != CEP_FED_FRAME_MODE_DATA) {
+        if (failure_note)
+            *failure_note = CEP_FED_MIRROR_NOTE_MODE;
+        return false;
+    }
+    if (required_payload_history_beats > 0u &&
+        frame->payload_history_beats != required_payload_history_beats) {
+        if (failure_note)
+            *failure_note = CEP_FED_MIRROR_NOTE_PAYLOAD;
+        return false;
+    }
+    if (required_manifest_history_beats > 0u &&
+        frame->manifest_history_beats != required_manifest_history_beats) {
+        if (failure_note)
+            *failure_note = CEP_FED_MIRROR_NOTE_MANIFEST;
+        return false;
+    }
+    return true;
+}
+
+static bool cep_fed_mirror_validate_flat_frame(const cepFedMirrorRequestCtx* ctx,
+                                               const uint8_t* payload,
+                                               size_t payload_len,
+                                               cepFedFrameMode mode) {
+    (void)mode;
+    if (!ctx || !payload || payload_len == 0u) {
+        if (ctx) {
+            cep_fed_mirror_emit_issue(ctx->request_cell,
+                                      CEP_FED_MIRROR_TOPIC_SCHEMA,
+                                      "mirror frame missing payload bytes");
+        }
+        return false;
+    }
+
+    cepFlatReader* reader = cep_flat_reader_create();
+    if (!reader) {
+        cep_fed_mirror_emit_issue(ctx->request_cell,
+                                  CEP_FED_MIRROR_TOPIC_SCHEMA,
+                                  "mirror frame reader allocation failed");
+        return false;
+    }
+
+    bool ok = cep_flat_reader_feed(reader, payload, payload_len) &&
+              cep_flat_reader_commit(reader) &&
+              cep_flat_reader_ready(reader);
+    const char* failure_note = NULL;
+    if (ok) {
+        const cepFlatFrameConfig* frame = cep_flat_reader_frame(reader);
+        if (!frame) {
+            ok = false;
+            failure_note = "mirror frame missing trailer";
+        } else if ((frame->capability_flags & CEP_FLAT_CAP_PAYLOAD_HISTORY) == 0u) {
+            ok = false;
+            failure_note = "mirror frame missing payload history capability";
+        } else if ((frame->capability_flags & CEP_FLAT_CAP_MANIFEST_HISTORY) == 0u) {
+            ok = false;
+            failure_note = "mirror frame missing manifest history capability";
+        }
+        if (ok &&
+            !cep_fed_mirror_validate_frame_contract(ctx->payload_history_beats,
+                                                    ctx->manifest_history_beats,
+                                                    mode,
+                                                    frame,
+                                                    &failure_note)) {
+            ok = false;
+        }
+    } else {
+        failure_note = "mirror frame parse failed";
+    }
+
+    cep_flat_reader_destroy(reader);
+
+    if (!ok) {
+        cep_fed_mirror_publish_state(ctx ? ctx->request_cell : NULL,
+                                     NULL,
+                                     failure_note ? failure_note : "mirror frame invalid",
+                                     NULL);
+        cep_fed_mirror_emit_issue(ctx->request_cell,
+                                  CEP_FED_MIRROR_TOPIC_SCHEMA,
+                                  failure_note ? failure_note : "mirror frame invalid");
+    }
+    return ok;
+}
 
 static cepFedMirrorRequestCtx* cep_fed_mirror_find_ctx(cepCell* request_cell) {
     for (cepFedMirrorRequestCtx* node = g_mirror_requests; node; node = node->next) {
         if (node->request_cell == request_cell) {
+            return node;
+        }
+    }
+    return NULL;
+}
+
+static cepFedMirrorRequestCtx* cep_fed_mirror_find_ctx_by_ids(const char* peer_id,
+                                                              const char* mount_id) {
+    if (!peer_id || !mount_id) {
+        return NULL;
+    }
+    for (cepFedMirrorRequestCtx* node = g_mirror_requests; node; node = node->next) {
+        if (node->peer[0] == '\0' || node->mount_id[0] == '\0') {
+            continue;
+        }
+        if (strcmp(node->peer, peer_id) == 0 &&
+            strcmp(node->mount_id, mount_id) == 0) {
             return node;
         }
     }
@@ -300,6 +439,38 @@ static bool cep_fed_mirror_read_u32(cepCell* parent,
     }
     *out_value = *payload;
     return true;
+}
+
+static void cep_fed_mirror_read_serializer_caps(cepCell* request_cell,
+                                                cepFedMirrorRequestCtx* ctx) {
+    if (!request_cell || !ctx) {
+        return;
+    }
+    cepCell* serializer = cep_cell_find_by_name(request_cell, dt_serializer_name());
+    if (!serializer) {
+        return;
+    }
+    serializer = cep_cell_resolve(serializer);
+    if (!serializer || !cep_cell_require_dictionary_store(&serializer)) {
+        return;
+    }
+    bool bool_value = false;
+    if (cep_fed_mirror_read_bool(serializer, dt_ser_crc32c_ok_name(), &bool_value)) {
+        ctx->flat_allow_crc32c = bool_value;
+    }
+    if (cep_fed_mirror_read_bool(serializer, dt_ser_deflate_ok_name(), &bool_value)) {
+        ctx->flat_allow_deflate = bool_value;
+    }
+    if (cep_fed_mirror_read_bool(serializer, dt_ser_aead_ok_name(), &bool_value)) {
+        ctx->flat_allow_aead = bool_value;
+    }
+    if (cep_fed_mirror_read_bool(serializer, dt_ser_warn_down_name(), &bool_value)) {
+        ctx->flat_warn_on_downgrade = bool_value;
+    }
+    uint32_t cmp_max = ctx->flat_comparator_max_version;
+    if (cep_fed_mirror_read_u32(serializer, dt_ser_cmpmax_name(), false, &cmp_max)) {
+        ctx->flat_comparator_max_version = cmp_max;
+    }
 }
 
 static bool cep_fed_mirror_read_u16(cepCell* parent,
@@ -592,11 +763,11 @@ static bool cep_fed_mirror_on_frame(void* user_ctx,
                                     size_t payload_len,
                                     cepFedFrameMode mode) {
     (void)mount;
-    (void)payload;
-    (void)payload_len;
-    (void)mode;
     cepFedMirrorRequestCtx* ctx = user_ctx;
     if (!ctx) {
+        return false;
+    }
+    if (!cep_fed_mirror_validate_flat_frame(ctx, payload, payload_len, mode)) {
         return false;
     }
     if (ctx->inflight < ctx->max_inflight) {
@@ -820,6 +991,8 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
     bool allow_upd_latest = false;
     uint64_t deadline = 0u;
     uint32_t beat_window = 1u;
+    uint32_t payload_history_beats = 0u;
+    uint32_t manifest_history_beats = 0u;
     uint16_t max_inflight = 1u;
 
     if (!cep_fed_mirror_read_text(request_cell, dt_peer_field_name(), true, peer, sizeof peer) ||
@@ -932,6 +1105,24 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
                                       "bundle.delta_cap capability required");
             return CEP_ENZYME_FATAL;
         }
+        (void)cep_fed_mirror_read_u32(bundle,
+                                      dt_payload_hist_beats_name(),
+                                      false,
+                                      &payload_history_beats);
+        (void)cep_fed_mirror_read_u32(bundle,
+                                      dt_manifest_hist_beats_name(),
+                                      false,
+                                      &manifest_history_beats);
+        if (payload_history_beats == 0u || manifest_history_beats == 0u) {
+            cep_fed_mirror_publish_state(request_cell,
+                                         "error",
+                                         "bundle must specify payload and manifest history beats",
+                                         NULL);
+            cep_fed_mirror_emit_issue(request_cell,
+                                      CEP_FED_MIRROR_TOPIC_SCHEMA,
+                                      "bundle missing history beat windows");
+            return CEP_ENZYME_FATAL;
+        }
     }
 
     if (beat_window == 0u) {
@@ -983,6 +1174,12 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
         }
         ctx->runtime = cep_runtime_active();
     }
+    ctx->flat_allow_crc32c = true;
+    ctx->flat_allow_deflate = true;
+    ctx->flat_allow_aead = true;
+    ctx->flat_warn_on_downgrade = true;
+    ctx->flat_comparator_max_version = UINT32_MAX;
+    cep_fed_mirror_read_serializer_caps(request_cell, ctx);
 
     (void)snprintf(ctx->peer, sizeof ctx->peer, "%s", peer);
     (void)snprintf(ctx->mount_id, sizeof ctx->mount_id, "%s", mount);
@@ -1004,6 +1201,8 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
     ctx->has_deadline = deadline_present;
     ctx->lease_armed = false;
     ctx->provider_id[0] = '\0';
+    ctx->payload_history_beats = payload_history_beats;
+    ctx->manifest_history_beats = manifest_history_beats;
     (void)snprintf(ctx->resume_token, sizeof ctx->resume_token, "%s", resume_token);
 
     cepBeatNumber current_beat = cep_heartbeat_current();
@@ -1083,6 +1282,17 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
     }
 
     ctx->mount = mount_handle;
+    cepFedTransportFlatPolicy flat_policy = {
+        .allow_crc32c = ctx->flat_allow_crc32c,
+        .allow_deflate = ctx->flat_allow_deflate,
+        .allow_aead = ctx->flat_allow_aead,
+        .warn_on_downgrade = ctx->flat_warn_on_downgrade,
+        .comparator_max_version = ctx->flat_comparator_max_version,
+    };
+    cep_fed_transport_manager_mount_set_flat_policy(mount_handle, &flat_policy);
+    cep_fed_transport_manager_mount_set_flat_history(mount_handle,
+                                                     ctx->payload_history_beats,
+                                                     ctx->manifest_history_beats);
     const char* provider_id = cep_fed_transport_manager_mount_provider_id(mount_handle);
     if (provider_id) {
         (void)snprintf(ctx->provider_id, sizeof ctx->provider_id, "%s", provider_id);
@@ -1164,4 +1374,36 @@ int cep_fed_mirror_destructor(const cepPath* signal_path,
         cep_fed_mirror_remove_ctx(request_cell);
     }
     return CEP_ENZYME_SUCCESS;
+}
+
+bool cep_fed_mirror_emit_cell(const char* peer_id,
+                              const char* mount_id,
+                              const cepCell* cell,
+                              const cepSerializationHeader* header,
+                              size_t blob_payload_bytes,
+                              cepFedFrameMode mode,
+                              uint64_t deadline_beat) {
+    if (!peer_id || !mount_id || !cell) {
+        return false;
+    }
+    if (!g_mirror_manager) {
+        g_mirror_manager = cep_fed_pack_manager();
+    }
+    if (!g_mirror_manager) {
+        return false;
+    }
+    if (mode != CEP_FED_FRAME_MODE_DATA) {
+        return false;
+    }
+    cepFedMirrorRequestCtx* ctx = cep_fed_mirror_find_ctx_by_ids(peer_id, mount_id);
+    if (!ctx || !ctx->mount) {
+        return false;
+    }
+    return cep_fed_transport_manager_send_cell(g_mirror_manager,
+                                               ctx->mount,
+                                               cell,
+                                               header,
+                                               blob_payload_bytes,
+                                               mode,
+                                               deadline_beat);
 }

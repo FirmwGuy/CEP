@@ -10,12 +10,20 @@
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_ops.h"
 #include "../l0_kernel/cep_namepool.h"
+#include "../l0_kernel/cep_flat_serializer.h"
 
+#include <limits.h>
 #include <string.h>
 
 typedef struct cepFedLinkRequestCtx {
     cepCell*                          request_cell;
     cepFedTransportManagerMount*      mount;
+    cepFedTransportFlatPolicy         flat_policy;
+    uint32_t                          payload_history_beats;
+    uint32_t                          manifest_history_beats;
+    bool                              allow_upd_latest;
+    char                              peer_id[64];
+    char                              mount_id[64];
     struct cepFedLinkRequestCtx*      next;
 } cepFedLinkRequestCtx;
 
@@ -52,6 +60,24 @@ CEP_DEFINE_STATIC_DT(dt_cap_latency_name,      CEP_ACRO("CEP"), CEP_WORD("low_la
 CEP_DEFINE_STATIC_DT(dt_cap_local_ipc_name,    CEP_ACRO("CEP"), CEP_WORD("local_ipc"));
 CEP_DEFINE_STATIC_DT(dt_cap_remote_net_name,   CEP_ACRO("CEP"), CEP_WORD("remote_net"));
 CEP_DEFINE_STATIC_DT(dt_cap_unreliable_name,   CEP_ACRO("CEP"), CEP_WORD("unreliable"));
+CEP_DEFINE_STATIC_DT(dt_serializer_name,       CEP_ACRO("CEP"), CEP_WORD("serializer"));
+CEP_DEFINE_STATIC_DT(dt_ser_crc32c_ok_name,    CEP_ACRO("CEP"), CEP_WORD("crc32c_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_deflate_ok_name,   CEP_ACRO("CEP"), CEP_WORD("deflate_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_aead_ok_name,      CEP_ACRO("CEP"), CEP_WORD("aead_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_warn_down_name,    CEP_ACRO("CEP"), CEP_WORD("warn_down"));
+CEP_DEFINE_STATIC_DT(dt_ser_cmpmax_name,       CEP_ACRO("CEP"), CEP_WORD("cmp_max_ver"));
+CEP_DEFINE_STATIC_DT(dt_ser_pay_hist_name,     CEP_ACRO("CEP"), CEP_WORD("pay_hist_bt"));
+CEP_DEFINE_STATIC_DT(dt_ser_man_hist_name,     CEP_ACRO("CEP"), CEP_WORD("man_hist_bt"));
+
+static const char* const CEP_FED_LINK_TOPIC_SCHEMA        = "tp_schema";
+static const char* const CEP_FED_LINK_NOTE_MODE           = "link frame unsupported mode";
+static const char* const CEP_FED_LINK_NOTE_PAYLOAD        = "link frame payload history mismatch";
+static const char* const CEP_FED_LINK_NOTE_MANIFEST       = "link frame manifest history mismatch";
+static const char* const CEP_FED_LINK_NOTE_PAYLOAD_CAP    = "link frame missing payload history capability";
+static const char* const CEP_FED_LINK_NOTE_MANIFEST_CAP   = "link frame missing manifest history capability";
+static const char* const CEP_FED_LINK_NOTE_PAYLOAD_BYTES  = "link frame missing payload bytes";
+static const char* const CEP_FED_LINK_NOTE_PARSE          = "link frame parse failed";
+static const char* const CEP_FED_LINK_NOTE_TRAILER        = "link frame missing trailer";
 
 static const struct {
     const cepDT* (*dt)(void);
@@ -71,6 +97,23 @@ static const struct {
 static cepFedLinkRequestCtx* cep_fed_link_find_ctx(cepCell* request_cell) {
     for (cepFedLinkRequestCtx* node = g_link_requests; node; node = node->next) {
         if (node->request_cell == request_cell) {
+            return node;
+        }
+    }
+    return NULL;
+}
+
+static cepFedLinkRequestCtx* cep_fed_link_find_ctx_by_ids(const char* peer_id,
+                                                          const char* mount_id) {
+    if (!peer_id || !mount_id) {
+        return NULL;
+    }
+    for (cepFedLinkRequestCtx* node = g_link_requests; node; node = node->next) {
+        if (node->peer_id[0] == '\0' || node->mount_id[0] == '\0') {
+            continue;
+        }
+        if (strcmp(node->peer_id, peer_id) == 0 &&
+            strcmp(node->mount_id, mount_id) == 0) {
             return node;
         }
     }
@@ -208,6 +251,37 @@ static bool cep_fed_link_read_bool(cepCell* parent,
     return true;
 }
 
+static bool cep_fed_link_read_u32(cepCell* parent,
+                                  const cepDT* field,
+                                  bool required,
+                                  uint32_t* out_value) {
+    if (!parent || !field || !out_value) {
+        return false;
+    }
+    cepCell* node = cep_cell_find_by_name(parent, field);
+    if (!node) {
+        return !required;
+    }
+    node = cep_cell_resolve(node);
+    if (!node) {
+        return false;
+    }
+    cepData* data = NULL;
+    if (!cep_cell_require_data(&node, &data)) {
+        return false;
+    }
+    cepDT expected = cep_ops_make_dt("val/u32");
+    if (cep_dt_compare(&data->dt, &expected) != 0 || data->size != sizeof(uint32_t)) {
+        return false;
+    }
+    const uint32_t* payload = (const uint32_t*)cep_data_payload(data);
+    if (!payload) {
+        return false;
+    }
+    *out_value = *payload;
+    return true;
+}
+
 static cepFedTransportCaps cep_fed_link_read_cap_flags(cepCell* caps_dict) {
     cepFedTransportCaps caps = 0u;
     if (!caps_dict) {
@@ -291,6 +365,191 @@ static bool cep_fed_link_parse_caps(cepCell* request_cell,
         }
         *preferred = cep_fed_link_read_cap_flags(preferred_caps);
     }
+    return true;
+}
+
+static void cep_fed_link_read_serializer_caps(cepCell* request_cell,
+                                              cepFedTransportFlatPolicy* policy,
+                                              uint32_t* payload_history_beats,
+                                              uint32_t* manifest_history_beats) {
+    if (!request_cell || !policy) {
+        return;
+    }
+    cepCell* serializer = cep_cell_find_by_name(request_cell, dt_serializer_name());
+    if (!serializer) {
+        return;
+    }
+    serializer = cep_cell_resolve(serializer);
+    if (!serializer || !cep_cell_require_dictionary_store(&serializer)) {
+        return;
+    }
+    bool bool_value = false;
+    if (cep_fed_link_read_bool(serializer, dt_ser_crc32c_ok_name(), &bool_value)) {
+        policy->allow_crc32c = bool_value;
+    }
+    if (cep_fed_link_read_bool(serializer, dt_ser_deflate_ok_name(), &bool_value)) {
+        policy->allow_deflate = bool_value;
+    }
+    if (cep_fed_link_read_bool(serializer, dt_ser_aead_ok_name(), &bool_value)) {
+        policy->allow_aead = bool_value;
+    }
+    if (cep_fed_link_read_bool(serializer, dt_ser_warn_down_name(), &bool_value)) {
+        policy->warn_on_downgrade = bool_value;
+    }
+    uint32_t cmp_max = policy->comparator_max_version;
+    if (cep_fed_link_read_u32(serializer, dt_ser_cmpmax_name(), false, &cmp_max)) {
+        policy->comparator_max_version = cmp_max;
+    }
+    if (payload_history_beats) {
+        uint32_t beats = *payload_history_beats;
+        if (cep_fed_link_read_u32(serializer, dt_ser_pay_hist_name(), false, &beats)) {
+            *payload_history_beats = beats;
+        }
+    }
+    if (manifest_history_beats) {
+        uint32_t beats = *manifest_history_beats;
+        if (cep_fed_link_read_u32(serializer, dt_ser_man_hist_name(), false, &beats)) {
+            *manifest_history_beats = beats;
+        }
+    }
+}
+
+bool cep_fed_link_validate_frame_contract(uint32_t required_payload_history_beats,
+                                          uint32_t required_manifest_history_beats,
+                                          bool allow_upd_latest,
+                                          cepFedFrameMode mode,
+                                          const cepFlatFrameConfig* frame,
+                                          const char** failure_note) {
+    if (!frame) {
+        if (failure_note)
+            *failure_note = CEP_FED_LINK_NOTE_TRAILER;
+        return false;
+    }
+    if (mode == CEP_FED_FRAME_MODE_UPD_LATEST) {
+        if (!allow_upd_latest) {
+            if (failure_note)
+                *failure_note = CEP_FED_LINK_NOTE_MODE;
+            return false;
+        }
+    } else if (mode != CEP_FED_FRAME_MODE_DATA) {
+        if (failure_note)
+            *failure_note = CEP_FED_LINK_NOTE_MODE;
+        return false;
+    }
+    if (required_payload_history_beats > 0u &&
+        frame->payload_history_beats != required_payload_history_beats) {
+        if (failure_note)
+            *failure_note = CEP_FED_LINK_NOTE_PAYLOAD;
+        return false;
+    }
+    if (required_manifest_history_beats > 0u &&
+        frame->manifest_history_beats != required_manifest_history_beats) {
+        if (failure_note)
+            *failure_note = CEP_FED_LINK_NOTE_MANIFEST;
+        return false;
+    }
+    return true;
+}
+
+static bool cep_fed_link_validate_flat_frame(const cepFedLinkRequestCtx* ctx,
+                                             const uint8_t* payload,
+                                             size_t payload_len,
+                                             cepFedFrameMode mode) {
+    if (!ctx || !payload || payload_len == 0u) {
+        if (ctx) {
+            cep_fed_link_publish_state(ctx->request_cell,
+                                       "error",
+                                       CEP_FED_LINK_NOTE_PAYLOAD_BYTES,
+                                       NULL);
+        }
+        return false;
+    }
+
+    cepFlatReader* reader = cep_flat_reader_create();
+    if (!reader) {
+        cep_fed_link_publish_state(ctx->request_cell,
+                                   "error",
+                                   CEP_FED_LINK_NOTE_PARSE,
+                                   NULL);
+        return false;
+    }
+
+    bool ok = cep_flat_reader_feed(reader, payload, payload_len) &&
+              cep_flat_reader_commit(reader) &&
+              cep_flat_reader_ready(reader);
+    const char* failure_note = NULL;
+    if (ok) {
+        const cepFlatFrameConfig* frame = cep_flat_reader_frame(reader);
+        if (!frame) {
+            ok = false;
+            failure_note = CEP_FED_LINK_NOTE_TRAILER;
+        } else if (ctx->payload_history_beats > 0u &&
+                   (frame->capability_flags & CEP_FLAT_CAP_PAYLOAD_HISTORY) == 0u) {
+            ok = false;
+            failure_note = CEP_FED_LINK_NOTE_PAYLOAD_CAP;
+        } else if (ctx->manifest_history_beats > 0u &&
+                   (frame->capability_flags & CEP_FLAT_CAP_MANIFEST_HISTORY) == 0u) {
+            ok = false;
+            failure_note = CEP_FED_LINK_NOTE_MANIFEST_CAP;
+        } else if (!cep_fed_link_validate_frame_contract(ctx->payload_history_beats,
+                                                         ctx->manifest_history_beats,
+                                                         ctx->allow_upd_latest,
+                                                         mode,
+                                                         frame,
+                                                         &failure_note)) {
+            ok = false;
+        }
+    } else {
+        failure_note = CEP_FED_LINK_NOTE_PARSE;
+    }
+
+    cep_flat_reader_destroy(reader);
+
+    if (!ok) {
+        cep_fed_link_publish_state(ctx->request_cell,
+                                   "error",
+                                   failure_note ? failure_note : CEP_FED_LINK_NOTE_PARSE,
+                                   NULL);
+    }
+    return ok;
+}
+
+static bool cep_fed_link_on_frame(void* user_ctx,
+                                  cepFedTransportManagerMount* mount,
+                                  const uint8_t* payload,
+                                  size_t payload_len,
+                                  cepFedFrameMode mode) {
+    (void)mount;
+    cepFedLinkRequestCtx* ctx = user_ctx;
+    if (!ctx) {
+        return false;
+    }
+    return cep_fed_link_validate_flat_frame(ctx, payload, payload_len, mode);
+}
+
+static void cep_fed_link_on_event(void* user_ctx,
+                                  cepFedTransportManagerMount* mount,
+                                  cepFedTransportEventKind kind,
+                                  const char* detail) {
+    (void)mount;
+    cepFedLinkRequestCtx* ctx = user_ctx;
+    if (!ctx || kind != CEP_FED_TRANSPORT_EVENT_FATAL) {
+        return;
+    }
+    cep_fed_link_publish_state(ctx->request_cell,
+                               "error",
+                               detail ? detail : "link mount fatal event",
+                               NULL);
+}
+
+static bool cep_fed_link_setup_callbacks(cepFedLinkRequestCtx* ctx,
+                                         cepFedTransportMountCallbacks* callbacks) {
+    if (!ctx || !callbacks) {
+        return false;
+    }
+    callbacks->on_frame = cep_fed_link_on_frame;
+    callbacks->on_event = cep_fed_link_on_event;
+    callbacks->user_ctx = ctx;
     return true;
 }
 
@@ -420,6 +679,14 @@ int cep_fed_link_validator(const cepPath* signal_path, const cepPath* target_pat
     bool allow_upd_latest = false;
     uint64_t deadline = 0u;
 
+    cepFedTransportFlatPolicy flat_policy = {
+        .allow_crc32c = true,
+        .allow_deflate = true,
+        .allow_aead = true,
+        .warn_on_downgrade = true,
+        .comparator_max_version = UINT32_MAX,
+    };
+
     if (!cep_fed_link_read_text(request_cell, dt_peer_field_name(), true, peer, sizeof peer) ||
         !cep_fed_link_read_text(request_cell, dt_mount_field_name(), true, mount, sizeof mount) ||
         !cep_fed_link_read_text(request_cell, dt_mode_field_name(), true, mode, sizeof mode) ||
@@ -430,6 +697,12 @@ int cep_fed_link_validator(const cepPath* signal_path, const cepPath* target_pat
 
     (void)cep_fed_link_read_text(request_cell, dt_pref_provider(), false, preferred_provider, sizeof preferred_provider);
     (void)cep_fed_link_read_bool(request_cell, dt_allow_upd(), &allow_upd_latest);
+    uint32_t payload_history_beats = 0u;
+    uint32_t manifest_history_beats = 0u;
+    cep_fed_link_read_serializer_caps(request_cell,
+                                      &flat_policy,
+                                      &payload_history_beats,
+                                      &manifest_history_beats);
 
     cepCell* deadline_node = cep_cell_find_by_name(request_cell, dt_deadline_name());
     if (deadline_node) {
@@ -466,24 +739,55 @@ int cep_fed_link_validator(const cepPath* signal_path, const cepPath* target_pat
     };
 
     cepFedLinkRequestCtx* ctx = cep_fed_link_find_ctx(request_cell);
-    if (ctx && ctx->mount) {
+    bool ctx_new = false;
+    if (!ctx) {
+        ctx = cep_malloc0(sizeof *ctx);
+        if (!ctx) {
+            return CEP_ENZYME_FATAL;
+        }
+        ctx->request_cell = request_cell;
+        ctx_new = true;
+    } else if (ctx->mount) {
         (void)cep_fed_link_mount_release(ctx->mount, "link-reconfigure");
         ctx->mount = NULL;
     }
+    (void)snprintf(ctx->peer_id, sizeof ctx->peer_id, "%s", peer);
+    (void)snprintf(ctx->mount_id, sizeof ctx->mount_id, "%s", mount);
 
-    cepFedTransportManagerMount* new_mount = NULL;
-    if (!cep_fed_link_mount_apply(&cfg, NULL, &new_mount)) {
-        cep_fed_link_publish_state(request_cell, "error", "transport manager rejected configuration", NULL);
+    cepFedTransportMountCallbacks callbacks = {0};
+    if (!cep_fed_link_setup_callbacks(ctx, &callbacks)) {
+        if (ctx_new) {
+            cep_free(ctx);
+        }
+        cep_fed_link_publish_state(request_cell,
+                                   "error",
+                                   "failed to prepare link callbacks",
+                                   NULL);
         return CEP_ENZYME_FATAL;
     }
 
-    if (!ctx) {
-        ctx = cep_malloc0(sizeof *ctx);
-        ctx->request_cell = request_cell;
+    cepFedTransportManagerMount* new_mount = NULL;
+    if (!cep_fed_link_mount_apply(&cfg, &callbacks, &new_mount)) {
+        cep_fed_link_publish_state(request_cell, "error", "transport manager rejected configuration", NULL);
+        if (ctx_new) {
+            cep_free(ctx);
+        }
+        return CEP_ENZYME_FATAL;
+    }
+
+    ctx->mount = new_mount;
+    ctx->flat_policy = flat_policy;
+    ctx->payload_history_beats = payload_history_beats;
+    ctx->manifest_history_beats = manifest_history_beats;
+    ctx->allow_upd_latest = allow_upd_latest;
+    if (ctx_new) {
         ctx->next = g_link_requests;
         g_link_requests = ctx;
     }
-    ctx->mount = new_mount;
+    cep_fed_transport_manager_mount_set_flat_policy(new_mount, &flat_policy);
+    cep_fed_transport_manager_mount_set_flat_history(new_mount,
+                                                     ctx->payload_history_beats,
+                                                     ctx->manifest_history_beats);
 
     const char* provider_id = cep_fed_transport_manager_mount_provider_id(new_mount);
     cep_fed_link_publish_state(request_cell, "active", NULL, provider_id);
@@ -505,4 +809,36 @@ int cep_fed_link_destructor(const cepPath* signal_path, const cepPath* target_pa
     cep_fed_link_publish_state(request_cell, "removed", NULL, NULL);
     cep_fed_link_remove_ctx(request_cell);
     return CEP_ENZYME_SUCCESS;
+}
+
+bool cep_fed_link_emit_cell(const char* peer_id,
+                            const char* mount_id,
+                            const cepCell* cell,
+                            const cepSerializationHeader* header,
+                            size_t blob_payload_bytes,
+                            cepFedFrameMode mode,
+                            uint64_t deadline_beat) {
+    if (!peer_id || !mount_id || !cell) {
+        return false;
+    }
+    if (!g_link_manager) {
+        g_link_manager = cep_fed_pack_manager();
+    }
+    if (!g_link_manager) {
+        return false;
+    }
+    cepFedLinkRequestCtx* ctx = cep_fed_link_find_ctx_by_ids(peer_id, mount_id);
+    if (!ctx || !ctx->mount) {
+        return false;
+    }
+    if (mode == CEP_FED_FRAME_MODE_UPD_LATEST && !ctx->allow_upd_latest) {
+        return false;
+    }
+    return cep_fed_transport_manager_send_cell(g_link_manager,
+                                               ctx->mount,
+                                               cell,
+                                               header,
+                                               blob_payload_bytes,
+                                               mode,
+                                               deadline_beat);
 }

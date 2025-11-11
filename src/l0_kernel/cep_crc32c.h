@@ -9,6 +9,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef enum {
+    CEP_CRC32C_OVERRIDE_AUTO = -1,
+    CEP_CRC32C_OVERRIDE_FORCE_IEEE = 0,
+    CEP_CRC32C_OVERRIDE_FORCE_CASTAGNOLI = 1,
+} cepCrc32cOverride;
+
 uint32_t cep_crc32c(const void* data, size_t size, uint32_t seed);
+cepCrc32cOverride cep_crc32c_set_castagnoli_override(cepCrc32cOverride override_mode);
 
 #endif /* CEP_CRC32C_H */

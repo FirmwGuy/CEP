@@ -203,6 +203,10 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `transports` | Federation transport | registry of transport providers keyed by provider ID. |
 | `transport` | Federation transport | per-mount dictionary recording the chosen provider and capability summary. |
 | `caps` | Federation transport | nested dictionary capturing capability bitmaps (required, preferred, or provider-specific). |
+| `cap_crc32c` | Federation transport | provider capability flag indicating CRC32C checksum support. |
+| `cap_deflate` | Federation transport | provider capability flag indicating deflate frame compression support. |
+| `cap_aead` | Federation transport | provider capability flag indicating AEAD payload encryption support. |
+| `cap_cmpver` | Federation transport | provider capability flag signalling comparator-version awareness. |
 | `prov_caps` | Federation transport | mirrors the selected provider capability bitset for the active mount. |
 | `provider` | Federation transport | stores the provider identifier associated with a mount record. |
 | `upd_latest` | Federation transport | boolean flag indicating a mount opts into droppable gauge frames. |
@@ -212,6 +216,12 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `max_infl` | Federation transport | mirror organ bundle parameter limiting simultaneous in-flight bundles. |
 | `resume_tok` | Federation transport | mirror organ optional token handed to callers to resume paused mirrors. |
 | `pend_resum` | Federation transport | mirror organ status field publishing the pending resume token when manual commits pause work. |
+| `serializer` | Federation transport | optional mirror organ dictionary constraining flat serializer features. |
+| `crc32c_ok` | Federation transport | serializer policy flag that permits CRC32C emission on a mirror mount. |
+| `deflate_ok` | Federation transport | serializer policy flag that permits deflate compression on a mirror mount. |
+| `aead_ok` | Federation transport | serializer policy flag that permits AEAD encryption on a mirror mount. |
+| `warn_down` | Federation transport | serializer policy flag enabling/disabling CEI when downgrading features. |
+| `cmp_max_ver` | Federation transport | serializer policy field limiting comparator versions emitted for a mirror mount. |
 | `bundle_seq` | Federation transport | mirror organ status field recording the last committed bundle sequence. |
 | `commit_beat` | Federation transport | mirror organ status field recording the beat of the most recent commit. |
 | `tp_inv_timeout` | Federation transport | CEI topic emitted when a remote invocation exceeds its beat budget. |
@@ -237,6 +247,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `tp_sendfail` | Federation transport | CEI topic emitted when a provider send operation fails. |
 | `tp_upd_den` | Federation transport | CEI topic capturing rejected `upd_latest` frames (mount opted out). |
 | `tp_upd_mis` | Federation transport | CEI topic capturing `upd_latest` frames sent to non-unreliable transports. |
+| `tp_flatneg` | Federation transport | CEI topic emitted when the sender downgrades CRC32C/deflate/AEAD for a mount. |
 | `tp_mconf` | Federation transport | CEI topic emitted when a mirror organ request conflicts with an existing mount. |
 | `tp_mtimeout` | Federation transport | CEI topic emitted when a mirror organ request exceeds its deadline. |
 

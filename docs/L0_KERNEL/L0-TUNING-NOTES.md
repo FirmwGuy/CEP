@@ -176,7 +176,7 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 
 **Read side**
 
-* The reader **stages** per‑transaction work until it sees a CONTROL commit, then applies all stages atomically. For chunked data, the reader verifies **offset continuity** and optional **payload hash** (FNV‑1a + DT/size fingerprint) — hashing costs are proportional to payload size, so avoid enabling hashes on very large streams if not needed .
+* The reader **stages** per‑transaction work until it sees a CONTROL commit, then applies all stages atomically. For flat frames this payload hash is BLAKE3-based; the legacy chunk stream still verifies **offset continuity** and optional **payload hash** (FNV‑1a + DT/size fingerprint) — hashing costs are proportional to payload size, so avoid enabling hashes on very large streams if not needed .
 
 **Tuning tips**
 

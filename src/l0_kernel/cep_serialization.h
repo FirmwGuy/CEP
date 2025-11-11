@@ -116,6 +116,7 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
 bool cep_serialization_reader_commit(cepSerializationReader* reader);
 bool cep_serialization_reader_pending(const cepSerializationReader* reader);
 bool cep_serialization_is_busy(void);
+bool cep_serialization_set_flat_mode_override(bool enable_flat);
 
 #ifdef __cplusplus
 }

@@ -13,7 +13,6 @@
 #include "cep_executor.h"
 
 #define CEP_DISABLE_LEGACY_SERIALIZATION_TESTS 1
-#define CEP_DISABLE_FEDERATION_TESTS 1
 
 #include <inttypes.h>
 #include <stdarg.h>
@@ -619,6 +618,38 @@ MunitTest tests[] = {
         NULL
     },
     {
+        "/fed_transport/send_cell_flat",
+        test_fed_transport_send_cell_flat,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_transport/send_cell_provider_caps",
+        test_fed_transport_send_cell_provider_caps,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_mirror/frame_contract",
+        test_fed_mirror_frame_contract,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_invoke/frame_contract",
+        test_fed_invoke_frame_contract,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/fed_transport/inbound",
         test_fed_transport_inbound,
         NULL,
@@ -659,6 +690,22 @@ MunitTest tests[] = {
         NULL
     },
     {
+        "/fed_link/emit_cell",
+        test_fed_link_emit_cell,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_link/frame_contract",
+        test_fed_link_frame_contract,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/fed_mirror/validator_success",
         test_fed_mirror_validator_success,
         NULL,
@@ -677,6 +724,14 @@ MunitTest tests[] = {
     {
         "/fed_mirror/validator_deadline",
         test_fed_mirror_validator_deadline,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_mirror/emit_cell",
+        test_fed_mirror_emit_cell,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,
@@ -741,6 +796,14 @@ MunitTest tests[] = {
     {
         "/fed_invoke/reject",
         test_fed_invoke_reject,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_invoke/emit_cell",
+        test_fed_invoke_emit_cell,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,

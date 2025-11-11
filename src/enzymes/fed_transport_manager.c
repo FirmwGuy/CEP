@@ -9,11 +9,14 @@
 #include "fed_transport.h"
 
 #include "../l0_kernel/cep_cell.h"
+#include "../l0_kernel/cep_crc32c.h"
 #include "../l0_kernel/cep_molecule.h"
 #include "../l0_kernel/cep_namepool.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 struct cepFedTransportManagerMount {
     cepFedTransportManager*        manager;
@@ -41,7 +44,63 @@ struct cepFedTransportManagerMount {
     uint8_t*                       pending_payload;
     size_t                         pending_len;
     cepFedTransportMountCallbacks  callbacks;
+    uint32_t                       payload_history_beats;
+    uint32_t                       manifest_history_beats;
+    bool                           flat_allow_crc32c;
+    bool                           flat_allow_deflate;
+    bool                           flat_allow_aead;
+    bool                           flat_warn_on_downgrade;
+    bool                           flat_warn_crc32c_emitted;
+    bool                           flat_warn_compression_emitted;
+    bool                           flat_warn_aead_emitted;
+    uint32_t                       flat_comparator_max_version;
 };
+
+typedef struct {
+    uint8_t* data;
+    size_t   size;
+    size_t   capacity;
+} cepFedFrameBuffer;
+
+static void cep_fed_frame_buffer_reset(cepFedFrameBuffer* buffer) {
+    if (!buffer) {
+        return;
+    }
+    if (buffer->data) {
+        cep_free(buffer->data);
+        buffer->data = NULL;
+    }
+    buffer->size = 0u;
+    buffer->capacity = 0u;
+}
+
+static bool cep_fed_frame_capture_sink(void* ctx, const uint8_t* chunk, size_t size) {
+    if (!ctx || (!chunk && size)) {
+        return false;
+    }
+    cepFedFrameBuffer* buffer = ctx;
+    if (size == 0u) {
+        return true;
+    }
+    size_t required = buffer->size + size;
+    if (required > buffer->capacity) {
+        size_t new_capacity = buffer->capacity ? buffer->capacity : 1024u;
+        while (new_capacity < required) {
+            new_capacity *= 2u;
+        }
+        uint8_t* grown = buffer->data
+            ? cep_realloc(buffer->data, new_capacity)
+            : cep_malloc(new_capacity);
+        if (!grown) {
+            return false;
+        }
+        buffer->data = grown;
+        buffer->capacity = new_capacity;
+    }
+    memcpy(buffer->data + buffer->size, chunk, size);
+    buffer->size += size;
+    return true;
+}
 
 CEP_DEFINE_STATIC_DT(dt_mounts_name, CEP_ACRO("CEP"), CEP_WORD("mounts"));
 CEP_DEFINE_STATIC_DT(dt_caps_name, CEP_ACRO("CEP"), CEP_WORD("caps"));
@@ -60,6 +119,10 @@ CEP_DEFINE_STATIC_DT(dt_cap_latency_name, CEP_ACRO("CEP"), CEP_WORD("low_latency
 CEP_DEFINE_STATIC_DT(dt_cap_local_ipc_name, CEP_ACRO("CEP"), CEP_WORD("local_ipc"));
 CEP_DEFINE_STATIC_DT(dt_cap_remote_net_name, CEP_ACRO("CEP"), CEP_WORD("remote_net"));
 CEP_DEFINE_STATIC_DT(dt_cap_unreliable_name, CEP_ACRO("CEP"), CEP_WORD("unreliable"));
+CEP_DEFINE_STATIC_DT(dt_cap_crc32c_name, CEP_ACRO("CEP"), CEP_WORD("cap_crc32c"));
+CEP_DEFINE_STATIC_DT(dt_cap_deflate_name, CEP_ACRO("CEP"), CEP_WORD("cap_deflate"));
+CEP_DEFINE_STATIC_DT(dt_cap_aead_name, CEP_ACRO("CEP"), CEP_WORD("cap_aead"));
+CEP_DEFINE_STATIC_DT(dt_cap_cmpver_name, CEP_ACRO("CEP"), CEP_WORD("cap_cmpver"));
 CEP_DEFINE_STATIC_DT(dt_sev_error_name, CEP_ACRO("sev"), CEP_WORD("error"));
 CEP_DEFINE_STATIC_DT(dt_sev_warn_name, CEP_ACRO("sev"), CEP_WORD("warn"));
 CEP_DEFINE_STATIC_DT(dt_services_name, CEP_ACRO("CEP"), CEP_WORD("services"));
@@ -79,6 +142,14 @@ CEP_DEFINE_STATIC_DT(dt_ceh_name, CEP_ACRO("CEP"), CEP_WORD("ceh"));
 CEP_DEFINE_STATIC_DT(dt_severity_field_name, CEP_ACRO("CEP"), CEP_WORD("severity"));
 CEP_DEFINE_STATIC_DT(dt_note_field_name, CEP_ACRO("CEP"), CEP_WORD("note"));
 CEP_DEFINE_STATIC_DT(dt_beat_field_name, CEP_ACRO("CEP"), CEP_WORD("beat"));
+CEP_DEFINE_STATIC_DT(dt_serializer_name, CEP_ACRO("CEP"), CEP_WORD("serializer"));
+CEP_DEFINE_STATIC_DT(dt_ser_crc32c_ok_name, CEP_ACRO("CEP"), CEP_WORD("crc32c_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_deflate_ok_name, CEP_ACRO("CEP"), CEP_WORD("deflate_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_aead_ok_name, CEP_ACRO("CEP"), CEP_WORD("aead_ok"));
+CEP_DEFINE_STATIC_DT(dt_ser_warn_down_name, CEP_ACRO("CEP"), CEP_WORD("warn_down"));
+CEP_DEFINE_STATIC_DT(dt_ser_cmpmax_name, CEP_ACRO("CEP"), CEP_WORD("cmp_max_ver"));
+CEP_DEFINE_STATIC_DT(dt_ser_pay_hist_name, CEP_ACRO("CEP"), CEP_WORD("pay_hist_bt"));
+CEP_DEFINE_STATIC_DT(dt_ser_man_hist_name, CEP_ACRO("CEP"), CEP_WORD("man_hist_bt"));
 
 typedef const cepDT* (*cepFedTransportDtGetter)(void);
 
@@ -97,6 +168,10 @@ static const cepFedTransportCapEntry cep_fed_transport_cap_entries[] = {
     { CEP_FED_TRANSPORT_CAP_LOCAL_IPC,   dt_cap_local_ipc_name   },
     { CEP_FED_TRANSPORT_CAP_REMOTE_NET,  dt_cap_remote_net_name  },
     { CEP_FED_TRANSPORT_CAP_UNRELIABLE,  dt_cap_unreliable_name  },
+    { CEP_FED_TRANSPORT_CAP_CHECKSUM_CRC32C,      dt_cap_crc32c_name      },
+    { CEP_FED_TRANSPORT_CAP_COMPRESSION_DEFLATE,  dt_cap_deflate_name     },
+    { CEP_FED_TRANSPORT_CAP_ENCRYPTION_AEAD,      dt_cap_aead_name        },
+    { CEP_FED_TRANSPORT_CAP_COMPARATOR_VERSIONED, dt_cap_cmpver_name      },
 };
 
 static const char* const CEP_FED_TOPIC_NO_PROVIDER      = "tp_noprov";
@@ -111,6 +186,7 @@ static const char* const CEP_FED_TOPIC_UPD_MISUSE       = "tp_upd_mis";
 static const char* const CEP_FED_TOPIC_BACKPRESSURE     = "tp_backpr";
 static const char* const CEP_FED_TOPIC_SEND_FAILED      = "tp_sendfail";
 static const char* const CEP_FED_TOPIC_FATAL_EVENT      = "tp_fatal";
+static const char* const CEP_FED_TOPIC_FLAT_NEGOTIATION = "tp_flatneg";
 
 static inline unsigned cep_fed_transport_popcount(cepFedTransportCaps value) {
     unsigned count = 0u;
@@ -126,6 +202,15 @@ static void cep_fed_transport_manager_update_health(cepFedTransportManager* mana
                                                     const cepDT* severity,
                                                     const char* note,
                                                     const char* topic);
+
+static void cep_fed_transport_manager_mount_reset_pending(cepFedTransportManagerMount* mount);
+static bool cep_fed_env_push_override(const char* name, uint32_t value, char** previous_copy);
+static bool cep_fed_env_push_text_override(const char* name, const char* value, char** previous_copy);
+static void cep_fed_env_pop_override(const char* name, char* previous_copy);
+static void cep_fed_transport_manager_warn_flat_downgrade(cepFedTransportManager* manager,
+                                                          cepFedTransportManagerMount* mount,
+                                                          bool* warned_flag,
+                                                          const char* note);
 
 static void cep_fed_transport_manager_mount_reset_pending(cepFedTransportManagerMount* mount) {
     if (!mount) {
@@ -583,6 +668,36 @@ static bool cep_fed_transport_manager_update_mount_schema(cepFedTransportManager
         }
     }
 
+    cepCell* serializer_cell = cep_cell_ensure_dictionary_child(mount->mount_cell, dt_serializer_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!serializer_cell) {
+        return false;
+    }
+    serializer_cell = cep_cell_resolve(serializer_cell);
+    if (!serializer_cell || !cep_cell_require_dictionary_store(&serializer_cell)) {
+        return false;
+    }
+    if (!cep_fed_transport_manager_write_bool(serializer_cell, dt_ser_crc32c_ok_name(), mount->flat_allow_crc32c)) {
+        return false;
+    }
+    if (!cep_fed_transport_manager_write_bool(serializer_cell, dt_ser_deflate_ok_name(), mount->flat_allow_deflate)) {
+        return false;
+    }
+    if (!cep_fed_transport_manager_write_bool(serializer_cell, dt_ser_aead_ok_name(), mount->flat_allow_aead)) {
+        return false;
+    }
+    if (!cep_fed_transport_manager_write_bool(serializer_cell, dt_ser_warn_down_name(), mount->flat_warn_on_downgrade)) {
+        return false;
+    }
+    if (!cep_fed_transport_manager_write_u64(serializer_cell, dt_ser_cmpmax_name(), (uint64_t)mount->flat_comparator_max_version)) {
+        return false;
+    }
+    if (!cep_fed_transport_manager_write_u64(serializer_cell, dt_ser_pay_hist_name(), mount->payload_history_beats)) {
+        return false;
+    }
+    if (!cep_fed_transport_manager_write_u64(serializer_cell, dt_ser_man_hist_name(), mount->manifest_history_beats)) {
+        return false;
+    }
+
     (void)cep_cell_resolve(mount->mount_cell);
     return true;
 }
@@ -934,6 +1049,16 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
     mount->frame_count = 0u;
     mount->last_frame_mode = CEP_FED_FRAME_MODE_DATA;
     mount->last_frame_sample = 0u;
+    mount->payload_history_beats = 0u;
+    mount->manifest_history_beats = 0u;
+    mount->flat_allow_crc32c = true;
+    mount->flat_allow_deflate = true;
+    mount->flat_allow_aead = true;
+    mount->flat_warn_on_downgrade = true;
+    mount->flat_warn_crc32c_emitted = false;
+    mount->flat_warn_compression_emitted = false;
+    mount->flat_warn_aead_emitted = false;
+    mount->flat_comparator_max_version = UINT32_MAX;
     cep_fed_transport_manager_mount_reset_pending(mount);
 
     const char* provider_id = NULL;
@@ -1230,4 +1355,263 @@ const char* cep_fed_transport_manager_mount_provider_id(const cepFedTransportMan
         return NULL;
     }
     return mount->provider_id;
+}
+
+bool cep_fed_transport_manager_send_cell(cepFedTransportManager* manager,
+                                         cepFedTransportManagerMount* mount,
+                                         const cepCell* cell,
+                                         const cepSerializationHeader* header,
+                                         size_t blob_payload_bytes,
+                                         cepFedFrameMode mode,
+                                         uint64_t deadline_beat) {
+    if (!manager || !mount || !cell) {
+        return false;
+    }
+
+    cepFedTransportCaps provider_caps = (mount && mount->provider)
+        ? mount->provider->caps
+        : 0u;
+    bool provider_crc32c = (provider_caps & CEP_FED_TRANSPORT_CAP_CHECKSUM_CRC32C) != 0u;
+    bool provider_deflate = (provider_caps & CEP_FED_TRANSPORT_CAP_COMPRESSION_DEFLATE) != 0u;
+    bool provider_aead = (provider_caps & CEP_FED_TRANSPORT_CAP_ENCRYPTION_AEAD) != 0u;
+
+    const char* compression_env = getenv("CEP_SERIALIZATION_FLAT_COMPRESSION");
+    bool compression_requested = compression_env && strcasecmp(compression_env, "deflate") == 0;
+    const char* aead_env = getenv("CEP_SERIALIZATION_FLAT_AEAD_MODE");
+    bool aead_requested = aead_env && *aead_env && strcasecmp(aead_env, "none") != 0;
+    const char* crc_env = getenv("CEP_CRC32C_MODE");
+
+    bool compression_allowed = mount->flat_allow_deflate && provider_deflate;
+    bool aead_allowed = mount->flat_allow_aead && provider_aead;
+    bool crc_allowed = mount->flat_allow_crc32c && provider_crc32c;
+
+    char* prev_payload_hist = NULL;
+    char* prev_manifest_hist = NULL;
+    char* prev_compression = NULL;
+    char* prev_aead_mode = NULL;
+    char* prev_comparator_max = NULL;
+    bool env_ok = true;
+    bool downgraded_compression = false;
+    bool downgraded_aead = false;
+    bool downgraded_crc = false;
+    cepCrc32cOverride prev_crc_override = CEP_CRC32C_OVERRIDE_AUTO;
+    bool crc_override_applied = false;
+    if (mount->payload_history_beats > 0u) {
+        env_ok = cep_fed_env_push_override("CEP_SERIALIZATION_FLAT_PAYLOAD_HISTORY_BEATS",
+                                           mount->payload_history_beats,
+                                           &prev_payload_hist);
+    }
+    if (env_ok && mount->manifest_history_beats > 0u) {
+        env_ok = cep_fed_env_push_override("CEP_SERIALIZATION_FLAT_MANIFEST_HISTORY_BEATS",
+                                           mount->manifest_history_beats,
+                                           &prev_manifest_hist);
+    }
+    if (env_ok && mount->flat_comparator_max_version != UINT32_MAX) {
+        env_ok = cep_fed_env_push_override("CEP_SERIALIZATION_FLAT_MAX_COMPARATOR_VERSION",
+                                           mount->flat_comparator_max_version,
+                                           &prev_comparator_max);
+    }
+    const char* downgraded_crc_note = NULL;
+    const char* downgraded_compression_note = NULL;
+    const char* downgraded_aead_note = NULL;
+
+    if (env_ok && compression_requested && !compression_allowed) {
+        env_ok = cep_fed_env_push_text_override("CEP_SERIALIZATION_FLAT_COMPRESSION",
+                                                "none",
+                                                &prev_compression);
+        if (env_ok) {
+            downgraded_compression = true;
+            downgraded_compression_note = provider_deflate
+                ? "Peer lacks deflate support; disabling frame compression"
+                : "Transport provider lacks deflate capability; disabling frame compression";
+        }
+    }
+    if (env_ok && aead_requested && !aead_allowed) {
+        env_ok = cep_fed_env_push_text_override("CEP_SERIALIZATION_FLAT_AEAD_MODE",
+                                                "none",
+                                                &prev_aead_mode);
+        if (env_ok) {
+            downgraded_aead = true;
+            downgraded_aead_note = provider_aead
+                ? "Peer rejected AEAD; sending plaintext payloads"
+                : "Transport provider lacks AEAD capability; sending plaintext payloads";
+        }
+    }
+    if (env_ok && !crc_allowed) {
+        bool crc_env_cast = crc_env && *crc_env && strcasecmp(crc_env, "castagnoli") == 0;
+        prev_crc_override = cep_crc32c_set_castagnoli_override(CEP_CRC32C_OVERRIDE_FORCE_IEEE);
+        crc_override_applied = true;
+        bool prev_forced_cast = (prev_crc_override == CEP_CRC32C_OVERRIDE_FORCE_CASTAGNOLI);
+        if (crc_env_cast || prev_forced_cast) {
+            downgraded_crc = true;
+            if (!mount->flat_allow_crc32c) {
+                downgraded_crc_note = "Peer cannot ingest CRC32C; forcing IEEE CRC32";
+            } else if (!provider_crc32c) {
+                downgraded_crc_note = "Transport provider lacks CRC32C capability; forcing IEEE CRC32";
+            }
+        }
+    }
+    if (!env_ok) {
+        cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_PAYLOAD_HISTORY_BEATS", prev_payload_hist);
+        cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_MANIFEST_HISTORY_BEATS", prev_manifest_hist);
+        cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_MAX_COMPARATOR_VERSION", prev_comparator_max);
+        cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_COMPRESSION", prev_compression);
+        cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_AEAD_MODE", prev_aead_mode);
+        if (crc_override_applied) {
+            cep_crc32c_set_castagnoli_override(prev_crc_override);
+        }
+        return false;
+    }
+
+    cepFedFrameBuffer buffer = {0};
+    bool emitted = cep_serialization_emit_cell(cell,
+                                               header,
+                                               cep_fed_frame_capture_sink,
+                                               &buffer,
+                                               blob_payload_bytes);
+    cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_PAYLOAD_HISTORY_BEATS", prev_payload_hist);
+    cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_MANIFEST_HISTORY_BEATS", prev_manifest_hist);
+    cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_MAX_COMPARATOR_VERSION", prev_comparator_max);
+    cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_COMPRESSION", prev_compression);
+    cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_AEAD_MODE", prev_aead_mode);
+    if (crc_override_applied) {
+        cep_crc32c_set_castagnoli_override(prev_crc_override);
+    }
+    if (!emitted || buffer.size == 0u) {
+        cep_fed_frame_buffer_reset(&buffer);
+        return false;
+    }
+
+    bool sent = cep_fed_transport_manager_send(manager,
+                                               mount,
+                                               buffer.data,
+                                               buffer.size,
+                                               mode,
+                                               deadline_beat);
+    cep_fed_frame_buffer_reset(&buffer);
+    if (downgraded_crc) {
+        const char* note = downgraded_crc_note
+            ? downgraded_crc_note
+            : "CRC32C disabled; forcing IEEE CRC32";
+        cep_fed_transport_manager_warn_flat_downgrade(manager,
+                                                      mount,
+                                                      &mount->flat_warn_crc32c_emitted,
+                                                      note);
+    }
+    if (downgraded_compression) {
+        const char* note = downgraded_compression_note
+            ? downgraded_compression_note
+            : "Frame compression unavailable; disabling deflate";
+        cep_fed_transport_manager_warn_flat_downgrade(manager,
+                                                      mount,
+                                                      &mount->flat_warn_compression_emitted,
+                                                      note);
+    }
+    if (downgraded_aead) {
+        const char* note = downgraded_aead_note
+            ? downgraded_aead_note
+            : "AEAD unavailable; sending plaintext payloads";
+        cep_fed_transport_manager_warn_flat_downgrade(manager,
+                                                      mount,
+                                                      &mount->flat_warn_aead_emitted,
+                                                      note);
+    }
+    return sent;
+}
+
+void cep_fed_transport_manager_mount_set_flat_history(cepFedTransportManagerMount* mount,
+                                                      uint32_t payload_history_beats,
+                                                      uint32_t manifest_history_beats) {
+    if (!mount) {
+        return;
+    }
+    mount->payload_history_beats = payload_history_beats;
+    mount->manifest_history_beats = manifest_history_beats;
+}
+
+void cep_fed_transport_manager_mount_set_flat_policy(cepFedTransportManagerMount* mount,
+                                                     const cepFedTransportFlatPolicy* policy) {
+    if (!mount) {
+        return;
+    }
+    if (!policy) {
+        mount->flat_allow_crc32c = true;
+        mount->flat_allow_deflate = true;
+        mount->flat_allow_aead = true;
+        mount->flat_warn_on_downgrade = true;
+        mount->flat_comparator_max_version = UINT32_MAX;
+    } else {
+        mount->flat_allow_crc32c = policy->allow_crc32c;
+        mount->flat_allow_deflate = policy->allow_deflate;
+        mount->flat_allow_aead = policy->allow_aead;
+        mount->flat_warn_on_downgrade = policy->warn_on_downgrade;
+        mount->flat_comparator_max_version = policy->comparator_max_version;
+    }
+    mount->flat_warn_crc32c_emitted = false;
+    mount->flat_warn_compression_emitted = false;
+    mount->flat_warn_aead_emitted = false;
+}
+static bool cep_fed_env_push_override(const char* name,
+                                      uint32_t value,
+                                      char** previous_copy) {
+    if (!name) {
+        if (previous_copy)
+            *previous_copy = NULL;
+        return false;
+    }
+    const char* current = getenv(name);
+    if (previous_copy) {
+        *previous_copy = current ? strdup(current) : NULL;
+    }
+    char buf[32];
+    int written = snprintf(buf, sizeof buf, "%u", value);
+    if (written < 0 || (size_t)written >= sizeof buf) {
+        return false;
+    }
+    return setenv(name, buf, 1) == 0;
+}
+
+static bool cep_fed_env_push_text_override(const char* name,
+                                           const char* value,
+                                           char** previous_copy) {
+    if (!name || !value) {
+        if (previous_copy) {
+            *previous_copy = NULL;
+        }
+        return false;
+    }
+    const char* current = getenv(name);
+    if (previous_copy) {
+        *previous_copy = current ? strdup(current) : NULL;
+    }
+    return setenv(name, value, 1) == 0;
+}
+
+static void cep_fed_env_pop_override(const char* name, char* previous_copy) {
+    if (!name)
+        return;
+    if (previous_copy) {
+        setenv(name, previous_copy, 1);
+        free(previous_copy);
+    } else {
+        unsetenv(name);
+    }
+}
+
+static void cep_fed_transport_manager_warn_flat_downgrade(cepFedTransportManager* manager,
+                                                          cepFedTransportManagerMount* mount,
+                                                          bool* warned_flag,
+                                                          const char* note) {
+    if (!manager || !mount || !warned_flag || !note) {
+        return;
+    }
+    if (!mount->flat_warn_on_downgrade || *warned_flag) {
+        return;
+    }
+    cep_fed_transport_manager_emit_diag(manager,
+                                        mount,
+                                        dt_sev_warn_name(),
+                                        note,
+                                        CEP_FED_TOPIC_FLAT_NEGOTIATION);
+    *warned_flag = true;
 }

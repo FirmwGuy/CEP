@@ -36,7 +36,14 @@ The canonical specification (fields, varints, AEAD layout) lives in `FLAT_SERIAL
 
 ### AEAD & compression
 - Optional AEAD is controlled via `CEP_SERIALIZATION_FLAT_AEAD_MODE` (`none`, `chacha20`, `xchacha20`) and `CEP_SERIALIZATION_FLAT_AEAD_KEY` (32-byte hex). Nonces are deterministic (keyed BLAKE3 over record key + chunk metadata) so replays remain byte-identical while maintaining uniqueness per payload revision.
+- AEAD encrypts only payload bytes (including history records). Manifests, trailers, and selectors stay plaintext so CAS fingerprints, audit tooling, and manifests remain indexable. Use encrypted transports (TLS/Noise/etc.) or encrypted volumes if the entire frame must be opaque in-flight or at-rest.
 - Frame compression is negotiated via `CEP_SERIALIZATION_FLAT_COMPRESSION` (`none` or `deflate`). When enabled, the serializer wraps the flat buffer in a `CFLT` container, records the uncompressed/compressed sizes, and raises `CEP_FLAT_CAP_FRAME_COMPRESSION`.
+
+### Checksums
+- Frames advertise the checksum algorithm in the trailer. By default writers use the IEEE CRC-32 polynomial via zlib. Set `CEP_CRC32C_MODE=castagnoli` to opt into hardware CRC32C (Castagnoli) when the CPU exposes SSE4.2 or ARM CRC32 instructions; emitters automatically fall back to IEEE CRC32 when hardware support is missing so receivers never see mixed algorithms mid-stream.
+
+### Comparator ceilings
+- Writers honour `CEP_SERIALIZATION_FLAT_MAX_COMPARATOR_VERSION` (default: unlimited). When a store’s comparator advertises a higher version than the override permits, serialization fails with `serialization.store.comparator_version` so the caller can negotiate a compatible reader before emitting bytes. Federation mounts set this knob automatically from `serializer/cmp_max_ver`.
 
 ### Namepool & CAS
 - Every record key is expressed in DT-segment form. If a path references a namepool entry the reader may not have, the writer emits `namepool_delta` records and sets `CEP_FLAT_CAP_NAMEPOOL_MAP`. Readers ingest those deltas first, ensuring the rest of the frame resolves cleanly.

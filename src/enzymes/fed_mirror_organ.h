@@ -8,6 +8,7 @@
 
 #include "fed_transport_manager.h"
 #include "../l0_kernel/cep_cell.h"
+#include "../l0_kernel/cep_flat_serializer.h"
 
 #include <stdbool.h>
 
@@ -23,6 +24,23 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
 
 int cep_fed_mirror_destructor(const cepPath* signal_path,
                               const cepPath* target_path);
+
+bool cep_fed_mirror_emit_cell(const char* peer_id,
+                              const char* mount_id,
+                              const cepCell* cell,
+                              const cepSerializationHeader* header,
+                              size_t blob_payload_bytes,
+                              cepFedFrameMode mode,
+                              uint64_t deadline_beat);
+
+/* Validates whether a flat frame satisfies the mirror contract (frame mode and
+   advertised history windows). Exposed for regression tests so they can assert
+   on rejection paths without plumbing full mounts. */
+bool cep_fed_mirror_validate_frame_contract(uint32_t required_payload_history_beats,
+                                            uint32_t required_manifest_history_beats,
+                                            cepFedFrameMode mode,
+                                            const cepFlatFrameConfig* frame,
+                                            const char** failure_note);
 
 #ifdef __cplusplus
 }

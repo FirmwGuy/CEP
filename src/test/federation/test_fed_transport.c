@@ -17,6 +17,7 @@
 #include "cep_enzyme.h"
 #include "cep_runtime.h"
 #include "cep_organ.h"
+#include "cep_flat_serializer.h"
 #include "fed_transport_manager.h"
 #include "fed_transport_providers.h"
 #include "fed_link_organ.h"
@@ -25,6 +26,8 @@
 #include "fed_pack.h"
 
 #include <string.h>
+#include <stdlib.h>
+#include <limits.h>
 
 typedef struct {
     unsigned ready_events;
@@ -75,6 +78,27 @@ static const char* const FED_DUAL_NODE_A = "node-a";
 static const char* const FED_DUAL_NODE_B = "node-b";
 static const char* const FED_DUAL_LINK_MOUNT = "link-ab";
 static const char* const FED_DUAL_MIRROR_MOUNT = "mir-ab";
+static const char* const FED_TEST_AEAD_KEY = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+static char* fed_test_env_push(const char* name, const char* value) {
+    const char* current = getenv(name);
+    char* snapshot = current ? strdup(current) : NULL;
+    if (value) {
+        setenv(name, value, 1);
+    } else {
+        unsetenv(name);
+    }
+    return snapshot;
+}
+
+static void fed_test_env_pop(const char* name, char* snapshot) {
+    if (snapshot) {
+        setenv(name, snapshot, 1);
+        free(snapshot);
+    } else {
+        unsetenv(name);
+    }
+}
 static const char* const FED_DUAL_INVOKE_MOUNT = "inv-ab";
 static const char* const FED_DUAL_CHANNEL_AB = "channel-ab";
 static const char* const FED_DUAL_CHANNEL_BA = "channel-ba";
@@ -642,6 +666,15 @@ static void fed_dual_runtime_configure_requests(FedDualRuntimeCtx* ctx,
     fed_test_write_bool(link_required, "reliable", true);
     fed_test_write_bool(link_required, "ordered", true);
     fed_test_write_bool(link_required, "remote_net", true);
+    cepCell* link_serializer = cep_cell_ensure_dictionary_child(link_request, CEP_DTAW("CEP","serializer"), CEP_STORAGE_RED_BLACK_T);
+    link_serializer = fed_test_require_dictionary(link_serializer);
+    fed_test_write_bool(link_serializer, "crc32c_ok", true);
+    fed_test_write_bool(link_serializer, "deflate_ok", true);
+    fed_test_write_bool(link_serializer, "aead_ok", true);
+    fed_test_write_bool(link_serializer, "warn_down", true);
+    fed_test_write_u32(link_serializer, "cmp_max_ver", 5u);
+    fed_test_write_u32(link_serializer, "pay_hist_bt", 6u);
+    fed_test_write_u32(link_serializer, "man_hist_bt", 3u);
     cepPath* link_path = NULL;
     munit_assert_true(cep_cell_path(link_request, &link_path));
     munit_assert_int(cep_fed_link_validator(NULL, link_path), ==, CEP_ENZYME_SUCCESS);
@@ -667,6 +700,8 @@ static void fed_dual_runtime_configure_requests(FedDualRuntimeCtx* ctx,
     fed_test_write_u16(mirror_bundle, "max_infl", 1u);
     fed_test_write_bool(mirror_bundle, "hist_cap", true);
     fed_test_write_bool(mirror_bundle, "delta_cap", true);
+    fed_test_write_u32(mirror_bundle, "pay_hist_bt", 4u);
+    fed_test_write_u32(mirror_bundle, "man_hist_bt", 2u);
     cepPath* mirror_path = NULL;
     munit_assert_true(cep_cell_path(mirror_request, &mirror_path));
     int mirror_rc = cep_fed_mirror_validator(NULL, mirror_path);
@@ -688,6 +723,15 @@ static void fed_dual_runtime_configure_requests(FedDualRuntimeCtx* ctx,
     cepCell* invoke_required = cep_cell_ensure_dictionary_child(invoke_caps, CEP_DTAW("CEP","required"), CEP_STORAGE_RED_BLACK_T);
     invoke_required = fed_test_require_dictionary(invoke_required);
     fed_test_write_bool(invoke_required, "ordered", true);
+    cepCell* invoke_serializer = cep_cell_ensure_dictionary_child(invoke_request, CEP_DTAW("CEP","serializer"), CEP_STORAGE_RED_BLACK_T);
+    invoke_serializer = fed_test_require_dictionary(invoke_serializer);
+    fed_test_write_bool(invoke_serializer, "crc32c_ok", true);
+    fed_test_write_bool(invoke_serializer, "deflate_ok", true);
+    fed_test_write_bool(invoke_serializer, "aead_ok", true);
+    fed_test_write_bool(invoke_serializer, "warn_down", true);
+    fed_test_write_u32(invoke_serializer, "cmp_max_ver", 7u);
+    fed_test_write_u32(invoke_serializer, "pay_hist_bt", 2u);
+    fed_test_write_u32(invoke_serializer, "man_hist_bt", 1u);
     cepPath* invoke_path = NULL;
     munit_assert_true(cep_cell_path(invoke_request, &invoke_path));
     munit_assert_int(cep_fed_invoke_validator(NULL, invoke_path), ==, CEP_ENZYME_SUCCESS);
@@ -933,6 +977,16 @@ static void fed_test_setup_invoke_request(cepCell* net_root,
     required_caps = fed_test_require_dictionary(required_caps);
     fed_test_write_bool(required_caps, "ordered", true);
 
+    cepCell* serializer = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","serializer"), CEP_STORAGE_RED_BLACK_T);
+    serializer = fed_test_require_dictionary(serializer);
+    fed_test_write_bool(serializer, "crc32c_ok", true);
+    fed_test_write_bool(serializer, "deflate_ok", true);
+    fed_test_write_bool(serializer, "aead_ok", true);
+    fed_test_write_bool(serializer, "warn_down", true);
+    fed_test_write_u32(serializer, "cmp_max_ver", 7u);
+    fed_test_write_u32(serializer, "pay_hist_bt", 2u);
+    fed_test_write_u32(serializer, "man_hist_bt", 1u);
+
     cepPath* request_path = NULL;
     munit_assert_true(cep_cell_path(request, &request_path));
 
@@ -1177,6 +1231,673 @@ MunitResult test_fed_transport_upd_latest(const MunitParameter params[], void* f
     return MUNIT_OK;
 }
 
+MunitResult test_fed_transport_send_cell_flat(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_test_prepare_providers();
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+
+    char* prev_compression = fed_test_env_push("CEP_SERIALIZATION_FLAT_COMPRESSION", "deflate");
+    char* prev_crc_mode = fed_test_env_push("CEP_CRC32C_MODE", "castagnoli");
+    char* prev_aead_mode = fed_test_env_push("CEP_SERIALIZATION_FLAT_AEAD_MODE", "xchacha20");
+    char* prev_aead_key = fed_test_env_push("CEP_SERIALIZATION_FLAT_AEAD_KEY", FED_TEST_AEAD_KEY);
+
+    cepFedTransportMountConfig cfg = {
+        .peer_id = "peer-flat",
+        .mount_id = "mirror-flat",
+        .mount_mode = "mirror",
+        .local_node_id = "node-flat",
+        .preferred_provider_id = NULL,
+        .required_caps = CEP_FED_TRANSPORT_CAP_ORDERED |
+                         CEP_FED_TRANSPORT_CAP_LOCAL_IPC,
+        .preferred_caps = 0u,
+        .allow_upd_latest = false,
+        .deadline_beat = 0u,
+    };
+
+    cepFedTransportManagerMount* mount = NULL;
+    munit_assert_true(cep_fed_transport_manager_configure_mount(&manager, &cfg, NULL, &mount));
+    munit_assert_not_null(mount);
+    cepFedTransportFlatPolicy flat_policy = {
+        .allow_crc32c = false,
+        .allow_deflate = false,
+        .allow_aead = false,
+        .warn_on_downgrade = true,
+        .comparator_max_version = UINT32_MAX,
+    };
+    cep_fed_transport_manager_mount_set_flat_policy(mount, &flat_policy);
+
+    const uint8_t payload_bytes[] = {0xDEu, 0xADu, 0xBEu, 0xEFu};
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP", "fed_payload"),
+                                       payload_bytes,
+                                       sizeof payload_bytes);
+    munit_assert_not_null(data);
+
+    cepCell cell;
+    CEP_0(&cell);
+    cep_cell_initialize(&cell,
+                        CEP_TYPE_NORMAL,
+                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("fed_flat")),
+                        data,
+                        NULL);
+
+    munit_assert_true(cep_fed_transport_manager_send_cell(&manager,
+                                                          mount,
+                                                          &cell,
+                                                          NULL,
+                                                          0u,
+                                                          CEP_FED_FRAME_MODE_DATA,
+                                                          0u));
+
+    uint8_t frame_buffer[4096];
+    size_t frame_len = 0u;
+    cepFedFrameMode frame_mode = CEP_FED_FRAME_MODE_DATA;
+    munit_assert_true(cep_fed_transport_mock_pop_outbound("peer-flat",
+                                                          "mirror-flat",
+                                                          frame_buffer,
+                                                          sizeof frame_buffer,
+                                                          &frame_len,
+                                                          &frame_mode));
+    munit_assert_size(frame_len, >, 0u);
+    munit_assert_uint(frame_mode, ==, CEP_FED_FRAME_MODE_DATA);
+
+    cepFlatReader* reader = cep_flat_reader_create();
+    munit_assert_not_null(reader);
+    munit_assert_true(cep_flat_reader_feed(reader, frame_buffer, frame_len));
+    munit_assert_true(cep_flat_reader_commit(reader));
+    munit_assert_true(cep_flat_reader_ready(reader));
+    const cepFlatFrameConfig* frame = cep_flat_reader_frame(reader);
+    munit_assert_not_null(frame);
+    munit_assert_uint(frame->apply_mode, ==, CEP_FLAT_APPLY_INSERT_ONLY);
+    munit_assert_uint(frame->checksum_algorithm, ==, CEP_FLAT_CHECKSUM_CRC32);
+    munit_assert_uint(frame->compression_algorithm, ==, CEP_FLAT_COMPRESSION_NONE);
+    size_t record_count = 0u;
+    const cepFlatRecordView* records = cep_flat_reader_records(reader, &record_count);
+    munit_assert_not_null(records);
+    munit_assert_size(record_count, >=, 1u);
+    bool found_cell_desc = false;
+    for (size_t i = 0; i < record_count; ++i) {
+        if (records[i].type == CEP_FLAT_RECORD_CELL_DESC) {
+            found_cell_desc = true;
+            break;
+        }
+    }
+    munit_assert_true(found_cell_desc);
+    cep_flat_reader_destroy(reader);
+
+    char text[64];
+    cepCell* ceh_flatneg = fed_test_ceh_entry(net_root, "peer-flat", "tp_flatneg");
+    munit_assert_not_null(ceh_flatneg);
+    fed_test_read_text_field(ceh_flatneg, "severity", text, sizeof text);
+    munit_assert_string_equal(text, "warn");
+    fed_test_read_text_field(ceh_flatneg, "note", text, sizeof text);
+    munit_assert_size(strlen(text), >, (size_t)0);
+
+    fed_test_env_pop("CEP_SERIALIZATION_FLAT_COMPRESSION", prev_compression);
+    fed_test_env_pop("CEP_CRC32C_MODE", prev_crc_mode);
+    fed_test_env_pop("CEP_SERIALIZATION_FLAT_AEAD_MODE", prev_aead_mode);
+    fed_test_env_pop("CEP_SERIALIZATION_FLAT_AEAD_KEY", prev_aead_key);
+
+    cep_cell_finalize_hard(&cell);
+    cep_fed_transport_manager_teardown(&manager);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_transport_send_cell_provider_caps(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_test_prepare_providers();
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+
+    cepFedTransportMountConfig cfg = {
+        .peer_id = "peer-cap",
+        .mount_id = "mirror-cap",
+        .mount_mode = "mirror",
+        .local_node_id = "node-cap",
+        .preferred_provider_id = "mock",
+        .required_caps = CEP_FED_TRANSPORT_CAP_ORDERED |
+                         CEP_FED_TRANSPORT_CAP_UNRELIABLE |
+                         CEP_FED_TRANSPORT_CAP_LOCAL_IPC,
+        .preferred_caps = 0u,
+        .allow_upd_latest = false,
+        .deadline_beat = 0u,
+    };
+
+    cepFedTransportManagerMount* mount = NULL;
+    munit_assert_true(cep_fed_transport_manager_configure_mount(&manager, &cfg, NULL, &mount));
+    munit_assert_not_null(mount);
+
+    const uint8_t payload_bytes[] = {0xA5u};
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP", "cap_payload"),
+                                       payload_bytes,
+                                       sizeof payload_bytes);
+    munit_assert_not_null(data);
+
+    cepCell cell;
+    CEP_0(&cell);
+    cep_cell_initialize(&cell,
+                        CEP_TYPE_NORMAL,
+                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("fed_cap")),
+                        data,
+                        NULL);
+
+    char note[128];
+    char* prev_crc_mode = fed_test_env_push("CEP_CRC32C_MODE", "castagnoli");
+    munit_assert_true(cep_fed_transport_manager_send_cell(&manager,
+                                                          mount,
+                                                          &cell,
+                                                          NULL,
+                                                          0u,
+                                                          CEP_FED_FRAME_MODE_DATA,
+                                                          0u));
+    cepCell* ceh_entry = fed_test_ceh_entry(net_root, "peer-cap", "tp_flatneg");
+    munit_assert_not_null(ceh_entry);
+    fed_test_read_text_field(ceh_entry, "note", note, sizeof note);
+    munit_assert_not_null(strstr(note, "CRC32C capability"));
+    fed_test_env_pop("CEP_CRC32C_MODE", prev_crc_mode);
+
+    char* prev_compression = fed_test_env_push("CEP_SERIALIZATION_FLAT_COMPRESSION", "deflate");
+    munit_assert_true(cep_fed_transport_manager_send_cell(&manager,
+                                                          mount,
+                                                          &cell,
+                                                          NULL,
+                                                          0u,
+                                                          CEP_FED_FRAME_MODE_DATA,
+                                                          0u));
+    ceh_entry = fed_test_ceh_entry(net_root, "peer-cap", "tp_flatneg");
+    munit_assert_not_null(ceh_entry);
+    fed_test_read_text_field(ceh_entry, "note", note, sizeof note);
+    munit_assert_not_null(strstr(note, "deflate capability"));
+    fed_test_env_pop("CEP_SERIALIZATION_FLAT_COMPRESSION", prev_compression);
+
+    char* prev_aead_mode = fed_test_env_push("CEP_SERIALIZATION_FLAT_AEAD_MODE", "xchacha20");
+    char* prev_aead_key = fed_test_env_push("CEP_SERIALIZATION_FLAT_AEAD_KEY", FED_TEST_AEAD_KEY);
+    munit_assert_true(cep_fed_transport_manager_send_cell(&manager,
+                                                          mount,
+                                                          &cell,
+                                                          NULL,
+                                                          0u,
+                                                          CEP_FED_FRAME_MODE_DATA,
+                                                          0u));
+    ceh_entry = fed_test_ceh_entry(net_root, "peer-cap", "tp_flatneg");
+    munit_assert_not_null(ceh_entry);
+    fed_test_read_text_field(ceh_entry, "note", note, sizeof note);
+    munit_assert_not_null(strstr(note, "AEAD capability"));
+    fed_test_env_pop("CEP_SERIALIZATION_FLAT_AEAD_MODE", prev_aead_mode);
+    fed_test_env_pop("CEP_SERIALIZATION_FLAT_AEAD_KEY", prev_aead_key);
+
+    cep_cell_finalize_hard(&cell);
+    cep_fed_transport_manager_teardown(&manager);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_mirror_frame_contract(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    cepFlatFrameConfig frame = {
+        .payload_history_beats = 4u,
+        .manifest_history_beats = 2u,
+        .capability_flags = CEP_FLAT_CAP_PAYLOAD_HISTORY | CEP_FLAT_CAP_MANIFEST_HISTORY,
+    };
+
+    const char* failure = NULL;
+    munit_assert_true(cep_fed_mirror_validate_frame_contract(4u,
+                                                             2u,
+                                                             CEP_FED_FRAME_MODE_DATA,
+                                                             &frame,
+                                                             &failure));
+    frame.payload_history_beats = 3u;
+    failure = NULL;
+    munit_assert_false(cep_fed_mirror_validate_frame_contract(4u,
+                                                              2u,
+                                                              CEP_FED_FRAME_MODE_DATA,
+                                                              &frame,
+                                                              &failure));
+    munit_assert_string_equal(failure, "mirror frame payload history mismatch");
+
+    frame.payload_history_beats = 4u;
+    frame.manifest_history_beats = 1u;
+    failure = NULL;
+    munit_assert_false(cep_fed_mirror_validate_frame_contract(4u,
+                                                              2u,
+                                                              CEP_FED_FRAME_MODE_DATA,
+                                                              &frame,
+                                                              &failure));
+    munit_assert_string_equal(failure, "mirror frame manifest history mismatch");
+
+    frame.manifest_history_beats = 2u;
+    failure = NULL;
+    munit_assert_false(cep_fed_mirror_validate_frame_contract(4u,
+                                                              2u,
+                                                              CEP_FED_FRAME_MODE_UPD_LATEST,
+                                                              &frame,
+                                                              &failure));
+    munit_assert_string_equal(failure, "mirror frame unsupported mode");
+
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_mirror_emit_cell(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_test_prepare_providers();
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+    munit_assert_true(cep_fed_mirror_organ_init(&manager, net_root));
+
+    cepCell* organs = fed_test_require_dictionary(fed_test_lookup_child(net_root, "organs"));
+    cepCell* mirror_root = fed_test_require_dictionary(fed_test_lookup_child(organs, "mirror"));
+    cepCell* requests = fed_test_require_dictionary(fed_test_lookup_child(mirror_root, "requests"));
+
+    cepDT request_name = fed_test_make_dt("mirror_emit");
+    cepCell* request = cep_cell_ensure_dictionary_child(requests, &request_name, CEP_STORAGE_RED_BLACK_T);
+    request = fed_test_require_dictionary(request);
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","peer"), "peer-mirror");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","mount"), "mirror-emit");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","mode"), "mirror");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","local_node"), "node-mirror");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","src_peer"), "peer-src");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","src_chan"), "chan-mirror");
+
+    cepCell* caps = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","caps"), CEP_STORAGE_RED_BLACK_T);
+    caps = fed_test_require_dictionary(caps);
+    cepCell* required = cep_cell_ensure_dictionary_child(caps, CEP_DTAW("CEP","required"), CEP_STORAGE_RED_BLACK_T);
+    required = fed_test_require_dictionary(required);
+    fed_test_write_bool(required, "reliable", true);
+
+    cepCell* bundle = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","bundle"), CEP_STORAGE_RED_BLACK_T);
+    bundle = fed_test_require_dictionary(bundle);
+    fed_test_write_u32(bundle, "beat_window", 1u);
+    fed_test_write_u16(bundle, "max_infl", 1u);
+    fed_test_write_bool(bundle, "hist_cap", true);
+    fed_test_write_bool(bundle, "delta_cap", true);
+    fed_test_write_u32(bundle, "pay_hist_bt", 4u);
+    fed_test_write_u32(bundle, "man_hist_bt", 2u);
+
+    cepCell* serializer = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","serializer"), CEP_STORAGE_RED_BLACK_T);
+    serializer = fed_test_require_dictionary(serializer);
+    fed_test_write_bool(serializer, "crc32c_ok", true);
+    fed_test_write_bool(serializer, "deflate_ok", true);
+    fed_test_write_bool(serializer, "aead_ok", true);
+    fed_test_write_bool(serializer, "warn_down", true);
+    fed_test_write_u32(serializer, "cmp_max_ver", 5u);
+
+    cepPath* request_path = NULL;
+    munit_assert_true(cep_cell_path(request, &request_path));
+    munit_assert_int(cep_fed_mirror_validator(NULL, request_path), ==, CEP_ENZYME_SUCCESS);
+
+    const uint8_t payload_bytes[] = {0x11u, 0x22u, 0x33u};
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP","mirror_payload"),
+                                       payload_bytes,
+                                       sizeof payload_bytes);
+    munit_assert_not_null(data);
+
+    cepCell cell;
+    CEP_0(&cell);
+    cep_cell_initialize(&cell,
+                        CEP_TYPE_NORMAL,
+                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("mirror_emit")),
+                        data,
+                        NULL);
+
+    munit_assert_true(cep_fed_mirror_emit_cell("peer-mirror",
+                                               "mirror-emit",
+                                               &cell,
+                                               NULL,
+                                               0u,
+                                               CEP_FED_FRAME_MODE_DATA,
+                                               0u));
+
+    uint8_t frame_buffer[4096];
+    size_t frame_len = 0u;
+    cepFedFrameMode frame_mode = CEP_FED_FRAME_MODE_DATA;
+    munit_assert_true(cep_fed_transport_mock_pop_outbound("peer-mirror",
+                                                          "mirror-emit",
+                                                          frame_buffer,
+                                                          sizeof frame_buffer,
+                                                          &frame_len,
+                                                          &frame_mode));
+    munit_assert_size(frame_len, >, 0u);
+    munit_assert_uint(frame_mode, ==, CEP_FED_FRAME_MODE_DATA);
+
+    cepFlatReader* reader = cep_flat_reader_create();
+    munit_assert_not_null(reader);
+    munit_assert_true(cep_flat_reader_feed(reader, frame_buffer, frame_len));
+    munit_assert_true(cep_flat_reader_commit(reader));
+    munit_assert_true(cep_flat_reader_ready(reader));
+    const cepFlatFrameConfig* parsed = cep_flat_reader_frame(reader);
+    munit_assert_not_null(parsed);
+    munit_assert_uint(parsed->payload_history_beats, ==, 4u);
+    munit_assert_uint(parsed->manifest_history_beats, ==, 2u);
+    cep_flat_reader_destroy(reader);
+
+    munit_assert_false(cep_fed_mirror_emit_cell("peer-mirror",
+                                                "mirror-emit",
+                                                &cell,
+                                                NULL,
+                                                0u,
+                                                CEP_FED_FRAME_MODE_UPD_LATEST,
+                                                0u));
+    munit_assert_false(cep_fed_mirror_emit_cell("peer-mirror",
+                                                "missing",
+                                                &cell,
+                                                NULL,
+                                                0u,
+                                                CEP_FED_FRAME_MODE_DATA,
+                                                0u));
+
+    cep_cell_finalize_hard(&cell);
+    (void)cep_fed_mirror_destructor(NULL, request_path);
+    cep_free(request_path);
+    cep_fed_transport_manager_teardown(&manager);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_link_frame_contract(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    cepFlatFrameConfig frame = {
+        .payload_history_beats = 6u,
+        .manifest_history_beats = 3u,
+        .capability_flags = CEP_FLAT_CAP_PAYLOAD_HISTORY | CEP_FLAT_CAP_MANIFEST_HISTORY,
+    };
+
+    const char* failure = NULL;
+    munit_assert_true(cep_fed_link_validate_frame_contract(6u,
+                                                           3u,
+                                                           true,
+                                                           CEP_FED_FRAME_MODE_DATA,
+                                                           &frame,
+                                                           &failure));
+
+    frame.payload_history_beats = 5u;
+    failure = NULL;
+    munit_assert_false(cep_fed_link_validate_frame_contract(6u,
+                                                            3u,
+                                                            true,
+                                                            CEP_FED_FRAME_MODE_DATA,
+                                                            &frame,
+                                                            &failure));
+    munit_assert_string_equal(failure, "link frame payload history mismatch");
+
+    frame.payload_history_beats = 6u;
+    frame.manifest_history_beats = 2u;
+    failure = NULL;
+    munit_assert_false(cep_fed_link_validate_frame_contract(6u,
+                                                            3u,
+                                                            true,
+                                                            CEP_FED_FRAME_MODE_DATA,
+                                                            &frame,
+                                                            &failure));
+    munit_assert_string_equal(failure, "link frame manifest history mismatch");
+
+    frame.manifest_history_beats = 3u;
+    failure = NULL;
+    munit_assert_false(cep_fed_link_validate_frame_contract(6u,
+                                                            3u,
+                                                            false,
+                                                            CEP_FED_FRAME_MODE_UPD_LATEST,
+                                                            &frame,
+                                                            &failure));
+    munit_assert_string_equal(failure, "link frame unsupported mode");
+
+    failure = NULL;
+    munit_assert_true(cep_fed_link_validate_frame_contract(6u,
+                                                           3u,
+                                                           true,
+                                                           CEP_FED_FRAME_MODE_UPD_LATEST,
+                                                           &frame,
+                                                           &failure));
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_link_emit_cell(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_test_prepare_providers();
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+    munit_assert_true(cep_fed_link_organ_init(&manager, net_root));
+
+    cepCell* organs = fed_test_require_dictionary(fed_test_lookup_child(net_root, "organs"));
+    cepCell* link_root = fed_test_require_dictionary(fed_test_lookup_child(organs, "link"));
+    cepCell* requests = fed_test_require_dictionary(fed_test_lookup_child(link_root, "requests"));
+    cepDT request_name = fed_test_make_dt("emit_link");
+    cepCell* request = cep_cell_ensure_dictionary_child(requests, &request_name, CEP_STORAGE_RED_BLACK_T);
+    request = fed_test_require_dictionary(request);
+
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","peer"), "peer-link");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","mount"), "emit-mount");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","mode"), "link");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP","local_node"), "node-link");
+
+    cepCell* caps = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","caps"), CEP_STORAGE_RED_BLACK_T);
+    caps = fed_test_require_dictionary(caps);
+    cepCell* required = cep_cell_ensure_dictionary_child(caps, CEP_DTAW("CEP","required"), CEP_STORAGE_RED_BLACK_T);
+    required = fed_test_require_dictionary(required);
+    fed_test_write_bool(required, "reliable", true);
+    fed_test_write_bool(required, "ordered", true);
+
+    cepCell* serializer = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","serializer"), CEP_STORAGE_RED_BLACK_T);
+    serializer = fed_test_require_dictionary(serializer);
+    fed_test_write_bool(serializer, "crc32c_ok", true);
+    fed_test_write_bool(serializer, "deflate_ok", true);
+    fed_test_write_bool(serializer, "aead_ok", true);
+    fed_test_write_bool(serializer, "warn_down", true);
+    fed_test_write_u32(serializer, "cmp_max_ver", 5u);
+    fed_test_write_u32(serializer, "pay_hist_bt", 6u);
+    fed_test_write_u32(serializer, "man_hist_bt", 3u);
+
+    cepPath* request_path = NULL;
+    munit_assert_true(cep_cell_path(request, &request_path));
+    munit_assert_int(cep_fed_link_validator(NULL, request_path), ==, CEP_ENZYME_SUCCESS);
+
+    const uint8_t payload_bytes[] = {0xAAu, 0xBBu};
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP","emit_payload"),
+                                       payload_bytes,
+                                       sizeof payload_bytes);
+    munit_assert_not_null(data);
+
+    cepCell cell;
+    CEP_0(&cell);
+    cep_cell_initialize(&cell,
+                        CEP_TYPE_NORMAL,
+                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("link_emit")),
+                        data,
+                        NULL);
+
+    munit_assert_true(cep_fed_link_emit_cell("peer-link",
+                                             "emit-mount",
+                                             &cell,
+                                             NULL,
+                                             0u,
+                                             CEP_FED_FRAME_MODE_DATA,
+                                             0u));
+
+    uint8_t frame_buffer[4096];
+    size_t frame_len = 0u;
+    cepFedFrameMode frame_mode = CEP_FED_FRAME_MODE_DATA;
+    munit_assert_true(cep_fed_transport_mock_pop_outbound("peer-link",
+                                                          "emit-mount",
+                                                          frame_buffer,
+                                                          sizeof frame_buffer,
+                                                          &frame_len,
+                                                          &frame_mode));
+    munit_assert_size(frame_len, >, 0u);
+    munit_assert_uint(frame_mode, ==, CEP_FED_FRAME_MODE_DATA);
+
+    cepFlatReader* reader = cep_flat_reader_create();
+    munit_assert_not_null(reader);
+    munit_assert_true(cep_flat_reader_feed(reader, frame_buffer, frame_len));
+    munit_assert_true(cep_flat_reader_commit(reader));
+    munit_assert_true(cep_flat_reader_ready(reader));
+    const cepFlatFrameConfig* parsed = cep_flat_reader_frame(reader);
+    munit_assert_not_null(parsed);
+    munit_assert_uint(parsed->payload_history_beats, ==, 6u);
+    munit_assert_uint(parsed->manifest_history_beats, ==, 3u);
+    cep_flat_reader_destroy(reader);
+
+    munit_assert_false(cep_fed_link_emit_cell("peer-link",
+                                              "emit-mount",
+                                              &cell,
+                                              NULL,
+                                              0u,
+                                              CEP_FED_FRAME_MODE_UPD_LATEST,
+                                              0u));
+
+    munit_assert_false(cep_fed_link_emit_cell("peer-link",
+                                              "missing",
+                                              &cell,
+                                              NULL,
+                                              0u,
+                                              CEP_FED_FRAME_MODE_DATA,
+                                              0u));
+
+    cep_cell_finalize_hard(&cell);
+    cep_fed_link_destructor(NULL, request_path);
+    cep_free(request_path);
+    cep_fed_transport_manager_teardown(&manager);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_invoke_emit_cell(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_test_prepare_providers();
+    fed_test_ensure_invoke_handler();
+
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+    munit_assert_true(cep_fed_invoke_organ_init(&manager, net_root));
+
+    cepCell* request = NULL;
+    cepPath* request_path = NULL;
+    fed_test_setup_invoke_request(net_root, &manager, "emit_invoke", &request, &request_path);
+
+    const cepFedInvokeRequest* ctx = cep_fed_invoke_request_find("peer-invoke", "inv-mnt");
+    munit_assert_not_null(ctx);
+
+    const uint8_t payload_bytes[] = {0x55u};
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP","invoke_payload"),
+                                       payload_bytes,
+                                       sizeof payload_bytes);
+    munit_assert_not_null(data);
+
+    cepCell cell;
+    CEP_0(&cell);
+    cep_cell_initialize(&cell,
+                        CEP_TYPE_NORMAL,
+                        CEP_DTS(CEP_ACRO("CEP"), CEP_WORD("invoke_emit")),
+                        data,
+                        NULL);
+
+    munit_assert_true(cep_fed_invoke_emit_cell("peer-invoke",
+                                               "inv-mnt",
+                                               &cell,
+                                               NULL,
+                                               0u,
+                                               CEP_FED_FRAME_MODE_DATA,
+                                               0u));
+
+    uint8_t frame_buffer[4096];
+    size_t frame_len = 0u;
+    cepFedFrameMode frame_mode = CEP_FED_FRAME_MODE_DATA;
+    munit_assert_true(cep_fed_transport_mock_pop_outbound("peer-invoke",
+                                                          "inv-mnt",
+                                                          frame_buffer,
+                                                          sizeof frame_buffer,
+                                                          &frame_len,
+                                                          &frame_mode));
+    munit_assert_size(frame_len, >, 0u);
+    munit_assert_uint(frame_mode, ==, CEP_FED_FRAME_MODE_DATA);
+
+    cepFlatReader* reader = cep_flat_reader_create();
+    munit_assert_not_null(reader);
+    munit_assert_true(cep_flat_reader_feed(reader, frame_buffer, frame_len));
+    munit_assert_true(cep_flat_reader_commit(reader));
+    munit_assert_true(cep_flat_reader_ready(reader));
+    const cepFlatFrameConfig* parsed = cep_flat_reader_frame(reader);
+    munit_assert_not_null(parsed);
+    munit_assert_uint(parsed->payload_history_beats, ==, 2u);
+    munit_assert_uint(parsed->manifest_history_beats, ==, 1u);
+    cep_flat_reader_destroy(reader);
+
+    munit_assert_false(cep_fed_invoke_emit_cell("peer-invoke",
+                                                "inv-mnt",
+                                                &cell,
+                                                NULL,
+                                                0u,
+                                                CEP_FED_FRAME_MODE_UPD_LATEST,
+                                                0u));
+    munit_assert_false(cep_fed_invoke_emit_cell("peer-invoke",
+                                                "missing",
+                                                &cell,
+                                                NULL,
+                                                0u,
+                                                CEP_FED_FRAME_MODE_DATA,
+                                                0u));
+
+    cep_cell_finalize_hard(&cell);
+    (void)cep_fed_invoke_destructor(NULL, request_path);
+    cep_free(request_path);
+    cep_fed_transport_manager_teardown(&manager);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_invoke_frame_contract(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    cepFedInvokeFrameHeader header = {0};
+    const char* failure = NULL;
+    munit_assert_true(cep_fed_invoke_validate_frame_contract((const uint8_t*)&header,
+                                                             sizeof header,
+                                                             CEP_FED_FRAME_MODE_DATA,
+                                                             &failure));
+
+    failure = NULL;
+    munit_assert_false(cep_fed_invoke_validate_frame_contract((const uint8_t*)&header,
+                                                              sizeof header,
+                                                              CEP_FED_FRAME_MODE_UPD_LATEST,
+                                                              &failure));
+    munit_assert_string_equal(failure, "invoke frame unsupported mode");
+
+    failure = NULL;
+    munit_assert_false(cep_fed_invoke_validate_frame_contract(NULL,
+                                                              sizeof header,
+                                                              CEP_FED_FRAME_MODE_DATA,
+                                                              &failure));
+    munit_assert_string_equal(failure, "invoke frame shorter than header");
+
+    failure = NULL;
+    munit_assert_false(cep_fed_invoke_validate_frame_contract((const uint8_t*)&header,
+                                                              sizeof header - 1u,
+                                                              CEP_FED_FRAME_MODE_DATA,
+                                                              &failure));
+    munit_assert_string_equal(failure, "invoke frame shorter than header");
+
+    return MUNIT_OK;
+}
+
 MunitResult test_fed_transport_inbound(const MunitParameter params[], void* fixture) {
     (void)params;
     (void)fixture;
@@ -1362,6 +2083,16 @@ MunitResult test_fed_link_validator_success(const MunitParameter params[], void*
     fed_test_write_bool(required_caps, "ordered", true);
     fed_test_write_bool(required_caps, "remote_net", true);
 
+    cepCell* serializer = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","serializer"), CEP_STORAGE_RED_BLACK_T);
+    serializer = fed_test_require_dictionary(serializer);
+    fed_test_write_bool(serializer, "crc32c_ok", false);
+    fed_test_write_bool(serializer, "deflate_ok", false);
+    fed_test_write_bool(serializer, "aead_ok", true);
+    fed_test_write_bool(serializer, "warn_down", false);
+    fed_test_write_u32(serializer, "cmp_max_ver", 3u);
+    fed_test_write_u32(serializer, "pay_hist_bt", 6u);
+    fed_test_write_u32(serializer, "man_hist_bt", 3u);
+
     cepPath* request_path = NULL;
     munit_assert_true(cep_cell_path(request, &request_path));
 
@@ -1377,6 +2108,19 @@ MunitResult test_fed_link_validator_success(const MunitParameter params[], void*
     munit_assert_string_equal(text, "active");
     fed_test_read_text_field(request, "provider", text, sizeof text);
     munit_assert_size(strlen(text), >, (size_t)0);
+
+    cepCell* mounts_root = fed_test_require_dictionary(fed_test_lookup_child(net_root, "mounts"));
+    cepCell* mount_peer = fed_test_require_dictionary(fed_test_lookup_child(mounts_root, "peer-link"));
+    cepCell* mount_mode = fed_test_require_dictionary(fed_test_lookup_child(mount_peer, "link"));
+    cepCell* mount_entry = fed_test_require_dictionary(fed_test_lookup_child(mount_mode, "mount-link"));
+    cepCell* serializer_entry = fed_test_require_dictionary(fed_test_lookup_child(mount_entry, "serializer"));
+    munit_assert_false(fed_test_read_bool_field(serializer_entry, "crc32c_ok"));
+    munit_assert_false(fed_test_read_bool_field(serializer_entry, "deflate_ok"));
+    munit_assert_true(fed_test_read_bool_field(serializer_entry, "aead_ok"));
+    munit_assert_false(fed_test_read_bool_field(serializer_entry, "warn_down"));
+    munit_assert_size((size_t)fed_test_read_u64_field(serializer_entry, "cmp_max_ver"), ==, 3u);
+    munit_assert_size((size_t)fed_test_read_u64_field(serializer_entry, "pay_hist_bt"), ==, 6u);
+    munit_assert_size((size_t)fed_test_read_u64_field(serializer_entry, "man_hist_bt"), ==, 3u);
 
     rc = cep_fed_link_destructor(NULL, request_path);
     munit_assert_int(rc, ==, CEP_ENZYME_SUCCESS);
@@ -1573,6 +2317,14 @@ MunitResult test_fed_invoke_reconfigure_cancels_pending(const MunitParameter par
     munit_assert_false(completion.completed);
 
     (void)cep_cell_put_text(request, CEP_DTAW("CEP","pref_prov"), "tcp");
+    cepCell* serializer = fed_test_require_dictionary(fed_test_lookup_child(request, "serializer"));
+    fed_test_write_bool(serializer, "crc32c_ok", false);
+    fed_test_write_bool(serializer, "deflate_ok", false);
+    fed_test_write_bool(serializer, "aead_ok", true);
+    fed_test_write_bool(serializer, "warn_down", false);
+    fed_test_write_u32(serializer, "cmp_max_ver", 5u);
+    fed_test_write_u32(serializer, "pay_hist_bt", 2u);
+    fed_test_write_u32(serializer, "man_hist_bt", 1u);
     munit_assert_int(cep_fed_invoke_validator(NULL, request_path), ==, CEP_ENZYME_SUCCESS);
 
     munit_assert_true(completion.completed);
@@ -1583,6 +2335,19 @@ MunitResult test_fed_invoke_reconfigure_cancels_pending(const MunitParameter par
     munit_assert_string_equal(text, "active");
     fed_test_read_text_field(request, "provider", text, sizeof text);
     munit_assert_string_equal(text, "tcp");
+
+    cepCell* mounts_root = fed_test_require_dictionary(fed_test_lookup_child(net_root, "mounts"));
+    cepCell* invoke_peer = fed_test_require_dictionary(fed_test_lookup_child(mounts_root, "peer-invoke"));
+    cepCell* invoke_mode = fed_test_require_dictionary(fed_test_lookup_child(invoke_peer, "invoke"));
+    cepCell* mount_entry = fed_test_require_dictionary(fed_test_lookup_child(invoke_mode, "inv-mnt"));
+    cepCell* serializer_entry = fed_test_require_dictionary(fed_test_lookup_child(mount_entry, "serializer"));
+    munit_assert_false(fed_test_read_bool_field(serializer_entry, "crc32c_ok"));
+    munit_assert_false(fed_test_read_bool_field(serializer_entry, "deflate_ok"));
+    munit_assert_true(fed_test_read_bool_field(serializer_entry, "aead_ok"));
+    munit_assert_false(fed_test_read_bool_field(serializer_entry, "warn_down"));
+    munit_assert_size((size_t)fed_test_read_u64_field(serializer_entry, "cmp_max_ver"), ==, 5u);
+    munit_assert_size((size_t)fed_test_read_u64_field(serializer_entry, "pay_hist_bt"), ==, 2u);
+    munit_assert_size((size_t)fed_test_read_u64_field(serializer_entry, "man_hist_bt"), ==, 1u);
 
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);
@@ -2087,6 +2852,8 @@ MunitResult test_fed_mirror_validator_success(const MunitParameter params[], voi
     fed_test_write_u16(bundle, "max_infl", 2u);
     fed_test_write_bool(bundle, "hist_cap", true);
     fed_test_write_bool(bundle, "delta_cap", true);
+    fed_test_write_u32(bundle, "pay_hist_bt", 4u);
+    fed_test_write_u32(bundle, "man_hist_bt", 2u);
     (void)cep_cell_put_text(bundle, CEP_DTAW("CEP","commit_mode"), "stream");
 
     cepPath* request_path = NULL;
@@ -2165,6 +2932,8 @@ MunitResult test_fed_mirror_validator_conflict(const MunitParameter params[], vo
     fed_test_write_u16(first_bundle, "max_infl", 1u);
     fed_test_write_bool(first_bundle, "hist_cap", true);
     fed_test_write_bool(first_bundle, "delta_cap", true);
+    fed_test_write_u32(first_bundle, "pay_hist_bt", 4u);
+    fed_test_write_u32(first_bundle, "man_hist_bt", 2u);
     (void)cep_cell_put_text(first_bundle, CEP_DTAW("CEP","commit_mode"), "batch");
 
     cepPath* first_path = NULL;
@@ -2188,6 +2957,8 @@ MunitResult test_fed_mirror_validator_conflict(const MunitParameter params[], vo
     fed_test_write_u16(second_bundle, "max_infl", 1u);
     fed_test_write_bool(second_bundle, "hist_cap", true);
     fed_test_write_bool(second_bundle, "delta_cap", true);
+    fed_test_write_u32(second_bundle, "pay_hist_bt", 4u);
+    fed_test_write_u32(second_bundle, "man_hist_bt", 2u);
 
     cepPath* second_path = NULL;
     munit_assert_true(cep_cell_path(second, &second_path));
@@ -2250,6 +3021,8 @@ MunitResult test_fed_mirror_validator_deadline(const MunitParameter params[], vo
     fed_test_write_u16(bundle, "max_infl", 1u);
     fed_test_write_bool(bundle, "hist_cap", true);
     fed_test_write_bool(bundle, "delta_cap", true);
+    fed_test_write_u32(bundle, "pay_hist_bt", 4u);
+    fed_test_write_u32(bundle, "man_hist_bt", 2u);
     (void)cep_cell_put_text(bundle, CEP_DTAW("CEP","commit_mode"), "manual");
 
     (void)cep_heartbeat_current();

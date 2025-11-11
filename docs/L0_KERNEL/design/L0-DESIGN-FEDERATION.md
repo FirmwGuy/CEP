@@ -1,7 +1,7 @@
 # Layer 0 Design: Federation Transport and Organs
 
 ## Introduction
-Federation lets independent CEP runtimes exchange signals, mirror persistent state, and invoke enzymes across process boundaries without sacrificing the determinism guarantees Layer 0 already enforces. Think of it as a well-lit causeway between runtimes: each side publishes the services it can host, the transport manager negotiates how to move frames, and a trio of organs—link, mirror, and invoke—turn those frames into familiar heartbeat work. This note explains how the design fits together so you can reason about beats, telemetry, and CEI diagnostics before touching the code.
+Federation lets independent CEP runtimes exchange signals, mirror persistent state, and invoke enzymes across process boundaries without sacrificing the determinism guarantees Layer 0 already enforces. Think of it as a well-lit causeway between runtimes: each side publishes the services it can host, the transport manager negotiates how to move frames, and a trio of organs—link, mirror, and invoke—turn those frames into familiar heartbeat work. This note explains how the design fits together so you can reason about beats, telemetry, and CEI diagnostics before touching the code. As of Stage 2, every federation frame is a flat serializer frame; the transport manager owns the call to `cep_fed_transport_manager_send_cell()` so per-mount history/AEAD/compression settings ride along without bespoke emitters. The legacy chunk serializer remains only inside the integration POC test (temporarily guarded via `cep_serialization_set_flat_mode_override(false)`) until those tests adopt flat frames. Next-stage work will extend mount negotiation so checksum/compression/AEAD/comparator capabilities are explicit rather than trial-and-error.
 
 ## Technical Details
 ### Beat Roadmap Overview
@@ -23,6 +23,7 @@ Federation lets independent CEP runtimes exchange signals, mirror persistent sta
 - **Link Organ**
   - Requests store fields: `peer`, `mount`, `mode`, `local_node`, optional `pref_prov`, `allow_upd`, `deadline`, and capability dictionaries.
   - Validator configures mounts via `cep_fed_link_mount_apply`, updates request `state/provider/error_note`, and records CEI when configuration fails.
+  - Optional serializer policy lives under `serializer/` (`crc32c_ok`, `deflate_ok`, `aead_ok`, `warn_down`, `cmp_max_ver`). The validator passes those booleans to the transport manager so the negotiated policy is visible under `/net/mounts/<peer>/link/<mount>/serializer/`.
   - Destructor closes mounts (reason `link-request-destroy`) and marks requests `removed`.
 - **Mirror Organ**
   - Request contexts now record `cepRuntime*` so duplicate detection occurs per runtime. This prevents cross-runtime tests from tripping “mirror mount already active”.
@@ -31,6 +32,7 @@ Federation lets independent CEP runtimes exchange signals, mirror persistent sta
 - **Invoke Organ**
   - Validates path segments and ensures textual IDs fit the 11-character CEP word constraint.
   - Configures mounts against required caps (reliable + ordered), schedules heartbeat-managed timeouts, and emits CEI topics `tp_inv_timeout` or `tp_inv_reject`.
+  - Requests can also include a `serializer/` dictionary with the same fields as link/mirror; the validator feeds those flags to `cep_fed_transport_manager_mount_set_flat_policy`, and the manager records the result under `/net/mounts/<peer>/invoke/<mount>/serializer/`.
   - Submission paths enqueue request frames with invocation IDs; responses remove pending entries and trigger completion callbacks.
 
 ### Federation Data Model
@@ -61,4 +63,3 @@ Telemetry marks `last_event` (e.g., `fatal` or `close`), counters increment, and
 
 **Q: How does this integrate with Layer 0 heartbeat?**  
 Organs run as heartbeat enzymes. Link/mirror/invoke validators execute during the capture phase, transport callbacks fire during compute, and request state/telemetry updates land during commit. Federation never shortcuts the beat pipeline.
-

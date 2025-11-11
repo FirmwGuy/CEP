@@ -59,6 +59,7 @@ static int cell_compare_by_name(const cepCell* restrict key,
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <limits.h>
 
 #define CEP_FLAT_CELL_META_TOMBSTONE 0x0001u
 #define CEP_FLAT_CELL_META_VEILED    0x0002u
@@ -221,31 +222,34 @@ static const char* cep_serialization_id_desc(cepID id, char* buf, size_t cap) {
     return buf;
 }
 
-static bool cep_serialization_env_flag_enabled(const char* name) {
-    const char* value = getenv(name);
-    if (!value || !*value)
-        return false;
-    if (strcmp(value, "0") == 0)
-        return false;
-    if (strcasecmp(value, "false") == 0)
-        return false;
-    return true;
-}
-
 static void cep_serialization_debug_log(const char* fmt, ...);
+static void cep_serialization_emit_failure(const char* topic,
+                                           const cepCell* subject,
+                                           const char* detail_fmt,
+                                           ...);
 
 static bool cep_serialization_debug_logging_enabled(void) {
     static int cached = -1;
     if (cached < 0) {
-        bool enabled = cep_serialization_env_flag_enabled("CEP_SERIALIZATION_DEBUG") ||
-                       cep_serialization_env_flag_enabled("CEP_POC_SERIALIZATION_DEBUG");
+        const char* dbg = getenv("CEP_SERIALIZATION_DEBUG");
+        const char* poc = getenv("CEP_POC_SERIALIZATION_DEBUG");
+        bool enabled = (dbg && *dbg && strcmp(dbg, "0") != 0 && strcasecmp(dbg, "false") != 0) ||
+                       (poc && *poc && strcmp(poc, "0") != 0 && strcasecmp(poc, "false") != 0);
         cached = enabled ? 1 : 0;
     }
     return cached == 1;
 }
 
+static bool g_cep_serialization_flat_mode = true;
+
+bool cep_serialization_set_flat_mode_override(bool enable_flat) {
+    bool previous = g_cep_serialization_flat_mode;
+    g_cep_serialization_flat_mode = enable_flat;
+    return previous;
+}
+
 static bool cep_serialization_flat_mode_enabled(void) {
-    return cep_serialization_env_flag_enabled("CEP_SERIALIZATION_USE_FLAT");
+    return g_cep_serialization_flat_mode;
 }
 
 static cepFlatCompressionAlgorithm cep_serialization_flat_compression_mode(void) {
@@ -281,6 +285,23 @@ static uint32_t cep_serialization_flat_payload_history_beats(void) {
 
 static uint32_t cep_serialization_flat_manifest_history_beats(void) {
     return cep_serialization_env_history_beats("CEP_SERIALIZATION_FLAT_MANIFEST_HISTORY_BEATS");
+}
+
+static uint32_t cep_serialization_flat_comparator_max_version(void) {
+    const char* value = getenv("CEP_SERIALIZATION_FLAT_MAX_COMPARATOR_VERSION");
+    if (!value || !*value)
+        return UINT32_MAX;
+    errno = 0;
+    char* end = NULL;
+    unsigned long parsed = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || (end && *end)) {
+        cep_serialization_debug_log("[serialization][flat] ignoring CEP_SERIALIZATION_FLAT_MAX_COMPARATOR_VERSION=%s (invalid integer)\n",
+                                    value);
+        return UINT32_MAX;
+    }
+    if (parsed > UINT32_MAX)
+        parsed = UINT32_MAX;
+    return (uint32_t)parsed;
 }
 
 static void cep_serialization_debug_log(const char* fmt, ...) {
@@ -1924,6 +1945,18 @@ static bool cep_serialization_store_meta_write_comparator(const cepStore* store,
     if (!cep_compare_identity(store->compare, &info))
         return false;
 
+    uint32_t max_version = cep_serialization_flat_comparator_max_version();
+    if (info.version > max_version) {
+        cep_serialization_emit_failure("serialization.store.comparator_version",
+                                       NULL,
+                                       "comparator version %u exceeds negotiated max %u (domain=%016" PRIx64 " tag=%016" PRIx64 ")",
+                                       info.version,
+                                       max_version,
+                                       (uint64_t)info.identifier.domain,
+                                       (uint64_t)info.identifier.tag);
+        return false;
+    }
+
     if (capacity < SERIAL_COMPARATOR_METADATA_SIZE)
         return false;
 
@@ -2225,8 +2258,6 @@ void cep_comparator_registry_reset_active(void) {
 }
 
 void cep_comparator_registry_reset_default(void) {
-    /* FIXME: Temporary escape hatch for legacy tests still mutating the
-       default runtime; remove once every suite provisions its own runtime. */
     cep_serialization_cleanup_default_registry();
 }
 
@@ -2625,7 +2656,7 @@ static bool cep_serialization_emitter_emit(cepSerializationEmitter* emitter,
                                            size_t payload_size);
 
 static inline uint64_t cep_serialization_hash_payload(const uint8_t* payload, size_t payload_size) {
-    return (payload && payload_size) ? cep_hash_bytes(payload, payload_size) : UINT64_C(0);
+    return (payload && payload_size) ? cep_hash_bytes_fnv1a(payload, payload_size) : UINT64_C(0);
 }
 
 static uint64_t cep_serialization_digest_mix(uint64_t seed,
@@ -2641,7 +2672,7 @@ static uint64_t cep_serialization_digest_mix(uint64_t seed,
         .id = chunk_id,
         .payload = cep_serialization_hash_payload(payload, payload_size),
     };
-    return cep_hash_bytes(&block, sizeof block);
+    return cep_hash_bytes_fnv1a(&block, sizeof block);
 }
 
 static uint8_t cep_serialization_store_organiser(const cepCell* cell) {
@@ -2702,7 +2733,7 @@ static bool cep_serialization_compute_cell_fingerprint(const cepCell* cell, uint
 
     size_t size = data->size;
     const void* bytes = cep_data_payload(data);
-    uint64_t payload_hash = size ? cep_hash_bytes(bytes, size) : UINT64_C(0);
+    uint64_t payload_hash = size ? cep_hash_bytes_fnv1a(bytes, size) : UINT64_C(0);
     struct {
         uint64_t domain;
         uint64_t tag;
@@ -2714,7 +2745,7 @@ static bool cep_serialization_compute_cell_fingerprint(const cepCell* cell, uint
         .size = size,
         .payload = payload_hash,
     };
-    *out_fingerprint = cep_hash_bytes(&fingerprint, sizeof fingerprint);
+    *out_fingerprint = cep_hash_bytes_fnv1a(&fingerprint, sizeof fingerprint);
     return true;
 }
 
@@ -3915,7 +3946,7 @@ static bool cep_serialization_emit_data(cepSerializationEmitter* emitter,
             if (resource_count)
                 meta_cursor = cep_serialization_reference_path_encode(meta_cursor, resource_segments, resource_count);
         }
-        payload_hash = metadata_size ? cep_hash_bytes(metadata, metadata_size) : 0u;
+        payload_hash = metadata_size ? cep_hash_bytes_fnv1a(metadata, metadata_size) : 0u;
     } else {
         payload_hash = cep_data_compute_hash(data);
     }
@@ -5184,7 +5215,7 @@ static bool cep_serialization_reader_check_hash(const cepSerializationStageData*
     if (data->total_size && !data->buffer)
         return false;
 
-    uint64_t payload_hash = cep_hash_bytes(data->buffer, (size_t)data->total_size);
+    uint64_t payload_hash = cep_hash_bytes_fnv1a(data->buffer, (size_t)data->total_size);
     struct {
         uint64_t domain;
         uint64_t tag;
@@ -5197,7 +5228,7 @@ static bool cep_serialization_reader_check_hash(const cepSerializationStageData*
         .payload = payload_hash,
     };
 
-    uint64_t computed = cep_hash_bytes(&fingerprint, sizeof fingerprint);
+    uint64_t computed = cep_hash_bytes_fnv1a(&fingerprint, sizeof fingerprint);
     return computed == data->hash;
 }
 

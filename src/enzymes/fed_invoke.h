@@ -29,6 +29,15 @@ typedef struct {
     void*                     user_ctx;
 } cepFedInvokeSubmission;
 
+typedef struct {
+    uint8_t  kind;
+    uint8_t  status;
+    uint16_t signal_segments;
+    uint16_t target_segments;
+    uint16_t reserved;
+    uint64_t invocation_id;
+} cepFedInvokeFrameHeader;
+
 bool cep_fed_invoke_organ_init(cepFedTransportManager* manager,
                                cepCell* net_root);
 
@@ -49,8 +58,21 @@ void cep_fed_invoke_process_frame(cepFedInvokeRequest* request,
                                   size_t payload_len,
                                   cepFedFrameMode mode);
 
+bool cep_fed_invoke_emit_cell(const char* peer_id,
+                              const char* mount_id,
+                              const cepCell* cell,
+                              const cepSerializationHeader* header,
+                              size_t blob_payload_bytes,
+                              cepFedFrameMode mode,
+                              uint64_t deadline_beat);
+
 int cep_fed_invoke_timeout_enzyme(const cepPath* signal_path,
                                   const cepPath* target_path);
+
+bool cep_fed_invoke_validate_frame_contract(const uint8_t* payload,
+                                            size_t payload_len,
+                                            cepFedFrameMode mode,
+                                            const char** failure_note);
 
 #ifdef __cplusplus
 }

@@ -11,6 +11,7 @@
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_ops.h"
 #include "../l0_kernel/cep_cei.h"
+#include "../l0_kernel/cep_serialization.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,6 +57,14 @@ typedef struct {
     size_t mount_capacity;
 } cepFedTransportManager;
 
+typedef struct {
+    bool allow_crc32c;
+    bool allow_deflate;
+    bool allow_aead;
+    bool warn_on_downgrade;
+    uint32_t comparator_max_version;
+} cepFedTransportFlatPolicy;
+
 bool cep_fed_transport_manager_init(cepFedTransportManager* manager,
                                     cepCell* net_root);
 
@@ -70,6 +79,20 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
                                     size_t payload_len,
                                     cepFedFrameMode mode,
                                     uint64_t deadline_beat);
+
+bool cep_fed_transport_manager_send_cell(cepFedTransportManager* manager,
+                                         cepFedTransportManagerMount* mount,
+                                         const cepCell* cell,
+                                         const cepSerializationHeader* header,
+                                         size_t blob_payload_bytes,
+                                         cepFedFrameMode mode,
+                                         uint64_t deadline_beat);
+
+void cep_fed_transport_manager_mount_set_flat_history(cepFedTransportManagerMount* mount,
+                                                      uint32_t payload_history_beats,
+                                                      uint32_t manifest_history_beats);
+void cep_fed_transport_manager_mount_set_flat_policy(cepFedTransportManagerMount* mount,
+                                                     const cepFedTransportFlatPolicy* policy);
 
 bool cep_fed_transport_manager_request_receive(cepFedTransportManager* manager,
                                                cepFedTransportManagerMount* mount);

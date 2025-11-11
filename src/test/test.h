@@ -111,6 +111,12 @@ MunitResult test_runtime_dual_isolation(const MunitParameter params[], void* use
 
 MunitResult test_fed_transport_negotiation(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_transport_upd_latest(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_transport_send_cell_flat(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_transport_send_cell_provider_caps(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_mirror_frame_contract(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_link_emit_cell(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_link_frame_contract(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_invoke_frame_contract(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_transport_inbound(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_transport_close_events(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_validator_success(const MunitParameter params[], void* user_data_or_fixture);

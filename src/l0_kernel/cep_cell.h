@@ -9,6 +9,7 @@
 
 
 #include "cep_molecule.h"
+#include "blake3.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -643,9 +644,26 @@ static inline uint64_t cep_hash_bytes(const void* data, size_t size) {
     if (!data || !size)
         return 0;
 
+    uint8_t digest[sizeof(uint64_t)];
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    blake3_hasher_update(&hasher, data, size);
+    blake3_hasher_finalize(&hasher, digest, sizeof digest);
+
+    uint64_t hash = 0;
+    for (size_t i = 0; i < sizeof digest; ++i)
+        hash |= ((uint64_t)digest[i]) << (i * 8u);
+    return hash;
+}
+
+/* TODO(legacy-serializer): delete once the hierarchical serializer is retired. */
+static inline uint64_t cep_hash_bytes_fnv1a(const void* data, size_t size) {
+    if (!data || !size)
+        return 0;
+
     const uint8_t* bytes = data;
     uint64_t hash = 1469598103934665603ULL;  // FNV-1a offset basis.
-    for (size_t i = 0; i < size; i++) {
+    for (size_t i = 0; i < size; ++i) {
         hash ^= bytes[i];
         hash *= 1099511628211ULL;            // FNV-1a prime.
     }
