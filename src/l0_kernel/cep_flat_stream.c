@@ -4,7 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 
-#include "cep_serialization.h"
+#include "cep_flat_stream.h"
 #include "cep_cell.h"
 #include "cep_flat_serializer.h"
 #include "cep_flat_helpers.h"
@@ -15,6 +15,7 @@
 #include "blake3.h"
 #include "storage/cep_octree.h"
 #include "stream/cep_stream_internal.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <sodium.h>
 
@@ -240,16 +241,8 @@ static bool cep_serialization_debug_logging_enabled(void) {
     return cached == 1;
 }
 
-static bool g_cep_serialization_flat_mode = true;
-
-bool cep_serialization_set_flat_mode_override(bool enable_flat) {
-    bool previous = g_cep_serialization_flat_mode;
-    g_cep_serialization_flat_mode = enable_flat;
-    return previous;
-}
-
 static bool cep_serialization_flat_mode_enabled(void) {
-    return g_cep_serialization_flat_mode;
+    return true;
 }
 
 static cepFlatCompressionAlgorithm cep_serialization_flat_compression_mode(void) {
@@ -579,8 +572,12 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
     bool ok = false;
     uint32_t payload_history_window = cep_serialization_flat_payload_history_beats();
     uint32_t manifest_history_window = cep_serialization_flat_manifest_history_beats();
+    cepOpCount frame_beat = cep_cell_latest_timestamp(canonical);
+    if (!frame_beat)
+        frame_beat = cep_beat_index();
+
     cepFlatFrameConfig config = {
-        .beat_number = cep_beat_index(),
+        .beat_number = frame_beat,
         .apply_mode = CEP_FLAT_APPLY_INSERT_ONLY,
         .capability_flags = 0u,
         .hash_algorithm = CEP_FLAT_HASH_BLAKE3_256,
@@ -754,13 +751,13 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
         }
     }
 
-    if (manifest_history_window) {
-        if (!cep_serialization_emit_manifest_history(canonical,
-                                                     serializer,
-                                                     &names,
-                                                     manifest_history_window,
-                                                     config.beat_number))
-            goto exit;
+    if (manifest_history_window &&
+        !cep_serialization_emit_manifest_history(canonical,
+                                                 serializer,
+                                                 &names,
+                                                 manifest_history_window,
+                                                 config.beat_number)) {
+        goto exit;
     }
 
     if (!cep_serialization_emit_payload_history(canonical,
@@ -2262,6 +2259,7 @@ void cep_comparator_registry_reset_default(void) {
 }
 
 CEP_DEFINE_STATIC_DT(dt_sev_crit, CEP_ACRO("CEP"), CEP_WORD("sev:crit"));
+CEP_DEFINE_STATIC_DT(dt_sev_warn, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
 
 /* Serialization failures should not emit CEI until the diagnostics mailbox is
    available. This guard keeps early bootstrap from tripping fatal reports. */

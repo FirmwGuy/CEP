@@ -27,7 +27,7 @@ Before this change, short-lived runtimes (especially inside tests) could leak or
 ## 0) Reading map
 
 * **Signals → Enzymes → Work**: register, bind, match, and order enzyme callbacks; how impulses get resolved and executed  .
-* **Serialization & Streams**: emit/ingest chunked cell streams; transactions; manifest & payload; proxy snapshots .
+* **Serialization & Streams**: emit/ingest flat-frame cell streams; transactions; manifest & payload; proxy snapshots .
 * **Diagnostics / CEI**: the Common Error Interface (`cep_cei_emit`) publishes structured Error Facts into the diagnostics mailbox (`/data/mailbox/diag`) and can emit `sig_cei/*` impulses; re-read the CEI topic before customising severity handling or routing.
 * **Federation transport manager**: negotiates mount/provider capabilities, seeds `/net/mounts` & `/net/transports`, and enforces `upd_latest` semantics so federation enzymes stay deterministic.
 * **Proxies & Libraries**: represent external resources/streams inside cells  .
@@ -254,38 +254,36 @@ Mailbox organs and PRR rely on these APIs, so reusing them keeps routing/backlog
 
 ## 2) Serialization & streams (wire format)
 
-When cells travel between processes or shards they move as chunked streams. This chapter explains how the wire format is framed, how manifests and payloads pair up during capture/commit, and which helpers keep ingestion deterministic while respecting append-only history.
+When cells travel between processes or shards they move as flat-frame streams. This chapter explains how the records are framed, how manifests and payloads pair up during capture/commit, and which helpers keep ingestion deterministic while respecting append-only history.
 
-### 2.1 Chunk framing and the control header
+### 2.1 Record framing and the control header
 
-Serialized streams are **chunked**. Each chunk carries a size and ID (class + transaction + sequence). The initial **control header** plants the **magic**, **format version**, **byte order**, and optional **metadata** (`cep_serialization_header_write/read`) . Helpers take care of **big‑endian on the wire** (inline BE conversions) and report exact buffer sizes so you can pre‑allocate (`*_chunk_size`) .
+Serialized streams are **record-based**. Each record carries a type, version, flags, and varint-encoded key/body lengths. The initial **control header** plants the **magic**, **format version**, **byte order**, and optional **metadata** (`cep_flat_stream_header_write/read`). Helpers take care of **big‑endian on the wire** (inline BE conversions) and report exact buffer sizes so you can pre‑allocate (`cep_flat_stream_header_chunk_size`).
 
-#### 2.1.1 Chunk helper utilities
+#### 2.1.1 Header helper utilities
 
-When you stitch bespoke emitters or parsers alongside the stock helpers, these primitives give you direct control over chunk identifiers and header sizes without duplicating bit-twiddling code.
+When you stitch bespoke emitters or parsers alongside the stock helpers, these primitives give you direct control over header construction without duplicating bit-twiddling code.
 
 **Technical details**
-- `uint64_t cep_serialization_chunk_id(uint16_t chunk_class, uint32_t transaction, uint16_t sequence)` composes the 64-bit chunk identifier from its components. Pair it with `cep_serialization_chunk_class/id/sequence` when you need to inspect or construct IDs manually.
-- `uint16_t cep_serialization_chunk_class(uint64_t chunk_id)`, `uint32_t cep_serialization_chunk_transaction(uint64_t chunk_id)`, and `uint16_t cep_serialization_chunk_sequence(uint64_t chunk_id)` unpack the class/transaction/sequence fields from any chunk ID you receive on the wire.
-- `size_t cep_serialization_header_chunk_size(const cepSerializationHeader* header)` tells you exactly how many bytes the control header will consume once encoded, making it easy to reserve buffers ahead of time.
-- `bool cep_serialization_header_read(const uint8_t* chunk, size_t chunk_size, cepSerializationHeader* header)` validates a control chunk and fills the struct back in, freeing you from reimplementing the endianness handling.
+- `size_t cep_flat_stream_header_chunk_size(const cepSerializationHeader* header)` tells you exactly how many bytes the control header will consume once encoded, making it easy to reserve buffers ahead of time.
+- `bool cep_flat_stream_header_read(const uint8_t* chunk, size_t chunk_size, cepSerializationHeader* header)` validates a control header and fills the struct back in, freeing you from reimplementing the endianness handling.
 
 **Q&A**
-- *Do I ever need to craft chunk IDs by hand?* Only when you build specialised emitters or run tests that validate error conditions. For ordinary streaming, stick to `cep_serialization_emit_cell()` and let it number chunks for you.
+- *Do I ever need to assemble records by hand?* Only when you build specialised emitters or run tests that validate error conditions. For ordinary streaming, stick to `cep_flat_stream_emit_cell()` and let it structure the frame for you.
 
 ### 2.2 Manifest and payload
 
-`cep_serialization_emit_cell` writes a **header** → **manifest** → **payload** → **end‑of‑transaction control**:
+`cep_flat_stream_emit_cell` writes a **header** → **manifest** → **payload** → **end‑of‑transaction control**:
 
-* **Manifest (STRUCTURE)**: captures the cell’s **type**, flags, and **path** segments (Domain/Tag pairs). The path is produced by `cep_cell_path` and stored as an array of `cepPast { cepDT dt; cepOpCount timestamp; }`, typically using timestamp 0 for “latest” at emit time  .
-* **Payload (STRUCTURE + optional BLOBs)**:
+* **Manifest (STRUCTURE)**: captures the cell’s **type**, flags, and **path** segments (Domain/Tag pairs). The path is produced by `cep_cell_path` and stored as an array of `cepPast { cepDT dt; cepOpCount timestamp; }`, typically using timestamp 0 for “latest” at emit time.
+* **Payload (STRUCTURE + optional BLOB records)**:
 
-  * Normal cells with `VALUE`/`DATA` payloads encode datatype, inlining small payloads and **chunking large blobs** with a caller‑configurable slice size (`blob_payload_bytes`). Each blob chunk carries an **offset + length**; the reader validates order and size before assembly .
-  * **Proxy cells** emit a **LIBRARY** chunk that carries a *snapshot* (bytes and flags). The reader forwards the snapshot to the proxy via `cep_proxy_restore` to reconstruct external state without peeking into proxy internals  .
+  * Normal cells with `VALUE`/`DATA` payloads encode datatype, inlining small payloads and **chunking large blobs** with a caller‑configurable slice size (`blob_payload_bytes`). Each blob record carries an **offset + length**; the reader validates order and size before assembly.
+  * **Proxy cells** emit a **LIBRARY** record that carries a *snapshot* (bytes and flags). The reader forwards the snapshot to the proxy via `cep_proxy_restore` to reconstruct external state without peeking into proxy internals.
 
 ### 2.3 Reader, transactions, and safety
 
-The **reader** (`cep_serialization_reader_*`) ingests chunks, validates ordering per **transaction/sequence**, stages per-cell **manifest/data/proxy** parts, and on `commit()` materializes changes into the tree:
+The **reader** (`cep_flat_stream_reader_*`) ingests records, validates ordering, stages per-cell **manifest/data/proxy** parts, and on `commit()` materializes changes into the tree:
 
 * Transactions guard against **out-of-order** or mixed chunks; any violation flips the reader to **error** and clears staged state .
 * For data payloads, the reader recomputes the **content hash** (over `{dt, size, payloadHash}`) using the same hash as the kernel (`cep_hash_bytes`) and rejects mismatches before applying the update  .
@@ -296,8 +294,8 @@ The **reader** (`cep_serialization_reader_*`) ingests chunks, validates ordering
 Streaming readers often live inside tight loops. These helpers reset or retire them without leaking staged buffers.
 
 **Technical details**
-- `void cep_serialization_reader_reset(cepSerializationReader* reader)` clears staged transactions, error state, and hash caches so the same reader can ingest a fresh stream from the start.
-- `void cep_serialization_reader_destroy(cepSerializationReader* reader)` releases allocations associated with staging buffers, manifests, and blob scratch space. Call it once you are done ingesting streams from that root.
+- `void cep_flat_stream_reader_reset(cepFlatStreamReader* reader)` clears staged transactions, error state, and hash caches so the same reader can ingest a fresh stream from the start.
+- `void cep_flat_stream_reader_destroy(cepFlatStreamReader* reader)` releases allocations associated with staging buffers, manifests, and blob scratch space. Call it once you are done ingesting streams from that root.
 
 **Q&A**
 - *Why not create a new reader every time?* Reusing a reset reader avoids repeated allocations when you decode many short streams (for example, in tests or on embedded targets).
@@ -309,11 +307,11 @@ Control headers now carry a tiny record of “which beat emitted this?” so dow
 **Technical details**
 
 - `cepSerializationHeader` gained `journal_metadata_present`, `journal_beat`, and `journal_decision_replay` fields. Set the boolean to `true` to request metadata; leave it `false` if you supply your own `metadata` buffer.
-- `cep_serialization_emit_cell()` auto-populates `journal_beat` with `cep_beat_index()` when you pass `NULL` for the header (or leave the boolean unset), so ordinary emitters get beat stamps for free.
+- `cep_flat_stream_emit_cell()` auto-populates `journal_beat` with `cep_beat_index()` when you pass `NULL` for the header (or leave the boolean unset), so ordinary emitters get beat stamps for free.
 - Structure manifests encode an extra byte after every `domain/tag` pair that mirrors the segment’s `glob` flag (`0x01` when set). Data descriptors append the same byte after the payload tag so wildcard hints survive round-trips.
 - During write, the header encodes a 16-byte metadata block: beat (big-endian `uint64_t`), a flag byte (`0x01` for decision replay), and padding. Readers parse it back and set the struct fields when `metadata_length` matches the pattern.
 - You can still inject arbitrary metadata: provide `metadata_length`/`metadata` and leave `journal_metadata_present` `false`; the serializer simply copies your payload.
-- `void cep_serialization_mark_decision_replay(void)` flips the global flag so the next serialized batch advertises that it originated from a replay, mirroring what higher layers use during forensic exports.
+- `void cep_flat_stream_mark_decision_replay(void)` flips the global flag so the next serialized batch advertises that it originated from a replay, mirroring what higher layers use during forensic exports.
 
 ---
 
@@ -488,23 +486,23 @@ cepSerializationHeader hdr = {
   .byte_order = CEP_SERIAL_ENDIAN_BIG,  // wire choice
 };
 FILE* out = fopen("cell.bin","wb");
-cep_serialization_emit_cell(cell, &hdr, sink, out, /*blob_payload_bytes*/ 64*1024);
+cep_flat_stream_emit_cell(cell, &hdr, sink, out, /*blob_payload_bytes*/ 64*1024);
 fclose(out);
 
 // Reader side
-cepSerializationReader* rd = cep_serialization_reader_create(root);
+cepFlatStreamReader* rd = cep_flat_stream_reader_create(root);
 FILE* in = fopen("cell.bin","rb");
 for (;;) {
   uint64_t size, id;               // read chunk framing...
   // ...
-  cep_serialization_reader_ingest(rd, chunk, chunk_len);
-  if (cep_serialization_reader_pending(rd)) {
-    cep_serialization_reader_commit(rd); // applies staged manifest/data
+  cep_flat_stream_reader_ingest(rd, chunk, chunk_len);
+  if (cep_flat_stream_reader_pending(rd)) {
+    cep_flat_stream_reader_commit(rd); // applies staged manifest/data
   }
 }
 ```
 
-The emitter outputs: **header → manifest → (data inline or BLOB chunks) → end control**. The reader validates **sequence**, reconstructs data, **verifies hashes**, and restores **proxy snapshots** when present .
+The emitter outputs: **header → manifest → (data inline or BLOB records) → trailer**. The reader validates **sequence**, reconstructs data, **verifies hashes**, and restores **proxy snapshots** when present.
 
 ### C) Wrap a file handle as a proxy
 
@@ -571,7 +569,7 @@ if (!cep_txn_commit(&txn)) {
 * **Deletion**: `cep_cell_delete[_hard]`, `cep_store_delete_children_hard`, child `take/pop` variants (soft/hard) .
 * **Locks**: `cep_store_lock/unlock`, `cep_data_lock/unlock`  .
 * **Enzymes**: registry lifecycle, register/unregister, resolve, and binding surface in the public header; see internals for ordering and specificity calculus  .
-* **Serialization**: header read/write; emit cell; reader ingest/commit; BLOB slicing; proxy library chunks .
+* **Serialization**: header read/write; emit cell; reader ingest/commit; BLOB slicing; proxy library records.
 * **Namepool**: intern/lookup/release textual names when using reference‑style identifiers .
 
 ---

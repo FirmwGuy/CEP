@@ -1538,7 +1538,7 @@ MunitResult test_fed_mirror_emit_cell(const MunitParameter params[], void* fixtu
     munit_assert_int(cep_fed_mirror_validator(NULL, request_path), ==, CEP_ENZYME_SUCCESS);
 
     const uint8_t payload_bytes[] = {0x11u, 0x22u, 0x33u};
-    cepData* data = cep_data_new_value(CEP_DTAW("CEP","mirror_payload"),
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP","mir_payld"),
                                        payload_bytes,
                                        sizeof payload_bytes);
     munit_assert_not_null(data);
@@ -1708,7 +1708,7 @@ MunitResult test_fed_link_emit_cell(const MunitParameter params[], void* fixture
     munit_assert_int(cep_fed_link_validator(NULL, request_path), ==, CEP_ENZYME_SUCCESS);
 
     const uint8_t payload_bytes[] = {0xAAu, 0xBBu};
-    cepData* data = cep_data_new_value(CEP_DTAW("CEP","emit_payload"),
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP","emit_payld"),
                                        payload_bytes,
                                        sizeof payload_bytes);
     munit_assert_not_null(data);
@@ -1796,7 +1796,7 @@ MunitResult test_fed_invoke_emit_cell(const MunitParameter params[], void* fixtu
     munit_assert_not_null(ctx);
 
     const uint8_t payload_bytes[] = {0x55u};
-    cepData* data = cep_data_new_value(CEP_DTAW("CEP","invoke_payload"),
+    cepData* data = cep_data_new_value(CEP_DTAW("CEP","invk_payld"),
                                        payload_bytes,
                                        sizeof payload_bytes);
     munit_assert_not_null(data);

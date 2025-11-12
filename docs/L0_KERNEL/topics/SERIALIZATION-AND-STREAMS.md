@@ -19,7 +19,7 @@ Each record has a canonical key (`type || path_key || subkey`), a body, and an I
 | `manifest_history_pg (0x07)` | Historical manifest pages keyed by `{parent path, page_id, revision}`. Controlled by `CEP_SERIALIZATION_FLAT_MANIFEST_HISTORY_BEATS`. | `type || parent_path_key || page_id || revision_id`. |
 | `frame_trailer (0xFF)` | Closure certificate: beat number, record count, apply mode, hash/checksum IDs, Merkle root, optional mini-TOC, history selectors, and capability bitmap. | `0xFF`. |
 
-The canonical specification (fields, varints, AEAD layout) lives in `FLAT_SERIALIZER.md`. This topic explains how the pieces are used inside the runtime.
+The canonical specification (fields, varints, AEAD layout) lives in the flat serializer wire-level spec. This topic explains how the pieces are used inside the runtime.
 
 ## Frame lifecycle and invariants
 
@@ -51,7 +51,7 @@ The canonical specification (fields, varints, AEAD layout) lives in `FLAT_SERIAL
 
 ## Streams & adapters
 
-- `cep_serialization_emit_cell` (and the federation emitters layered on top) always build a flat frame. Feature toggles now enable/disable optional records within that frame rather than swapping whole serializers.
+- `cep_flat_stream_emit_cell` (and the federation emitters layered on top) always build a flat frame. Feature toggles now enable/disable optional records within that frame rather than swapping whole serializers.
 - Streams, CAS adapters, and federation transports simply forward the frame bytes. Replay paths call `cep_flat_reader_feed`/`commit` to validate and iterate records.
 - Test helpers such as `serialization_capture_sink` or `flat_assert_chunk_records` in `src/test/l0_kernel/test_serialization.c` show how to capture a frame and inspect specific record types.
 
@@ -61,4 +61,4 @@ The canonical specification (fields, varints, AEAD layout) lives in `FLAT_SERIAL
 - `test_serialization_flat_chunk_offset_violation` and `test_serialization_flat_chunk_order_violation` mutate captured frames (recomputing per-record CRCs) and ensure the reader now rejects out-of-order or overlapping chunks.
 - Historical coverage lives in `test_serialization_manifest_history` and the new flat history tests—keep these updated whenever the schema changes.
 
-By default, every Layer 0 node emits flat frames. Federation, replication, archives, and debug tooling all expect this format, so when you update the serializer or add a record type, update the docs (`FLAT_SERIALIZER.md` plus this topic) and the test cases listed above. No legacy chunk stream remains in the codebase or the documentation.
+By default, every Layer 0 node emits flat frames. Federation, replication, archives, and debug tooling all expect this format, so when you update the serializer or add a record type, update the spec and this topic plus the test cases listed above. No legacy chunk stream remains in the codebase or the documentation.

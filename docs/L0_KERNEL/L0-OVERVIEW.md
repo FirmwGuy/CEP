@@ -17,7 +17,7 @@ This L0 Kernel API gives you a **hierarchical, time‑aware data kernel** (“ce
 * A **beat-recorded Operations timeline** (`op/*`) with watcher support so long-running work, boot, and shutdown stay observable and awaitable.
 * A **Common Error Interface (CEI)** that centralises diagnostics, routes structured Error Facts through mailboxes, and enforces severity-driven OPS/shutdown policy.
 * A **pluggable federation transport manager** that negotiates capabilities, coalesces `upd_latest` gauges deterministically, and keeps `/net/mounts` plus `/net/transports` in sync with provider selections.
-* A compact **chunked serialization** format with staged reading/commit and optional blob chunking for large payloads. 
+* A compact **flat-frame serialization** format with staged reading/commit and optional payload chunking for large blobs. 
 * An optional **namepool** to intern strings when you need textual names bound to IDs. 
 * **Pause / Rollback / Resume (PRR) controls** that gate non-essential work, rewind the visible beat horizon, and deterministically drain queued impulses from a mailbox-backed backlog.
 * **Episodic Enzyme Engine (E³)** that runs long-lived workloads deterministically, with the ability to promote episodes from threaded RO slices to cooperative RW slices and demote them back without breaking replay or budget accounting.
@@ -182,7 +182,7 @@ Mailbox retention hooks into the same cadence. Mailbox helpers resolve per-messa
 
 ### 7) Serialization & streaming
 
-The serializer emits a **control header** (magic, version, endianness, optional metadata), a **manifest** (path + flags), **data** (inline or chunked BLOBs), **library** snapshots for proxies, and an **end control** chunk. The reader **stages** chunks by transaction/sequence and only **commits** when a control marker tells it the set is complete. It validates hashes and reconstructs cells (creating parents as needed) before applying payloads or proxy snapshots. 
+The serializer emits a **record header** (magic, version, endianness, optional metadata), a **manifest** (path + flags), **data** (inline or chunked BLOBs), **library** snapshots for proxies, and a **frame trailer** that certifies integrity/capabilities. The reader **stages** records and only **commits** when the trailer arrives. It validates hashes and reconstructs cells (creating parents as needed) before applying payloads or proxy snapshots. 
 
 You can **stream** parts of your tree over files/sockets, resume, validate, and apply atomically.
 
@@ -193,7 +193,7 @@ You can **stream** parts of your tree over files/sockets, resume, validate, and 
 * **Local‑first document/graph stores** with built‑in history and path addressing (dictionary or tree branches).  
 * **Reactive pipelines** (“when `/signal/users/*` arrives, run indexer before aggregator, then commit”).  
 * **Digital twins / scene graphs** leveraging the **octree** store for spatial indexing. 
-* **Replicated state** across processes or machines via staged **chunked serialization**. 
+* **Replicated state** across processes or machines via staged **flat serialization**. 
 * **Resource graphs** where nodes are **proxies** to external handles and streams (files, sockets, GPU buffers) with snapshot/restore semantics. 
 * **Audit‑friendly systems** where history is kept as timestamps and can be replayed or queried at a beat (“as of” semantics). 
 
@@ -283,7 +283,7 @@ At resolve time, the runtime merges **bindings from target ancestry** (propagate
 
 ---
 
-### D) Streaming a cell over the wire (chunked)
+### D) Streaming a cell over the wire (flat frames)
 
 ```c
 // Writer callback used by the emitter
@@ -295,11 +295,11 @@ static bool write_chunk(void* ctx, const uint8_t* bytes, size_t n) {
 // Emit one cell (with optional BLOB chunking)
 cepSerializationHeader hdr = { .byte_order = CEP_SERIAL_ENDIAN_BIG };
 FILE* out = fopen("cell.bin", "wb");
-cep_serialization_emit_cell(users, &hdr, write_chunk, out, /*blob payload*/ 64*1024);  // emit chunks  :contentReference[oaicite:45]{index=45}
+cep_flat_stream_emit_cell(users, &hdr, write_chunk, out, /*blob payload*/ 64*1024);  // emit chunks  :contentReference[oaicite:45]{index=45}
 fclose(out);
 ```
 
-On the receiving side, you **ingest** chunks (in any stepwise manner), and **commit** once a control marker is seen. The reader validates sizes/hashes, reconstructs the path (creating parents as needed), and restores either **inline data** or **proxy snapshots**. 
+On the receiving side, you **ingest** records (in any stepwise manner), and **commit** once the trailer is seen. The reader validates sizes/hashes, reconstructs the path (creating parents as needed), and restores either **inline data** or **proxy snapshots**. 
 
 ---
 
@@ -353,7 +353,7 @@ Veiled subtrees let you build a complex branch exactly where it belongs while ke
 * **Data:** `cep_data_new`, `cep_cell_update(_hard)`, history via `_past` lookups; hashes are computed over dt+size+payload for integrity.  
 * **Links/proxies:** `cep_link_*`, `cep_proxy_*`, `cep_library_*`.  
 * **Enzymes & heartbeats:** `cep_enzyme_register/unregister/resolve`, registry lifecycle, bindings on cells. Heartbeat queues handle impulses.   
-* **Serialization:** `cep_serialization_emit_cell`, reader `*_ingest/_commit`, header `*_write/_read`. 
+* **Serialization:** `cep_flat_stream_emit_cell`, reader `*_ingest/_commit`, header `*_write/_read`. 
 * **Naming & namepool:** DT macros + `cep_namepool_*` for interned references.  
 
 ---

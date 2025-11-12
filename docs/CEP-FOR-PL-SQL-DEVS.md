@@ -32,7 +32,7 @@ If you know how to keep Oracle packages humming, you already understand most of 
   - Unit tests ship with the repository (see `src/test/l0_kernel`) and rely on munit. Harness helpers such as `test_boot_cycle_prepare` mimic packages that rerun initialization blocks. When you need a PL/SQL-like fixture (set up schema, run procedure, assert tables), use the heartbeat boot helpers, mutate the tree, and inspect `/data/**` or `/journal/**`.
 
 - **Schema migrations**
-  - Because CEP is append-only, structural changes resemble forward-only migrations. Use enzymes to emit reform stories under `/data/flow/**` or `/data/err/**`; serialization snapshots (`cep_serialization_emit_cell`) replace your datapump exports when you need to move state between environments.
+  - Because CEP is append-only, structural changes resemble forward-only migrations. Use enzymes to emit reform stories under `/data/flow/**` or `/data/err/**`; serialization snapshots (`cep_flat_stream_emit_cell`) replace your datapump exports when you need to move state between environments.
 
 ## Global Q&A
 - **Can I still rely on declarative constraints?**  

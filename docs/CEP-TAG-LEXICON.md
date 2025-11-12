@@ -50,7 +50,6 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `enzymes` | Runtime platform | registry dictionary exposing registered enzymes. |
 | `impulses` | Runtime platform | beat impulse log recorded under `/rt/beat/<n>/impulses` (legacy `inbox` link retained for one release). |
 | `analytics` | Runtime platform | runtime analytics root under `/rt/analytics`. |
-| `runtime_isolation` | Runtime platform | harness marker ensuring per-runtime storage separation during tests. |
 | `spacing` | Runtime platform | beat-to-beat spacing metrics recorded by the heartbeat analytics helper. |
 | `interval_ns` | Runtime platform | nanosecond interval payload inside spacing analytics entries. |
 | `issued_unix` | Runtime platform | unix timestamp captured alongside `issued_beat` inside a mailbox envelope. |
@@ -69,9 +68,6 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `msgs` | Runtime platform | mailbox message dictionary keyed by local message ID. |
 | `topic` | Runtime platform | short subject tag used by CEI facts for routing and filtering. |
 | `organ/<k>` | Runtime platform | store tag pattern identifying typed organ root dictionaries. |
-| `organ/sys_namepool` | Runtime platform | store tag assigned to the `/sys/namepool` dictionary (bootstrap service, not an organ). |
-| `organ/rt_beat` | Runtime platform | store tag assigned to the `/rt/beat` organ root. |
-| `organ/journal` | Runtime platform | store tag assigned to the `/journal` organ root. |
 | `organs` | Runtime platform | system dictionary publishing immutable organ descriptors. |
 | `txn` | Runtime platform | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
 | `boot_oid` | Runtime platform | `val/bytes` cell under `/sys/state` publishing the boot operation OID. |
@@ -141,17 +137,10 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | OPS timeline | operation identifiers emitted by `sig_cell` payloads. |
 | `opm:states` | OPS timeline | operation mode indicating state-tracking semantics. |
 | `org:<k>:*` | OPS timeline | organ enzyme names (`org:<k>:vl`, `org:<k>:ct`, `org:<k>:dt`) bound at organ roots. |
-| `org:sys_namepool:*` | OPS timeline | namepool organ validator/constructor/destructor signals. |
-| `org:rt_beat:*` | OPS timeline | beat ledger organ validator/constructor/destructor signals. |
-| `org:journal:*` | OPS timeline | journal organ validator/constructor/destructor signals. |
 | `payload_id` | OPS timeline | optional `val/bytes` payload stored in envelopes and watcher entries. |
 | `qos` | OPS timeline | control-plane QoS flags stored alongside paused impulses. |
 | `role_parnt` / `role_source` / `role_subj` / `role_templ` | OPS timeline | role vocabulary consumed by mutation enzymes. |
 | `sig_cell` | OPS timeline | signal namespace for kernel cell operations. |
-| `sig_mail/arrive` | OPS timeline | mailbox arrival impulse emitted during beat capture. |
-| `sig_mail/ack` | OPS timeline | mailbox acknowledgement impulse emitted when a subscriber reads or acknowledges a message. |
-| `sig_mail/ttl` | OPS timeline | retention impulse emitted when a TTL deadline matures. |
-| `sig_mail/route` | OPS timeline | optional routing impulse for fan-out or mirrors. |
 | `sig_cei/*` | OPS timeline | error-channel signals dispatched by CEI helper emissions and consumed by bound enzymes. |
 | `state` | OPS timeline | current logical state (`ist:*`) stored on an operation root. |
 | `status` | OPS timeline | terminal status (`sts:*`) recorded under `/close/status`. |
@@ -160,9 +149,6 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `sts:ok` | OPS timeline | success status recorded when an operation completes normally. |
 | `summary_id` | OPS timeline | optional summary payload identifier stored under `/close/summary_id`. |
 | `ttl` | OPS timeline | watcher expiry interval in beats. |
-| `enz_mail_dispatch` | OPS timeline | enzyme descriptor handling `sig_mail/arrive`. |
-| `enz_mail_ack` | OPS timeline | enzyme descriptor handling `sig_mail/ack`. |
-| `enz_mail_retention` | OPS timeline | enzyme descriptor handling `sig_mail/ttl`. |
 | `watchers` | OPS timeline | dictionary tracking pending awaiters. |
 | `want` | OPS timeline | requested state or status captured for a watcher. |
 | `closed_beat` | OPS timeline | beat index recorded when the `/close/` branch was sealed. |
@@ -210,7 +196,6 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `prov_caps` | Federation transport | mirrors the selected provider capability bitset for the active mount. |
 | `provider` | Federation transport | stores the provider identifier associated with a mount record. |
 | `upd_latest` | Federation transport | boolean flag indicating a mount opts into droppable gauge frames. |
-| `net_invoke` | Federation transport | invoke organ slug registered by the federation pack. |
 | `src_peer` | Federation transport | mirror organ request field naming the remote peer supplying bundles. |
 | `src_chan` | Federation transport | mirror organ request field naming the remote channel supplying bundles. |
 | `max_infl` | Federation transport | mirror organ bundle parameter limiting simultaneous in-flight bundles. |
@@ -262,10 +247,8 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `hyb_field` | Test harness | hybrid integration POC field mutated during promote/demote coverage. |
 | `hyb_fin` | Test harness | hybrid episode test tag confirming RO guard after demotion. |
 | `hyb_mut` | Test harness | hybrid episode test tag recording the RW mutation slice. |
-| `lib_payld` | Test harness | payload marker for library-backed stream tests. |
 | `oct_root` / `oct_space` | Test harness | octree storage fixtures in randomized tests. |
 | `pq_buffer` / `pq_root` | Test harness | packed-queue storage fixtures. |
-| `ser_child` / `ser_dict` / `ser_root` | Test harness | serialization fixtures validating tree walkers. |
 | `poc` | Test harness | integration POC root covering the end-to-end heartbeat timeline scenario. |
 | `poc_catalog` | Test harness | dictionary store standing in for the catalog branch during integration testing. |
 | `poc_event` | Test harness | log entry payload tag used by the integration log/history assertions. |
@@ -274,16 +257,14 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `poc_log` | Test harness | list store tag backing the integration log branch. |
 | `poc_stream_root` | Test harness | stream/proxy dictionary hosting the journalled stdio adapter in the integration test. |
 | `poc_replay` | Test harness | replay root populated when verifying serialization round-trips. |
-| `poc_replay_store` | Test harness | dictionary store tag assigned to the replay subtree. |
 | `poc_txn` | Test harness | veiled transaction branch staged during the integration heartbeat timeline. |
 | `space` | Test harness | octree dictionary mounted under `/data/poc` to exercise spatial store plumbing during integration. |
 | `space_entry` | Test harness | deterministic point payload inserted into the spatial store to validate octree comparisons. |
-| `item_[a-e]` | Test harness | catalog payload value tags that track deterministic append-only history mutations in the integration scenario. |
 | `rand_entry_*` | Test harness | seeded log entries appended during randomized mutation passes to ensure logging remains deterministic. |
 | `prr_pause` | Test harness | backlog dictionary that records retained impulses while pause/rollback is exercised. |
 | `enz:poc_idx` / `enz:poc_agg` | Test harness | ordered enzyme pair asserting catalog reindex sequencing. |
 | `enz:poc_rand` | Test harness | deterministic random enzyme descriptor feeding seeded impulse bursts. |
-| `sig:poc/reindex` / `sig:poc/prr` / `sig:poc/rand/*` | Test harness | signal namespace driven by the integration heartbeat timeline. |
+| `sig:poc/prr` | Test harness | integration heartbeat signal that exercises pause/rollback sequencing. |
 | `org:poc:*` | Test harness | integration organ descriptor signals (`org:poc:val`, `org:poc:ctor`, `org:poc:dtor`). |
 | `org:fixture:*` | Test harness | OVH (Organ Validation Harness) fixture signals exercising constructor/destructor/validator dossiers. |
 | `sig_apply` `sig_beta` `sig_broad` `sig_cycle` `sig_dedup` `sig_dup` `sig_empty` `sig_expect` `sig_gamma` `sig_hb` `sig_img` `sig_mask` `sig_match` `sig_nop` `sig_rand` `sig_root` `sig_rty` `sig_skip` `sig_thumb` `sig_tree` | Test harness | assorted signal tags exercised by scheduler and heartbeat tests. |

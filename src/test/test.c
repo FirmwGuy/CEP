@@ -12,8 +12,6 @@
 #include "cep_ops.h"
 #include "cep_executor.h"
 
-#define CEP_DISABLE_LEGACY_SERIALIZATION_TESTS 1
-
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -388,80 +386,6 @@ MunitTest tests[] = {
         MUNIT_TEST_OPTION_NONE,
         boot_cycle_params
     },
-#if !CEP_DISABLE_LEGACY_SERIALIZATION_TESTS
-    {
-        "/serialization/cell",
-        test_serialization,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_params
-    },
-    {
-        "/serialization/proxy",
-        test_serialization_proxy,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_params
-    },
-    {
-        "/serialization/proxy_release_once",
-        test_serialization_proxy_release_single,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_params
-    },
-    {
-        "/serialization/manifest_history",
-        test_serialization_manifest_history,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_params
-    },
-    {
-        "/serialization/manifest/split_child_capacity",
-        test_serialization_manifest_split_child_capacity,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_params
-    },
-    {
-        "/serialization/manifest/positional_add",
-        test_serialization_manifest_positional_add,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_params
-    },
-    {
-        "/serialization/manifest/fingerprint_corruption",
-        test_serialization_manifest_fingerprint_corruption,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_params
-    },
-    {
-        "/serialization/manifest/delta_fingerprint_corruption",
-        test_serialization_manifest_delta_fingerprint_corruption,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_params
-    },
-    {
-        "/serialization/header/capability_mismatch",
-        test_serialization_header_capability_mismatch,
-        NULL,
-        NULL,
-        MUNIT_TEST_OPTION_NONE,
-        boot_cycle_params
-    },
-#endif /* !CEP_DISABLE_LEGACY_SERIALIZATION_TESTS */
     {
         "/serialization/flat_multi_chunk",
         test_serialization_flat_multi_chunk,
@@ -489,6 +413,14 @@ MunitTest tests[] = {
     {
         "/serialization/flat_chunk_order_violation",
         test_serialization_flat_chunk_order_violation,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/serialization/flat_randomized_corruption",
+        test_serialization_flat_randomized_corruption,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,

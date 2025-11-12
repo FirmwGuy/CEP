@@ -6,7 +6,7 @@
 #ifndef CEP_FLAT_SERIALIZER_H
 #define CEP_FLAT_SERIALIZER_H
 
-#include "cep_serialization.h"
+#include "cep_flat_stream.h"
 
 #ifdef __cplusplus
 extern "C" {

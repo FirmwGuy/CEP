@@ -11,7 +11,7 @@
 #include "cep_executor.h"
 #include "cep_ep.h"
 #include "cep_namepool.h"
-#include "cep_serialization.h"
+#include "cep_flat_stream.h"
 #include "../enzymes/cep_cell_operations.h"
 #include "../enzymes/cep_l0_organs.h"
 #include "cep_mailbox.h"
@@ -65,7 +65,7 @@ cep_control_ensure_serialization_idle(cepControlOpState* op,
                                       const char* verb_label,
                                       const char* guard_reason)
 {
-    if (!cep_serialization_is_busy())
+    if (!cep_flat_stream_is_busy())
         return true;
     if (!op)
         return false;

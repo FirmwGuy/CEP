@@ -171,7 +171,7 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 
 **Emit side**
 
-* `cep_serialization_emit_cell` writes a control header, a **manifest** (path + meta), then a **data descriptor**. Blobs larger than `blob_payload_bytes` are sent in **BLOB** chunks; set this to match your MTU / network frame or disk block to reduce fragmentation. Default falls back to `CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD` if zero .
+* `cep_flat_stream_emit_cell` writes a control header, a **manifest** (path + meta), then a **data descriptor**. Blobs larger than `blob_payload_bytes` are sent in **BLOB** chunks; set this to match your MTU / network frame or disk block to reduce fragmentation. Default falls back to `CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD` if zero .
 * Proxies (handles/streams) snapshot through the library binding and are emitted as **LIBRARY** chunks; make sure your adapter implements snapshot/release correctly to avoid temporary heap copies for large payloads  .
 
 **Read side**
@@ -223,7 +223,7 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 * **Locks**: `cep_store_lock` / `cep_data_lock` — short, scoped use; hierarchy checks cost O(depth) per op .
 * **Links**: avoid massive backlink sets on hot targets; detaches are O(k) in number of links .
 * **Enzymes**: set `CEP_ENZYME_CAPACITY_HINT`; keep `before[]/after[]` minimal; consistent DT naming; register outside live beats when possible; activation of pending is explicit and rebuilds indexes once  .
-* **Serialization**: `cep_serialization_emit_cell` with tuned `blob_payload_bytes`; reader stages per‑tx and commits atomically; optional payload hashing trades CPU for verification .
+* **Serialization**: `cep_flat_stream_emit_cell` with tuned `blob_payload_bytes`; reader stages per‑tx and commits atomically; optional payload hashing trades CPU for verification .
 * **Control Ops**: `cep_txn_clear_metadata` now frees transaction metadata buckets/stores; keep pause/rollback/resume diagnostics behind `CEP_ENABLE_DEBUG` so control logging compiles out in release builds.
 
 ---

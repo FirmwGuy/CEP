@@ -93,25 +93,25 @@ Cloning routines and the special cases for handles/streams are in the core imple
 
 ---
 
-## 6) Serialization & streaming (chunked wire format)
+## 6) Serialization & streaming (flat wire format)
 
 **Why it exists.** CEP streams cells across processes/storage in a way that (a) is self‑describing and resynchronizable, (b) preserves path identity, (c) handles large payloads incrementally, and (d) restores proxies via library callbacks.
 
 **What it does.**
 
-* **Writer (emitter).** `cep_serialization_emit_cell` writes:
+* **Writer (emitter).** `cep_flat_stream_emit_cell` writes:
 
-  1. a **control header** chunk with magic/version/options (`cep_serialization_header_write`),
-  2. a **manifest** with the DT path + flags describing the cell’s type and whether it has data/proxy,
-  3. a **data descriptor** (VALUE/DATA) either inline or as separate **blob** chunks if the payload exceeds a blob limit, and
-  4. a **control** chunk marking end of transaction. The emitter enforces monotonically increasing `(transaction, sequence)` in chunk ids so readers can sanity‑check streams and resume at boundaries .
+  1. a **control header** record with magic/version/options (`cep_flat_stream_header_write`),
+  2. a **manifest** record with the DT path + flags describing the cell’s type and whether it has data/proxy,
+  3. a **data descriptor** (VALUE/DATA) either inline or as separate **blob** records if the payload exceeds a blob limit, and
+  4. a **frame trailer** record marking end of transaction. The emitter keeps record ordering deterministic so readers can sanity‑check streams and resume at boundaries.
 * **Reader (ingest/commit state machine).**
 
-  * `cep_serialization_reader_ingest` validates each chunk, reorders nothing, and **stages** manifests, data headers, blobs, and library snapshots in a per‑transaction structure. For chunked data it allocates a buffer of the final size and copies each slice at the declared offset; hashes are verified against `(dt,size,payload)`.
-  * When a **control** chunk arrives, `commit` applies all staged changes: it materializes nodes at the path (creating intermediate dictionaries when necessary), writes payloads, and calls proxy restore hooks for library‑backed cells. Only successful commits mutate the tree; otherwise the reader is failed/reset. The apply code respects existing types and replaces payloads with correct destructors .
+  * `cep_flat_stream_reader_ingest` validates each record, reorders nothing, and **stages** manifests, data headers, blobs, and library snapshots in a per-frame structure. For blob data it allocates a buffer of the final size and copies each slice at the declared offset; hashes are verified against `(dt,size,payload)`.
+  * When the **trailer** arrives, `commit` applies all staged changes: it materializes nodes at the path (creating intermediate dictionaries when necessary), writes payloads, and calls proxy restore hooks for library‑backed cells. Only successful commits mutate the tree; otherwise the reader is failed/reset. The apply code respects existing types and replaces payloads with correct destructors.
 
 **Where it lives.**
-All emitter/reader algorithms, chunk format, and integrity checks (hashes, path, sequencing) are in the serialization module; cell/path helpers are used extensively from the cell layer .
+All emitter/reader algorithms, record format, and integrity checks (hashes, path, sequencing) are in the serialization module; cell/path helpers are used extensively from the cell layer.
 
 ---
 
@@ -219,7 +219,7 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 * **Insertion & reindex:** `cep_store_add_child`, `cep_store_append_child`, `store_to_dictionary`, `store_sort` 
 * **Traversal API (live/past):** `cep_cell_traverse`, `cep_cell_deep_traverse`, `cep_cell_traverse_past`, `cep_cell_deep_traverse_past` 
 * **Cloning:** `cep_cell_clone`, `cep_cell_clone_deep` (plus `cep_store_clone_structure`) 
-* **Serialization:** `cep_serialization_emit_cell`, `cep_serialization_reader_ingest`, `cep_serialization_reader_commit` 
+* **Serialization:** `cep_flat_stream_emit_cell`, `cep_flat_stream_reader_ingest`, `cep_flat_stream_reader_commit` 
 * **Enzyme dispatch:** `cep_enzyme_resolve` and registry lifecycle (register/activate/unregister)  
 * **Heartbeat impulses:** `cep_heartbeat_impulse_queue_append/reset/swap/destroy` 
 * **Locking:** `cep_store_lock/unlock`, `cep_data_lock/unlock`, `cep_cell_*_locked_hierarchy`  
@@ -232,7 +232,7 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 * **History:** O(1) per update for metadata; copying cost proportional to payload when deep‑copying. Store reindexing sorts in O(n log n) for list/array, O(n) bucket rebuilds for hash/trees as implemented by backends invoked from `store_sort`/`store_to_dictionary` .
 * **Shadows:** O(1) attach; O(1) detach via swap‑with‑last; capacity grows geometrically. Move/clone preserves backlinks in O(k) where k is link count to the node .
 * **Traversal past:** O(visible nodes) with constant extra per node; deep traversal uses O(depth) state; no recursion (explicit stack/frames) for robustness .
-* **Serialization:** Writer is linear in path length + payload size; reader is linear in the sum of chunk sizes with strict sequencing and hash checks. Large blobs are streamed in slices of configurable size (default if zero) .
+* **Serialization:** Writer is linear in path length + payload size; reader is linear in the sum of record sizes with strict sequencing and hash checks. Large blobs are streamed in slices of configurable size (default if zero).
 * **Enzyme resolution:**
 
   * Matching: O(log n) to find buckets + O(candidates) to filter.

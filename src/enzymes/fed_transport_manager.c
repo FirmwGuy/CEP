@@ -10,6 +10,7 @@
 
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_crc32c.h"
+#include "../l0_kernel/cep_flat_stream.h"
 #include "../l0_kernel/cep_molecule.h"
 #include "../l0_kernel/cep_namepool.h"
 
@@ -1464,11 +1465,11 @@ bool cep_fed_transport_manager_send_cell(cepFedTransportManager* manager,
     }
 
     cepFedFrameBuffer buffer = {0};
-    bool emitted = cep_serialization_emit_cell(cell,
-                                               header,
-                                               cep_fed_frame_capture_sink,
-                                               &buffer,
-                                               blob_payload_bytes);
+    bool emitted = cep_flat_stream_emit_cell(cell,
+                                             header,
+                                             (cepFlatStreamWriteFn)cep_fed_frame_capture_sink,
+                                             &buffer,
+                                             blob_payload_bytes);
     cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_PAYLOAD_HISTORY_BEATS", prev_payload_hist);
     cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_MANIFEST_HISTORY_BEATS", prev_manifest_hist);
     cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_MAX_COMPARATOR_VERSION", prev_comparator_max);

@@ -15,7 +15,7 @@ Serialization is Layer 0’s shipping department. It turns a live tree into a 
 
 ## Subsystem Map
 - Code
-  - `src/l0_kernel/cep_serialization.c`, `cep_serialization.h` — manifest writers, reader state machine, flat record orchestration.
+- `src/l0_kernel/cep_flat_stream.c`, `cep_flat_stream.h` — manifest writers, reader state machine, flat record orchestration.
   - `src/l0_kernel/stream/` (e.g., `cep_stream_stdio.c`, `cep_stream_zip.c`) — stream adapters participating in serialization.
   - `src/l0_kernel/cep_cell_stream.c` — proxy snapshot helpers used during serialize/restore.
 - Tests
@@ -33,7 +33,7 @@ Serialization is Layer 0’s shipping department. It turns a live tree into a 
 
 ## Change Playbook
 1. Revisit this design doc and `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md`.
-2. Define new flat record fields in `cep_serialization.h`, keeping capability negotiation in mind.
+2. Define new flat record fields in `cep_flat_stream.h`, keeping capability negotiation in mind.
 3. Extend unit tests (`test_serialization*.c`, stream tests) to exercise the new framing or adapter behaviour.
 4. Update proxy adapters (`stream/` or `cep_cell_stream.c`) if payload semantics change.
 5. Run `meson test -C build --suite serialization` followed by `python tools/check_docs_structure.py` and `meson compile -C build docs_html`.
@@ -41,12 +41,12 @@ Serialization is Layer 0’s shipping department. It turns a live tree into a 
 
 ## S2 Upgrade Field Notes
 ### Nontechnical summary
-S2 hardens serialization so manifests carry their own history, readers reject malformed ordering immediately, and leak hunting stays reproducible. Federation adoption is complete: every mount emits/ingests flat frames, and the integration POC is the only remaining consumer of the legacy chunk stream (it temporarily calls `cep_serialization_set_flat_mode_override(false)` until that test suite migrates). Think of this section as the field guide: it lists the hot code paths, the gaps we still need to close, and the guardrails that keep replay deterministic.
+S2 hardens serialization so manifests carry their own history, readers reject malformed ordering immediately, and leak hunting stays reproducible. Federation adoption is complete: every mount emits/ingests flat frames, and the legacy chunk serializer (and its override hook) have been retired entirely. Think of this section as the field guide: it lists the hot code paths, the gaps we still need to close, and the guardrails that keep replay deterministic.
 
 ### Technical details
 - **Entry points worth bookmarking.**
-  - Emit surface: `cep_serialization_header_write` (control chunk prep) and `cep_serialization_emit_cell` (graph traversal + sink writes).
-  - Reader lifecycle: `cep_serialization_reader_create/destroy/reset`, `cep_serialization_reader_ingest`, `cep_serialization_reader_commit`, and `cep_serialization_reader_pending`.
+  - Emit surface: `cep_flat_stream_header_write` (control chunk prep) and `cep_flat_stream_emit_cell` (graph traversal + sink writes).
+  - Reader lifecycle: `cep_flat_stream_reader_create/destroy/reset`, `cep_flat_stream_reader_ingest`, `cep_flat_stream_reader_commit`, and `cep_flat_stream_reader_pending`.
   - Internal emit helpers: `cep_serialization_emit_manifest`, `cep_serialization_emit_data`, `cep_serialization_emit_library_proxy`.
   - Internal ingest helpers: `cep_serialization_stage_manifest`, `cep_serialization_stage_payload`, `cep_serialization_stage_commit`.
 - **Gap snapshot (2025-11-03).**

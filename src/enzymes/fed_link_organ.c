@@ -13,6 +13,7 @@
 #include "../l0_kernel/cep_flat_serializer.h"
 
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct cepFedLinkRequestCtx {

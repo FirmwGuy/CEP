@@ -20,6 +20,7 @@ extern "C" {
 #endif
 
 typedef struct cepSerializationReader cepSerializationReader;
+typedef cepSerializationReader cepFlatStreamReader;
 
 typedef struct _cepCell cepCell;
 
@@ -30,8 +31,10 @@ typedef struct _cepCell cepCell;
 #define CEP_SERIALIZATION_HEADER_BASE    16u
 
 typedef bool (*cepSerializationWriteFn)(void* context, const uint8_t* chunk, size_t size);
+typedef cepSerializationWriteFn cepFlatStreamWriteFn;
 
 #define CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD 4096u
+#define CEP_FLAT_STREAM_DEFAULT_BLOB_PAYLOAD CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD
 
 /**
  * @brief Logical chunk classes used by the CEP serialization envelope.
@@ -116,7 +119,19 @@ bool cep_serialization_reader_ingest(cepSerializationReader* reader, const uint8
 bool cep_serialization_reader_commit(cepSerializationReader* reader);
 bool cep_serialization_reader_pending(const cepSerializationReader* reader);
 bool cep_serialization_is_busy(void);
-bool cep_serialization_set_flat_mode_override(bool enable_flat);
+
+#define cep_flat_stream_header_chunk_size cep_serialization_header_chunk_size
+#define cep_flat_stream_header_write cep_serialization_header_write
+#define cep_flat_stream_header_read cep_serialization_header_read
+#define cep_flat_stream_emit_cell cep_serialization_emit_cell
+#define cep_flat_stream_mark_decision_replay cep_serialization_mark_decision_replay
+#define cep_flat_stream_reader_create cep_serialization_reader_create
+#define cep_flat_stream_reader_destroy cep_serialization_reader_destroy
+#define cep_flat_stream_reader_reset cep_serialization_reader_reset
+#define cep_flat_stream_reader_ingest cep_serialization_reader_ingest
+#define cep_flat_stream_reader_commit cep_serialization_reader_commit
+#define cep_flat_stream_reader_pending cep_serialization_reader_pending
+#define cep_flat_stream_is_busy cep_serialization_is_busy
 
 #ifdef __cplusplus
 }

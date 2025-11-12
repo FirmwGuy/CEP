@@ -640,6 +640,8 @@ enum _cepDataType {
     CEP_DATATYPE_COUNT
 };
 
+/* NOTE: Hash consumers currently expect 64-bit fingerprints; widen to 128/256
+   bits (full BLAKE3 output) if/when schemas are ready for the larger fields. */
 static inline uint64_t cep_hash_bytes(const void* data, size_t size) {
     if (!data || !size)
         return 0;

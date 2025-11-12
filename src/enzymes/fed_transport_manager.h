@@ -11,7 +11,7 @@
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_ops.h"
 #include "../l0_kernel/cep_cei.h"
-#include "../l0_kernel/cep_serialization.h"
+#include "../l0_kernel/cep_flat_stream.h"
 
 #ifdef __cplusplus
 extern "C" {

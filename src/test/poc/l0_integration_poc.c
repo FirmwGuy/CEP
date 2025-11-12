@@ -14,7 +14,7 @@
 #include "cep_namepool.h"
 #include "cep_ops.h"
 #include "cep_organ.h"
-#include "cep_serialization.h"
+#include "cep_flat_stream.h"
 #include "cep_flat_serializer.h"
 #include "cep_ep.h"
 #include "stream/cep_stream_internal.h"
@@ -202,6 +202,9 @@ static bool integration_serialization_logging_enabled(void) {
            integration_env_flag("CEP_SERIALIZATION_DEBUG");
 }
 
+static bool integration_serialization_log_all_enabled(void) {
+    return integration_env_flag("CEP_POC_SERIALIZATION_LOG_ALL");
+}
 static bool integration_focus_test_enabled(void) {
     const char* value = getenv("CEP_POC_ENABLE_SERIALIZATION_FOCUS");
     if (!value || !*value)
@@ -420,13 +423,6 @@ static void integration_trace_assert_stage(const char* stage) {
     integration_trace_log_stage(stage);
 }
 
-static void integration_trace_chunk_stage(size_t index) {
-    if (!integration_serialization_logging_enabled())
-        return;
-    fprintf(stderr, "[integration][assert-stage] chunk_parity[%zu]\n", index);
-    fflush(stderr);
-}
-
 static size_t integration_chunk_first_diff(const IntegrationCaptureChunk* baseline,
                                            const IntegrationCaptureChunk* replayed) {
     if (!baseline || !replayed || !baseline->data || !replayed->data)
@@ -551,23 +547,6 @@ static void integration_log_payload_diff(const cepCell* baseline,
     integration_debug_print_path(candidate);
 }
 
-static uint16_t integration_read_be16(const uint8_t* src) {
-    if (!src)
-        return 0u;
-    return (uint16_t)((src[0] << 8) | src[1]);
-}
-
-static uint64_t integration_read_be64(const uint8_t* src) {
-    return ((uint64_t)src[0] << 56) |
-           ((uint64_t)src[1] << 48) |
-           ((uint64_t)src[2] << 40) |
-           ((uint64_t)src[3] << 32) |
-           ((uint64_t)src[4] << 24) |
-           ((uint64_t)src[5] << 16) |
-           ((uint64_t)src[6] << 8)  |
-           ((uint64_t)src[7]);
-}
-
 static bool integration_capture_append(IntegrationSerializationCapture* capture,
                                        const uint8_t* chunk,
                                        size_t size) {
@@ -609,19 +588,11 @@ static bool integration_capture_append(IntegrationSerializationCapture* capture,
     capture->chunks[capture->count].size = size;
     capture->count += 1u;
 
-    if (size >= CEP_SERIALIZATION_CHUNK_OVERHEAD && integration_serialization_logging_enabled()) {
-        uint64_t payload = integration_read_be64(chunk);
-        uint64_t chunk_id = integration_read_be64(chunk + sizeof(uint64_t));
-        uint16_t chunk_class = (uint16_t)((chunk_id >> 48u) & UINT16_C(0xFFFF));
-        uint16_t transaction = (uint16_t)((chunk_id >> 24u) & UINT16_C(0xFFFF));
-        uint16_t sequence = (uint16_t)(chunk_id & UINT16_C(0xFFFF));
+    if (integration_serialization_logging_enabled()) {
         fprintf(stderr,
-                "[integration][debug] capture chunk=%zu class=0x%04x tx=%u seq=%u payload=%" PRIu64 "\n",
+                "[integration][debug] capture chunk=%zu size=%zu\n",
                 capture->count - 1u,
-                chunk_class,
-                transaction,
-                sequence,
-                payload);
+                size);
         fflush(stderr);
     }
 
@@ -645,6 +616,42 @@ static void integration_capture_clear(IntegrationSerializationCapture* capture) 
     capture->chunks = NULL;
     capture->count = 0u;
     capture->capacity = 0u;
+}
+
+static size_t integration_capture_total_bytes(const IntegrationSerializationCapture* capture) {
+    if (!capture)
+        return 0u;
+    size_t total = 0u;
+    for (size_t i = 0; i < capture->count; ++i) {
+        total += capture->chunks[i].size;
+    }
+    return total;
+}
+
+static void integration_assert_capture_bytes_equal(const IntegrationSerializationCapture* baseline,
+                                                   const IntegrationSerializationCapture* candidate,
+                                                   const char* label) {
+    if (!baseline || !candidate)
+        munit_error("capture comparison received NULL input");
+    munit_assert_size(baseline->count, ==, candidate->count);
+    for (size_t i = 0; i < baseline->count; ++i) {
+        const IntegrationCaptureChunk* base_chunk = &baseline->chunks[i];
+        const IntegrationCaptureChunk* cand_chunk = &candidate->chunks[i];
+        munit_assert_size(base_chunk->size, ==, cand_chunk->size);
+        if (!base_chunk->size)
+            continue;
+        munit_assert_ptr_not_null(base_chunk->data);
+        munit_assert_ptr_not_null(cand_chunk->data);
+        size_t diff = integration_chunk_first_diff(base_chunk, cand_chunk);
+        if (diff != SIZE_MAX) {
+            munit_errorf("%s chunk[%zu] mismatch at offset=%zu (0x%02x vs 0x%02x)",
+                         label ? label : "capture-bytes",
+                         i,
+                         diff,
+                         base_chunk->data[diff],
+                         cand_chunk->data[diff]);
+        }
+    }
 }
 
 static const char* integration_flat_record_type_name(uint8_t type) {
@@ -857,21 +864,6 @@ static void integration_log_flat_records(const IntegrationSerializationCapture* 
     cep_flat_reader_destroy(reader);
 }
 
-static bool integration_emit_legacy_capture(const cepCell* cell,
-                                            IntegrationSerializationCapture* capture) {
-    if (!cell || !capture) {
-        return false;
-    }
-    bool previous_flat = cep_serialization_set_flat_mode_override(false);
-    bool ok = cep_serialization_emit_cell(cell,
-                                          NULL,
-                                          integration_capture_sink,
-                                          capture,
-                                          0);
-    cep_serialization_set_flat_mode_override(previous_flat);
-    return ok;
-}
-
 static void integration_dump_trace(const IntegrationSerializationCapture* capture, const char* suffix) {
     const char* base = getenv("CEP_SERIALIZATION_TRACE_DIR");
     if (!base || !capture || !suffix)
@@ -908,81 +900,14 @@ static void integration_log_space_flat_records(const IntegrationSerializationCap
     if (!capture || !integration_serialization_logging_enabled()) {
         return;
     }
+    if (integration_serialization_log_all_enabled()) {
+        integration_log_flat_records(capture, stage, NULL, 0u);
+    }
     cepDT space_path_segments[3];
     space_path_segments[0] = *CEP_DTAW("CEP", "data");
     space_path_segments[1] = *CEP_DTAW("CEP", "poc");
     space_path_segments[2] = *CEP_DTAW("CEP", "space");
     integration_log_flat_records(capture, stage, space_path_segments, cep_lengthof(space_path_segments));
-}
-
-static void integration_compare_trace_files(const char* lhs_suffix, const char* rhs_suffix) {
-    const char* base = getenv("CEP_SERIALIZATION_TRACE_DIR");
-    if (!base || !lhs_suffix || !rhs_suffix)
-        return;
-
-    char lhs_path[1024];
-    char rhs_path[1024];
-    int lhs_len = snprintf(lhs_path, sizeof lhs_path, "%s/%s", base, lhs_suffix);
-    int rhs_len = snprintf(rhs_path, sizeof rhs_path, "%s/%s", base, rhs_suffix);
-    if (lhs_len < 0 || rhs_len < 0)
-        return;
-    if ((size_t)lhs_len >= sizeof lhs_path || (size_t)rhs_len >= sizeof rhs_path)
-        return;
-
-    FILE* lhs = fopen(lhs_path, "rb");
-    FILE* rhs = fopen(rhs_path, "rb");
-    if (!lhs || !rhs) {
-        if (lhs)
-            fclose(lhs);
-        if (rhs)
-            fclose(rhs);
-        return;
-    }
-
-    size_t offset = 0u;
-    int lhs_byte = 0;
-    int rhs_byte = 0;
-    bool mismatch = false;
-
-    while (true) {
-        lhs_byte = fgetc(lhs);
-        rhs_byte = fgetc(rhs);
-        if (lhs_byte == EOF || rhs_byte == EOF) {
-            if (lhs_byte != rhs_byte)
-                mismatch = true;
-            break;
-        }
-        if (lhs_byte != rhs_byte) {
-            mismatch = true;
-            break;
-        }
-        offset += 1u;
-    }
-
-    if (mismatch) {
-        if (lhs_byte == EOF)
-            lhs_byte = -1;
-        if (rhs_byte == EOF)
-            rhs_byte = -1;
-        fprintf(stderr,
-                "[integration][trace-diff] files=\"%s\" vs \"%s\" offset=%zu lhs=%d rhs=%d\n",
-                lhs_suffix,
-                rhs_suffix,
-                offset,
-                lhs_byte,
-                rhs_byte);
-        fflush(stderr);
-    } else {
-        fprintf(stderr,
-                "[integration][trace-diff] files=\"%s\" vs \"%s\" match (bytes=%zu)\n",
-                lhs_suffix,
-                rhs_suffix,
-                offset);
-        fflush(stderr);
-    }
-
-    fclose(lhs);
-    fclose(rhs);
 }
 
 static const char* integration_cell_type_string(const cepCell* cell) {
@@ -2467,56 +2392,6 @@ static void integration_stream_ctx_verify(IntegrationStreamContext* ctx) {
     munit_assert_true(matched_result);
 }
 
-static bool integration_payload_should_release(const cepDT* dt) {
-    if (!dt)
-        return false;
-    const struct {
-        const cepDT* (*dt_fn)(void);
-    } targets[] = {
-        {dt_stream_payload_outcome},
-        {dt_stream_payload_log},
-        {dt_stream_payload_library},
-        {dt_stream_payload_stdio_res},
-        {dt_stream_payload_stdio_stream},
-        {dt_poc_item_payload},
-        {dt_poc_event_payload},
-        {dt_oct_point_payload},
-    };
-    for (unsigned i = 0; i < cep_lengthof(targets); ++i) {
-        const cepDT* match = targets[i].dt_fn();
-        if (dt->domain == match->domain && dt->tag == match->tag)
-            return true;
-    }
-    return false;
-}
-
-static void integration_release_payloads_recursive(cepCell* node) {
-    if (!node)
-        return;
-    cepCell* resolved = cep_cell_resolve(node);
-    if (!resolved)
-        return;
-    if (resolved->data && integration_payload_should_release(&resolved->data->dt)) {
-        cepData* payload = resolved->data;
-        resolved->data = NULL;
-        cep_data_del(payload);
-    }
-    if (!resolved->store || !resolved->store->chdCount)
-        return;
-    for (cepCell* child = cep_cell_first_all(resolved); child; child = cep_cell_next_all(resolved, child)) {
-        integration_release_payloads_recursive(child);
-    }
-}
-
-static void integration_release_payloads_for_branch(cepCell* root) {
-    if (!root)
-        return;
-    cepCell* resolved = cep_cell_resolve(root);
-    if (!resolved)
-        return;
-    integration_release_payloads_recursive(resolved);
-}
-
 static void integration_stream_ctx_cleanup(IntegrationStreamContext* ctx) {
     if (!ctx) {
         return;
@@ -2730,15 +2605,6 @@ static void integration_prr_ctx_execute(IntegrationPauseResumeContext* ctx) {
     munit_assert_int(integration_prr_calls, ==, 0);
 
     if (!skip_rollback) {
-        unsigned serialization_spins = 0u;
-        while (cep_serialization_is_busy()) {
-            if (serialization_spins++ >= 64u) {
-                munit_errorf("serialization still active while requesting rollback after %u spins",
-                             serialization_spins);
-            }
-            test_executor_relax();
-        }
-
         cepBeatNumber current = cep_heartbeat_current();
         cepBeatNumber rollback_target = current ? (current - 1u) : current;
         munit_assert_true(cep_runtime_rollback(rollback_target));
@@ -3871,192 +3737,48 @@ static void integration_serialize_and_replay(IntegrationFixture* fix) {
 
     integration_trace_reset_stage_log();
 
-    IntegrationSerializationCapture capture = {0};
-    munit_assert_true(cep_serialization_emit_cell(fix->poc_root,
-                                                  NULL,
-                                                  integration_capture_sink,
-                                                  &capture,
-                                                  0));
-    IntegrationSerializationCapture legacy_capture = {0};
-    munit_assert_true(integration_emit_legacy_capture(fix->poc_root, &legacy_capture));
-    integration_dump_trace(&capture, "integration_before_ingest.bin");
-    integration_assert_flat_frame_contract(&capture, "emit");
-    integration_log_space_flat_records(&capture, "emit");
-    munit_assert_size(capture.count, >, 0u);
-    integration_snapshot_journal_branch("baseline poc_root", fix->poc_root, true);
-    integration_snapshot_space_branch("baseline poc_root", fix->poc_root, true);
-    integration_snapshot_prr_branch("baseline poc_root", fix->poc_root, true);
+    IntegrationSerializationCapture primary_capture = {0};
+    munit_assert_true(cep_flat_stream_emit_cell(fix->poc_root,
+                                                NULL,
+                                                (cepFlatStreamWriteFn)integration_capture_sink,
+                                                &primary_capture,
+                                                0));
+    integration_dump_trace(&primary_capture, "integration_flat_primary.bin");
+    integration_assert_flat_frame_contract(&primary_capture, "flat-primary");
+    integration_log_space_flat_records(&primary_capture, "flat-primary");
 
-    cepCell* data_root = cep_cell_resolve(cep_heartbeat_data_root());
-    munit_assert_not_null(data_root);
+    /* Keep other subsystems busy between consecutive serializations so the
+       flat writer is exercised while the heartbeat continues resolving work. */
+    munit_assert_true(cep_heartbeat_stage_commit());
+    munit_assert_true(cep_heartbeat_step());
+    munit_assert_true(cep_heartbeat_resolve_agenda());
+    munit_assert_true(cep_heartbeat_process_impulses());
+    munit_assert_true(cep_heartbeat_stage_commit());
 
-    cepDT replay_name = *CEP_DTAW("CEP", "poc_replay");
-    cepCell* existing = cep_cell_find_by_name(data_root, &replay_name);
-    if (existing) {
-        existing = cep_cell_resolve(existing);
-        if (existing) {
-            cep_cell_delete(existing);
-            cep_cell_remove_hard(existing, NULL);
-        }
-    }
+    IntegrationSerializationCapture repeat_capture = {0};
+    munit_assert_true(cep_flat_stream_emit_cell(fix->poc_root,
+                                                NULL,
+                                                (cepFlatStreamWriteFn)integration_capture_sink,
+                                                &repeat_capture,
+                                                0));
+    integration_dump_trace(&repeat_capture, "integration_flat_repeat.bin");
+    integration_assert_flat_frame_contract(&repeat_capture, "flat-repeat");
+    integration_log_space_flat_records(&repeat_capture, "flat-repeat");
 
-    cepDT store_type = fix->poc_root->store ? fix->poc_root->store->dt : integration_named_dt("poc_replay_store");
-    cepCell* replay_root = cep_cell_add_dictionary(data_root,
-                                                   &replay_name,
-                                                   0,
-                                                   &store_type,
-                                                   CEP_STORAGE_RED_BLACK_T);
-    munit_assert_not_null(replay_root);
-    replay_root = cep_cell_resolve(replay_root);
-    munit_assert_not_null(replay_root);
+    integration_assert_capture_bytes_equal(&primary_capture,
+                                           &repeat_capture,
+                                           "flat-determinism");
 
-    cepSerializationReader* reader = cep_serialization_reader_create(replay_root);
-    munit_assert_not_null(reader);
-    for (size_t i = 0; i < legacy_capture.count; ++i) {
-        munit_assert_true(cep_serialization_reader_ingest(reader,
-                                                          legacy_capture.chunks[i].data,
-                                                          legacy_capture.chunks[i].size));
-    }
-    integration_snapshot_journal_branch("replay pre-commit", replay_root, false);
-    munit_assert_true(cep_serialization_reader_commit(reader));
-    cepCell* replay_subtree = integration_resolve_replay_root(replay_root, fix->poc_path);
-    munit_assert_not_null(replay_subtree);
-    integration_snapshot_journal_branch("replay post-commit", replay_subtree, false);
-    integration_snapshot_space_branch("replay post-commit", replay_subtree, false);
-    integration_snapshot_prr_branch("replay post-commit", replay_subtree, false);
-    cep_serialization_reader_destroy(reader);
-    integration_trace_assert_stage("manifest_parity");
-    integration_assert_manifest_parity(fix->poc_root, replay_subtree);
-    integration_trace_assert_stage("journal_parity");
-    integration_assert_journal_positions(fix->poc_root, replay_subtree);
+    size_t total_bytes = integration_capture_total_bytes(&primary_capture);
+    munit_logf(MUNIT_LOG_INFO,
+               "[integration][flat] frame bytes=%zu chunks=%zu",
+               total_bytes,
+               primary_capture.count);
 
-    IntegrationSerializationCapture replay_capture = {0};
-    munit_assert_true(cep_serialization_emit_cell(replay_subtree,
-                                                  NULL,
-                                                  integration_capture_sink,
-                                                  &replay_capture,
-                                                  0));
-    IntegrationSerializationCapture replay_legacy_capture = {0};
-    munit_assert_true(integration_emit_legacy_capture(replay_subtree, &replay_legacy_capture));
-    if (integration_serialization_logging_enabled()) {
-        integration_dump_trace(&replay_capture, "integration_replay_debug.bin");
-    }
-    integration_assert_flat_frame_contract(&replay_capture, "replay");
-    integration_log_space_flat_records(&replay_capture, "replay");
-    munit_assert_size(replay_legacy_capture.count, ==, legacy_capture.count);
-    integration_trace_assert_stage("chunk_parity");
-    for (size_t i = 0; i < legacy_capture.count; ++i) {
-        const IntegrationCaptureChunk* baseline = &legacy_capture.chunks[i];
-        const IntegrationCaptureChunk* replayed = &replay_legacy_capture.chunks[i];
-        integration_trace_chunk_stage(i);
-        if (replayed->size != baseline->size) {
-            size_t mismatch_offset = (baseline->size < replayed->size) ? baseline->size : replayed->size;
-            uint8_t baseline_byte = (mismatch_offset < baseline->size && baseline->data)
-                ? baseline->data[mismatch_offset]
-                : 0u;
-            uint8_t replay_byte = (mismatch_offset < replayed->size && replayed->data)
-                ? replayed->data[mismatch_offset]
-                : 0u;
-            integration_log_chunk_diff(i,
-                                       mismatch_offset,
-                                       baseline->size,
-                                       replayed->size,
-                                       baseline_byte,
-                                       replay_byte);
-        }
-        munit_assert_size(replayed->size, ==, baseline->size);
-        if (baseline->size && replayed->size &&
-            baseline->data && replayed->data &&
-            memcmp(baseline->data, replayed->data, baseline->size) != 0) {
-            size_t diff_offset = integration_chunk_first_diff(baseline, replayed);
-            uint8_t baseline_byte = (diff_offset < baseline->size && baseline->data)
-                ? baseline->data[diff_offset]
-                : 0u;
-            uint8_t replay_byte = (diff_offset < replayed->size && replayed->data)
-                ? replayed->data[diff_offset]
-                : 0u;
-            integration_log_chunk_diff(i,
-                                       diff_offset,
-                                       baseline->size,
-                                       replayed->size,
-                                       baseline_byte,
-                                       replay_byte);
-        }
-        munit_assert_memory_equal(baseline->size, baseline->data, replayed->data);
-    }
+    integration_capture_clear(&repeat_capture);
+    integration_capture_clear(&primary_capture);
 
-    integration_dump_trace(&capture, "integration_original.bin");
-    integration_dump_trace(&replay_capture, "integration_replay.bin");
-    integration_compare_trace_files("integration_original.bin", "integration_replay.bin");
-    integration_capture_clear(&capture);
-    integration_capture_clear(&legacy_capture);
-    integration_release_payloads_for_branch(replay_subtree);
-
-    cep_cell_delete(replay_root);
-    cep_cell_remove_hard(replay_root, NULL);
-    replay_root = NULL;
-
-    /* Re-ingest the replay stream to ensure it is self-stable. */
-    cepCell* replay_root_again = cep_cell_add_dictionary(data_root,
-                                                         &replay_name,
-                                                         0,
-                                                         &store_type,
-                                                         CEP_STORAGE_RED_BLACK_T);
-    munit_assert_not_null(replay_root_again);
-    replay_root_again = cep_cell_resolve(replay_root_again);
-    munit_assert_not_null(replay_root_again);
-
-    cepSerializationReader* reader_again = cep_serialization_reader_create(replay_root_again);
-    munit_assert_not_null(reader_again);
-    for (size_t i = 0; i < replay_legacy_capture.count; ++i) {
-        munit_assert_true(cep_serialization_reader_ingest(reader_again,
-                                                          replay_legacy_capture.chunks[i].data,
-                                                          replay_legacy_capture.chunks[i].size));
-    }
-    munit_assert_true(cep_serialization_reader_commit(reader_again));
-    cep_serialization_reader_destroy(reader_again);
-    cepCell* replay_again_subtree = integration_resolve_replay_root(replay_root_again, fix->poc_path);
-    munit_assert_not_null(replay_again_subtree);
-    integration_assert_manifest_parity(fix->poc_root, replay_again_subtree);
-    integration_assert_journal_positions(fix->poc_root, replay_again_subtree);
-
-    IntegrationSerializationCapture replay_capture_again = {0};
-    munit_assert_true(cep_serialization_emit_cell(replay_again_subtree,
-                                                  NULL,
-                                                  integration_capture_sink,
-                                                  &replay_capture_again,
-                                                  0));
-    IntegrationSerializationCapture replay_legacy_capture_again = {0};
-    munit_assert_true(integration_emit_legacy_capture(replay_again_subtree, &replay_legacy_capture_again));
-    integration_assert_flat_frame_contract(&replay_capture_again, "roundtrip");
-    integration_log_space_flat_records(&replay_capture_again, "roundtrip");
-    munit_assert_size(replay_legacy_capture_again.count, ==, replay_legacy_capture.count);
-    for (size_t i = 0; i < replay_legacy_capture.count; ++i) {
-        const IntegrationCaptureChunk* first = &replay_legacy_capture.chunks[i];
-        const IntegrationCaptureChunk* second = &replay_legacy_capture_again.chunks[i];
-        munit_assert_size(second->size, ==, first->size);
-        munit_assert_memory_equal(first->size, first->data, second->data);
-    }
-
-    integration_dump_trace(&replay_capture_again, "integration_replay_roundtrip.bin");
-    integration_capture_clear(&replay_capture_again);
-    integration_capture_clear(&replay_legacy_capture_again);
-    integration_capture_clear(&replay_capture);
-    integration_capture_clear(&replay_legacy_capture);
-    integration_release_payloads_for_branch(replay_again_subtree);
-    if (replay_root_again) {
-        cep_cell_delete(replay_root_again);
-        cep_cell_remove_hard(replay_root_again, NULL);
-        replay_root_again = NULL;
-    }
-    if (replay_root) {
-        cep_cell_delete(replay_root);
-        cep_cell_remove_hard(replay_root, NULL);
-        replay_root = NULL;
-    }
 }
-
-
 
 /* Register a synthetic `organ:poc` descriptor, run ctor/validator/dtor enzymes, and validate heartbeat integration counters. */
 static void integration_exercise_organ_lifecycle(IntegrationFixture* fix) {

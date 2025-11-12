@@ -33,8 +33,8 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` — How the Episodic Enzyme Engine (E³) handles RO budgets, hybrid RO↔RW promotions/demotions, and cooperative cancellation now that it replaces Rendezvous.
   - `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` — Episodic engine design rationale, executor backends, and migration guidance from Rendezvous.
 - **External Integrations**
-  - `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md` — Flat-frame record taxonomy, capability negotiation, AEAD/compression knobs, and replay expectations.
-  - `FLAT_SERIALIZER.md` — Wire-level spec for each record type, env selectors (history, AEAD, compression), and reference layouts for tooling/tests.
+- `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md` — Flat-frame record taxonomy, capability negotiation, AEAD/compression knobs, and replay expectations.
+- Flat serializer wire-level specification — captures record layouts, env selectors (history, AEAD, compression), and reference frames for tooling/tests.
   - `docs/L0_KERNEL/topics/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect logging, CAS, and preconditions around I/O.
   - `docs/L0_KERNEL/topics/EXTERNAL-LIBRARIES-INTERFACE.md` — Adapter vtable responsibilities, snapshot vs. handle rules.
   - `docs/L0_KERNEL/topics/PROXY-CELLS.md` — Proxy cell lifecycle and serialization hooks.
