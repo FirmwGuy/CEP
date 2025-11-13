@@ -11,6 +11,7 @@
 #include "cep_cei.h"
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
+#include "cep_crc32c.h"
 #include "cep_runtime.h"
 #include "blake3.h"
 #include "storage/cep_octree.h"
@@ -295,6 +296,17 @@ static uint32_t cep_serialization_flat_comparator_max_version(void) {
     if (parsed > UINT32_MAX)
         parsed = UINT32_MAX;
     return (uint32_t)parsed;
+}
+
+static cepFlatChecksumAlgorithm cep_serialization_flat_checksum_algorithm(void) {
+    const char* override = getenv("CEP_SERIALIZATION_FLAT_CHECKSUM");
+    if (override && *override) {
+        if (strcasecmp(override, "crc32c") == 0)
+            return CEP_FLAT_CHECKSUM_CRC32C;
+        if (strcasecmp(override, "crc32") == 0)
+            return CEP_FLAT_CHECKSUM_CRC32;
+    }
+    return cep_crc32c_castagnoli_enabled() ? CEP_FLAT_CHECKSUM_CRC32C : CEP_FLAT_CHECKSUM_CRC32;
 }
 
 static void cep_serialization_debug_log(const char* fmt, ...) {
@@ -582,7 +594,7 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
         .capability_flags = 0u,
         .hash_algorithm = CEP_FLAT_HASH_BLAKE3_256,
         .compression_algorithm = cep_serialization_flat_compression_mode(),
-        .checksum_algorithm = CEP_FLAT_CHECKSUM_CRC32,
+        .checksum_algorithm = cep_serialization_flat_checksum_algorithm(),
         .payload_history_beats = payload_history_window,
         .manifest_history_beats = manifest_history_window,
     };

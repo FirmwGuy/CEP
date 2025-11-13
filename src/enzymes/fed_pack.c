@@ -54,9 +54,20 @@ CEP_DEFINE_STATIC_DT(dt_last_event_name,  CEP_ACRO("CEP"), CEP_WORD("last_event"
 CEP_DEFINE_STATIC_DT(dt_severity_field_name, CEP_ACRO("CEP"), CEP_WORD("severity"));
 CEP_DEFINE_STATIC_DT(dt_note_field_name,  CEP_ACRO("CEP"), CEP_WORD("note"));
 CEP_DEFINE_STATIC_DT(dt_beat_field_name,  CEP_ACRO("CEP"), CEP_WORD("beat"));
+#define CEP_DEFINE_DYNAMIC_DT(fn_name, literal)                                 \
+    static const cepDT* fn_name(void) {                                         \
+        static cepDT value = {0};                                               \
+        static bool initialized = false;                                        \
+        if (!initialized) {                                                     \
+            value = cep_ops_make_dt(literal);                                   \
+            initialized = true;                                                 \
+        }                                                                       \
+        return &value;                                                          \
+    }
+
 CEP_DEFINE_STATIC_DT(dt_val_text,         CEP_ACRO("CEP"), CEP_WORD("val/text"));
 CEP_DEFINE_STATIC_DT(dt_val_bool,         CEP_ACRO("CEP"), CEP_WORD("val/bool"));
-CEP_DEFINE_STATIC_DT(dt_val_u64,          CEP_ACRO("CEP"), CEP_WORD("val/u64"));
+CEP_DEFINE_DYNAMIC_DT(dt_val_u64, "val/u64");
 CEP_DEFINE_STATIC_DT(dt_sev_error_name,   CEP_ACRO("sev"), CEP_WORD("error"));
 
 static const char* const CEP_FED_TOPIC_SCHEMA         = "tp_schema";

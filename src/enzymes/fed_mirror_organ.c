@@ -103,7 +103,15 @@ CEP_DEFINE_STATIC_DT(dt_last_bundle_seq_name,    CEP_ACRO("CEP"), CEP_WORD("bund
 CEP_DEFINE_STATIC_DT(dt_last_commit_beat_name,   CEP_ACRO("CEP"), CEP_WORD("commit_beat"));
 CEP_DEFINE_STATIC_DT(dt_sev_error_name,          CEP_ACRO("sev"), CEP_WORD("error"));
 CEP_DEFINE_STATIC_DT(dt_serializer_name,         CEP_ACRO("CEP"), CEP_WORD("serializer"));
-CEP_DEFINE_STATIC_DT(dt_ser_crc32c_ok_name,      CEP_ACRO("CEP"), CEP_WORD("crc32c_ok"));
+static const cepDT* dt_ser_crc32c_ok_name(void) {
+    static cepDT value = {0};
+    static bool initialized = false;
+    if (!initialized) {
+        value = cep_ops_make_dt("crc32c_ok");
+        initialized = true;
+    }
+    return &value;
+}
 CEP_DEFINE_STATIC_DT(dt_ser_deflate_ok_name,     CEP_ACRO("CEP"), CEP_WORD("deflate_ok"));
 CEP_DEFINE_STATIC_DT(dt_ser_aead_ok_name,        CEP_ACRO("CEP"), CEP_WORD("aead_ok"));
 CEP_DEFINE_STATIC_DT(dt_ser_warn_down_name,      CEP_ACRO("CEP"), CEP_WORD("warn_down"));

@@ -13,6 +13,7 @@
 #include "../l0_kernel/cep_flat_stream.h"
 #include "../l0_kernel/cep_molecule.h"
 #include "../l0_kernel/cep_namepool.h"
+#include "../l0_kernel/cep_ops.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -120,7 +121,18 @@ CEP_DEFINE_STATIC_DT(dt_cap_latency_name, CEP_ACRO("CEP"), CEP_WORD("low_latency
 CEP_DEFINE_STATIC_DT(dt_cap_local_ipc_name, CEP_ACRO("CEP"), CEP_WORD("local_ipc"));
 CEP_DEFINE_STATIC_DT(dt_cap_remote_net_name, CEP_ACRO("CEP"), CEP_WORD("remote_net"));
 CEP_DEFINE_STATIC_DT(dt_cap_unreliable_name, CEP_ACRO("CEP"), CEP_WORD("unreliable"));
-CEP_DEFINE_STATIC_DT(dt_cap_crc32c_name, CEP_ACRO("CEP"), CEP_WORD("cap_crc32c"));
+#define CEP_DEFINE_DYNAMIC_DT(fn_name, literal)                                 \
+    static const cepDT* fn_name(void) {                                         \
+        static cepDT value = {0};                                               \
+        static bool initialized = false;                                        \
+        if (!initialized) {                                                     \
+            value = cep_ops_make_dt(literal);                                   \
+            initialized = true;                                                 \
+        }                                                                       \
+        return &value;                                                          \
+    }
+
+CEP_DEFINE_DYNAMIC_DT(dt_cap_crc32c_name, "cap_crc32c");
 CEP_DEFINE_STATIC_DT(dt_cap_deflate_name, CEP_ACRO("CEP"), CEP_WORD("cap_deflate"));
 CEP_DEFINE_STATIC_DT(dt_cap_aead_name, CEP_ACRO("CEP"), CEP_WORD("cap_aead"));
 CEP_DEFINE_STATIC_DT(dt_cap_cmpver_name, CEP_ACRO("CEP"), CEP_WORD("cap_cmpver"));
@@ -144,7 +156,7 @@ CEP_DEFINE_STATIC_DT(dt_severity_field_name, CEP_ACRO("CEP"), CEP_WORD("severity
 CEP_DEFINE_STATIC_DT(dt_note_field_name, CEP_ACRO("CEP"), CEP_WORD("note"));
 CEP_DEFINE_STATIC_DT(dt_beat_field_name, CEP_ACRO("CEP"), CEP_WORD("beat"));
 CEP_DEFINE_STATIC_DT(dt_serializer_name, CEP_ACRO("CEP"), CEP_WORD("serializer"));
-CEP_DEFINE_STATIC_DT(dt_ser_crc32c_ok_name, CEP_ACRO("CEP"), CEP_WORD("crc32c_ok"));
+CEP_DEFINE_DYNAMIC_DT(dt_ser_crc32c_ok_name, "crc32c_ok");
 CEP_DEFINE_STATIC_DT(dt_ser_deflate_ok_name, CEP_ACRO("CEP"), CEP_WORD("deflate_ok"));
 CEP_DEFINE_STATIC_DT(dt_ser_aead_ok_name, CEP_ACRO("CEP"), CEP_WORD("aead_ok"));
 CEP_DEFINE_STATIC_DT(dt_ser_warn_down_name, CEP_ACRO("CEP"), CEP_WORD("warn_down"));
@@ -339,16 +351,7 @@ static bool cep_fed_transport_manager_write_text(cepCell* parent,
     if (!cep_cell_require_dictionary_store(&resolved)) {
         return false;
     }
-
-    size_t len = strlen(value);
-    cepCell* existing = cep_cell_find_by_name(resolved, field);
-    if (existing) {
-        return cep_cell_update(existing, len, len, (void*)value, false) != NULL;
-    }
-
-    cepDT field_copy = *field;
-    cepDT type_dt = cep_ops_make_dt("val/text");
-    return cep_dict_add_value(resolved, &field_copy, &type_dt, (void*)value, len, len) != NULL;
+    return cep_cell_put_text(resolved, field, value);
 }
 
 static bool cep_fed_transport_manager_write_u64(cepCell* parent,
@@ -1391,12 +1394,11 @@ bool cep_fed_transport_manager_send_cell(cepFedTransportManager* manager,
     char* prev_compression = NULL;
     char* prev_aead_mode = NULL;
     char* prev_comparator_max = NULL;
+    char* prev_checksum_mode = NULL;
     bool env_ok = true;
     bool downgraded_compression = false;
     bool downgraded_aead = false;
     bool downgraded_crc = false;
-    cepCrc32cOverride prev_crc_override = CEP_CRC32C_OVERRIDE_AUTO;
-    bool crc_override_applied = false;
     if (mount->payload_history_beats > 0u) {
         env_ok = cep_fed_env_push_override("CEP_SERIALIZATION_FLAT_PAYLOAD_HISTORY_BEATS",
                                            mount->payload_history_beats,
@@ -1440,13 +1442,13 @@ bool cep_fed_transport_manager_send_cell(cepFedTransportManager* manager,
     }
     if (env_ok && !crc_allowed) {
         bool crc_env_cast = crc_env && *crc_env && strcasecmp(crc_env, "castagnoli") == 0;
-        prev_crc_override = cep_crc32c_set_castagnoli_override(CEP_CRC32C_OVERRIDE_FORCE_IEEE);
-        crc_override_applied = true;
-        bool prev_forced_cast = (prev_crc_override == CEP_CRC32C_OVERRIDE_FORCE_CASTAGNOLI);
-        if (crc_env_cast || prev_forced_cast) {
+        env_ok = cep_fed_env_push_text_override("CEP_SERIALIZATION_FLAT_CHECKSUM",
+                                                "crc32",
+                                                &prev_checksum_mode);
+        if (env_ok && crc_env_cast) {
             downgraded_crc = true;
             if (!mount->flat_allow_crc32c) {
-                downgraded_crc_note = "Peer cannot ingest CRC32C; forcing IEEE CRC32";
+                downgraded_crc_note = "Peer cannot ingest CRC32C capability; forcing IEEE CRC32";
             } else if (!provider_crc32c) {
                 downgraded_crc_note = "Transport provider lacks CRC32C capability; forcing IEEE CRC32";
             }
@@ -1458,9 +1460,7 @@ bool cep_fed_transport_manager_send_cell(cepFedTransportManager* manager,
         cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_MAX_COMPARATOR_VERSION", prev_comparator_max);
         cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_COMPRESSION", prev_compression);
         cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_AEAD_MODE", prev_aead_mode);
-        if (crc_override_applied) {
-            cep_crc32c_set_castagnoli_override(prev_crc_override);
-        }
+        cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_CHECKSUM", prev_checksum_mode);
         return false;
     }
 
@@ -1475,9 +1475,7 @@ bool cep_fed_transport_manager_send_cell(cepFedTransportManager* manager,
     cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_MAX_COMPARATOR_VERSION", prev_comparator_max);
     cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_COMPRESSION", prev_compression);
     cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_AEAD_MODE", prev_aead_mode);
-    if (crc_override_applied) {
-        cep_crc32c_set_castagnoli_override(prev_crc_override);
-    }
+    cep_fed_env_pop_override("CEP_SERIALIZATION_FLAT_CHECKSUM", prev_checksum_mode);
     if (!emitted || buffer.size == 0u) {
         cep_fed_frame_buffer_reset(&buffer);
         return false;
@@ -1493,7 +1491,7 @@ bool cep_fed_transport_manager_send_cell(cepFedTransportManager* manager,
     if (downgraded_crc) {
         const char* note = downgraded_crc_note
             ? downgraded_crc_note
-            : "CRC32C disabled; forcing IEEE CRC32";
+            : "CRC32C capability disabled; forcing IEEE CRC32";
         cep_fed_transport_manager_warn_flat_downgrade(manager,
                                                       mount,
                                                       &mount->flat_warn_crc32c_emitted,
@@ -1528,6 +1526,9 @@ void cep_fed_transport_manager_mount_set_flat_history(cepFedTransportManagerMoun
     }
     mount->payload_history_beats = payload_history_beats;
     mount->manifest_history_beats = manifest_history_beats;
+    if (mount->manager) {
+        (void)cep_fed_transport_manager_update_mount_schema(mount);
+    }
 }
 
 void cep_fed_transport_manager_mount_set_flat_policy(cepFedTransportManagerMount* mount,
@@ -1551,6 +1552,9 @@ void cep_fed_transport_manager_mount_set_flat_policy(cepFedTransportManagerMount
     mount->flat_warn_crc32c_emitted = false;
     mount->flat_warn_compression_emitted = false;
     mount->flat_warn_aead_emitted = false;
+    if (mount->manager) {
+        (void)cep_fed_transport_manager_update_mount_schema(mount);
+    }
 }
 static bool cep_fed_env_push_override(const char* name,
                                       uint32_t value,

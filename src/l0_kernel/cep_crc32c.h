@@ -6,6 +6,7 @@
 #ifndef CEP_CRC32C_H
 #define CEP_CRC32C_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -16,6 +17,11 @@ typedef enum {
 } cepCrc32cOverride;
 
 uint32_t cep_crc32c(const void* data, size_t size, uint32_t seed);
+uint32_t cep_crc32c_compute_explicit(const void* data,
+                                     size_t size,
+                                     uint32_t seed,
+                                     bool castagnoli);
+bool cep_crc32c_castagnoli_enabled(void);
 cepCrc32cOverride cep_crc32c_set_castagnoli_override(cepCrc32cOverride override_mode);
 
 #endif /* CEP_CRC32C_H */

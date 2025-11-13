@@ -41,6 +41,14 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `beat` | Runtime platform | dictionary grouping heartbeat evidence for a specific beat. |
 | `cas` | Runtime platform | content-addressable storage subtree. |
 | `data` | Runtime platform | durable dataset root promoted at the end of a beat. |
+| `persist` | Runtime platform | `/data/persist` subtree publishing CPS readiness evidence and per-branch stats. |
+| `metrics` | Runtime platform | dictionary under `/data/persist/<branch>/metrics` containing per-branch counters. |
+| `kv_eng` | Runtime platform | `val/text` field on `/data/persist/<branch>` identifying the active CPS backend (e.g. `flatfile`). |
+| `frames` | Runtime platform | metric recording the number of committed frames under `/data/persist/<branch>/metrics`. |
+| `beats` | Runtime platform | metric recording the number of beats persisted under `/data/persist/<branch>/metrics`. |
+| `bytes_idx` | Runtime platform | metric tracking cumulative bytes written to `branch.idx` under `/data/persist/<branch>/metrics`. |
+| `bytes_dat` | Runtime platform | metric tracking cumulative bytes written to `branch.dat` under `/data/persist/<branch>/metrics`. |
+| `persist_branch` | Runtime platform | fallback tag used when a branch name cannot be interned; hosts CPS metrics if needed. |
 | `dictionary` | Runtime platform | canonical store tag for dictionary nodes. |
 | `dtor` | Runtime platform | spec field storing the optional organ destructor enzyme name. |
 | `ctor` | Runtime platform | spec field storing the optional organ constructor enzyme name. |

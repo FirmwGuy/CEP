@@ -30,7 +30,15 @@ CEP_DEFINE_STATIC_DT(dt_required_caps_name,    CEP_ACRO("CEP"), CEP_WORD("requir
 CEP_DEFINE_STATIC_DT(dt_preferred_caps_name,   CEP_ACRO("CEP"), CEP_WORD("preferred"));
 CEP_DEFINE_STATIC_DT(dt_deadline_field_name,   CEP_ACRO("CEP"), CEP_WORD("deadline"));
 CEP_DEFINE_STATIC_DT(dt_serializer_name,       CEP_ACRO("CEP"), CEP_WORD("serializer"));
-CEP_DEFINE_STATIC_DT(dt_ser_crc32c_ok_name,    CEP_ACRO("CEP"), CEP_WORD("crc32c_ok"));
+static const cepDT* dt_ser_crc32c_ok_name(void) {
+    static cepDT value = {0};
+    static bool initialized = false;
+    if (!initialized) {
+        value = cep_ops_make_dt("crc32c_ok");
+        initialized = true;
+    }
+    return &value;
+}
 CEP_DEFINE_STATIC_DT(dt_ser_deflate_ok_name,   CEP_ACRO("CEP"), CEP_WORD("deflate_ok"));
 CEP_DEFINE_STATIC_DT(dt_ser_aead_ok_name,      CEP_ACRO("CEP"), CEP_WORD("aead_ok"));
 CEP_DEFINE_STATIC_DT(dt_ser_warn_down_name,    CEP_ACRO("CEP"), CEP_WORD("warn_down"));

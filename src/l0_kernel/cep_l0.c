@@ -9,6 +9,7 @@
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
 #include "cep_runtime.h"
+#include "../cps/cps_runtime.h"
 #include "../enzymes/fed_pack.h"
 
 bool cep_l0_bootstrap(void) {
@@ -34,6 +35,11 @@ bool cep_l0_bootstrap(void) {
     }
 
     if (!cep_heartbeat_bootstrap()) {
+        cep_runtime_restore_active(previous_scope);
+        return false;
+    }
+
+    if (!cps_runtime_bootstrap()) {
         cep_runtime_restore_active(previous_scope);
         return false;
     }

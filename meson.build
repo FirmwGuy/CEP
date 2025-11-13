@@ -18,6 +18,7 @@ inc_paths = [
   'src/l0_kernel',
   'src/test',
   'src/enzymes',
+  'src/cps',
   'src/third_party/blake3',
   'src/third_party/munit',
 ]
@@ -98,6 +99,8 @@ l0_srcs = files(
   'src/enzymes/fed_mirror_organ.c',
   'src/enzymes/fed_transport_manager.c',
   'src/enzymes/fed_transport_providers.c',
+  'src/cps/cps_flatfile.c',
+  'src/cps/cps_runtime.c',
 )
 
 blake3_sources = files(

@@ -1,0 +1,980 @@
+/* Copyright (c) 2024–2025 Victor M. Barrientos (https://github.com/FirmwGuy/CEP) */
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+#include "cps_flatfile.h"
+
+#include "blake3.h"
+#include "cep_crc32c.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#define CPS_FLATFILE_META_MAGIC 0x43505331u /* "CPS1" */
+#define CPS_FLATFILE_META_VERSION 1u
+
+typedef struct __attribute__((packed)) {
+  uint32_t magic;
+  uint16_t format_ver;
+  uint16_t engine_id;
+  uint64_t branch_id_hi;
+  uint64_t branch_id_lo;
+  uint64_t head_idx_ofs;
+  uint64_t head_idx_len;
+  uint64_t head_dat_ofs;
+  uint64_t head_dat_len;
+  uint64_t last_beat;
+  uint64_t head_frame_id;
+  uint8_t head_merkle[32];
+  uint32_t checkpoint_gen;
+  uint32_t flags;
+  uint8_t reserved[140];
+  uint32_t crc32c;
+} cps_flatfile_meta;
+
+_Static_assert(sizeof(cps_flatfile_meta) == 256u, "branch.meta must stay 256 bytes");
+
+typedef struct {
+  char *root_dir;
+  char *branch_name;
+  char *branch_dir;
+  char *tmp_dir;
+  char *idx_path;
+  char *dat_path;
+  char *meta_path;
+  char *meta_tmp_path;
+  uint32_t checkpoint_interval;
+  uint32_t mini_toc_hint;
+  bool create_branch;
+  uint64_t next_frame_id;
+  cps_flatfile_meta meta;
+} cps_flatfile_state;
+
+typedef struct {
+  cps_flatfile_state *owner;
+  uint64_t beat;
+  uint64_t frame_id;
+  int dat_fd;
+  int idx_fd;
+  char *frame_dir;
+  char *dat_tmp_path;
+  char *idx_tmp_path;
+  size_t dat_bytes;
+  size_t idx_bytes;
+  blake3_hasher merkle;
+  bool merkle_ready;
+  uint32_t crc32;
+  bool crc_ready;
+} cps_flatfile_txn_state;
+
+static cps_flatfile_state *cps_flatfile_state_from(cps_engine *engine);
+static cps_flatfile_txn_state *cps_flatfile_txn_from(cps_txn *txn);
+static int cps_flatfile_ensure_directories(cps_flatfile_state *state);
+static int cps_flatfile_prepare_txn_files(cps_flatfile_txn_state *txn);
+static void cps_flatfile_txn_cleanup(cps_flatfile_txn_state *txn);
+static int cps_flatfile_write_all(int fd, const uint8_t *data, size_t len);
+static int cps_flatfile_append_file(const char *dst_path, const char *src_path, uint64_t *out_offset, uint64_t *out_len);
+static int cps_flatfile_scan_file_for_key(const char *path, cps_slice key, cps_buf *out);
+static int cps_flatfile_read_all(int fd, uint8_t *buffer, size_t len);
+static int cps_flatfile_skip_bytes(int fd, size_t len);
+static char *cps_flatfile_join2(const char *base, const char *leaf);
+static int cps_flatfile_stat_path(const char *path, struct stat *st);
+static int cps_flatfile_mkdir_p(const char *path, mode_t mode);
+static void cps_flatfile_meta_init(cps_flatfile_state *state);
+static uint32_t cps_flatfile_meta_crc(const cps_flatfile_meta *meta);
+static int cps_flatfile_meta_store(cps_flatfile_state *state);
+static int cps_flatfile_meta_load(cps_flatfile_state *state);
+static int cps_flatfile_meta_commit(cps_flatfile_state *state,
+                                    const cps_flatfile_txn_state *txn,
+                                    uint64_t dat_ofs,
+                                    uint64_t dat_len,
+                                    uint64_t idx_ofs,
+                                    uint64_t idx_len,
+                                    const uint8_t merkle[32]);
+
+static cps_flatfile_state *cps_flatfile_state_from(cps_engine *engine) {
+  return engine ? (cps_flatfile_state *)engine->state : NULL;
+}
+
+static cps_flatfile_txn_state *cps_flatfile_txn_from(cps_txn *txn) {
+  return txn ? (cps_flatfile_txn_state *)txn->state : NULL;
+}
+
+static char *cps_strdup_or_default(const char *text, const char *fallback) {
+  const char *source = text ? text : fallback;
+  if (!source) {
+    return NULL;
+  }
+  size_t len = strlen(source) + 1;
+  char *copy = (char *)malloc(len);
+  if (!copy) {
+    return NULL;
+  }
+  memcpy(copy, source, len);
+  return copy;
+}
+
+static void cps_flatfile_state_destroy(cps_flatfile_state *state) {
+  if (!state) {
+    return;
+  }
+  free(state->root_dir);
+  free(state->branch_name);
+  free(state->branch_dir);
+  free(state->tmp_dir);
+  free(state->idx_path);
+  free(state->dat_path);
+  free(state->meta_path);
+  free(state->meta_tmp_path);
+  free(state);
+}
+
+static void cps_flatfile_close(cps_engine *engine) {
+  if (!engine) {
+    return;
+  }
+  cps_flatfile_state_destroy(cps_flatfile_state_from(engine));
+  free(engine);
+}
+
+/* begin_beat() allocates a transaction shell for beat staging, preparing the
+ * append-only part files that will accumulate structural and payload records
+ * before the commit path promotes them into the branch files. */
+static int cps_flatfile_begin_beat(cps_engine *engine, uint64_t beat_no, cps_txn **out) {
+  if (!engine || !out) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  cps_flatfile_state *state = cps_flatfile_state_from(engine);
+  if (!state) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  cps_txn *handle = (cps_txn *)calloc(1, sizeof(*handle));
+  cps_flatfile_txn_state *txn = (cps_flatfile_txn_state *)calloc(1, sizeof(*txn));
+  if (!handle || !txn) {
+    free(handle);
+    free(txn);
+    return CPS_ERR_NOMEM;
+  }
+
+  txn->owner = state;
+  txn->beat = beat_no;
+  txn->frame_id = state->next_frame_id;
+  txn->dat_fd = -1;
+  txn->idx_fd = -1;
+  handle->state = txn;
+
+  int status = cps_flatfile_prepare_txn_files(txn);
+  if (status != CPS_OK) {
+    cps_flatfile_txn_cleanup(txn);
+    free(handle);
+    return status;
+  }
+
+  blake3_hasher_init(&txn->merkle);
+  txn->merkle_ready = true;
+  txn->crc32 = 0u;
+  txn->crc_ready = true;
+
+  state->next_frame_id += 1u;
+  *out = handle;
+  return CPS_OK;
+}
+
+/* put_record() currently writes a simple length-prefixed envelope to the
+ * per-beat part files so future history work can re-scan the staged bytes. */
+static int cps_flatfile_put_record(cps_txn *txn_handle, cps_slice key, cps_slice value, uint32_t rtype) {
+  cps_flatfile_txn_state *txn = cps_flatfile_txn_from(txn_handle);
+  if (!txn) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  int fd = (rtype == 0x02u) ? txn->dat_fd : txn->idx_fd;
+  if (fd < 0) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  uint32_t header[3] = { rtype, (uint32_t)key.len, (uint32_t)value.len };
+  int rc = cps_flatfile_write_all(fd, (const uint8_t *)header, sizeof header);
+  if (rc != CPS_OK) {
+    return rc;
+  }
+  if (txn->merkle_ready) {
+    blake3_hasher_update(&txn->merkle, (const uint8_t *)header, sizeof header);
+  }
+  if (txn->crc_ready) {
+    txn->crc32 = cep_crc32c(header, sizeof header, txn->crc32);
+  }
+
+  if (key.len > 0u) {
+    rc = cps_flatfile_write_all(fd, key.data, key.len);
+    if (rc != CPS_OK) {
+      return rc;
+    }
+    if (txn->merkle_ready) {
+      blake3_hasher_update(&txn->merkle, key.data, key.len);
+    }
+    if (txn->crc_ready) {
+      txn->crc32 = cep_crc32c(key.data, key.len, txn->crc32);
+    }
+  }
+  if (value.len > 0u) {
+    rc = cps_flatfile_write_all(fd, value.data, value.len);
+    if (rc != CPS_OK) {
+      return rc;
+    }
+    if (txn->merkle_ready) {
+      blake3_hasher_update(&txn->merkle, value.data, value.len);
+    }
+    if (txn->crc_ready) {
+      txn->crc32 = cep_crc32c(value.data, value.len, txn->crc32);
+    }
+  }
+
+  if (rtype == 0x02u) {
+    txn->dat_bytes += sizeof header + key.len + value.len;
+  } else {
+    txn->idx_bytes += sizeof header + key.len + value.len;
+  }
+  return CPS_OK;
+}
+
+/* commit_beat() flushes the staged part files and appends them to the branch
+ * files in the documented order (dat → idx → meta). */
+static int cps_flatfile_commit_beat(cps_txn *txn_handle, cps_frame_meta *out_meta) {
+  cps_flatfile_txn_state *txn = cps_flatfile_txn_from(txn_handle);
+  if (!txn) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  uint8_t merkle[32] = {0};
+  if (txn->merkle_ready) {
+    blake3_hasher_finalize(&txn->merkle, merkle, sizeof merkle);
+    txn->merkle_ready = false;
+  }
+
+  int rc = CPS_OK;
+  if (txn->dat_fd >= 0) {
+    if (fsync(txn->dat_fd) != 0) {
+      rc = CPS_ERR_IO;
+    }
+    close(txn->dat_fd);
+    txn->dat_fd = -1;
+  }
+  if (rc == CPS_OK && txn->idx_fd >= 0) {
+    if (fsync(txn->idx_fd) != 0) {
+      rc = CPS_ERR_IO;
+    }
+    close(txn->idx_fd);
+    txn->idx_fd = -1;
+  }
+
+  uint64_t dat_ofs = 0u, dat_len = 0u;
+  uint64_t idx_ofs = 0u, idx_len = 0u;
+  if (rc == CPS_OK) {
+    rc = cps_flatfile_append_file(txn->owner->dat_path, txn->dat_tmp_path, &dat_ofs, &dat_len);
+  }
+  if (rc == CPS_OK) {
+    rc = cps_flatfile_append_file(txn->owner->idx_path, txn->idx_tmp_path, &idx_ofs, &idx_len);
+  }
+  if (rc == CPS_OK) {
+    rc = cps_flatfile_meta_commit(txn->owner, txn, dat_ofs, dat_len, idx_ofs, idx_len, merkle);
+  }
+
+  if (out_meta) {
+    memset(out_meta, 0, sizeof(*out_meta));
+    out_meta->beat = txn->beat;
+    out_meta->frame_id = txn->frame_id;
+    memcpy(out_meta->merkle, merkle, sizeof merkle);
+  }
+
+  cps_flatfile_txn_cleanup(txn);
+  free(txn_handle);
+  return rc;
+}
+
+/* abort_beat() removes the staged part files so a failed ingestion leaves
+ * no observable tail for recovery to inspect. */
+static void cps_flatfile_abort_beat(cps_txn *txn_handle) {
+  cps_flatfile_txn_state *txn = cps_flatfile_txn_from(txn_handle);
+  if (!txn) {
+    return;
+  }
+  cps_flatfile_txn_cleanup(txn);
+  free(txn_handle);
+}
+
+/* get_record() performs a simple scan over the branch files written so far and
+ * returns the newest matching record payload. This is a placeholder until the
+ * mini-TOC and checkpoint indexes land. */
+static int cps_flatfile_get_record(cps_engine *engine, cps_slice key, cps_buf *out) {
+  if (!engine || !out) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  cps_flatfile_state *state = cps_flatfile_state_from(engine);
+  if (!state) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  int rc = cps_flatfile_scan_file_for_key(state->idx_path, key, out);
+  if (rc == CPS_ERR_NOT_FOUND) {
+    rc = cps_flatfile_scan_file_for_key(state->dat_path, key, out);
+  }
+  return rc;
+}
+
+static int cps_flatfile_scan_prefix(cps_engine *engine, cps_slice prefix, cps_scan_cb cb, void *user) {
+  (void)engine;
+  (void)prefix;
+  (void)cb;
+  (void)user;
+  return CPS_ERR_NOT_IMPLEMENTED;
+}
+
+static int cps_flatfile_checkpoint(cps_engine *engine, const cps_ckpt_opts *opts, cps_ckpt_stat *out) {
+  (void)engine;
+  (void)opts;
+  if (out) {
+    memset(out, 0, sizeof(*out));
+  }
+  return CPS_ERR_NOT_IMPLEMENTED;
+}
+
+static int cps_flatfile_compact(cps_engine *engine, const cps_compact_opts *opts, cps_compact_stat *out) {
+  (void)engine;
+  (void)opts;
+  if (out) {
+    memset(out, 0, sizeof(*out));
+  }
+  return CPS_ERR_NOT_IMPLEMENTED;
+}
+
+static int cps_flatfile_stats(cps_engine *engine, cps_stats *out) {
+  if (!engine || !out) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  memset(out, 0, sizeof(*out));
+  return CPS_OK;
+}
+
+static cps_caps_t cps_flatfile_caps(const cps_engine *engine) {
+  if (!engine) {
+    return 0;
+  }
+  return engine->caps;
+}
+
+static const cps_vtable cps_flatfile_vtable = {
+  .open = NULL,
+  .close = cps_flatfile_close,
+  .begin_beat = cps_flatfile_begin_beat,
+  .put_record = cps_flatfile_put_record,
+  .commit_beat = cps_flatfile_commit_beat,
+  .abort_beat = cps_flatfile_abort_beat,
+  .get_record = cps_flatfile_get_record,
+  .scan_prefix = cps_flatfile_scan_prefix,
+  .checkpoint = cps_flatfile_checkpoint,
+  .compact = cps_flatfile_compact,
+  .stats = cps_flatfile_stats,
+  .caps = cps_flatfile_caps,
+};
+
+int cps_flatfile_engine_open(const cps_flatfile_opts *opts, cps_engine **out) {
+  const char *default_branch_name = "default";
+  if (!opts || !out) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  cps_engine *engine = (cps_engine *)calloc(1, sizeof(*engine));
+  if (!engine) {
+    return CPS_ERR_NOMEM;
+  }
+
+  cps_flatfile_state *state = (cps_flatfile_state *)calloc(1, sizeof(*state));
+  if (!state) {
+    free(engine);
+    return CPS_ERR_NOMEM;
+  }
+
+  state->root_dir = cps_strdup_or_default(opts->root_dir, ".");
+  state->branch_name = cps_strdup_or_default(opts->branch_name, default_branch_name);
+  if (!state->root_dir || !state->branch_name) {
+    cps_flatfile_state_destroy(state);
+    free(engine);
+    return CPS_ERR_NOMEM;
+  }
+
+  state->branch_dir = cps_flatfile_join2(state->root_dir, state->branch_name);
+  state->tmp_dir = cps_flatfile_join2(state->branch_dir, "tmp");
+  state->idx_path = cps_flatfile_join2(state->branch_dir, "branch.idx");
+  state->dat_path = cps_flatfile_join2(state->branch_dir, "branch.dat");
+  state->meta_path = cps_flatfile_join2(state->branch_dir, "branch.meta");
+  state->meta_tmp_path = cps_flatfile_join2(state->branch_dir, "branch.meta.new");
+  if (!state->branch_dir || !state->tmp_dir || !state->idx_path || !state->dat_path || !state->meta_path || !state->meta_tmp_path) {
+    cps_flatfile_state_destroy(state);
+    free(engine);
+    return CPS_ERR_NOMEM;
+  }
+
+  state->checkpoint_interval = opts->checkpoint_interval ? opts->checkpoint_interval : 128;
+  state->mini_toc_hint = opts->mini_toc_hint ? opts->mini_toc_hint : 64;
+  state->create_branch = opts->create_branch;
+
+  int status = cps_flatfile_ensure_directories(state);
+  if (status != CPS_OK) {
+    cps_flatfile_state_destroy(state);
+    free(engine);
+    return status;
+  }
+
+  status = cps_flatfile_meta_load(state);
+  if (status != CPS_OK) {
+    cps_flatfile_state_destroy(state);
+    free(engine);
+    return status;
+  }
+  state->next_frame_id = state->meta.head_frame_id + 1u;
+
+  engine->ops = &cps_flatfile_vtable;
+  engine->state = state;
+  engine->caps = CPS_CAP_BEAT_ATOMIC |
+                 CPS_CAP_PREFIX_SCAN |
+                 CPS_CAP_CHECKPOINT |
+                 CPS_CAP_COMPACTION |
+                 CPS_CAP_CRC32C |
+                 CPS_CAP_MERKLE |
+                 CPS_CAP_AEAD |
+                 CPS_CAP_DEFLATE |
+                 CPS_CAP_HISTORY_PAYLOAD |
+                 CPS_CAP_HISTORY_MANIFEST |
+                 CPS_CAP_NAMEPOOL_MAP;
+
+  *out = engine;
+  return CPS_OK;
+}
+
+static int cps_flatfile_prepare_txn_files(cps_flatfile_txn_state *txn) {
+  if (!txn || !txn->owner) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  char frame_suffix[64];
+  snprintf(frame_suffix, sizeof frame_suffix, "frame_%llu_%llu", (unsigned long long)txn->beat, (unsigned long long)txn->frame_id);
+
+  txn->frame_dir = cps_flatfile_join2(txn->owner->tmp_dir, frame_suffix);
+  if (!txn->frame_dir) {
+    return CPS_ERR_NOMEM;
+  }
+  if (cps_flatfile_mkdir_p(txn->frame_dir, 0755) != 0) {
+    free(txn->frame_dir);
+    txn->frame_dir = NULL;
+    return CPS_ERR_IO;
+  }
+
+  txn->dat_tmp_path = cps_flatfile_join2(txn->frame_dir, "branch.dat.part");
+  txn->idx_tmp_path = cps_flatfile_join2(txn->frame_dir, "branch.idx.part");
+  if (!txn->dat_tmp_path || !txn->idx_tmp_path) {
+    return CPS_ERR_NOMEM;
+  }
+
+  txn->dat_fd = open(txn->dat_tmp_path, O_CREAT | O_TRUNC | O_RDWR, 0644);
+  if (txn->dat_fd < 0) {
+    return CPS_ERR_IO;
+  }
+
+  txn->idx_fd = open(txn->idx_tmp_path, O_CREAT | O_TRUNC | O_RDWR, 0644);
+  if (txn->idx_fd < 0) {
+    close(txn->dat_fd);
+    txn->dat_fd = -1;
+    return CPS_ERR_IO;
+  }
+
+  return CPS_OK;
+}
+
+static void cps_flatfile_txn_cleanup(cps_flatfile_txn_state *txn) {
+  if (!txn) {
+    return;
+  }
+  if (txn->dat_fd >= 0) {
+    close(txn->dat_fd);
+    txn->dat_fd = -1;
+  }
+  if (txn->idx_fd >= 0) {
+    close(txn->idx_fd);
+    txn->idx_fd = -1;
+  }
+  if (txn->dat_tmp_path) {
+    unlink(txn->dat_tmp_path);
+    free(txn->dat_tmp_path);
+    txn->dat_tmp_path = NULL;
+  }
+  if (txn->idx_tmp_path) {
+    unlink(txn->idx_tmp_path);
+    free(txn->idx_tmp_path);
+    txn->idx_tmp_path = NULL;
+  }
+  if (txn->frame_dir) {
+    rmdir(txn->frame_dir);
+    free(txn->frame_dir);
+    txn->frame_dir = NULL;
+  }
+  free(txn);
+}
+
+static int cps_flatfile_ensure_directories(cps_flatfile_state *state) {
+  if (!state) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  struct stat st;
+  if (cps_flatfile_stat_path(state->branch_dir, &st) != 0) {
+    if (!state->create_branch) {
+      return CPS_ERR_IO;
+    }
+    if (cps_flatfile_mkdir_p(state->branch_dir, 0755) != 0) {
+      return CPS_ERR_IO;
+    }
+  } else if (!S_ISDIR(st.st_mode)) {
+    return CPS_ERR_IO;
+  }
+
+  if (cps_flatfile_stat_path(state->tmp_dir, &st) != 0) {
+    if (cps_flatfile_mkdir_p(state->tmp_dir, 0755) != 0) {
+      return CPS_ERR_IO;
+    }
+  } else if (!S_ISDIR(st.st_mode)) {
+    return CPS_ERR_IO;
+  }
+
+  int fd;
+  fd = open(state->idx_path, O_CREAT | O_APPEND, 0644);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+  close(fd);
+
+  fd = open(state->dat_path, O_CREAT | O_APPEND, 0644);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+  close(fd);
+
+  fd = open(state->meta_path, O_CREAT, 0644);
+  if (fd < 0 && errno != EEXIST) {
+    return CPS_ERR_IO;
+  }
+  if (fd >= 0) {
+    close(fd);
+  }
+  return CPS_OK;
+}
+
+static int cps_flatfile_write_all(int fd, const uint8_t *data, size_t len) {
+  while (len > 0u) {
+    ssize_t wrote = write(fd, data, len);
+    if (wrote < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return CPS_ERR_IO;
+    }
+    data += (size_t)wrote;
+    len -= (size_t)wrote;
+  }
+  return CPS_OK;
+}
+
+static int cps_flatfile_append_file(const char *dst_path, const char *src_path, uint64_t *out_offset, uint64_t *out_len) {
+  if (!dst_path || !src_path) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  int src_fd = open(src_path, O_RDONLY);
+  if (src_fd < 0) {
+    return CPS_ERR_IO;
+  }
+
+  int dst_fd = open(dst_path, O_WRONLY | O_CREAT, 0644);
+  if (dst_fd < 0) {
+    close(src_fd);
+    return CPS_ERR_IO;
+  }
+
+  off_t offset = lseek(dst_fd, 0, SEEK_END);
+  if (offset < 0) {
+    close(dst_fd);
+    close(src_fd);
+    return CPS_ERR_IO;
+  }
+
+  uint8_t buffer[64 * 1024];
+  uint64_t total = 0u;
+  int rc = CPS_OK;
+  for (;;) {
+    ssize_t rd = read(src_fd, buffer, sizeof buffer);
+    if (rd < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      rc = CPS_ERR_IO;
+      break;
+    }
+    if (rd == 0) {
+      break;
+    }
+    rc = cps_flatfile_write_all(dst_fd, buffer, (size_t)rd);
+    if (rc != CPS_OK) {
+      break;
+    }
+    total += (uint64_t)rd;
+  }
+
+  if (rc == CPS_OK && fsync(dst_fd) != 0) {
+    rc = CPS_ERR_IO;
+  }
+
+  close(dst_fd);
+  close(src_fd);
+
+  if (out_offset) {
+    *out_offset = (uint64_t)offset;
+  }
+  if (out_len) {
+    *out_len = total;
+  }
+  return rc;
+}
+
+static int cps_flatfile_scan_file_for_key(const char *path, cps_slice key, cps_buf *out) {
+  if (!path || !out) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+
+  int rc = CPS_ERR_NOT_FOUND;
+  for (;;) {
+    uint32_t header[3];
+    ssize_t rd = read(fd, header, sizeof header);
+    if (rd == 0) {
+      break; /* EOF, not found */
+    }
+    if (rd < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      rc = CPS_ERR_IO;
+      break;
+    }
+    if ((size_t)rd != sizeof header) {
+      rc = CPS_ERR_IO;
+      break;
+    }
+
+    uint32_t rtype = header[0];
+    uint32_t key_len = header[1];
+    uint32_t val_len = header[2];
+
+    uint8_t *key_buf = NULL;
+    if (key_len > 0u) {
+      key_buf = (uint8_t *)malloc(key_len);
+      if (!key_buf) {
+        rc = CPS_ERR_NOMEM;
+        break;
+      }
+      if (cps_flatfile_read_all(fd, key_buf, key_len) != CPS_OK) {
+        free(key_buf);
+        rc = CPS_ERR_IO;
+        break;
+      }
+    }
+
+    bool match = (key_len == key.len) && (key_len == 0u || memcmp(key_buf, key.data, key_len) == 0);
+    if (!match) {
+      free(key_buf);
+      if (cps_flatfile_skip_bytes(fd, val_len) != CPS_OK) {
+        rc = CPS_ERR_IO;
+        break;
+      }
+      continue;
+    }
+
+    free(key_buf);
+    if (val_len > 0u) {
+      if (out->cap < val_len) {
+        uint8_t *grown = (uint8_t *)realloc(out->data, val_len);
+        if (!grown) {
+          rc = CPS_ERR_NOMEM;
+          break;
+        }
+        out->data = grown;
+        out->cap = val_len;
+      }
+      if (cps_flatfile_read_all(fd, out->data, val_len) != CPS_OK) {
+        rc = CPS_ERR_IO;
+        break;
+      }
+    } else {
+      if (out->cap == 0u) {
+        out->data = NULL;
+      }
+    }
+    out->len = val_len;
+    (void)rtype;
+    rc = CPS_OK;
+    break;
+  }
+
+  close(fd);
+  return rc;
+}
+
+static int cps_flatfile_read_all(int fd, uint8_t *buffer, size_t len) {
+  while (len > 0u) {
+    ssize_t rd = read(fd, buffer, len);
+    if (rd < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return CPS_ERR_IO;
+    }
+    if (rd == 0) {
+      return CPS_ERR_IO;
+    }
+    buffer += (size_t)rd;
+    len -= (size_t)rd;
+  }
+  return CPS_OK;
+}
+
+static int cps_flatfile_skip_bytes(int fd, size_t len) {
+  if (len == 0u) {
+    return CPS_OK;
+  }
+  if (lseek(fd, (off_t)len, SEEK_CUR) >= 0) {
+    return CPS_OK;
+  }
+  uint8_t discard[1024];
+  while (len > 0u) {
+    size_t chunk = len < sizeof discard ? len : sizeof discard;
+    ssize_t rd = read(fd, discard, chunk);
+    if (rd < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return CPS_ERR_IO;
+    }
+    if (rd == 0) {
+      return CPS_ERR_IO;
+    }
+    len -= (size_t)rd;
+  }
+  return CPS_OK;
+}
+
+static void cps_flatfile_meta_init(cps_flatfile_state *state) {
+  if (!state) {
+    return;
+  }
+  cps_flatfile_meta *meta = &state->meta;
+  memset(meta, 0, sizeof(*meta));
+  meta->magic = CPS_FLATFILE_META_MAGIC;
+  meta->format_ver = CPS_FLATFILE_META_VERSION;
+  meta->engine_id = 1u;
+
+  blake3_hasher hasher;
+  blake3_hasher_init(&hasher);
+  if (state->branch_dir) {
+    blake3_hasher_update(&hasher, (const uint8_t *)state->branch_dir, strlen(state->branch_dir));
+  }
+  uint8_t digest[32];
+  blake3_hasher_finalize(&hasher, digest, sizeof digest);
+  memcpy(&meta->branch_id_hi, digest, sizeof(meta->branch_id_hi));
+  memcpy(&meta->branch_id_lo, digest + sizeof(meta->branch_id_hi), sizeof(meta->branch_id_lo));
+}
+
+static uint32_t cps_flatfile_meta_crc(const cps_flatfile_meta *meta) {
+  size_t bytes = sizeof(*meta) - sizeof(meta->crc32c);
+  cps_flatfile_meta copy = *meta;
+  copy.crc32c = 0u;
+  return cep_crc32c(&copy, bytes, 0u);
+}
+
+static int cps_flatfile_meta_store(cps_flatfile_state *state) {
+  if (!state || !state->meta_tmp_path || !state->meta_path) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  cps_flatfile_meta meta = state->meta;
+  meta.magic = CPS_FLATFILE_META_MAGIC;
+  meta.format_ver = CPS_FLATFILE_META_VERSION;
+  meta.engine_id = 1u;
+  meta.crc32c = cps_flatfile_meta_crc(&meta);
+
+  int fd = open(state->meta_tmp_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+
+  int rc = cps_flatfile_write_all(fd, (const uint8_t *)&meta, sizeof meta);
+  if (rc == CPS_OK && fsync(fd) != 0) {
+    rc = CPS_ERR_IO;
+  }
+  close(fd);
+
+  if (rc == CPS_OK && rename(state->meta_tmp_path, state->meta_path) != 0) {
+    rc = CPS_ERR_IO;
+  }
+  if (rc != CPS_OK) {
+    unlink(state->meta_tmp_path);
+    return rc;
+  }
+
+  state->meta = meta;
+  return CPS_OK;
+}
+
+static int cps_flatfile_meta_load(cps_flatfile_state *state) {
+  if (!state) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  struct stat st;
+  if (cps_flatfile_stat_path(state->meta_path, &st) != 0) {
+    if (errno != ENOENT) {
+      return CPS_ERR_IO;
+    }
+    cps_flatfile_meta_init(state);
+    return cps_flatfile_meta_store(state);
+  }
+
+  if ((size_t)st.st_size != sizeof(cps_flatfile_meta)) {
+    cps_flatfile_meta_init(state);
+    return cps_flatfile_meta_store(state);
+  }
+
+  int fd = open(state->meta_path, O_RDONLY);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+
+  cps_flatfile_meta meta;
+  ssize_t rd = read(fd, &meta, sizeof meta);
+  close(fd);
+  if (rd != sizeof meta) {
+    cps_flatfile_meta_init(state);
+    return cps_flatfile_meta_store(state);
+  }
+
+  uint32_t stored_crc = meta.crc32c;
+  meta.crc32c = 0u;
+  if (meta.magic != CPS_FLATFILE_META_MAGIC ||
+      meta.format_ver != CPS_FLATFILE_META_VERSION ||
+      stored_crc != cps_flatfile_meta_crc(&meta)) {
+    cps_flatfile_meta_init(state);
+    return cps_flatfile_meta_store(state);
+  }
+
+  meta.crc32c = stored_crc;
+  state->meta = meta;
+  return CPS_OK;
+}
+
+static int cps_flatfile_meta_commit(cps_flatfile_state *state,
+                                    const cps_flatfile_txn_state *txn,
+                                    uint64_t dat_ofs,
+                                    uint64_t dat_len,
+                                    uint64_t idx_ofs,
+                                    uint64_t idx_len,
+                                    const uint8_t merkle[32]) {
+  if (!state || !txn || !merkle) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  state->meta.magic = CPS_FLATFILE_META_MAGIC;
+  state->meta.format_ver = CPS_FLATFILE_META_VERSION;
+  state->meta.engine_id = 1u;
+  state->meta.head_dat_ofs = dat_ofs;
+  state->meta.head_dat_len = dat_len;
+  state->meta.head_idx_ofs = idx_ofs;
+  state->meta.head_idx_len = idx_len;
+  state->meta.last_beat = txn->beat;
+  state->meta.head_frame_id = txn->frame_id;
+  memcpy(state->meta.head_merkle, merkle, 32);
+  return cps_flatfile_meta_store(state);
+}
+
+static char *cps_flatfile_join2(const char *base, const char *leaf) {
+  if (!base || !leaf) {
+    return NULL;
+  }
+  size_t len_base = strlen(base);
+  bool needs_sep = len_base > 0u && base[len_base - 1u] != '/';
+  size_t total = len_base + (needs_sep ? 1u : 0u) + strlen(leaf) + 1u;
+  char *joined = (char *)malloc(total);
+  if (!joined) {
+    return NULL;
+  }
+  if (needs_sep) {
+    snprintf(joined, total, "%s/%s", base, leaf);
+  } else {
+    snprintf(joined, total, "%s%s", base, leaf);
+  }
+  return joined;
+}
+
+static int cps_flatfile_stat_path(const char *path, struct stat *st) {
+  if (!path || !st) {
+    errno = EINVAL;
+    return -1;
+  }
+  return stat(path, st);
+}
+
+static int cps_flatfile_mkdir_p(const char *path, mode_t mode) {
+  if (!path || !*path) {
+    errno = EINVAL;
+    return -1;
+  }
+  char *dup = strdup(path);
+  if (!dup) {
+    errno = ENOMEM;
+    return -1;
+  }
+  char *cursor = dup;
+  if (*cursor == '/') {
+    ++cursor;
+  }
+  for (; *cursor; ++cursor) {
+    if (*cursor == '/') {
+      *cursor = '\0';
+      if (strlen(dup) > 0u) {
+        if (mkdir(dup, mode) != 0 && errno != EEXIST) {
+          *cursor = '/';
+          free(dup);
+          return -1;
+        }
+      }
+      *cursor = '/';
+    }
+  }
+  if (mkdir(dup, mode) != 0 && errno != EEXIST) {
+    free(dup);
+    return -1;
+  }
+  free(dup);
+  return 0;
+}

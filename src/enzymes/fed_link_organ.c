@@ -62,7 +62,15 @@ CEP_DEFINE_STATIC_DT(dt_cap_local_ipc_name,    CEP_ACRO("CEP"), CEP_WORD("local_
 CEP_DEFINE_STATIC_DT(dt_cap_remote_net_name,   CEP_ACRO("CEP"), CEP_WORD("remote_net"));
 CEP_DEFINE_STATIC_DT(dt_cap_unreliable_name,   CEP_ACRO("CEP"), CEP_WORD("unreliable"));
 CEP_DEFINE_STATIC_DT(dt_serializer_name,       CEP_ACRO("CEP"), CEP_WORD("serializer"));
-CEP_DEFINE_STATIC_DT(dt_ser_crc32c_ok_name,    CEP_ACRO("CEP"), CEP_WORD("crc32c_ok"));
+static const cepDT* dt_ser_crc32c_ok_name(void) {
+    static cepDT value = {0};
+    static bool initialized = false;
+    if (!initialized) {
+        value = cep_ops_make_dt("crc32c_ok");
+        initialized = true;
+    }
+    return &value;
+}
 CEP_DEFINE_STATIC_DT(dt_ser_deflate_ok_name,   CEP_ACRO("CEP"), CEP_WORD("deflate_ok"));
 CEP_DEFINE_STATIC_DT(dt_ser_aead_ok_name,      CEP_ACRO("CEP"), CEP_WORD("aead_ok"));
 CEP_DEFINE_STATIC_DT(dt_ser_warn_down_name,    CEP_ACRO("CEP"), CEP_WORD("warn_down"));

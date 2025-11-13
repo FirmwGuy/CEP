@@ -14,6 +14,7 @@
 #include "cep_namepool_runtime.h"
 #include "cep_organ.h"
 #include "cep_organ.h"
+#include "../cps/cps_runtime.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -482,6 +483,8 @@ cep_runtime_shutdown(cepRuntime* runtime)
     }
 
     cep_runtime_restore_active(previous_runtime_scope);
+
+    cps_runtime_shutdown();
 
     if (runtime->executor_state) {
         cep_executor_state_destroy(runtime->executor_state);

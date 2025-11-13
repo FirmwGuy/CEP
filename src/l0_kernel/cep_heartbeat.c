@@ -2422,6 +2422,7 @@ typedef struct {
     cepBeatNumber   shdn_last_beat;
     bool            boot_kernel_ready;
     bool            boot_namepool_ready;
+    bool            boot_store_ready;
     size_t          shdn_scopes_marked;
 } cepLifecycleOpsState;
 
@@ -3743,6 +3744,7 @@ static void cep_boot_ops_reset(void) {
     CEP_LIFECYCLE_OPS_STATE.shdn_last_beat = CEP_BEAT_INVALID;
     CEP_LIFECYCLE_OPS_STATE.boot_kernel_ready = false;
     CEP_LIFECYCLE_OPS_STATE.boot_namepool_ready = false;
+    CEP_LIFECYCLE_OPS_STATE.boot_store_ready = false;
     CEP_LIFECYCLE_OPS_STATE.shdn_scopes_marked = 0u;
 }
 
@@ -3784,6 +3786,7 @@ static bool cep_boot_ops_progress_boot(void) {
 
     if (CEP_LIFECYCLE_OPS_STATE.boot_phase == CEP_BOOT_PHASE_KERNEL &&
         CEP_LIFECYCLE_OPS_STATE.boot_kernel_ready &&
+        CEP_LIFECYCLE_OPS_STATE.boot_store_ready &&
         cep_boot_ops_ready_for_next(CEP_LIFECYCLE_OPS_STATE.boot_last_beat)) {
         if (!cep_boot_ops_record_state(CEP_LIFECYCLE_OPS_STATE.boot_oid,
                                        dt_ist_store(),
@@ -5832,6 +5835,14 @@ bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope) {
         CEP_LIFECYCLE_OPS_STATE.boot_namepool_ready = true;
     }
 
+    return true;
+}
+
+bool cep_boot_ops_mark_store_ready(void) {
+    if (!cep_boot_ops_start_boot()) {
+        return false;
+    }
+    CEP_LIFECYCLE_OPS_STATE.boot_store_ready = true;
     return true;
 }
 

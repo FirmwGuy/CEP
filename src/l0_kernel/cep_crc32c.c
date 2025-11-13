@@ -70,21 +70,36 @@ cepCrc32cOverride cep_crc32c_set_castagnoli_override(cepCrc32cOverride override_
 
 static bool cep_crc32c_hw_process(const void* data, size_t size, uint32_t seed, uint32_t* out);
 
-uint32_t cep_crc32c(const void* data, size_t size, uint32_t seed) {
+static uint32_t cep_crc32c_compute_impl(const void* data, size_t size, uint32_t seed, bool castagnoli) {
     if (!data || size == 0u) {
         return seed;
     }
 
-    if (cep_crc32c_castagnoli_mode()) {
-        uint32_t castagnoli = seed;
-        if (cep_crc32c_hw_process(data, size, seed, &castagnoli)) {
-            return castagnoli;
+    if (castagnoli) {
+        uint32_t castagnoli_value = seed;
+        if (cep_crc32c_hw_process(data, size, seed, &castagnoli_value)) {
+            return castagnoli_value;
         }
     }
 
     const unsigned char* bytes = (const unsigned char*)data;
     unsigned long crc = crc32_z((unsigned long)seed, bytes, (z_size_t)size);
     return (uint32_t)crc;
+}
+
+uint32_t cep_crc32c(const void* data, size_t size, uint32_t seed) {
+    return cep_crc32c_compute_impl(data, size, seed, cep_crc32c_castagnoli_mode());
+}
+
+uint32_t cep_crc32c_compute_explicit(const void* data,
+                                     size_t size,
+                                     uint32_t seed,
+                                     bool castagnoli) {
+    return cep_crc32c_compute_impl(data, size, seed, castagnoli);
+}
+
+bool cep_crc32c_castagnoli_enabled(void) {
+    return cep_crc32c_castagnoli_mode();
 }
 
 #if CEP_CRC32C_HAS_X86

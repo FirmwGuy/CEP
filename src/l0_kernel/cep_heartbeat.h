@@ -245,6 +245,7 @@ typedef enum {
 bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope);
 bool cep_lifecycle_scope_mark_teardown(cepLifecycleScope scope);
 bool cep_lifecycle_scope_is_ready(cepLifecycleScope scope);
+bool cep_boot_ops_mark_store_ready(void);
 
 
 #ifdef __cplusplus
