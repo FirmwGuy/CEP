@@ -17,9 +17,11 @@
 #include "cep_flat_stream.h"
 #include "cep_flat_serializer.h"
 #include "cep_ep.h"
+#include "cps_flatfile.h"
 #include "stream/cep_stream_internal.h"
 #include "stream/cep_stream_stdio.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -31,6 +33,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <inttypes.h>
+#include <unistd.h>
+#include <limits.h>
 
 CEP_DEFINE_STATIC_DT(dt_stream_payload_outcome, CEP_ACRO("CEP"), CEP_WORD("outcome"));
 CEP_DEFINE_STATIC_DT(dt_stream_payload_log, CEP_ACRO("CEP"), CEP_WORD("stream-log"));
@@ -195,6 +199,10 @@ static bool integration_focus_ops_ctx_enabled(void) {
 
 static bool integration_focus_random_plan_enabled(void) {
     return integration_env_flag("CEP_POC_FOCUS_RANDOM_PLAN");
+}
+
+static bool integration_cps_flow_enabled(void) {
+    return !integration_env_flag("CEP_POC_DISABLE_CPS");
 }
 
 static bool integration_serialization_logging_enabled(void) {
@@ -391,6 +399,7 @@ typedef struct {
     size_t                   capacity;
 } IntegrationSerializationCapture;
 
+static void integration_cps_roundtrip(IntegrationFixture* fix, const IntegrationSerializationCapture* capture);
 static void integration_dump_trace(const IntegrationSerializationCapture* capture, const char* suffix);
 
 static const char* integration_stage_log_path(void) {
@@ -908,6 +917,228 @@ static void integration_log_space_flat_records(const IntegrationSerializationCap
     space_path_segments[1] = *CEP_DTAW("CEP", "poc");
     space_path_segments[2] = *CEP_DTAW("CEP", "space");
     integration_log_flat_records(capture, stage, space_path_segments, cep_lengthof(space_path_segments));
+}
+
+static bool integration_ensure_parent_dirs(char* path) {
+    if (!path) {
+        return false;
+    }
+    size_t len = strlen(path);
+    if (!len) {
+        return false;
+    }
+    for (size_t i = 1u; i < len; ++i) {
+        if (path[i] != '/') {
+            continue;
+        }
+        char saved = path[i];
+        path[i] = '\0';
+        if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+            path[i] = saved;
+            return false;
+        }
+        path[i] = saved;
+    }
+    return true;
+}
+
+static bool integration_make_temp_root(char* buffer, size_t cap) {
+    if (!buffer || cap == 0u) {
+        return false;
+    }
+    const char* base = getenv("MESON_BUILD_ROOT");
+    if (!base || !*base) {
+        base = "build";
+    }
+    char tmpl[PATH_MAX];
+    int written = snprintf(tmpl, sizeof tmpl, "%s/integration_cps.XXXXXX", base);
+    if (written < 0 || (size_t)written >= sizeof tmpl) {
+        return false;
+    }
+    if (!integration_ensure_parent_dirs(tmpl)) {
+        return false;
+    }
+    char* dir = mkdtemp(tmpl);
+    if (!dir) {
+        return false;
+    }
+    if ((size_t)snprintf(buffer, cap, "%s", dir) >= cap) {
+        return false;
+    }
+    return true;
+}
+
+static void integration_remove_tree(const char* path) {
+    if (!path || !*path) {
+        return;
+    }
+    DIR* dir = opendir(path);
+    if (!dir) {
+        (void)remove(path);
+        return;
+    }
+    struct dirent* entry = NULL;
+    while ((entry = readdir(dir))) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        char child[PATH_MAX];
+        if ((size_t)snprintf(child, sizeof child, "%s/%s", path, entry->d_name) >= sizeof child) {
+            continue;
+        }
+        struct stat st;
+        if (lstat(child, &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            integration_remove_tree(child);
+        } else {
+            (void)unlink(child);
+        }
+    }
+    closedir(dir);
+    (void)rmdir(path);
+}
+
+static uint64_t integration_read_uint64_field(cepCell* parent, const char* field_name) {
+    munit_assert_not_null(parent);
+    munit_assert_not_null(field_name);
+    cepDT field_dt = cep_ops_make_dt(field_name);
+    cepCell* field = cep_cell_find_by_name(parent, &field_dt);
+    munit_assert_not_null(field);
+    cepCell* resolved = cep_cell_resolve(field);
+    munit_assert_not_null(resolved);
+    const uint64_t* payload = (const uint64_t*)cep_cell_data(resolved);
+    munit_assert_not_null(payload);
+    return *payload;
+}
+
+static bool integration_cps_apply_reader(cps_engine* engine, cepFlatReader* reader) {
+    if (!engine || !engine->ops || !reader) {
+        return false;
+    }
+    size_t record_count = 0u;
+    const cepFlatRecordView* records = cep_flat_reader_records(reader, &record_count);
+    if (!records) {
+        return false;
+    }
+    const cepFlatFrameConfig* frame = cep_flat_reader_frame(reader);
+    uint64_t beat_no = frame ? frame->beat_number : 0u;
+    if (beat_no == 0u) {
+        cepBeatNumber current = cep_beat_index();
+        if (current != CEP_BEAT_INVALID) {
+            beat_no = (uint64_t)current;
+        }
+    }
+    if (!engine->ops->begin_beat || !engine->ops->put_record || !engine->ops->commit_beat) {
+        return false;
+    }
+    cps_txn* txn = NULL;
+    int rc = engine->ops->begin_beat(engine, beat_no, &txn);
+    if (rc != CPS_OK || !txn) {
+        return false;
+    }
+    for (size_t i = 0; i < record_count; ++i) {
+        cps_slice key = {
+            .data = records[i].key.data,
+            .len = records[i].key.size,
+        };
+        cps_slice value = {
+            .data = records[i].body.data,
+            .len = records[i].body.size,
+        };
+        rc = engine->ops->put_record(txn, key, value, records[i].type);
+        if (rc != CPS_OK) {
+            if (engine->ops->abort_beat) {
+                engine->ops->abort_beat(txn);
+            }
+            return false;
+        }
+    }
+    cps_frame_meta meta = {
+        .beat = beat_no,
+    };
+    const uint8_t* merkle = cep_flat_reader_merkle_root(reader);
+    if (merkle) {
+        memcpy(meta.merkle, merkle, sizeof meta.merkle);
+    }
+    rc = engine->ops->commit_beat(txn, &meta);
+    if (rc != CPS_OK) {
+        if (engine->ops->abort_beat) {
+            engine->ops->abort_beat(txn);
+        }
+        return false;
+    }
+    return true;
+}
+
+static void integration_assert_persist_metrics(const char* branch_name, uint64_t min_frames) {
+    munit_assert_not_null(branch_name);
+    cepCell* data_root = cep_cell_resolve(cep_heartbeat_data_root());
+    munit_assert_not_null(data_root);
+    cepCell* persist_root = cep_cell_find_by_name(data_root, CEP_DTAW("CEP", "persist"));
+    munit_assert_not_null(persist_root);
+    cepCell* resolved_persist = cep_cell_resolve(persist_root);
+    munit_assert_not_null(resolved_persist);
+    cepDT branch_dt = cep_ops_make_dt(branch_name);
+    cepCell* branch_cell = cep_cell_find_by_name(resolved_persist, &branch_dt);
+    munit_assert_not_null(branch_cell);
+    cepCell* resolved_branch = cep_cell_resolve(branch_cell);
+    munit_assert_not_null(resolved_branch);
+
+    cepCell* engine_field = cep_cell_find_by_name(resolved_branch, CEP_DTAW("CEP", "kv_eng"));
+    munit_assert_not_null(engine_field);
+    const char* engine_text = (const char*)cep_cell_data(engine_field);
+    munit_assert_not_null(engine_text);
+    munit_assert_string_equal(engine_text, "flatfile");
+
+    cepCell* metrics_cell = cep_cell_find_by_name(resolved_branch, CEP_DTAW("CEP", "metrics"));
+    munit_assert_not_null(metrics_cell);
+    cepCell* resolved_metrics = cep_cell_resolve(metrics_cell);
+    munit_assert_not_null(resolved_metrics);
+    uint64_t frames = integration_read_uint64_field(resolved_metrics, "frames");
+    munit_assert_uint64(frames, >=, min_frames);
+    uint64_t beats = integration_read_uint64_field(resolved_metrics, "beats");
+    munit_assert_uint64(beats, >=, min_frames);
+
+    cep_cell_delete_hard(branch_cell);
+}
+
+static void integration_cps_roundtrip(IntegrationFixture* fix, const IntegrationSerializationCapture* capture) {
+    if (!integration_cps_flow_enabled() || !fix || !capture || capture->count == 0u) {
+        return;
+    }
+    char temp_root[PATH_MAX];
+    munit_assert_true(integration_make_temp_root(temp_root, sizeof temp_root));
+    const char* branch_name = "integration_poc_branch";
+    cps_engine* engine = NULL;
+    cps_flatfile_opts opts = {
+        .root_dir = temp_root,
+        .branch_name = branch_name,
+        .checkpoint_interval = 8u,
+        .mini_toc_hint = 32u,
+        .create_branch = true,
+    };
+    bool success = (cps_flatfile_engine_open(&opts, &engine) == CPS_OK && engine);
+    if (success) {
+        cepFlatReader* reader = cep_flat_reader_create();
+        success = reader &&
+                  integration_capture_feed_flat_reader(capture, reader) &&
+                  cep_flat_reader_commit(reader) &&
+                  cep_flat_reader_ready(reader) &&
+                  integration_cps_apply_reader(engine, reader);
+        if (reader) {
+            cep_flat_reader_destroy(reader);
+        }
+    }
+    if (success) {
+        integration_assert_persist_metrics(branch_name, 1u);
+    }
+    if (engine && engine->ops && engine->ops->close) {
+        engine->ops->close(engine);
+    }
+    integration_remove_tree(temp_root);
+    munit_assert_true(success);
 }
 
 static const char* integration_cell_type_string(const cepCell* cell) {
@@ -3774,6 +4005,8 @@ static void integration_serialize_and_replay(IntegrationFixture* fix) {
                "[integration][flat] frame bytes=%zu chunks=%zu",
                total_bytes,
                primary_capture.count);
+
+    integration_cps_roundtrip(fix, &primary_capture);
 
     integration_capture_clear(&repeat_capture);
     integration_capture_clear(&primary_capture);

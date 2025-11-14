@@ -57,7 +57,7 @@ CEP Persistent Storage (CPS) is the Layer 0 service that mirrors the in-memory
 
 ## Fixture & Replay Workflow
 
-- **Fixtures.** `src/test/l0_kernel/test_flat_serializer_fixtures.c` generates deterministic inline and CAS frames plus blobs under `fixtures/cps/{frames,cas}`. The test fails fast if fixtures drift and logs “set `CEP_UPDATE_PAYLOAD_REF_FIXTURES=1`” instructions.
+- **Fixtures.** All deterministic serializer outputs and CAS blobs live under the repo’s `fixtures/` tree. CPS uses the `fixtures/cps/{frames,cas}` subdirectory, keeping golden test data out of the source tree and making it easy for multiple suites (serializer harness, CPS replay, integration POC) to reuse the same artifacts. `src/test/l0_kernel/test_flat_serializer_fixtures.c` regenerates these assets; the test fails fast if fixtures drift and logs “set `CEP_UPDATE_PAYLOAD_REF_FIXTURES=1`” instructions.
 - **Replay harness.** `/CEP/cps/replay/inline`, `/CEP/cps/replay/cas_cache`, and `/CEP/cps/replay/cas_runtime` install fixtures into temporary branches and scoped runtimes, then assert CAS metrics and payload parity. Scoped runtimes guarantee `/data/persist` and `/cas` roots exist and serializer env vars never leak between suites.
 - **Regeneration.** Run `CEP_UPDATE_PAYLOAD_REF_FIXTURES=1 build/cep_tests --no-fork --single /CEP/serialization/flat_payload_ref_fixtures`, commit the updated fixtures, then rerun `meson test -C build cep_unit_tests` to validate CPS replay with the new serializer output.
 
