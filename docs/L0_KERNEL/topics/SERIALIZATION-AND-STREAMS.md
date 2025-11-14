@@ -36,6 +36,11 @@ The canonical specification (fields, varints, AEAD layout) lives in the flat ser
 ### History selectors
 - Set `CEP_SERIALIZATION_FLAT_PAYLOAD_HISTORY_BEATS=<beats>` or `CEP_SERIALIZATION_FLAT_MANIFEST_HISTORY_BEATS=<beats>` to bundle historical payload bytes or manifest pages. The trailer records the selectors so readers know the window is partial, and the writer only asserts `CEP_FLAT_CAP_{PAYLOAD,MANIFEST}_HISTORY` when history records were emitted.
 
+### Secured payloads
+- Secured payloads store encrypted and/or compressed bytes directly in RAM, so the serializer’s payload_chunk and CPS mirror the exact ciphertext/deflated buffer without rewriting.
+- Every secured payload carries a secmeta snapshot (fingerprint, raw/encrypted lengths, codec, AEAD mode, key identifier, nonce, AAD hash). Readers don’t decrypt; they stream the chunk and keep the metadata for policy inspection.
+- cep_data_unveil_ro provides short-lived plaintext views for enzymes that need them; cep_data_unveil_done zeroizes/frees the scratch buffer immediately so persistence never exposes plaintext.
+
 ### AEAD & compression
 - Optional AEAD is controlled via `CEP_SERIALIZATION_FLAT_AEAD_MODE` (`none`, `chacha20`, `xchacha20`) and `CEP_SERIALIZATION_FLAT_AEAD_KEY` (32-byte hex). Nonces are deterministic (keyed BLAKE3 over record key + chunk metadata) so replays remain byte-identical while maintaining uniqueness per payload revision.
 - AEAD encrypts only payload bytes (including history records). Manifests, trailers, and selectors stay plaintext so CAS fingerprints, audit tooling, and manifests remain indexable. Use encrypted transports (TLS/Noise/etc.) or encrypted volumes if the entire frame must be opaque in-flight or at-rest.
@@ -67,4 +72,9 @@ The canonical specification (fields, varints, AEAD layout) lives in the flat ser
 - `test_serialization_flat_chunk_offset_violation` and `test_serialization_flat_chunk_order_violation` mutate captured frames (recomputing per-record CRCs) and ensure the reader now rejects out-of-order or overlapping chunks.
 - Historical coverage lives in `test_serialization_manifest_history` and the new flat history tests—keep these updated whenever the schema changes.
 
-By default, every Layer 0 node emits flat frames. Federation, replication, archives, and debug tooling all expect this format, so when you update the serializer or add a record type, update the spec and this topic plus the test cases listed above. No legacy chunk stream remains in the codebase or the documentation.
+By default, every Layer 0 node emits flat frames. Federation, replication, archives, and debug tooling all expect this format, so when you update the serializer or add a record type, update the spec and this topic plus the test cases listed above. No legacy chunk stream remains in the codebase or the documentation.### Secured Payload Encoding
+- Secured payloads store encrypted and/or compressed bytes directly in RAM. The serializer’s payload_chunk carries the exact ciphertext/deflated buffer that secdata sealed, so federation, CPS, and import/export replay the same data without transformation.
+- Each cell_desc now includes the secmeta snapshot (fingerprint, raw/encrypted lengths, codec, AEAD mode, key identifier, nonce, AAD hash) when the payload is secured. Readers don’t need to decrypt; they simply stream the bytes and keep the metadata for policy inspection.
+- cep_data_unveil_ro provides temporary plaintext views for enzymes that need them; cep_data_unveil_done zeroizes and frees the scratch buffer immediately. The serializer and CPS never invoke unveil—they process the authoritative ciphertext.
+
+

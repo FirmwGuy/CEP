@@ -32,6 +32,12 @@ Goal: make L0 deterministic and simple by treating payloads as opaque bytes and 
 - Does: store bytes; compare and hash deterministically; keep the cepDT; move/copy/update byte buffers; record/stream bytes.
 - Doesn’t: validate semantics (endianness, UTF‑8, IEEE754), track element width, or enforce shapes (scalar/vector/matrix). Those are enzyme/upper-layer packs concerns.
 
+#### Secured payloads (secdata)
+
+- `secdata/` keeps encrypted and/or deflated VALUE/DATA buffers resident in RAM. Every `cepData` now carries a `secmeta` snapshot (`enc_mode`, `codec`, `key_id`, `payload_fp`, `raw_len`, `enc_len`) plus the nonce/AAD hash used to seal the bytes so serializers and CPS can emit the exact ciphertext without re-encoding.
+- Inline VALUE payloads are automatically externalised whenever `enc_mode != none`, forcing encrypted revisions through `payload_chunk` records and preventing inline metadata from leaking ciphertext.
+- Public helpers (`cep_data_set_plain/enc/cenc/cdef`, `cep_data_unveil_ro/done`, `cep_data_rekey`, `cep_data_recompress`) drive the secure pipeline, zero scratch slabs on release, and emit CEI topics (`enc_fail`, `dec_fail`, `rekey_fail`, `codec_mis`) whenever sealing or unveiling fails.
+
 ### 2.3 Deterministic Ordering and Hashing
 
 To index and sort payloads deterministically, L0 defines a stable hash without inspecting semantics:

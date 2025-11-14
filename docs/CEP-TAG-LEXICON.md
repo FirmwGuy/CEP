@@ -58,6 +58,18 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `persist.checkpoint` | Runtime platform | CEI topic emitted when CPS writes checkpoint TOCs or reports errors during `op/checkpt`. |
 | `persist.recover` | Runtime platform | CEI topic emitted when CPS detects branch corruption and runs crash-recovery sweeps. |
 | `persist.bootstrap` | Runtime platform | CEI topic emitted when CPS bootstrap/engine activation surfaces warnings before `ist:store`. |
+| `enc_mode` | Runtime platform | Secdata metadata field describing the AEAD mode applied to the in-RAM payload. |
+| `codec` | Runtime platform | Secdata metadata field describing the compression codec applied to the secured payload. |
+| `key_id` | Runtime platform | Namepooled identifier recorded with secured payloads referencing the key selector used for sealing. |
+| `payload_fp` | Runtime platform | Plaintext fingerprint stored alongside secured payload metadata for deterministic replay. |
+| `ram_enc` | Runtime platform | Boolean flag indicating whether the in-memory payload bytes are sealed (encrypted) between beats. |
+| `ram_cas` | Runtime platform | Boolean flag advertising whether the sealed payload has a matching CAS blob persisted on disk. |
+| `rekey` | Runtime platform | OPS verb name reserved for secdata rekey operations. |
+| `rcomp` | Runtime platform | OPS verb name reserved for secdata recompress operations. |
+| `enc_fail` | Runtime platform | CEI topic emitted when secdata sealing fails (encryption/compression errors). |
+| `dec_fail` | Runtime platform | CEI topic emitted when secdata unveiling fails (decryption errors). |
+| `rekey_fail` | Runtime platform | CEI topic emitted when a secdata rekey attempt cannot complete. |
+| `codec_mis` | Runtime platform | CEI topic emitted when secdata compression/decompression encounters an unsupported or corrupt codec stream. |
 | `dictionary` | Runtime platform | canonical store tag for dictionary nodes. |
 | `dtor` | Runtime platform | spec field storing the optional organ destructor enzyme name. |
 | `ctor` | Runtime platform | spec field storing the optional organ constructor enzyme name. |

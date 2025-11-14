@@ -1574,10 +1574,32 @@ cep_ep_request_lease(cepEID eid,
     }
 
     const cepPath* lookup_path = root;
+    bool consumed_root_segment = false;
+    cepPath* trimmed_path = NULL;
+    const cepCell* system_root = cep_root();
+    const cepDT* system_root_name = system_root ? cep_cell_get_name(system_root) : NULL;
+    if (lookup_path && lookup_path->length && system_root_name) {
+        if (cep_dt_compare(system_root_name, &lookup_path->past[0].dt) == 0) {
+            consumed_root_segment = true;
+            if (lookup_path->length > 1u) {
+                unsigned trimmed_len = lookup_path->length - 1u;
+                size_t bytes = sizeof(cepPath) + ((size_t)trimmed_len * sizeof(cepPast));
+                trimmed_path = cep_alloca(bytes);
+                trimmed_path->length = trimmed_len;
+                trimmed_path->capacity = trimmed_len;
+                memcpy(trimmed_path->past, &lookup_path->past[1], trimmed_len * sizeof(cepPast));
+                lookup_path = trimmed_path;
+            } else {
+                lookup_path = NULL;
+            }
+        }
+    }
 
     cepCell* target = NULL;
     if (lookup_path && lookup_path->length) {
         target = cep_cell_find_by_path(cep_root(), lookup_path);
+    } else if (consumed_root_segment) {
+        target = (cepCell*)system_root;
     }
     if (!target) {
         cepCell* current = cep_root();

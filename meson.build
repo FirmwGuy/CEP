@@ -92,6 +92,7 @@ l0_srcs = files(
   'src/l0_kernel/cep_namepool.c',
   'src/l0_kernel/cep_flat_serializer.c',
   'src/l0_kernel/cep_flat_stream.c',
+  'src/l0_kernel/secdata/cep_secdata.c',
   'src/enzymes/fed_transport.c',
   'src/enzymes/fed_pack.c',
   'src/enzymes/fed_invoke.c',
@@ -466,7 +467,7 @@ if docs_ready
     ],
     depend_files: [doxygen_runner, git_tag_file, fix_toc_script],
     build_by_default: false,
-    build_always_stale: docs_html_opt,
+    build_always_stale: true,
   )
 else
   docs_message = 'HTML documentation requires python3, doxygen, and graphviz (dot); missing: ' + ', '.join(docs_missing)

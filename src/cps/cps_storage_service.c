@@ -1168,11 +1168,9 @@ static bool cps_storage_apply_reader(cps_engine *engine, cepFlatReader *reader) 
   }
   rc = engine->ops->commit_beat(txn, &meta);
   if (rc != CPS_OK) {
-    if (engine->ops->abort_beat) {
-      engine->ops->abort_beat(txn);
-    }
     return false;
   }
+  txn = NULL;
   return true;
 }
 

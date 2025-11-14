@@ -55,43 +55,20 @@ CEP Persistent Storage (CPS) is the Layer 0 service that mirrors the in-memory
 - **CEI integration.** CPS emits diagnostic notes for frame verification failures, fsync errors, checkpoint rollbacks, import/export verification mismatches, and CAS runtime failures, tying each fact to the branch path.
 - **Boot readiness.** Once CPS publishes metrics and marks `ist:store`, Layer 0’s boot operation (`op/boot`) can advance, ensuring storage readiness stays part of the deterministic startup timeline.
 
-## Fixture & Replay Workflow
+## Secured Payload Integration
 
-- **Fixtures.** All deterministic serializer outputs and CAS blobs live under the repo’s `fixtures/` tree. CPS uses the `fixtures/cps/{frames,cas}` subdirectory, keeping golden test data out of the source tree and making it easy for multiple suites (serializer harness, CPS replay, integration POC) to reuse the same artifacts. `src/test/l0_kernel/test_flat_serializer_fixtures.c` regenerates these assets; the test fails fast if fixtures drift and logs “set `CEP_UPDATE_PAYLOAD_REF_FIXTURES=1`” instructions.
-- **Replay harness.** `/CEP/cps/replay/inline`, `/CEP/cps/replay/cas_cache`, and `/CEP/cps/replay/cas_runtime` install fixtures into temporary branches and scoped runtimes, then assert CAS metrics and payload parity. Scoped runtimes guarantee `/data/persist` and `/cas` roots exist and serializer env vars never leak between suites.
-- **Regeneration.** Run `CEP_UPDATE_PAYLOAD_REF_FIXTURES=1 build/cep_tests --no-fork --single /CEP/serialization/flat_payload_ref_fixtures`, commit the updated fixtures, then rerun `meson test -C build cep_unit_tests` to validate CPS replay with the new serializer output.
+### Introduction
+Secured payloads let CEP keep VALUE/DATA bytes encrypted or compressed while they live in RAM. The serializer emits those ciphertext/deflated buffers as-is, so CPS simply persists what secdata sealed—there is no re-encoding step during commit.
 
-## Subsystem Map
+### Technical Details
+- **Secmeta snapshots.** Every cepData revision carries secmeta (fingerprint, raw/encrypted lengths, codec, AEAD mode, key identifier, nonce, and AAD hash). CPS does not interpret the struct; the serializer writes it alongside each cell_desc so replay tooling understands how to rehydrate the bytes.
+- **Zero-transform handoff.** When cep_data_set_enc/cdef/cenc commit a payload, the stored buffer already matches the serializer’s payload_chunk body. CPS therefore ingests the same ciphertext/compressed data without decrypting or deflating it.
+- **Plaintext hygiene.** cep_data_unveil_ro allocates a temporary plaintext view, marks sec_view_active, and cep_data_unveil_done zeros/frees it. CPS never needs to call unveil; persistence, serializer, and federation all stream the authoritative encrypted payload.
+- **Runtime helpers.** Rekey/recompress calls (cep_data_rekey, cep_data_recompress) build a fresh secmeta snapshot and flip mode flags. CPS just persists the new ciphertext once the beat commits.
+- **Failure isolation.** If secdata cannot decrypt/compress/encode, the caller emits CEI (enc_fail, codec_mis, rekey_fail) and CPS receives no frame for that beat, keeping the beat-atomic rollback semantics intact.
 
-| Area | Key files |
-| --- | --- |
-| Engine interface & vtable | `src/cps/cps_engine.h`, `src/cps/cps_flatfile.{h,c}` |
-| Storage service & ops verbs | `src/cps/cps_storage_service.c` |
-| Runtime wiring | `src/l0_kernel/cep_heartbeat.c` (storage hooks), `src/l0_kernel/cep_ops.c` |
-| Tests & fixtures | `src/test/cps/test_cps_replay.c`, `src/test/l0_kernel/test_flat_serializer_fixtures.c`, `fixtures/cps/*` |
-| Docs | Overview / Integration / Algorithms references plus this design doc |
+### Q&A
+- **Where do policies see security metadata?** Call cep_data_secmeta during capture/compute. CPS already carries the metadata in the frame; no storage hook is needed.
+- **Does CPS need new serializer bits?** No. The existing payload_ref/AED/codec capabilities already describe the chunk.
+- **How are plaintext views protected?** Only the secdata unveil path touches plaintext, and the scratch buffer is zeroized immediately. CPS and the serializer never see unsealed payloads.
 
-## Operational Guidance
-
-- **Environment switches.**
-  - `CEP_SERIALIZATION_FLAT_AEAD_MODE`, `CEP_SERIALIZATION_FLAT_AEAD_KEY`, `CEP_SERIALIZATION_FLAT_COMPRESSION` control serializer policies; clean them up after tests.
-  - `CEP_UPDATE_PAYLOAD_REF_FIXTURES=1` regenerates fixtures; keep it unset in CI.
-- **Metrics consumption.** Dashboards should watch `/data/persist/<branch>/metrics/{frames,beats,bytes_*}` for branch health and `cas_*` for cache effectiveness. Latency is average nanoseconds per lookup (`cas_lat_ns`).
-- **Import/export.** `op/sync` packages idx/dat/checkpoints + CAS blobs, signs them with a Merkle manifest, and stages bundles for import. Import verifies the bundle, merges CAS, swaps head files, and emits CEI evidence.
-- **Recovery.** After crashes CPS scans trailing idx/dat segments, validates Merkle trailers, truncates torn beats, and replays the last good frame directory. Branches remain beat-consistent even after abrupt exits.
-
-## Change Playbook
-
-1. **Touching serializer compatibility.** Update `src/cps/cps_flatfile.c` capability checks, extend fixtures, rerun `/CEP/serialization/flat_payload_ref_fixtures` + `/CEP/cps/replay/*`, update docs (Integration + Algorithms).
-2. **Adding engine backends.** Implement the `cps_engine` vtable, advertise capabilities, add Meson wiring, and extend `/data/persist/<branch>` to surface the engine name. Tests must cover `begin_beat` semantics and crash recovery.
-3. **Tweaking CAS policy.** Keep manifest format backward compatible or add a version bump. Re-run the CAS replay harness and confirm metrics publish after lookups.
-4. **Modifying ops verbs.** Document new CEI topics, add integration tests under `src/test/cps` or `src/test/poc`, and ensure `/rt/ops` state transitions still obey capture → compute → commit.
-5. **Fixture updates.** Regenerate fixtures, commit artifacts, rerun serializer + CPS suites, and mention the fixtures in release notes if they change external tooling expectations.
-
-## Global Q&A
-
-- **Why a KV abstraction instead of direct file I/O?** To keep CPS pluggable: the flatfile backend proves determinism today, but RocksDB/LMDB/object-store engines can implement the same API for different deployments without rewriting Layer 0.
-- **How does CPS avoid partial visibility?** Beats write to staging files, fsync parts in order, then atomically advance head pointers and metrics. Readers rely on `branch.meta` to locate the last sealed frame.
-- **What happens if CAS is missing locally?** Metrics record a miss, CPS emits a `persist.recover` CEI warning, and the caller gets a deterministic error. Importing a bundle with CAS manifests is the recommended fix.
-- **Do tests need a dedicated data root?** Yes. Scoped runtimes configure temporary directories so CPS can publish `/data/persist`, `/cas`, and `/tmp` without colliding with other suites.
-- **How do I extend CPS docs?** Update this design doc plus the Overview/Integration references. Keep fixtures and replay instructions nearby so future contributors can replicate the workflow without hunting external files.

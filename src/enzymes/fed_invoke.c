@@ -611,16 +611,16 @@ cep_fed_invoke_decode_path(const uint8_t** cursor,
             return false;
         }
 
-        const cepFedInvokeFrameSegmentHeader* header =
-            (const cepFedInvokeFrameSegmentHeader*)(void*)(*cursor);
-        uint16_t domain_len = header->domain_length;
-        uint16_t tag_len = header->tag_length;
-        uint8_t domain_kind = header->domain_kind;
-        uint8_t tag_kind = header->tag_kind;
-        uint64_t timestamp = header->timestamp;
+        cepFedInvokeFrameSegmentHeader header;
+        memcpy(&header, *cursor, sizeof header);
+        uint16_t domain_len = header.domain_length;
+        uint16_t tag_len = header.tag_length;
+        uint8_t domain_kind = header.domain_kind;
+        uint8_t tag_kind = header.tag_kind;
+        uint64_t timestamp = header.timestamp;
 
-        *cursor += sizeof *header;
-        *remaining -= sizeof *header;
+        *cursor += sizeof header;
+        *remaining -= sizeof header;
 
         if (*remaining < (size_t)domain_len + (size_t)tag_len) {
             cep_free(path);
@@ -743,6 +743,7 @@ cep_fed_invoke_send_response(const cepFedInvokeRequest* request,
         cep_free(payload);
         return false;
     }
+    cep_free(payload);
     return true;
 }
 
@@ -1492,17 +1493,18 @@ cep_fed_invoke_process_frame(cepFedInvokeRequest* request,
         return;
     }
 
-    const cepFedInvokeFrameHeader* header = (const cepFedInvokeFrameHeader*)payload;
-    const uint8_t* cursor = payload + sizeof *header;
-    size_t remaining = payload_len - sizeof *header;
+    cepFedInvokeFrameHeader header;
+    memcpy(&header, payload, sizeof header);
+    const uint8_t* cursor = payload + sizeof header;
+    size_t remaining = payload_len - sizeof header;
 
-    if (header->kind == CEP_FED_INVOKE_FRAME_REQUEST) {
+    if (header.kind == CEP_FED_INVOKE_FRAME_REQUEST) {
         cepPath* signal_path = NULL;
         cepPath* target_path = NULL;
 
         if (!cep_fed_invoke_decode_path(&cursor,
                                         &remaining,
-                                        header->signal_segments,
+                                        header.signal_segments,
                                         &signal_path)) {
             cep_fed_invoke_emit_issue(request,
                                       CEP_FED_INVOKE_TOPIC_REJECT,
@@ -1512,7 +1514,7 @@ cep_fed_invoke_process_frame(cepFedInvokeRequest* request,
 
         if (!cep_fed_invoke_decode_path(&cursor,
                                         &remaining,
-                                        header->target_segments,
+                                        header.target_segments,
                                         &target_path)) {
             cep_free(signal_path);
             cep_fed_invoke_emit_issue(request,
@@ -1529,7 +1531,7 @@ cep_fed_invoke_process_frame(cepFedInvokeRequest* request,
 
         if (rc != CEP_ENZYME_SUCCESS) {
             (void)cep_fed_invoke_send_response(request,
-                                               header->invocation_id,
+                                               header.invocation_id,
                                                CEP_FED_INVOKE_STATUS_REJECT);
             cep_fed_invoke_emit_issue(request,
                                       CEP_FED_INVOKE_TOPIC_REJECT,
@@ -1538,18 +1540,18 @@ cep_fed_invoke_process_frame(cepFedInvokeRequest* request,
         }
 
         (void)cep_fed_invoke_send_response(request,
-                                           header->invocation_id,
+                                           header.invocation_id,
                                            CEP_FED_INVOKE_STATUS_OK);
         return;
     }
 
-    if (header->kind == CEP_FED_INVOKE_FRAME_RESPONSE) {
+    if (header.kind == CEP_FED_INVOKE_FRAME_RESPONSE) {
         cepFedInvokePending* prev = NULL;
         cepFedInvokePending* node = g_invoke_pending;
         while (node) {
-            if (node->id == header->invocation_id &&
+            if (node->id == header.invocation_id &&
                 node->request == request) {
-                bool ok = (header->status == CEP_FED_INVOKE_STATUS_OK);
+                bool ok = (header.status == CEP_FED_INVOKE_STATUS_OK);
                 if (!ok) {
                     cep_fed_invoke_emit_issue(request,
                                               CEP_FED_INVOKE_TOPIC_REJECT,

@@ -10,6 +10,7 @@
 #include "cep_executor.h"
 #include "cep_namepool.h"
 #include "cep_ops.h"
+#include "secdata/cep_secdata.h"
 
 #include <stdarg.h>
 #include <dlfcn.h>
@@ -644,6 +645,7 @@ void cep_proxy_initialize_stream(cepCell* cell, cepDT* name, cepCell* stream, ce
 void cep_data_history_push(cepData* data) {
     assert(data);
 
+    cep_secdata_runtime_scrub(data);
     if (!data->modified)
         return;
 
@@ -655,13 +657,45 @@ void cep_data_history_push(cepData* data) {
     data->past = past;
 }
 
+static void cep_data_history_node_release(cepDataNode* node, unsigned datatype) {
+    if (!node)
+        return;
+
+    switch (datatype) {
+      case CEP_DATATYPE_DATA: {
+        if (node->destructor && node->data)
+            node->destructor(node->data);
+        break;
+      }
+
+      case CEP_DATATYPE_HANDLE:
+      case CEP_DATATYPE_STREAM: {
+        if (node->binding) {
+            cep_library_binding_release(node->binding);
+            node->binding = NULL;
+        }
+        if (node->proxy_ctx) {
+            cep_proxy_library_ctx_release((cepProxyLibraryCtx*)node->proxy_ctx);
+            node->proxy_ctx = NULL;
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+
+    cep_enzyme_binding_list_destroy(node->bindings);
+    cep_free(node);
+}
+
 void cep_data_history_clear(cepData* data) {
     if (!data)
         return;
 
     for (cepDataNode* node = data->past; node; ) {
         cepDataNode* previous = node->past;
-        cep_free(node);
+        cep_data_history_node_release(node, data->datatype);
         node = previous;
     }
 
@@ -960,6 +994,7 @@ void cep_data_del(cepData* data) {
 
     data->lock = 0u;
     data->lockOwner = NULL;
+    cep_secdata_runtime_scrub(data);
 
     switch (data->datatype) {
       case CEP_DATATYPE_DATA: {
@@ -1102,6 +1137,15 @@ static cepData* cep_data_clone_payload(const cepData* data) {
     clone->lock      = 0u;
     clone->lockOwner = NULL;
     clone->writable  = data->writable;
+    clone->mode_flags = data->mode_flags;
+    clone->secmeta = data->secmeta;
+    memcpy(clone->sec_nonce, data->sec_nonce, sizeof clone->sec_nonce);
+    clone->sec_nonce_len = data->sec_nonce_len;
+    memcpy(clone->sec_aad_hash, data->sec_aad_hash, sizeof clone->sec_aad_hash);
+    clone->sec_view_active = 0u;
+    memset(clone->sec_runtime_pad, 0, sizeof clone->sec_runtime_pad);
+    clone->sec_plaintext = NULL;
+    clone->sec_plaintext_size = 0u;
 
     return clone;
 }

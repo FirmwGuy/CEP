@@ -90,6 +90,7 @@ typedef struct {
 static cepSerializationAeadConfig cep_serialization_aead_config;
 
 static bool cep_serialization_build_payload_chunk_body(const cepData* data,
+                                                       const cepDataNode* snapshot,
                                                        uint64_t payload_fp,
                                                        const void* payload_bytes,
                                                        size_t total_size,
@@ -178,6 +179,7 @@ static bool cep_serialization_build_payload_chunk_key(const cepCell* cell,
                                                       cepFlatNamepoolCollector* names,
                                                       uint8_t** out_key,
                                                       size_t* out_key_size);
+static uint8_t cep_serialization_flat_aead_from_secdata(uint8_t enc_mode);
 static bool cep_serialization_emit_payload_history(const cepCell* cell,
                                                    cepFlatSerializer* serializer,
                                                    cepFlatNamepoolCollector* names,
@@ -667,8 +669,17 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
                                     : NULL;
     size_t payload_size = (data && payload_bytes) ? data->size : 0u;
     bool inline_allowed = data && data->datatype == CEP_DATATYPE_VALUE && payload_size && payload_size <= 64u;
+    if (data && (data->mode_flags & CEP_SECDATA_FLAG_INLINE_FORBIDDEN))
+        inline_allowed = false;
     size_t inline_len = inline_allowed ? payload_size : 0u;
-    uint64_t payload_fp = data ? cep_data_compute_hash(data) : 0u;
+    bool data_secured = data && (data->mode_flags & CEP_SECDATA_FLAG_SECURED);
+    uint64_t payload_fp = 0u;
+    if (data) {
+        if (data_secured && data->secmeta.payload_fp)
+            payload_fp = data->secmeta.payload_fp;
+        else
+            payload_fp = cep_data_compute_hash(data);
+    }
     uint8_t payload_hash[CEP_FLAT_HASH_SIZE];
     bool has_payload_hash = false;
     if (payload_bytes && payload_size)
@@ -676,6 +687,8 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
     size_t chunk_limit = blob_payload_bytes ? blob_payload_bytes : CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD;
     if (!chunk_limit)
         chunk_limit = CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD;
+    if (data_secured && payload_size)
+        chunk_limit = payload_size;
 
     uint8_t* key_bytes = NULL;
     size_t key_size = 0u;
@@ -757,6 +770,7 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
         uint64_t chunk_ordinal = 0u;
         size_t expected_chunk_offset = 0u;
         uint64_t expected_chunk_ordinal = 0u;
+        const cepDataNode* live_snapshot = data ? (const cepDataNode*)&data->modified : NULL;
 
         while (chunk_offset < payload_size) {
             if (chunk_offset != expected_chunk_offset || chunk_ordinal != expected_chunk_ordinal) {
@@ -774,6 +788,7 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
             if (!cep_serialization_build_payload_chunk_key(canonical, chunk_ordinal, &names, &chunk_key, &chunk_key_size))
                 goto exit;
             if (!cep_serialization_build_payload_chunk_body(data,
+                                                            live_snapshot,
                                                             payload_fp,
                                                             payload_bytes,
                                                             payload_size,
@@ -1098,7 +1113,19 @@ static bool cep_serialization_build_payload_chunk_key(const cepCell* cell,
     return true;
 }
 
+static uint8_t cep_serialization_flat_aead_from_secdata(uint8_t enc_mode) {
+    switch ((cepAeadMode)enc_mode) {
+      case CEP_SECDATA_AEAD_CHACHA20:
+        return CEP_FLAT_AEAD_CHACHA20_POLY1305;
+      case CEP_SECDATA_AEAD_XCHACHA20:
+        return CEP_FLAT_AEAD_XCHACHA20_POLY1305;
+      default:
+        return CEP_FLAT_AEAD_NONE;
+    }
+}
+
 static bool cep_serialization_build_payload_chunk_body(const cepData* data,
+                                                       const cepDataNode* snapshot,
                                                        uint64_t payload_fp,
                                                        const void* payload_bytes,
                                                        size_t total_size,
@@ -1174,12 +1201,36 @@ static bool cep_serialization_build_payload_chunk_body(const cepData* data,
     uint8_t* encrypted = NULL;
     size_t encrypted_len = 0u;
 
+    bool snapshot_secured = snapshot && (snapshot->mode_flags & CEP_SECDATA_FLAG_SECURED);
+    bool snapshot_encrypted = snapshot_secured && (snapshot->mode_flags & CEP_SECDATA_FLAG_ENCRYPTED);
+    if (snapshot_encrypted && (chunk_offset != 0u || chunk_size != total_size)) {
+        cep_serialization_debug_log("[serialization][flat] secured payload chunking violated (offset=%zu size=%zu total=%zu)\n",
+                                    chunk_offset,
+                                    chunk_size,
+                                    total_size);
+        goto exit;
+    }
+
     const uint8_t* chunk_ptr = (const uint8_t*)payload_bytes + chunk_offset;
-    bool encrypt = chunk_key && chunk_key_size &&
+    bool encrypt = !snapshot_encrypted &&
+                   chunk_key && chunk_key_size &&
                    cep_serialization_aead_ready() &&
                    cep_serialization_aead_mode() != CEP_SERIALIZATION_AEAD_MODE_NONE;
 
-    if (encrypt) {
+    if (snapshot_encrypted) {
+        aead_mode = cep_serialization_flat_aead_from_secdata(snapshot->secmeta.enc_mode);
+        nonce_len = snapshot->sec_nonce_len;
+        if (nonce_len > sizeof nonce_buf || nonce_len == 0u)
+            goto exit;
+        if (nonce_len)
+            memcpy(nonce_buf, snapshot->sec_nonce, nonce_len);
+        size_t copy_len = sizeof aad_hash;
+        if (copy_len > CEP_SECDATA_AAD_BYTES)
+            copy_len = CEP_SECDATA_AAD_BYTES;
+        memcpy(aad_hash, snapshot->sec_aad_hash, copy_len);
+        if (copy_len < sizeof aad_hash)
+            memset(aad_hash + copy_len, 0, sizeof aad_hash - copy_len);
+    } else if (encrypt) {
         if (!cep_serialization_aead_encrypt_chunk(chunk_key,
                                                   chunk_key_size,
                                                   payload_fp,
@@ -1615,13 +1666,20 @@ static bool cep_serialization_emit_payload_history(const cepCell* cell,
             inline_payload = cursor->value;
             inline_length = cursor->size;
         }
+        if (inline_payload && (cursor->mode_flags & CEP_SECDATA_FLAG_INLINE_FORBIDDEN)) {
+            inline_payload = NULL;
+            inline_length = 0u;
+        }
 
         uint8_t revision[16] = {0};
+        uint64_t revision_fp = (cursor->mode_flags & CEP_SECDATA_FLAG_SECURED && cursor->secmeta.payload_fp)
+                                   ? cursor->secmeta.payload_fp
+                                   : cursor->hash;
         cep_flat_compute_revision_id(cell,
                                      data,
                                      store_descriptor,
                                      meta_mask,
-                                     cursor->hash,
+                                     revision_fp,
                                      inline_payload,
                                      inline_length,
                                      revision);
@@ -1641,12 +1699,16 @@ static bool cep_serialization_emit_payload_history(const cepCell* cell,
         memcpy(revision_key + base_key_size, revision, sizeof revision);
         cep_free(base_key);
 
+        uint64_t node_payload_fp = (cursor->mode_flags & CEP_SECDATA_FLAG_SECURED && cursor->secmeta.payload_fp)
+                                       ? cursor->secmeta.payload_fp
+                                       : cursor->hash;
         size_t chunk_offset = 0u;
         uint64_t chunk_ordinal = 0u;
         while (chunk_offset < cursor->size) {
             size_t chunk_size = cursor->size - chunk_offset;
-            if (chunk_size > chunk_limit)
-                chunk_size = chunk_limit;
+            size_t node_chunk_limit = (cursor->mode_flags & CEP_SECDATA_FLAG_SECURED) ? cursor->size : chunk_limit;
+            if (chunk_size > node_chunk_limit)
+                chunk_size = node_chunk_limit;
 
             size_t ordinal_len = cep_serialization_varint_length(chunk_ordinal);
             size_t chunk_key_size = revision_key_size + ordinal_len;
@@ -1661,7 +1723,8 @@ static bool cep_serialization_emit_payload_history(const cepCell* cell,
             uint8_t* chunk_body = NULL;
             size_t chunk_body_size = 0u;
             if (!cep_serialization_build_payload_chunk_body(data,
-                                                            cursor->hash,
+                                                            cursor,
+                                                            node_payload_fp,
                                                             payload_bytes,
                                                             cursor->size,
                                                             chunk_offset,

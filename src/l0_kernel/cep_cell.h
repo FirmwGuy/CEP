@@ -10,6 +10,7 @@
 
 #include "cep_molecule.h"
 #include "blake3.h"
+#include "secdata/cep_secdata.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -576,6 +577,12 @@ typedef struct cepLibraryBinding cepLibraryBinding;
     size_t              size;       /**< Payload size in bytes. */         \
     size_t              capacity;   /**< Allocated payload capacity. */    \
     uint64_t            hash;       /**< Cached payload hash. */           \
+    uint8_t             mode_flags; /**< Secdata mode bits. */             \
+    uint8_t             sec_nonce_len; /**< Stored nonce length. */        \
+    uint8_t             sec_header_pad[6]; /**< Reserved header pad. */    \
+    cepSecmeta          secmeta;    /**< Snapshot security metadata. */    \
+    uint8_t             sec_nonce[CEP_SECDATA_NONCE_MAX]; /**< Snapshot nonce bytes. */ \
+    uint8_t             sec_aad_hash[CEP_SECDATA_AAD_BYTES]; /**< Snapshot AAD hash. */ \
     union {                                                               \
         struct {                                                          \
             void*       data;       /**< Heap buffer backing DATA type. */ \
@@ -623,10 +630,14 @@ struct _cepData {
     cepOpCount          created;        /**< Data content creation time. */
     cepOpCount          deleted;        /**< Data content deletion time (if any). */
 
+    uint8_t             sec_view_active; /**< Tracks live plaintext views. */
+    uint8_t             sec_runtime_pad[7]; /**< Reserved for runtime bits. */
+    void*               sec_plaintext;   /**< Scratch plaintext view (if any). */
+    size_t              sec_plaintext_size; /**< Size of plaintext view. */
+    cepCell*            lockOwner;      /**< Cell that currently holds the payload lock (if any). */
     struct {
         CEP_DATA_NODE_MEMBERS;
     };
-    cepCell*            lockOwner;      /**< Cell that currently holds the payload lock (if any). */
 };
 
 #undef CEP_DATA_NODE_MEMBERS

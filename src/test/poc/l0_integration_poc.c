@@ -17,6 +17,7 @@
 #include "cep_flat_stream.h"
 #include "cep_flat_serializer.h"
 #include "cep_ep.h"
+#include "secdata/cep_secdata.h"
 #include "cps_flatfile.h"
 #include "stream/cep_stream_internal.h"
 #include "stream/cep_stream_stdio.h"
@@ -145,6 +146,7 @@ typedef struct {
     cepCell* poc_root;
     cepPath* poc_path;
     cepCell* catalog;
+    cepCell* secdata_cell;
     cepCell* log_branch;
     cepCell* space_root;
     cepCell* space_entry;
@@ -2876,6 +2878,107 @@ static void integration_prr_ctx_cleanup(IntegrationPauseResumeContext* ctx) {
     memset(ctx, 0, sizeof *ctx);
 }
 
+static void integration_secdata_assert_plain(cepCell* cell,
+                                             const void* expected,
+                                             size_t expected_size) {
+    munit_assert_not_null(cell);
+    const void* plaintext = NULL;
+    size_t plain_size = 0u;
+    munit_assert_true(cep_data_unveil_ro(cell, &plaintext, &plain_size));
+    munit_assert_size(plain_size, ==, expected_size);
+    munit_assert_memory_equal(expected_size, plaintext, expected);
+    cep_data_unveil_done(cell, plaintext);
+}
+
+static void integration_secdata_flow(IntegrationFixture* fix) {
+    if (!fix || !fix->secdata_cell) {
+        return;
+    }
+    cepCell* cell = cep_cell_resolve(fix->secdata_cell);
+    munit_assert_not_null(cell);
+    munit_assert_true(cep_cell_is_normal(cell));
+    munit_assert_false(cep_cell_is_immutable(cell));
+    munit_assert_true(cep_cell_has_data(cell));
+    munit_assert_not_null(cell->data);
+    munit_assert_true(cell->data->writable);
+
+    cepEpExecutionContext* saved_ctx = cep_executor_context_get();
+    bool restore_ctx = saved_ctx != NULL;
+    if (restore_ctx) {
+        cep_executor_context_clear();
+    }
+
+    cepEpExecutionContext shim_ctx = {
+        .profile = CEP_EP_PROFILE_RW,
+        .cpu_budget_ns = CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS,
+        .io_budget_bytes = CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES,
+        .user_data = NULL,
+        .cpu_consumed_ns = 0u,
+        .io_consumed_bytes = 0u,
+        .allow_without_lease = true,
+        .runtime = cep_runtime_active(),
+        .ticket = 0u,
+    };
+    atomic_init(&shim_ctx.cancel_requested, false);
+    cep_executor_context_set(&shim_ctx);
+
+    static const char plain_payload[] = "poc-secdata::plain";
+    munit_assert_true(cep_ep_require_rw());
+    munit_assert_true(cep_data_set_plain(cell, plain_payload, sizeof plain_payload));
+    munit_assert_int(cep_data_mode(cell), ==, CEP_SECDATA_MODE_PLAIN);
+    integration_secdata_assert_plain(cell, plain_payload, sizeof plain_payload);
+
+    static const char cdef_payload[] = "poc-secdata::compressed payload for CDEF mode";
+    munit_assert_true(cep_data_set_cdef(cell,
+                                        cdef_payload,
+                                        sizeof cdef_payload,
+                                        CEP_SECDATA_CODEC_DEFLATE));
+    munit_assert_int(cep_data_mode(cell), ==, CEP_SECDATA_MODE_CDEF);
+    integration_secdata_assert_plain(cell, cdef_payload, sizeof cdef_payload);
+
+    cepKeyId key_primary = cep_text_to_word("sec:keypri");
+    cepKeyId key_secondary = cep_text_to_word("sec:keysec");
+    munit_assert_uint64(key_primary, !=, 0u);
+    munit_assert_uint64(key_secondary, !=, 0u);
+    static const char enc_payload[] = "poc-secdata::encrypted only payload";
+    munit_assert_true(cep_data_set_enc(cell,
+                                       enc_payload,
+                                       sizeof enc_payload,
+                                       key_primary,
+                                       CEP_SECDATA_AEAD_XCHACHA20));
+    munit_assert_int(cep_data_mode(cell), ==, CEP_SECDATA_MODE_ENC);
+    integration_secdata_assert_plain(cell, enc_payload, sizeof enc_payload);
+
+    munit_assert_true(cep_data_rekey(cell, key_secondary));
+    integration_secdata_assert_plain(cell, enc_payload, sizeof enc_payload);
+
+    static const char cenc_payload[] = "poc-secdata::compress+encrypt payload under test";
+    munit_assert_true(cep_data_set_cenc(cell,
+                                        cenc_payload,
+                                        sizeof cenc_payload,
+                                        key_primary,
+                                        CEP_SECDATA_AEAD_XCHACHA20,
+                                        CEP_SECDATA_CODEC_DEFLATE));
+    munit_assert_int(cep_data_mode(cell), ==, CEP_SECDATA_MODE_CENC);
+    integration_secdata_assert_plain(cell, cenc_payload, sizeof cenc_payload);
+
+    munit_assert_true(cep_data_recompress(cell, CEP_SECDATA_CODEC_NONE));
+    munit_assert_int(cep_data_mode(cell), ==, CEP_SECDATA_MODE_ENC);
+    integration_secdata_assert_plain(cell, cenc_payload, sizeof cenc_payload);
+
+    const cepData* data = cell->data;
+    munit_assert_not_null(data);
+    munit_assert_true(data->mode_flags & CEP_SECDATA_FLAG_SECURED);
+    munit_assert_uint64(data->secmeta.raw_len, ==, sizeof cenc_payload);
+    munit_assert_uint64(data->secmeta.payload_fp, !=, 0u);
+
+    if (restore_ctx) {
+        cep_executor_context_set(saved_ctx);
+    } else {
+        cep_executor_context_clear();
+    }
+}
+
 static void integration_execute_interleaved_timeline(IntegrationFixture* fix) {
     munit_assert_not_null(fix);
 
@@ -3438,7 +3541,8 @@ static void integration_runtime_cleanup(IntegrationFixture* fix) {
 
 /* Ensure `/data/poc/catalog` contains predictable entries before other phases run. */
 static cepCell* integration_seed_catalog(cepCell* poc_root,
-                                         cepCell** out_item_a) {
+                                         cepCell** out_item_a,
+                                         cepCell** out_secdata) {
     cepCell* catalog = cep_cell_add_dictionary(poc_root,
                                                CEP_DTAW("CEP", "catalog"),
                                                0,
@@ -3482,8 +3586,24 @@ static cepCell* integration_seed_catalog(cepCell* poc_root,
                                              sizeof point_c,
                                              sizeof point_c));
 
+    static const char sec_seed[] = "poc-secdata::seed";
+    cepCell* secdata_item = cep_cell_add_data(catalog,
+                                              CEP_DTAW("CEP", "sec_item"),
+                                              0,
+                                              &item_type,
+                                              sec_seed,
+                                              sizeof sec_seed,
+                                              128u,
+                                              NULL);
+    munit_assert_not_null(secdata_item);
+    secdata_item = cep_cell_resolve(secdata_item);
+    munit_assert_not_null(secdata_item);
+
     if (out_item_a) {
         *out_item_a = item_a;
+    }
+    if (out_secdata) {
+        *out_secdata = secdata_item;
     }
     return catalog;
 }
@@ -3546,11 +3666,13 @@ static void integration_build_tree(IntegrationFixture* fix) {
     fix->log_type = log_type;
 
     cepCell* item_a = NULL;
-    cepCell* catalog = integration_seed_catalog(poc_root, &item_a);
+    cepCell* secdata_cell = NULL;
+    cepCell* catalog = integration_seed_catalog(poc_root, &item_a, &secdata_cell);
     munit_assert_not_null(item_a);
     item_a = cep_cell_resolve(item_a);
     munit_assert_not_null(item_a);
     fix->catalog = catalog;
+    fix->secdata_cell = secdata_cell;
     fix->item_type = item_type;
 
     size_t history_before = integration_data_history_depth(item_a);
@@ -4253,6 +4375,7 @@ static MunitResult test_l0_integration(const MunitParameter params[], void* user
     IntegrationFixture fixture = {.boot_oid = cep_oid_invalid()};
     integration_runtime_boot(&fixture);
     integration_build_tree(&fixture);
+    integration_secdata_flow(&fixture);
     integration_execute_interleaved_timeline(&fixture);
     integration_teardown_tree(&fixture);
     integration_runtime_cleanup(&fixture);
@@ -4280,6 +4403,7 @@ static MunitResult test_l0_integration_focus(const MunitParameter params[],
     IntegrationFixture fixture = {.boot_oid = cep_oid_invalid()};
     integration_runtime_boot(&fixture);
     integration_build_tree(&fixture);
+    integration_secdata_flow(&fixture);
     bool focus_stream_flow = integration_focus_stream_flow_enabled();
     bool focus_ops_ctx = integration_focus_ops_ctx_enabled();
     IntegrationStreamContext stream_ctx;
