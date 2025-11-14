@@ -15,5 +15,8 @@ bool        cps_runtime_bootstrap(void);
 void        cps_runtime_shutdown(void);
 bool        cps_runtime_is_ready(void);
 cps_engine* cps_runtime_engine(void);
+const char* cps_runtime_branch_name(void);
+const char* cps_runtime_root_dir(void);
+const char* cps_runtime_branch_dir(void);
 
 #endif /* CEP_CPS_RUNTIME_H */

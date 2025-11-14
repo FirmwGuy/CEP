@@ -11,9 +11,11 @@
 #include "cep_crc32c.h"
 #include "cep_heartbeat.h"
 #include "cep_flat_serializer.h"
+#include "cep_flat_stream.h"
 #include "cep_ops.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <sodium.h>
@@ -21,9 +23,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <zlib.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 static const char k_cps_topic_frame_io[] = "persist.frame.io";
 static const char k_cps_topic_checkpoint[] = "persist.checkpoint";
@@ -39,14 +47,22 @@ CEP_DEFINE_STATIC_DT(dt_persist_frames_field, CEP_ACRO("CEP"), CEP_WORD("frames"
 CEP_DEFINE_STATIC_DT(dt_persist_beats_field, CEP_ACRO("CEP"), CEP_WORD("beats"));
 CEP_DEFINE_STATIC_DT(dt_persist_bytes_idx_field, CEP_ACRO("CEP"), CEP_WORD("bytes_idx"));
 CEP_DEFINE_STATIC_DT(dt_persist_bytes_dat_field, CEP_ACRO("CEP"), CEP_WORD("bytes_dat"));
+CEP_DEFINE_STATIC_DT(dt_persist_cas_hits_field, CEP_ACRO("CEP"), CEP_WORD("cas_hits"));
+CEP_DEFINE_STATIC_DT(dt_persist_cas_miss_field, CEP_ACRO("CEP"), CEP_WORD("cas_miss"));
+CEP_DEFINE_STATIC_DT(dt_persist_cas_latency_field, CEP_ACRO("CEP"), CEP_WORD("cas_lat_ns"));
 
 #define CPS_FLATFILE_META_MAGIC    0x43505331u /* "CPS1" */
 #define CPS_FLATFILE_META_VERSION  1u
 #define CPS_FLATFILE_TOC_MAGIC     0x544F4331u /* "TOC1" */
 #define CPS_FLATFILE_TRAIL_MAGIC   0x54524C31u /* "TRL1" */
 #define CPS_FLATFILE_CKP_MAGIC     0x434B5031u /* "CKP1" */
+#define CPS_FLATFILE_CAS_MANIFEST_MAGIC 0x4341534Du /* "CASM" */
+#define CPS_FLATFILE_CAS_MANIFEST_VERSION 1u
 
+#define CPS_RECORD_TYPE_CELL_DESC  0x01u
 #define CPS_RECORD_TYPE_PAYLOAD    0x02u
+
+#define CPS_FLATFILE_TOC_FLAG_CAS_REF  0x00000001u
 
 #define CPS_FLATFILE_PAYLOAD_FLAG_KIND_MASK  0x000000FFu
 #define CPS_FLATFILE_PAYLOAD_FLAG_AEAD_SHIFT 8u
@@ -73,6 +89,45 @@ typedef struct __attribute__((packed)) {
 
 _Static_assert(sizeof(cps_flatfile_meta) == 256u, "branch.meta must stay 256 bytes");
 
+typedef struct __attribute__((packed)) {
+  uint64_t beat;
+  uint64_t frame_id;
+  uint64_t idx_ofs;
+  uint64_t idx_len;
+  uint64_t dat_ofs;
+  uint64_t dat_len;
+} cps_flatfile_frame_dir_entry_disk;
+
+_Static_assert(sizeof(cps_flatfile_frame_dir_entry_disk) == 48u,
+               "frame directory entries must stay packed");
+
+typedef struct {
+  cps_flatfile_frame_dir_entry_disk *entries;
+  size_t count;
+} cps_flatfile_frame_dir_snapshot;
+
+typedef struct {
+  uint8_t hash[CEP_FLAT_HASH_SIZE];
+  uint64_t payload_size;
+  uint8_t codec;
+  uint8_t aead_mode;
+} cps_flatfile_cas_manifest_entry;
+
+typedef struct __attribute__((packed)) {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t reserved;
+  uint64_t entry_count;
+} cps_flatfile_cas_manifest_header_disk;
+
+typedef struct __attribute__((packed)) {
+  uint8_t hash[CEP_FLAT_HASH_SIZE];
+  uint64_t payload_size;
+  uint8_t codec;
+  uint8_t aead_mode;
+  uint8_t reserved[6];
+} cps_flatfile_cas_manifest_entry_disk;
+
 typedef struct {
   char *root_dir;
   char *branch_name;
@@ -83,6 +138,9 @@ typedef struct {
   char *meta_path;
   char *meta_tmp_path;
   char *ckp_path;
+  char *dir_path;
+  char *cas_dir;
+  char *cas_manifest_path;
   uint32_t checkpoint_interval;
   uint32_t mini_toc_hint;
   bool create_branch;
@@ -93,6 +151,13 @@ typedef struct {
   uint64_t stat_beats;
   uint64_t stat_bytes_idx;
   uint64_t stat_bytes_dat;
+  uint64_t stat_cas_hits;
+  uint64_t stat_cas_misses;
+  uint64_t stat_cas_lookup_ns;
+  cps_flatfile_cas_manifest_entry *cas_entries;
+  size_t cas_entry_count;
+  size_t cas_entry_cap;
+  bool cas_manifest_dirty;
 } cps_flatfile_state;
 
 typedef struct {
@@ -102,7 +167,7 @@ typedef struct {
   uint32_t key_len;
   uint32_t val_len;
   uint32_t rtype;
-  uint32_t reserved;
+  uint32_t flags;
 } cps_flatfile_toc_entry;
 
 typedef struct __attribute__((packed)) {
@@ -133,6 +198,16 @@ typedef struct {
   size_t chunk_bytes_len;
 } cps_flatfile_chunk_info;
 
+typedef struct {
+  cepFlatPayloadRefKind kind;
+  cepFlatHashAlgorithm  hash_alg;
+  uint8_t               codec;
+  uint8_t               aead_mode;
+  uint64_t              payload_size;
+  const uint8_t        *hash_bytes;
+  size_t                hash_len;
+} cps_flatfile_payload_ref_info;
+
 typedef struct __attribute__((packed)) {
   uint32_t magic;
   uint32_t entry_count;
@@ -145,7 +220,7 @@ typedef struct __attribute__((packed)) {
   uint32_t key_len;
   uint32_t val_len;
   uint32_t rtype;
-  uint32_t reserved;
+  uint32_t flags;
 } cps_flatfile_toc_entry_disk;
 
 typedef struct __attribute__((packed)) {
@@ -170,7 +245,7 @@ typedef struct __attribute__((packed)) {
 typedef struct {
   cps_flatfile_ckp_header_disk header;
   cps_flatfile_toc_entry_disk *entries;
-} cps_flatfile_checkpoint_view;
+} cps_flatfile_checkpoint_block;
 
 typedef struct {
   uint64_t hash;
@@ -209,11 +284,33 @@ static size_t cps_flatfile_record_header_span(uint32_t rtype);
 static int cps_flatfile_extract_chunk_info(cps_slice key, cps_slice value, cps_flatfile_chunk_info *info);
 static bool cps_flatfile_decode_chunk_key(const uint8_t *key, size_t key_len, size_t *base_len, uint64_t *ordinal);
 static bool cps_flatfile_read_varint(const uint8_t *data, size_t size, size_t *offset, uint64_t *value);
+static bool cps_flatfile_parse_cell_desc_payload_ref(cps_slice value,
+                                                     uint8_t *payload_kind,
+                                                     uint64_t *payload_fp,
+                                                     cps_flatfile_payload_ref_info *ref_info);
 static bool cps_flatfile_publish_metrics(cps_flatfile_state *state);
 static cepDT cps_flatfile_branch_dt(const cps_flatfile_state *state);
 static int cps_flatfile_checkpoint_finalize(cps_flatfile_state *state, uint64_t beat);
-static void cps_flatfile_checkpoint_view_destroy(cps_flatfile_checkpoint_view *view);
-static int cps_flatfile_load_last_checkpoint(cps_flatfile_state *state, cps_flatfile_checkpoint_view *view);
+static int cps_flatfile_iterate_checkpoints(cps_flatfile_state *state,
+                                            bool (*cb)(const cps_flatfile_ckp_header_disk *,
+                                                       const cps_flatfile_toc_entry_disk *,
+                                                       void *user),
+                                            void *user);
+static bool cps_flatfile_checkpoint_scan_cb(const cps_flatfile_ckp_header_disk *header,
+                                            const cps_flatfile_toc_entry_disk *entries,
+                                            void *user);
+typedef struct {
+  cps_flatfile_state *state;
+  int idx_fd;
+  int dat_fd;
+  cps_slice prefix;
+  cps_scan_cb cb;
+  void *user;
+  cps_flatfile_scanned_key **visited;
+  size_t *visited_len;
+  size_t *visited_cap;
+  int rc;
+} cps_flatfile_checkpoint_scan_ctx;
 static int cps_flatfile_validate_head_trailer(const cps_flatfile_state *state, int idx_fd);
 static int cps_flatfile_reset_branch(cps_flatfile_state *state, int idx_fd, int dat_fd);
 static int cps_flatfile_recover_branch(cps_flatfile_state *state);
@@ -231,7 +328,8 @@ static int cps_flatfile_scan_keys_add(cps_flatfile_scanned_key **keys,
                                       uint32_t key_len,
                                       uint64_t hash);
 static void cps_flatfile_scan_keys_clear(cps_flatfile_scanned_key *keys, size_t len);
-static int cps_flatfile_scan_entries_with_prefix(int idx_fd,
+static int cps_flatfile_scan_entries_with_prefix(cps_flatfile_state *state,
+                                                 int idx_fd,
                                                  int dat_fd,
                                                  const cps_flatfile_toc_entry_disk *entries,
                                                  uint32_t entry_count,
@@ -256,6 +354,54 @@ static int cps_flatfile_write_checkpoint_snapshot(cps_flatfile_state *state,
 static int cps_flatfile_write_all(int fd, const uint8_t *data, size_t len);
 static int cps_flatfile_append_file(const char *dst_path, const char *src_path, uint64_t *out_offset, uint64_t *out_len);
 static int cps_flatfile_read_exact_fd(int fd, uint64_t ofs, void *buf, size_t len);
+static void cps_flatfile_frame_dir_snapshot_destroy(cps_flatfile_frame_dir_snapshot *snapshot);
+static int cps_flatfile_frame_dir_snapshot_load(const cps_flatfile_state *state,
+                                                cps_flatfile_frame_dir_snapshot *snapshot);
+static int cps_flatfile_frame_dir_append(const cps_flatfile_state *state,
+                                         uint64_t beat,
+                                         uint64_t frame_id,
+                                         uint64_t idx_ofs,
+                                         uint64_t idx_len,
+                                         uint64_t dat_ofs,
+                                         uint64_t dat_len);
+static int cps_flatfile_frame_dir_trim_to_fit(cps_flatfile_state *state,
+                                              uint64_t idx_size,
+                                              uint64_t dat_size,
+                                              cps_flatfile_frame_dir_entry_disk *out_tail);
+static int cps_flatfile_frame_dir_seed_from_meta(cps_flatfile_state *state);
+static int cps_flatfile_apply_tail_entry(cps_flatfile_state *state,
+                                         int idx_fd,
+                                         const cps_flatfile_frame_dir_entry_disk *entry);
+static int cps_flatfile_load_frame_entries(int idx_fd,
+                                           uint64_t frame_ofs,
+                                           uint64_t frame_len,
+                                           cps_flatfile_toc_entry_disk **entries_out,
+                                           uint32_t *entry_count);
+static int cps_flatfile_lookup_frame_record_fd(int idx_fd,
+                                               int dat_fd,
+                                               uint64_t frame_ofs,
+                                               uint64_t frame_len,
+                                               cps_slice key,
+                                               cps_buf *out);
+static int cps_flatfile_try_cas_read(cps_engine *engine, cps_slice key, cps_buf *out);
+static bool cps_flatfile_parse_cell_desc_payload_ref(cps_slice value,
+                                                     uint8_t *payload_kind,
+                                                     uint64_t *payload_fp,
+                                                     cps_flatfile_payload_ref_info *ref_info);
+static bool cps_flatfile_hash_bytes(const void *data, size_t len, uint8_t out[CEP_FLAT_HASH_SIZE]);
+static bool cps_flatfile_buf_reserve(cps_buf *buf, size_t extra);
+static bool cps_flatfile_buf_append(cps_buf *buf, const void *data, size_t len);
+static bool cps_flatfile_buf_append_u8(cps_buf *buf, uint8_t value);
+static bool cps_flatfile_buf_append_varint(cps_buf *buf, uint64_t value);
+static size_t cps_flatfile_varint_length(uint64_t value);
+static uint8_t *cps_flatfile_write_varint_bytes(uint64_t value, uint8_t *dst);
+static int cps_flatfile_build_cas_chunk(cps_slice chunk_key,
+                                        uint8_t payload_kind,
+                                        uint64_t payload_fp,
+                                        const cps_flatfile_payload_ref_info *ref_info,
+                                        cps_buf *payload,
+                                        cps_buf *out);
+static int cps_flatfile_build_cas_record(cps_flatfile_state *state, cps_slice key, cps_buf *out);
 static int cps_flatfile_lookup_head_record(cps_flatfile_state *state, cps_slice key, cps_buf *out);
 static char *cps_flatfile_join2(const char *base, const char *leaf);
 static int cps_flatfile_stat_path(const char *path, struct stat *st);
@@ -275,6 +421,33 @@ static int cps_flatfile_meta_commit(cps_flatfile_state *state,
                                     uint64_t idx_ofs,
                                     uint64_t idx_len,
                                     const uint8_t merkle[32]);
+static int cps_flatfile_cas_manifest_load(cps_flatfile_state *state);
+static int cps_flatfile_cas_manifest_store(cps_flatfile_state *state);
+static cps_flatfile_cas_manifest_entry *cps_flatfile_cas_manifest_find(cps_flatfile_state *state,
+                                                                       const uint8_t hash[CEP_FLAT_HASH_SIZE]);
+static int cps_flatfile_cas_manifest_record(cps_flatfile_state *state,
+                                            const cps_flatfile_payload_ref_info *ref,
+                                            size_t payload_len);
+static bool cps_flatfile_cas_hash_to_hex(const uint8_t hash[CEP_FLAT_HASH_SIZE], char hex[65]);
+static int cps_flatfile_build_cas_cache_path(const cps_flatfile_state *state,
+                                             const uint8_t hash[CEP_FLAT_HASH_SIZE],
+                                             char *buffer,
+                                             size_t buflen,
+                                             bool ensure_parent);
+static int cps_flatfile_store_cas_blob(cps_flatfile_state *state,
+                                       const cps_flatfile_payload_ref_info *ref,
+                                       const uint8_t *payload,
+                                       size_t len);
+static int cps_flatfile_load_cas_blob_from_cache(cps_flatfile_state *state,
+                                                 const cps_flatfile_payload_ref_info *ref,
+                                                 cps_buf *out);
+static int cps_flatfile_fetch_cas_blob_runtime(const cps_flatfile_payload_ref_info *ref, cps_buf *out);
+static int cps_flatfile_fetch_cas_blob_bytes(cps_flatfile_state *state,
+                                             const cps_flatfile_payload_ref_info *ref,
+                                             cps_buf *out);
+static int cps_flatfile_normalize_cas_payload(const cps_flatfile_payload_ref_info *ref, cps_buf *payload);
+static bool cps_flatfile_u64_to_size(uint64_t value, size_t *out);
+static uint64_t cps_flatfile_monotonic_ns(void);
 
 static cps_flatfile_state *cps_flatfile_state_from(cps_engine *engine) {
   return engine ? (cps_flatfile_state *)engine->state : NULL;
@@ -302,6 +475,9 @@ static void cps_flatfile_state_destroy(cps_flatfile_state *state) {
   if (!state) {
     return;
   }
+  if (state->cas_manifest_dirty) {
+    (void)cps_flatfile_cas_manifest_store(state);
+  }
   free(state->root_dir);
   free(state->branch_name);
   free(state->branch_dir);
@@ -311,9 +487,419 @@ static void cps_flatfile_state_destroy(cps_flatfile_state *state) {
   free(state->meta_path);
   free(state->meta_tmp_path);
   free(state->ckp_path);
+  free(state->dir_path);
+  free(state->cas_dir);
+  free(state->cas_manifest_path);
+  if (state->cas_entries) {
+    free(state->cas_entries);
+  }
   free(state);
 }
 
+static bool cps_flatfile_u64_to_size(uint64_t value, size_t *out) {
+  if (!out) {
+    return false;
+  }
+  if (value > SIZE_MAX) {
+    return false;
+  }
+  *out = (size_t)value;
+  return true;
+}
+
+static uint64_t cps_flatfile_monotonic_ns(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    return 0u;
+  }
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static bool cps_flatfile_cas_hash_to_hex(const uint8_t hash[CEP_FLAT_HASH_SIZE], char hex[65]) {
+  static const char digits[] = "0123456789abcdef";
+  if (!hash || !hex) {
+    return false;
+  }
+  for (size_t i = 0; i < CEP_FLAT_HASH_SIZE; ++i) {
+    hex[i * 2u] = digits[(hash[i] >> 4u) & 0x0Fu];
+    hex[i * 2u + 1u] = digits[hash[i] & 0x0Fu];
+  }
+  hex[64] = '\0';
+  return true;
+}
+
+static int cps_flatfile_build_cas_cache_path(const cps_flatfile_state *state,
+                                             const uint8_t hash[CEP_FLAT_HASH_SIZE],
+                                             char *buffer,
+                                             size_t buflen,
+                                             bool ensure_parent) {
+  if (!state || !state->cas_dir || !hash || !buffer) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  char hex[65];
+  if (!cps_flatfile_cas_hash_to_hex(hash, hex)) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  char subdir_path[PATH_MAX];
+  int dir_need = snprintf(subdir_path, sizeof subdir_path, "%s/%c%c", state->cas_dir, hex[0], hex[1]);
+  if (dir_need < 0 || (size_t)dir_need >= sizeof subdir_path) {
+    return CPS_ERR_IO;
+  }
+  if (ensure_parent) {
+    if (cps_flatfile_mkdir_p(subdir_path, 0755) != 0 && errno != EEXIST) {
+      return CPS_ERR_IO;
+    }
+  }
+  int need = snprintf(buffer, buflen, "%s/%s.blob", subdir_path, hex);
+  if (need < 0 || (size_t)need >= buflen) {
+    return CPS_ERR_IO;
+  }
+  return CPS_OK;
+}
+
+static cps_flatfile_cas_manifest_entry *cps_flatfile_cas_manifest_find(cps_flatfile_state *state,
+                                                                       const uint8_t hash[CEP_FLAT_HASH_SIZE]) {
+  if (!state || !hash || !state->cas_entries) {
+    return NULL;
+  }
+  for (size_t i = 0; i < state->cas_entry_count; ++i) {
+    if (memcmp(state->cas_entries[i].hash, hash, CEP_FLAT_HASH_SIZE) == 0) {
+      return &state->cas_entries[i];
+    }
+  }
+  return NULL;
+}
+
+static int cps_flatfile_cas_manifest_store(cps_flatfile_state *state) {
+  if (!state || !state->cas_manifest_path) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  int fd = open(state->cas_manifest_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+
+  cps_flatfile_cas_manifest_header_disk header = {
+    .magic = CPS_FLATFILE_CAS_MANIFEST_MAGIC,
+    .version = CPS_FLATFILE_CAS_MANIFEST_VERSION,
+    .reserved = 0u,
+    .entry_count = state->cas_entry_count,
+  };
+
+  int rc = cps_flatfile_write_all(fd, (const uint8_t *)&header, sizeof header);
+  if (rc == CPS_OK) {
+    for (size_t i = 0; i < state->cas_entry_count && rc == CPS_OK; ++i) {
+      cps_flatfile_cas_manifest_entry_disk disk = {
+        .payload_size = state->cas_entries[i].payload_size,
+        .codec = state->cas_entries[i].codec,
+        .aead_mode = state->cas_entries[i].aead_mode,
+        .reserved = {0},
+      };
+      memcpy(disk.hash, state->cas_entries[i].hash, CEP_FLAT_HASH_SIZE);
+      rc = cps_flatfile_write_all(fd, (const uint8_t *)&disk, sizeof disk);
+    }
+  }
+
+  int saved_errno = errno;
+  close(fd);
+  errno = saved_errno;
+  if (rc != CPS_OK) {
+    return rc;
+  }
+  state->cas_manifest_dirty = false;
+  return CPS_OK;
+}
+
+static int cps_flatfile_cas_manifest_load(cps_flatfile_state *state) {
+  if (!state || !state->cas_manifest_path) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  int fd = open(state->cas_manifest_path, O_RDONLY);
+  if (fd < 0) {
+    if (errno == ENOENT) {
+      return CPS_OK;
+    }
+    return CPS_ERR_IO;
+  }
+
+  cps_flatfile_cas_manifest_header_disk header;
+  int rc = cps_flatfile_read_exact_fd(fd, 0u, &header, sizeof header);
+  if (rc != CPS_OK) {
+    close(fd);
+    return rc;
+  }
+  if (header.magic != CPS_FLATFILE_CAS_MANIFEST_MAGIC ||
+      header.version != CPS_FLATFILE_CAS_MANIFEST_VERSION) {
+    close(fd);
+    return CPS_ERR_VERIFY;
+  }
+
+  if (header.entry_count > 0u) {
+    cps_flatfile_cas_manifest_entry *entries =
+      (cps_flatfile_cas_manifest_entry *)calloc((size_t)header.entry_count, sizeof *entries);
+    if (!entries) {
+      close(fd);
+      return CPS_ERR_NOMEM;
+    }
+    off_t offset = (off_t)sizeof header;
+    for (uint64_t i = 0u; i < header.entry_count; ++i) {
+      cps_flatfile_cas_manifest_entry_disk disk = {0};
+      rc = cps_flatfile_read_exact_fd(fd, offset, &disk, sizeof disk);
+      if (rc != CPS_OK) {
+        free(entries);
+        close(fd);
+        return rc;
+      }
+      offset += (off_t)sizeof disk;
+      memcpy(entries[i].hash, disk.hash, CEP_FLAT_HASH_SIZE);
+      entries[i].payload_size = disk.payload_size;
+      entries[i].codec = disk.codec;
+      entries[i].aead_mode = disk.aead_mode;
+    }
+    free(state->cas_entries);
+    state->cas_entries = entries;
+    state->cas_entry_count = (size_t)header.entry_count;
+    state->cas_entry_cap = (size_t)header.entry_count;
+  }
+  close(fd);
+  state->cas_manifest_dirty = false;
+  return CPS_OK;
+}
+
+static int cps_flatfile_cas_manifest_record(cps_flatfile_state *state,
+                                            const cps_flatfile_payload_ref_info *ref,
+                                            size_t payload_len) {
+  if (!state || !ref || !ref->hash_len || ref->hash_len != CEP_FLAT_HASH_SIZE) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  cps_flatfile_cas_manifest_entry *entry = cps_flatfile_cas_manifest_find(state, ref->hash_bytes);
+  if (!entry) {
+    if (state->cas_entry_count == state->cas_entry_cap) {
+      size_t new_cap = state->cas_entry_cap ? (state->cas_entry_cap * 2u) : 8u;
+      cps_flatfile_cas_manifest_entry *grown =
+        (cps_flatfile_cas_manifest_entry *)realloc(state->cas_entries, new_cap * sizeof *grown);
+      if (!grown) {
+        return CPS_ERR_NOMEM;
+      }
+      state->cas_entries = grown;
+      state->cas_entry_cap = new_cap;
+    }
+    entry = &state->cas_entries[state->cas_entry_count++];
+    memset(entry, 0, sizeof *entry);
+    memcpy(entry->hash, ref->hash_bytes, CEP_FLAT_HASH_SIZE);
+  }
+  entry->payload_size = ref->payload_size ? ref->payload_size : (uint64_t)payload_len;
+  entry->codec = ref->codec;
+  entry->aead_mode = ref->aead_mode;
+  state->cas_manifest_dirty = true;
+  return cps_flatfile_cas_manifest_store(state);
+}
+
+static int cps_flatfile_store_cas_blob(cps_flatfile_state *state,
+                                       const cps_flatfile_payload_ref_info *ref,
+                                       const uint8_t *payload,
+                                       size_t len) {
+  if (!state || !ref || !payload || len == 0u) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  char path[PATH_MAX];
+  int rc = cps_flatfile_build_cas_cache_path(state, ref->hash_bytes, path, sizeof path, true);
+  if (rc != CPS_OK) {
+    return rc;
+  }
+  int fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+  rc = cps_flatfile_write_all(fd, payload, len);
+  int saved_errno = errno;
+  close(fd);
+  errno = saved_errno;
+  if (rc != CPS_OK) {
+    return rc;
+  }
+  return cps_flatfile_cas_manifest_record(state, ref, len);
+}
+
+static int cps_flatfile_load_cas_blob_from_cache(cps_flatfile_state *state,
+                                                 const cps_flatfile_payload_ref_info *ref,
+                                                 cps_buf *out) {
+  if (!state || !ref || !out) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  char path[PATH_MAX];
+  int rc = cps_flatfile_build_cas_cache_path(state, ref->hash_bytes, path, sizeof path, false);
+  if (rc != CPS_OK) {
+    return rc;
+  }
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) {
+    return (errno == ENOENT) ? CPS_ERR_NOT_FOUND : CPS_ERR_IO;
+  }
+  struct stat st;
+  if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return CPS_ERR_IO;
+  }
+  size_t file_size = (size_t)st.st_size;
+  uint8_t *buffer = (uint8_t *)malloc(file_size);
+  if (!buffer) {
+    close(fd);
+    return CPS_ERR_NOMEM;
+  }
+  size_t total = 0u;
+  while (total < file_size) {
+    ssize_t rd = read(fd, buffer + total, file_size - total);
+    if (rd < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      free(buffer);
+      int saved_errno = errno;
+      close(fd);
+      errno = saved_errno;
+      return CPS_ERR_IO;
+    }
+    if (rd == 0) {
+      break;
+    }
+    total += (size_t)rd;
+  }
+  int saved_errno = errno;
+  close(fd);
+  errno = saved_errno;
+  if (total != file_size) {
+    free(buffer);
+    return CPS_ERR_IO;
+  }
+  free(out->data);
+  out->data = buffer;
+  out->len = file_size;
+  out->cap = file_size;
+  return CPS_OK;
+}
+
+static int cps_flatfile_fetch_cas_blob_runtime(const cps_flatfile_payload_ref_info *ref, cps_buf *out) {
+  if (!ref || !out || !ref->hash_bytes || ref->hash_len == 0u) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  cepCell *cas_root = cep_heartbeat_cas_root();
+  if (!cas_root) {
+    return CPS_ERR_NOT_FOUND;
+  }
+  cepCell *resolved_root = cep_cell_resolve(cas_root);
+  if (!resolved_root || !cep_cell_require_dictionary_store(&resolved_root)) {
+    return CPS_ERR_NOT_FOUND;
+  }
+
+  uint8_t hash_buf[CEP_FLAT_HASH_SIZE];
+  for (cepCell *bucket = cep_cell_first_all(resolved_root);
+       bucket;
+       bucket = cep_cell_next_all(resolved_root, bucket)) {
+    cepCell *resolved_bucket = cep_cell_resolve(bucket);
+    if (!resolved_bucket || !cep_cell_require_dictionary_store(&resolved_bucket)) {
+      continue;
+    }
+    for (cepCell *item = cep_cell_first_all(resolved_bucket);
+         item;
+         item = cep_cell_next_all(resolved_bucket, item)) {
+      cepCell *entry = cep_cell_resolve(item);
+      if (!entry || !cep_cell_has_data(entry) || !entry->data) {
+        continue;
+      }
+      const cepData *data = entry->data;
+      if (data->size == 0u) {
+        continue;
+      }
+      const void *payload = cep_data_payload(data);
+      if (!payload) {
+        continue;
+      }
+      if (ref->payload_size && data->size != ref->payload_size) {
+        continue;
+      }
+      if (!cps_flatfile_hash_bytes(payload, data->size, hash_buf)) {
+        continue;
+      }
+      if (ref->hash_len == CEP_FLAT_HASH_SIZE &&
+          memcmp(hash_buf, ref->hash_bytes, CEP_FLAT_HASH_SIZE) == 0) {
+        if (!cps_flatfile_buf_reserve(out, data->size)) {
+          return CPS_ERR_NOMEM;
+        }
+        memcpy(out->data, payload, data->size);
+        out->len = data->size;
+        return CPS_OK;
+      }
+    }
+  }
+  return CPS_ERR_NOT_FOUND;
+}
+
+static int cps_flatfile_fetch_cas_blob_bytes(cps_flatfile_state *state,
+                                             const cps_flatfile_payload_ref_info *ref,
+                                             cps_buf *out) {
+  if (!state || !ref || !out) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  uint64_t start_ns = cps_flatfile_monotonic_ns();
+  int rc = cps_flatfile_load_cas_blob_from_cache(state, ref, out);
+  if (rc == CPS_OK) {
+    state->stat_cas_hits += 1u;
+  } else if (rc == CPS_ERR_NOT_FOUND) {
+    rc = cps_flatfile_fetch_cas_blob_runtime(ref, out);
+    if (rc == CPS_OK) {
+      (void)cps_flatfile_store_cas_blob(state, ref, out->data, out->len);
+    } else {
+      cps_flatfile_emit_cei(state,
+                            dt_cps_sev_warn(),
+                            k_cps_topic_recover,
+                            "cas blob not found in cache or runtime");
+    }
+    state->stat_cas_misses += 1u;
+  }
+  uint64_t end_ns = cps_flatfile_monotonic_ns();
+  if (end_ns >= start_ns) {
+    state->stat_cas_lookup_ns += (end_ns - start_ns);
+  }
+  (void)cps_flatfile_publish_metrics(state);
+  return rc;
+}
+
+static int cps_flatfile_normalize_cas_payload(const cps_flatfile_payload_ref_info *ref, cps_buf *payload) {
+  if (!ref || !payload || !payload->data) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  if (ref->codec == CEP_FLAT_COMPRESSION_NONE) {
+    return CPS_OK;
+  }
+  if (ref->codec == CEP_FLAT_COMPRESSION_DEFLATE) {
+    if (ref->payload_size == 0u) {
+      return CPS_ERR_VERIFY;
+    }
+    size_t expected = 0u;
+    if (!cps_flatfile_u64_to_size(ref->payload_size, &expected)) {
+      return CPS_ERR_VERIFY;
+    }
+    uint8_t *decoded = (uint8_t *)malloc(expected);
+    if (!decoded) {
+      return CPS_ERR_NOMEM;
+    }
+    uLongf dest_len = (uLongf)expected;
+    int zrc = uncompress(decoded, &dest_len, payload->data, (uLong)payload->len);
+    if (zrc != Z_OK || dest_len != expected) {
+      free(decoded);
+      return CPS_ERR_VERIFY;
+    }
+    free(payload->data);
+    payload->data = decoded;
+    payload->len = expected;
+    payload->cap = expected;
+    return CPS_OK;
+  }
+  return CPS_ERR_NOT_IMPLEMENTED;
+}
 static void cps_flatfile_close(cps_engine *engine) {
   if (!engine) {
     return;
@@ -482,6 +1068,19 @@ static int cps_flatfile_put_record(cps_txn *txn_handle, cps_slice key, cps_slice
   if (push_rc != CPS_OK) {
     return push_rc;
   }
+  if (rtype == CPS_RECORD_TYPE_CELL_DESC) {
+    cps_flatfile_payload_ref_info ref_info = {0};
+    uint8_t parsed_payload_kind = 0u;
+    uint64_t parsed_payload_fp = 0u;
+    if (cps_flatfile_parse_cell_desc_payload_ref(value,
+                                                 &parsed_payload_kind,
+                                                 &parsed_payload_fp,
+                                                 &ref_info) &&
+        ref_info.kind != CEP_FLAT_PAYLOAD_REF_INLINE) {
+      cps_flatfile_toc_entry *entry = &txn->toc_entries[txn->toc_len - 1u];
+      entry->flags |= CPS_FLATFILE_TOC_FLAG_CAS_REF;
+    }
+  }
   return CPS_OK;
 }
 
@@ -555,11 +1154,25 @@ static int cps_flatfile_commit_beat(cps_txn *txn_handle, cps_frame_meta *out_met
       error_detail = "branch.meta update failed";
     }
   }
+  if (rc == CPS_OK) {
+    rc = cps_flatfile_frame_dir_append(txn->owner,
+                                       txn->beat,
+                                       txn->frame_id,
+                                       idx_ofs,
+                                       idx_len,
+                                       dat_ofs,
+                                       dat_len);
+    if (rc != CPS_OK && !error_topic) {
+      error_topic = k_cps_topic_frame_io;
+      error_detail = "frame directory update failed";
+      error_severity = dt_cps_sev_warn();
+    }
+  }
   if (rc == CPS_OK && txn->owner->checkpoint_interval > 0 &&
       (txn->frame_id % txn->owner->checkpoint_interval) == 0) {
     rc = cps_flatfile_write_checkpoint_snapshot(txn->owner, txn->beat, txn->frame_id,
-                                                dat_ofs, idx_ofs,
-                                                txn->toc_entries, txn->toc_len);
+                                               dat_ofs, idx_ofs,
+                                               txn->toc_entries, txn->toc_len);
     if (rc != CPS_OK) {
       error_topic = k_cps_topic_checkpoint;
       error_detail = "auto-checkpoint failed";
@@ -625,6 +1238,49 @@ static int cps_flatfile_get_record(cps_engine *engine, cps_slice key, cps_buf *o
   int rc = cps_flatfile_lookup_head_record(state, key, out);
   if (rc == CPS_ERR_NOT_FOUND) {
     rc = cps_flatfile_lookup_checkpoint_record(state, key, out);
+  }
+
+  if (rc == CPS_ERR_NOT_FOUND) {
+    cps_flatfile_frame_dir_snapshot snapshot = {0};
+    int snap_rc = cps_flatfile_frame_dir_snapshot_load(state, &snapshot);
+    if (snap_rc == CPS_OK && snapshot.count > 0u) {
+      int idx_fd = open(state->idx_path, O_RDONLY);
+      int dat_fd = open(state->dat_path, O_RDONLY);
+      if (idx_fd < 0 || dat_fd < 0) {
+        if (idx_fd >= 0) close(idx_fd);
+        if (dat_fd >= 0) close(dat_fd);
+        rc = CPS_ERR_IO;
+      } else {
+        for (size_t i = snapshot.count; i > 0u; --i) {
+          cps_flatfile_frame_dir_entry_disk *entry = &snapshot.entries[i - 1u];
+          if (entry->idx_len == 0u) {
+            continue;
+          }
+          if (entry->idx_ofs == state->meta.head_idx_ofs &&
+              entry->idx_len == state->meta.head_idx_len &&
+              entry->frame_id == state->meta.head_frame_id) {
+            continue; /* Already scanned head frame. */
+          }
+          rc = cps_flatfile_lookup_frame_record_fd(idx_fd,
+                                                   dat_fd,
+                                                   entry->idx_ofs,
+                                                   entry->idx_len,
+                                                   key,
+                                                   out);
+          if (rc == CPS_OK || rc != CPS_ERR_NOT_FOUND) {
+            break;
+          }
+        }
+        close(dat_fd);
+        close(idx_fd);
+      }
+    } else if (snap_rc != CPS_OK) {
+      rc = snap_rc;
+    }
+    cps_flatfile_frame_dir_snapshot_destroy(&snapshot);
+  }
+  if (rc == CPS_ERR_NOT_FOUND) {
+    rc = cps_flatfile_try_cas_read(engine, key, out);
   }
   return rc;
 }
@@ -697,7 +1353,8 @@ static int cps_flatfile_scan_prefix(cps_engine *engine, cps_slice prefix, cps_sc
       rc = CPS_ERR_IO;
       break;
     }
-    int head_rc = cps_flatfile_scan_entries_with_prefix(idx_fd,
+    int head_rc = cps_flatfile_scan_entries_with_prefix(state,
+                                                        idx_fd,
                                                         dat_fd,
                                                         head_entries,
                                                         toc_header.entry_count,
@@ -717,26 +1374,81 @@ static int cps_flatfile_scan_prefix(cps_engine *engine, cps_slice prefix, cps_sc
   free(head_entries);
 
   if (rc == CPS_OK || rc == CPS_ERR_NOT_FOUND) {
-    cps_flatfile_checkpoint_view view = {0};
-    int view_rc = cps_flatfile_load_last_checkpoint(state, &view);
-    if (view_rc == CPS_OK && view.header.entry_count > 0u && view.entries) {
-      int ck_rc = cps_flatfile_scan_entries_with_prefix(idx_fd,
-                                                        dat_fd,
-                                                        view.entries,
-                                                        view.header.entry_count,
-                                                        prefix,
-                                                        cb,
-                                                        user,
-                                                        &visited,
-                                                        &visited_len,
-                                                        &visited_cap);
-      if (ck_rc == CPS_OK) {
-        rc = CPS_OK;
-      } else if (ck_rc != CPS_ERR_NOT_FOUND) {
-        rc = ck_rc;
-      }
+    cps_flatfile_checkpoint_scan_ctx ctx = {
+      .state = state,
+      .idx_fd = idx_fd,
+      .dat_fd = dat_fd,
+      .prefix = prefix,
+      .cb = cb,
+      .user = user,
+      .visited = &visited,
+      .visited_len = &visited_len,
+      .visited_cap = &visited_cap,
+      .rc = rc,
+    };
+
+    int iter_rc = cps_flatfile_iterate_checkpoints(state, cps_flatfile_checkpoint_scan_cb, &ctx);
+    if (ctx.rc == CPS_OK) {
+      rc = CPS_OK;
+    } else if (iter_rc != CPS_OK && iter_rc != CPS_ERR_NOT_FOUND) {
+      rc = iter_rc;
+    } else if (ctx.rc != CPS_ERR_NOT_FOUND && rc != CPS_OK) {
+      rc = ctx.rc;
     }
-    cps_flatfile_checkpoint_view_destroy(&view);
+  }
+
+  if (rc == CPS_OK || rc == CPS_ERR_NOT_FOUND) {
+    cps_flatfile_frame_dir_snapshot snapshot = {0};
+    int snap_rc = cps_flatfile_frame_dir_snapshot_load(state, &snapshot);
+    if (snap_rc == CPS_OK && snapshot.count > 0u) {
+      for (size_t i = snapshot.count; i > 0u; --i) {
+        cps_flatfile_frame_dir_entry_disk *entry = &snapshot.entries[i - 1u];
+        if (entry->idx_len == 0u) {
+          continue;
+        }
+        if (entry->frame_id == state->meta.head_frame_id &&
+            entry->idx_ofs == state->meta.head_idx_ofs &&
+            entry->idx_len == state->meta.head_idx_len) {
+          continue;
+        }
+        cps_flatfile_toc_entry_disk *frame_entries = NULL;
+        uint32_t entry_count = 0u;
+        int load_rc = cps_flatfile_load_frame_entries(idx_fd,
+                                                      entry->idx_ofs,
+                                                      entry->idx_len,
+                                                      &frame_entries,
+                                                      &entry_count);
+        if (load_rc != CPS_OK) {
+          rc = load_rc;
+          break;
+        }
+        if (entry_count == 0u || !frame_entries) {
+          free(frame_entries);
+          continue;
+        }
+        int frame_rc = cps_flatfile_scan_entries_with_prefix(state,
+                                                             idx_fd,
+                                                             dat_fd,
+                                                             frame_entries,
+                                                             entry_count,
+                                                             prefix,
+                                                             cb,
+                                                             user,
+                                                             &visited,
+                                                             &visited_len,
+                                                             &visited_cap);
+        free(frame_entries);
+        if (frame_rc == CPS_OK) {
+          rc = CPS_OK;
+        } else if (frame_rc != CPS_ERR_NOT_FOUND) {
+          rc = frame_rc;
+          break;
+        }
+      }
+    } else if (snap_rc != CPS_OK) {
+      rc = snap_rc;
+    }
+    cps_flatfile_frame_dir_snapshot_destroy(&snapshot);
   }
 
   cps_flatfile_scan_keys_clear(visited, visited_len);
@@ -843,7 +1555,7 @@ static int cps_flatfile_checkpoint(cps_engine *engine, const cps_ckpt_opts *opts
       rel->val_ofs = disk_entry->val_ofs - base;
       rel->key_len = disk_entry->key_len;
       rel->val_len = disk_entry->val_len;
-      rel->reserved = 0u;
+      rel->flags = disk_entry->flags;
     }
   }
 
@@ -970,7 +1682,12 @@ int cps_flatfile_engine_open(const cps_flatfile_opts *opts, cps_engine **out) {
   state->meta_path = cps_flatfile_join2(state->branch_dir, "branch.meta");
   state->meta_tmp_path = cps_flatfile_join2(state->branch_dir, "branch.meta.new");
   state->ckp_path = cps_flatfile_join2(state->branch_dir, "branch.ckp");
-  if (!state->branch_dir || !state->tmp_dir || !state->idx_path || !state->dat_path || !state->meta_path || !state->meta_tmp_path || !state->ckp_path) {
+  state->dir_path = cps_flatfile_join2(state->branch_dir, "branch.frames");
+  state->cas_dir = cps_flatfile_join2(state->branch_dir, "cas");
+  state->cas_manifest_path = cps_flatfile_join2(state->cas_dir, "manifest.bin");
+  if (!state->branch_dir || !state->tmp_dir || !state->idx_path || !state->dat_path ||
+      !state->meta_path || !state->meta_tmp_path || !state->ckp_path ||
+      !state->dir_path || !state->cas_dir || !state->cas_manifest_path) {
     cps_flatfile_state_destroy(state);
     free(engine);
     return CPS_ERR_NOMEM;
@@ -993,6 +1710,12 @@ int cps_flatfile_engine_open(const cps_flatfile_opts *opts, cps_engine **out) {
     free(engine);
     return status;
   }
+  status = cps_flatfile_cas_manifest_load(state);
+  if (status != CPS_OK) {
+    cps_flatfile_state_destroy(state);
+    free(engine);
+    return status;
+  }
   status = cps_flatfile_recover_branch(state);
   if (status != CPS_OK) {
     cps_flatfile_state_destroy(state);
@@ -1000,6 +1723,13 @@ int cps_flatfile_engine_open(const cps_flatfile_opts *opts, cps_engine **out) {
     return status;
   }
   state->next_frame_id = state->meta.head_frame_id + 1u;
+
+  status = cps_flatfile_frame_dir_seed_from_meta(state);
+  if (status != CPS_OK) {
+    cps_flatfile_state_destroy(state);
+    free(engine);
+    return status;
+  }
 
   engine->ops = &cps_flatfile_vtable;
   engine->state = state;
@@ -1147,6 +1877,23 @@ static int cps_flatfile_ensure_directories(cps_flatfile_state *state) {
     return CPS_ERR_IO;
   }
   close(fd);
+
+  if (state->dir_path) {
+    fd = open(state->dir_path, O_CREAT | O_APPEND, 0644);
+    if (fd < 0) {
+      return CPS_ERR_IO;
+    }
+    close(fd);
+  }
+  if (state->cas_dir) {
+    if (cps_flatfile_stat_path(state->cas_dir, &st) != 0) {
+      if (cps_flatfile_mkdir_p(state->cas_dir, 0755) != 0) {
+        return CPS_ERR_IO;
+      }
+    } else if (!S_ISDIR(st.st_mode)) {
+      return CPS_ERR_IO;
+    }
+  }
   return CPS_OK;
 }
 
@@ -1192,6 +1939,185 @@ static bool cps_flatfile_read_varint(const uint8_t *data, size_t size, size_t *o
     }
   }
   return false;
+}
+
+static bool cps_flatfile_parse_cell_desc_payload_ref(cps_slice value,
+                                                     uint8_t *payload_kind,
+                                                     uint64_t *payload_fp,
+                                                     cps_flatfile_payload_ref_info *ref_info) {
+  if (!value.data || value.len == 0u || !ref_info) {
+    return false;
+  }
+  size_t offset = 0u;
+  if (value.len < 1u + sizeof(uint16_t)) {
+    return false;
+  }
+  offset += 1u; /* cell type */
+  offset += sizeof(uint16_t); /* store descriptor */
+
+  uint64_t tmp = 0u;
+  if (!cps_flatfile_read_varint(value.data, value.len, &offset, &tmp)) {
+    return false;
+  }
+  if (!cps_flatfile_read_varint(value.data, value.len, &offset, &tmp)) {
+    return false;
+  }
+  if (value.len - offset < 16u) {
+    return false;
+  }
+  offset += 16u; /* revision */
+  if (value.len - offset < 1u) {
+    return false;
+  }
+  uint8_t local_payload_kind = value.data[offset++];
+  if (payload_kind) {
+    *payload_kind = local_payload_kind;
+  }
+
+  uint64_t fp_len = 0u;
+  if (!cps_flatfile_read_varint(value.data, value.len, &offset, &fp_len)) {
+    return false;
+  }
+  uint64_t local_payload_fp = 0u;
+  if (fp_len > 0u) {
+    if (fp_len != sizeof local_payload_fp || value.len - offset < fp_len) {
+      return false;
+    }
+    memcpy(&local_payload_fp, value.data + offset, sizeof local_payload_fp);
+    offset += fp_len;
+  }
+  if (payload_fp) {
+    *payload_fp = local_payload_fp;
+  }
+
+  uint64_t inline_len = 0u;
+  if (!cps_flatfile_read_varint(value.data, value.len, &offset, &inline_len)) {
+    return false;
+  }
+  if (inline_len > value.len - offset) {
+    return false;
+  }
+  offset += (size_t)inline_len;
+
+  uint64_t payload_ref_len = 0u;
+  if (!cps_flatfile_read_varint(value.data, value.len, &offset, &payload_ref_len)) {
+    return false;
+  }
+  if (payload_ref_len == 0u || payload_ref_len > value.len - offset) {
+    return false;
+  }
+
+  const uint8_t *ref_base = value.data + offset;
+  size_t ref_size = (size_t)payload_ref_len;
+  if (ref_size < 4u) {
+    return false;
+  }
+  size_t ref_cursor = 0u;
+  ref_info->kind = (cepFlatPayloadRefKind)ref_base[ref_cursor++];
+  ref_info->hash_alg = (cepFlatHashAlgorithm)ref_base[ref_cursor++];
+  ref_info->codec = ref_base[ref_cursor++];
+  ref_info->aead_mode = ref_base[ref_cursor++];
+  if (!cps_flatfile_read_varint(ref_base, ref_size, &ref_cursor, &ref_info->payload_size)) {
+    return false;
+  }
+  uint64_t hash_len = 0u;
+  if (!cps_flatfile_read_varint(ref_base, ref_size, &ref_cursor, &hash_len)) {
+    return false;
+  }
+  if (hash_len == 0u || hash_len > ref_size - ref_cursor) {
+    return false;
+  }
+  ref_info->hash_bytes = ref_base + ref_cursor;
+  ref_info->hash_len = (size_t)hash_len;
+  return true;
+}
+
+static size_t cps_flatfile_varint_length(uint64_t value) {
+  size_t length = 1u;
+  while (value >= 0x80u) {
+    value >>= 7u;
+    length += 1u;
+  }
+  return length;
+}
+
+static uint8_t *cps_flatfile_write_varint_bytes(uint64_t value, uint8_t *dst) {
+  do {
+    uint8_t byte = (uint8_t)(value & 0x7Fu);
+    value >>= 7u;
+    if (value != 0u) {
+      byte |= 0x80u;
+    }
+    *dst++ = byte;
+  } while (value != 0u);
+  return dst;
+}
+
+static bool cps_flatfile_buf_reserve(cps_buf *buf, size_t extra) {
+  if (!buf) {
+    return false;
+  }
+  size_t needed = buf->len + extra;
+  if (needed <= buf->cap) {
+    return true;
+  }
+  size_t new_cap = buf->cap ? buf->cap : 64u;
+  while (new_cap < needed) {
+    size_t grown = new_cap << 1u;
+    if (grown <= new_cap) {
+      new_cap = needed;
+      break;
+    }
+    new_cap = grown;
+  }
+  uint8_t *grown_buf = (uint8_t *)realloc(buf->data, new_cap);
+  if (!grown_buf) {
+    return false;
+  }
+  buf->data = grown_buf;
+  buf->cap = new_cap;
+  return true;
+}
+
+static bool cps_flatfile_buf_append(cps_buf *buf, const void *data, size_t len) {
+  if (!buf || (len && !data)) {
+    return false;
+  }
+  if (len == 0u) {
+    return true;
+  }
+  if (!cps_flatfile_buf_reserve(buf, len)) {
+    return false;
+  }
+  memcpy(buf->data + buf->len, data, len);
+  buf->len += len;
+  return true;
+}
+
+static bool cps_flatfile_buf_append_u8(cps_buf *buf, uint8_t value) {
+  return cps_flatfile_buf_append(buf, &value, 1u);
+}
+
+static bool cps_flatfile_buf_append_varint(cps_buf *buf, uint64_t value) {
+  size_t needed = cps_flatfile_varint_length(value);
+  if (!cps_flatfile_buf_reserve(buf, needed)) {
+    return false;
+  }
+  uint8_t *dst = buf->data + buf->len;
+  cps_flatfile_write_varint_bytes(value, dst);
+  buf->len += needed;
+  return true;
+}
+
+static bool cps_flatfile_hash_bytes(const void *data, size_t len, uint8_t out[CEP_FLAT_HASH_SIZE]) {
+  if (!data || len == 0u || !out) {
+    return false;
+  }
+  blake3_hasher hasher;
+  blake3_hasher_init(&hasher);
+  blake3_hasher_update(&hasher, data, len);
+  blake3_hasher_finalize(&hasher, out, CEP_FLAT_HASH_SIZE);
+  return true;
 }
 
 static bool cps_flatfile_decode_chunk_key(const uint8_t *key, size_t key_len, size_t *base_len, uint64_t *ordinal) {
@@ -1300,13 +2226,119 @@ static int cps_flatfile_extract_chunk_info(cps_slice key, cps_slice value, cps_f
   return CPS_OK;
 }
 
-static void cps_flatfile_checkpoint_view_destroy(cps_flatfile_checkpoint_view *view) {
-  if (!view) {
+static int cps_flatfile_checkpoint_blocks_push(cps_flatfile_checkpoint_block **blocks,
+                                               size_t *len,
+                                               size_t *cap,
+                                               const cps_flatfile_ckp_header_disk *header,
+                                               cps_flatfile_toc_entry_disk *entries) {
+  if (!blocks || !len || !cap || !header) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  if (*len == *cap) {
+    size_t new_cap = (*cap == 0u) ? 4u : (*cap * 2u);
+    cps_flatfile_checkpoint_block *grown =
+      (cps_flatfile_checkpoint_block *)realloc(*blocks, new_cap * sizeof(**blocks));
+    if (!grown) {
+      return CPS_ERR_NOMEM;
+    }
+    *blocks = grown;
+    *cap = new_cap;
+  }
+  cps_flatfile_checkpoint_block *slot = &(*blocks)[(*len)++];
+  slot->header = *header;
+  slot->entries = entries;
+  return CPS_OK;
+}
+
+static void cps_flatfile_checkpoint_blocks_destroy(cps_flatfile_checkpoint_block *blocks, size_t len) {
+  if (!blocks) {
     return;
   }
-  free(view->entries);
-  view->entries = NULL;
-  memset(&view->header, 0, sizeof(view->header));
+  for (size_t i = 0; i < len; ++i) {
+    free(blocks[i].entries);
+    blocks[i].entries = NULL;
+  }
+  free(blocks);
+}
+
+static int cps_flatfile_iterate_checkpoints(cps_flatfile_state *state,
+                                            bool (*cb)(const cps_flatfile_ckp_header_disk *,
+                                                       const cps_flatfile_toc_entry_disk *,
+                                                       void *user),
+                                            void *user) {
+  if (!state || !state->ckp_path || !cb) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  int fd = open(state->ckp_path, O_RDONLY);
+  if (fd < 0) {
+    if (errno == ENOENT) {
+      return CPS_ERR_NOT_FOUND;
+    }
+    return CPS_ERR_IO;
+  }
+
+  cps_flatfile_checkpoint_block *blocks = NULL;
+  size_t len = 0u;
+  size_t cap = 0u;
+  off_t offset = 0;
+  int rc = CPS_OK;
+
+  for (;;) {
+    cps_flatfile_ckp_header_disk header = {0};
+    ssize_t rd = pread(fd, &header, sizeof header, offset);
+    if (rd == 0) {
+      break;
+    }
+    if (rd < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      rc = CPS_ERR_IO;
+      goto done;
+    }
+    if ((size_t)rd != sizeof header || header.magic != CPS_FLATFILE_CKP_MAGIC) {
+      rc = CPS_ERR_VERIFY;
+      goto done;
+    }
+    offset += sizeof header;
+
+    size_t entries_size = (size_t)header.entry_count * sizeof(cps_flatfile_toc_entry_disk);
+    cps_flatfile_toc_entry_disk *entries = NULL;
+    if (entries_size > 0u) {
+      entries = (cps_flatfile_toc_entry_disk *)malloc(entries_size);
+      if (!entries) {
+        rc = CPS_ERR_NOMEM;
+        goto done;
+      }
+      ssize_t erd = pread(fd, entries, entries_size, offset);
+      if (erd != (ssize_t)entries_size) {
+        free(entries);
+        rc = CPS_ERR_IO;
+        goto done;
+      }
+    }
+    offset += (off_t)entries_size;
+
+    rc = cps_flatfile_checkpoint_blocks_push(&blocks, &len, &cap, &header, entries);
+    if (rc != CPS_OK) {
+      free(entries);
+      goto done;
+    }
+  }
+
+  for (size_t i = len; i > 0u; --i) {
+    cps_flatfile_checkpoint_block *block = &blocks[i - 1u];
+    bool cont = cb(&block->header, block->entries, user);
+    if (!cont) {
+      break;
+    }
+  }
+
+done:
+  close(fd);
+  cps_flatfile_checkpoint_blocks_destroy(blocks, len);
+  return rc;
 }
 
 static int cps_flatfile_checkpoint_finalize(cps_flatfile_state *state, uint64_t beat) {
@@ -1408,69 +2440,12 @@ static bool cps_flatfile_publish_metrics(cps_flatfile_state *state) {
   ok &= cep_cell_put_uint64(metrics_cell, dt_persist_beats_field(), state->stat_beats);
   ok &= cep_cell_put_uint64(metrics_cell, dt_persist_bytes_idx_field(), state->stat_bytes_idx);
   ok &= cep_cell_put_uint64(metrics_cell, dt_persist_bytes_dat_field(), state->stat_bytes_dat);
+  uint64_t cas_lookups = state->stat_cas_hits + state->stat_cas_misses;
+  uint64_t cas_latency = cas_lookups ? (state->stat_cas_lookup_ns / cas_lookups) : 0u;
+  ok &= cep_cell_put_uint64(metrics_cell, dt_persist_cas_hits_field(), state->stat_cas_hits);
+  ok &= cep_cell_put_uint64(metrics_cell, dt_persist_cas_miss_field(), state->stat_cas_misses);
+  ok &= cep_cell_put_uint64(metrics_cell, dt_persist_cas_latency_field(), cas_latency);
   return ok;
-}
-
-static int cps_flatfile_load_last_checkpoint(cps_flatfile_state *state, cps_flatfile_checkpoint_view *view) {
-  if (!state || !state->ckp_path || !view) {
-    return CPS_ERR_INVALID_ARGUMENT;
-  }
-  int fd = open(state->ckp_path, O_RDONLY);
-  if (fd < 0) {
-    return CPS_ERR_IO;
-  }
-
-  cps_flatfile_checkpoint_view_destroy(view);
-  uint64_t offset = 0u;
-  int rc = CPS_ERR_NOT_FOUND;
-
-  for (;;) {
-    cps_flatfile_ckp_header_disk header = {0};
-    ssize_t rd = pread(fd, &header, sizeof header, (off_t)offset);
-    if (rd == 0) {
-      break;
-    }
-    if (rd < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      rc = CPS_ERR_IO;
-      goto done;
-    }
-    if ((size_t)rd != sizeof header || header.magic != CPS_FLATFILE_CKP_MAGIC) {
-      rc = CPS_ERR_VERIFY;
-      goto done;
-    }
-    offset += sizeof header;
-
-    size_t entries_size = (size_t)header.entry_count * sizeof(cps_flatfile_toc_entry_disk);
-    cps_flatfile_toc_entry_disk *entries = NULL;
-    if (entries_size > 0u) {
-      entries = (cps_flatfile_toc_entry_disk *)malloc(entries_size);
-      if (!entries) {
-        rc = CPS_ERR_NOMEM;
-        goto done;
-      }
-      if (pread(fd, entries, entries_size, (off_t)offset) != (ssize_t)entries_size) {
-        free(entries);
-        rc = CPS_ERR_IO;
-        goto done;
-      }
-    }
-    offset += entries_size;
-
-    cps_flatfile_checkpoint_view_destroy(view);
-    view->header = header;
-    view->entries = entries;
-    rc = CPS_OK;
-  }
-
-done:
-  close(fd);
-  if (rc != CPS_OK) {
-    cps_flatfile_checkpoint_view_destroy(view);
-  }
-  return rc;
 }
 
 static int cps_flatfile_validate_head_trailer(const cps_flatfile_state *state, int idx_fd) {
@@ -1528,6 +2503,13 @@ static int cps_flatfile_reset_branch(cps_flatfile_state *state, int idx_fd, int 
 
   state->next_frame_id = 0u;
   state->last_checkpoint_beat = 0u;
+  if (state->dir_path) {
+    int dir_fd = open(state->dir_path, O_RDWR | O_CREAT, 0644);
+    if (dir_fd >= 0) {
+      (void)ftruncate(dir_fd, 0);
+      close(dir_fd);
+    }
+  }
   return cps_flatfile_meta_store(state);
 }
 
@@ -1555,21 +2537,59 @@ static int cps_flatfile_recover_branch(cps_flatfile_state *state) {
     goto done;
   }
 
-  if (idx_end > 0u && (uint64_t)idx_size < idx_end) {
-    reset = true;
-  }
-  if (dat_end > 0u && (uint64_t)dat_size < dat_end) {
-    reset = true;
-  }
-
-  if (!reset && state->meta.head_idx_len > 0u) {
-    rc = cps_flatfile_validate_head_trailer(state, idx_fd);
-    if (rc != CPS_OK) {
-      reset = true;
+  cps_flatfile_frame_dir_entry_disk tail_entry = {0};
+  bool have_tail = false;
+  if (state->dir_path) {
+    int trim_rc = cps_flatfile_frame_dir_trim_to_fit(state,
+                                                     (uint64_t)idx_size,
+                                                     (uint64_t)dat_size,
+                                                     &tail_entry);
+    if (trim_rc == CPS_OK) {
+      have_tail = true;
+    } else if (trim_rc != CPS_ERR_NOT_FOUND) {
+      rc = trim_rc;
+      goto done;
     }
   }
-  if (rc != CPS_OK && !reset) {
-    goto done;
+
+  bool idx_overflow = state->meta.head_idx_ofs > UINT64_MAX - state->meta.head_idx_len;
+  bool dat_overflow = state->meta.head_dat_ofs > UINT64_MAX - state->meta.head_dat_len;
+  if (idx_overflow) {
+    idx_end = UINT64_MAX;
+  }
+  if (dat_overflow) {
+    dat_end = UINT64_MAX;
+  }
+
+  bool head_valid = true;
+  if (state->meta.head_idx_len > 0u) {
+    if (idx_overflow || dat_overflow ||
+        (uint64_t)idx_size < idx_end ||
+        (uint64_t)dat_size < dat_end) {
+      head_valid = false;
+    } else {
+      int validate_rc = cps_flatfile_validate_head_trailer(state, idx_fd);
+      head_valid = (validate_rc == CPS_OK);
+    }
+  }
+
+  if (!head_valid && have_tail) {
+    int repair_rc = cps_flatfile_apply_tail_entry(state, idx_fd, &tail_entry);
+    if (repair_rc == CPS_OK) {
+      head_valid = true;
+      idx_end = state->meta.head_idx_ofs + state->meta.head_idx_len;
+      dat_end = state->meta.head_dat_ofs + state->meta.head_dat_len;
+    } else {
+      cps_flatfile_emit_cei(state, dt_cps_sev_warn(), k_cps_topic_recover, "failed to repair head; resetting branch");
+      reset = true;
+      rc = repair_rc;
+    }
+  }
+
+  if (!head_valid) {
+    reset = true;
+  } else {
+    rc = CPS_OK;
   }
 
   if (reset) {
@@ -1729,7 +2749,8 @@ static void cps_flatfile_scan_keys_clear(cps_flatfile_scanned_key *keys, size_t 
   }
 }
 
-static int cps_flatfile_scan_entries_with_prefix(int idx_fd,
+static int cps_flatfile_scan_entries_with_prefix(cps_flatfile_state *state,
+                                                 int idx_fd,
                                                  int dat_fd,
                                                  const cps_flatfile_toc_entry_disk *entries,
                                                  uint32_t entry_count,
@@ -1797,11 +2818,17 @@ static int cps_flatfile_scan_entries_with_prefix(int idx_fd,
     value.len = 0u;
     value.cap = 0u;
     value.data = NULL;
+    cps_slice key_slice = { .data = key_buf, .len = header.key_len };
     int val_rc = cps_flatfile_fetch_entry_value(idx_fd,
                                                 dat_fd,
                                                 entry,
-                                                (cps_slice){ .data = key_buf, .len = header.key_len },
+                                                key_slice,
                                                 &value);
+    if (val_rc == CPS_ERR_NOT_FOUND && state &&
+        (entry->flags & CPS_FLATFILE_TOC_FLAG_CAS_REF) != 0u &&
+        entry->rtype == CPS_RECORD_TYPE_PAYLOAD) {
+      val_rc = cps_flatfile_build_cas_record(state, key_slice, &value);
+    }
     if (val_rc != CPS_OK) {
       free(value.data);
       value.data = NULL;
@@ -1809,7 +2836,6 @@ static int cps_flatfile_scan_entries_with_prefix(int idx_fd,
       continue;
     }
 
-    cps_slice key_slice = { .data = key_buf, .len = header.key_len };
     cps_slice value_slice = { .data = value.data, .len = value.len };
     int cb_rc = cb(key_slice, value_slice, user);
     free(value.data);
@@ -1853,6 +2879,7 @@ static int cps_flatfile_toc_push(cps_flatfile_txn_state *txn, uint32_t rtype, ui
   entry->key_len = key_len;
   entry->val_ofs = val_ofs;
   entry->val_len = val_len;
+  entry->flags = 0u;
   return CPS_OK;
 }
 
@@ -1886,7 +2913,7 @@ static int cps_flatfile_write_mini_toc_and_trailer(cps_flatfile_txn_state *txn,
       .key_len = txn->toc_entries[i].key_len,
       .val_len = txn->toc_entries[i].val_len,
       .rtype = txn->toc_entries[i].rtype,
-      .reserved = 0u,
+      .flags = txn->toc_entries[i].flags,
     };
     rc = cps_flatfile_write_all(fd, (const uint8_t *)&entry, sizeof entry);
     bytes_written += sizeof entry;
@@ -1958,7 +2985,7 @@ static int cps_flatfile_write_checkpoint_snapshot(cps_flatfile_state *state,
       .key_len = entry->key_len,
       .val_len = entry->val_len,
       .rtype = entry->rtype,
-      .reserved = 0u,
+      .flags = entry->flags,
     };
     rc = cps_flatfile_write_all(fd, (const uint8_t *)&disk_entry, sizeof disk_entry);
     if (rc != CPS_OK) {
@@ -2050,6 +3077,327 @@ static int cps_flatfile_append_file(const char *dst_path, const char *src_path, 
   return rc;
 }
 
+static void cps_flatfile_frame_dir_snapshot_destroy(cps_flatfile_frame_dir_snapshot *snapshot) {
+  if (!snapshot) {
+    return;
+  }
+  free(snapshot->entries);
+  snapshot->entries = NULL;
+  snapshot->count = 0u;
+}
+
+static int cps_flatfile_frame_dir_snapshot_load(const cps_flatfile_state *state,
+                                                cps_flatfile_frame_dir_snapshot *snapshot) {
+  if (!state || !state->dir_path || !snapshot) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  memset(snapshot, 0, sizeof *snapshot);
+
+  int fd = open(state->dir_path, O_RDONLY);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+
+  off_t size = lseek(fd, 0, SEEK_END);
+  if (size < 0) {
+    close(fd);
+    return CPS_ERR_IO;
+  }
+  if ((size_t)size % sizeof(cps_flatfile_frame_dir_entry_disk) != 0u) {
+    close(fd);
+    return CPS_ERR_VERIFY;
+  }
+  if (size == 0) {
+    close(fd);
+    return CPS_OK;
+  }
+
+  size_t count = (size_t)size / sizeof(cps_flatfile_frame_dir_entry_disk);
+  cps_flatfile_frame_dir_entry_disk *entries = (cps_flatfile_frame_dir_entry_disk *)malloc(count * sizeof *entries);
+  if (!entries) {
+    close(fd);
+    return CPS_ERR_NOMEM;
+  }
+
+  ssize_t rd = pread(fd, entries, size, 0);
+  close(fd);
+  if (rd != size) {
+    free(entries);
+    return CPS_ERR_IO;
+  }
+
+  snapshot->entries = entries;
+  snapshot->count = count;
+  return CPS_OK;
+}
+
+static int cps_flatfile_frame_dir_append(const cps_flatfile_state *state,
+                                         uint64_t beat,
+                                         uint64_t frame_id,
+                                         uint64_t idx_ofs,
+                                         uint64_t idx_len,
+                                         uint64_t dat_ofs,
+                                         uint64_t dat_len) {
+  if (!state || !state->dir_path) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  int fd = open(state->dir_path, O_WRONLY | O_APPEND | O_CREAT, 0644);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+
+  cps_flatfile_frame_dir_entry_disk entry = {
+    .beat = beat,
+    .frame_id = frame_id,
+    .idx_ofs = idx_ofs,
+    .idx_len = idx_len,
+    .dat_ofs = dat_ofs,
+    .dat_len = dat_len,
+  };
+
+  int rc = cps_flatfile_write_all(fd, (const uint8_t *)&entry, sizeof entry);
+  if (rc == CPS_OK && fsync(fd) != 0) {
+    rc = CPS_ERR_IO;
+  }
+  close(fd);
+  return rc;
+}
+
+static bool cps_flatfile_frame_dir_entry_matches_meta(const cps_flatfile_frame_dir_entry_disk *entry,
+                                                      const cps_flatfile_meta *meta) {
+  if (!entry || !meta) {
+    return false;
+  }
+  return entry->frame_id == meta->head_frame_id &&
+         entry->idx_ofs == meta->head_idx_ofs &&
+         entry->idx_len == meta->head_idx_len &&
+         entry->dat_ofs == meta->head_dat_ofs &&
+         entry->dat_len == meta->head_dat_len;
+}
+
+static int cps_flatfile_frame_dir_tail(const cps_flatfile_state *state,
+                                       cps_flatfile_frame_dir_entry_disk *entry) {
+  if (!state || !state->dir_path || !entry) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  int fd = open(state->dir_path, O_RDONLY);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+  off_t size = lseek(fd, 0, SEEK_END);
+  if (size < 0) {
+    close(fd);
+    return CPS_ERR_IO;
+  }
+  if (size == 0) {
+    close(fd);
+    return CPS_ERR_NOT_FOUND;
+  }
+  if ((size_t)size % sizeof *entry != 0u) {
+    close(fd);
+    return CPS_ERR_VERIFY;
+  }
+  off_t ofs = size - (off_t)sizeof *entry;
+  ssize_t rd = pread(fd, entry, sizeof *entry, ofs);
+  close(fd);
+  if (rd != sizeof *entry) {
+    return CPS_ERR_IO;
+  }
+  return CPS_OK;
+}
+
+static int cps_flatfile_frame_dir_trim_to_fit(cps_flatfile_state *state,
+                                              uint64_t idx_size,
+                                              uint64_t dat_size,
+                                              cps_flatfile_frame_dir_entry_disk *out_tail) {
+  if (!state || !state->dir_path) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  int fd = open(state->dir_path, O_RDWR | O_CREAT, 0644);
+  if (fd < 0) {
+    return CPS_ERR_IO;
+  }
+
+  off_t size = lseek(fd, 0, SEEK_END);
+  if (size < 0) {
+    close(fd);
+    return CPS_ERR_IO;
+  }
+
+  const off_t entry_size = (off_t)sizeof(cps_flatfile_frame_dir_entry_disk);
+  while (size >= entry_size) {
+    off_t ofs = size - entry_size;
+    cps_flatfile_frame_dir_entry_disk entry = {0};
+    if (pread(fd, &entry, sizeof entry, ofs) != sizeof entry) {
+      close(fd);
+      return CPS_ERR_IO;
+    }
+
+    bool overflow = (entry.idx_len > 0u && entry.idx_ofs > UINT64_MAX - entry.idx_len) ||
+                    (entry.dat_len > 0u && entry.dat_ofs > UINT64_MAX - entry.dat_len);
+    uint64_t idx_end = overflow ? UINT64_MAX : entry.idx_ofs + entry.idx_len;
+    uint64_t dat_end = overflow ? UINT64_MAX : entry.dat_ofs + entry.dat_len;
+    if (!overflow && idx_end <= idx_size && dat_end <= dat_size) {
+      if (out_tail) {
+        *out_tail = entry;
+      }
+      close(fd);
+      return CPS_OK;
+    }
+
+    size -= entry_size;
+    if (ftruncate(fd, size) != 0) {
+      close(fd);
+      return CPS_ERR_IO;
+    }
+  }
+
+  close(fd);
+  if (out_tail) {
+    memset(out_tail, 0, sizeof *out_tail);
+  }
+  return CPS_ERR_NOT_FOUND;
+}
+
+static int cps_flatfile_frame_dir_seed_from_meta(cps_flatfile_state *state) {
+  if (!state || !state->dir_path) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  if (state->meta.head_idx_len == 0u && state->meta.head_dat_len == 0u) {
+    return CPS_OK;
+  }
+
+  cps_flatfile_frame_dir_entry_disk tail = {0};
+  int tail_rc = cps_flatfile_frame_dir_tail(state, &tail);
+  if (tail_rc == CPS_OK && cps_flatfile_frame_dir_entry_matches_meta(&tail, &state->meta)) {
+    return CPS_OK;
+  }
+  return cps_flatfile_frame_dir_append(state,
+                                       state->meta.last_beat,
+                                       state->meta.head_frame_id,
+                                       state->meta.head_idx_ofs,
+                                       state->meta.head_idx_len,
+                                       state->meta.head_dat_ofs,
+                                       state->meta.head_dat_len);
+}
+
+static int cps_flatfile_apply_tail_entry(cps_flatfile_state *state,
+                                         int idx_fd,
+                                         const cps_flatfile_frame_dir_entry_disk *entry) {
+  if (!state || idx_fd < 0 || !entry) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  if (entry->idx_len < sizeof(cps_flatfile_trailer_disk)) {
+    return CPS_ERR_VERIFY;
+  }
+  uint64_t trailer_ofs = entry->idx_ofs + entry->idx_len - sizeof(cps_flatfile_trailer_disk);
+  cps_flatfile_trailer_disk trailer = {0};
+  int rc = cps_flatfile_read_exact_fd(idx_fd, trailer_ofs, &trailer, sizeof trailer);
+  if (rc != CPS_OK) {
+    return rc;
+  }
+  if (trailer.magic != CPS_FLATFILE_TRAIL_MAGIC) {
+    return CPS_ERR_VERIFY;
+  }
+
+  state->meta.head_idx_ofs = entry->idx_ofs;
+  state->meta.head_idx_len = entry->idx_len;
+  state->meta.head_dat_ofs = entry->dat_ofs;
+  state->meta.head_dat_len = entry->dat_len;
+  state->meta.head_frame_id = entry->frame_id;
+  state->meta.last_beat = entry->beat;
+  memcpy(state->meta.head_merkle, trailer.merkle, sizeof trailer.merkle);
+  return cps_flatfile_meta_store(state);
+}
+
+
+static int cps_flatfile_load_frame_entries(int idx_fd,
+                                           uint64_t frame_ofs,
+                                           uint64_t frame_len,
+                                           cps_flatfile_toc_entry_disk **entries_out,
+                                           uint32_t *entry_count) {
+  if (idx_fd < 0 || !entries_out || !entry_count) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  *entries_out = NULL;
+  *entry_count = 0u;
+  if (frame_len < sizeof(cps_flatfile_trailer_disk)) {
+    return CPS_ERR_VERIFY;
+  }
+
+  const uint64_t trailer_ofs = frame_ofs + frame_len - sizeof(cps_flatfile_trailer_disk);
+  cps_flatfile_trailer_disk trailer = {0};
+  int rc = cps_flatfile_read_exact_fd(idx_fd, trailer_ofs, &trailer, sizeof trailer);
+  if (rc != CPS_OK) {
+    return rc;
+  }
+  if (trailer.magic != CPS_FLATFILE_TRAIL_MAGIC) {
+    return CPS_ERR_VERIFY;
+  }
+
+  const size_t toc_bytes = sizeof(cps_flatfile_toc_header_disk) +
+                           (size_t)trailer.toc_count * sizeof(cps_flatfile_toc_entry_disk);
+  if (frame_len < toc_bytes + sizeof(cps_flatfile_trailer_disk)) {
+    return CPS_ERR_VERIFY;
+  }
+
+  const uint64_t toc_ofs = trailer_ofs - toc_bytes;
+  cps_flatfile_toc_header_disk toc_header;
+  rc = cps_flatfile_read_exact_fd(idx_fd, toc_ofs, &toc_header, sizeof toc_header);
+  if (rc != CPS_OK) {
+    return rc;
+  }
+  if (toc_header.magic != CPS_FLATFILE_TOC_MAGIC || toc_header.entry_count != trailer.toc_count) {
+    return CPS_ERR_VERIFY;
+  }
+  if (toc_header.entry_count == 0u) {
+    return CPS_ERR_NOT_FOUND;
+  }
+
+  const size_t entries_size = (size_t)toc_header.entry_count * sizeof(cps_flatfile_toc_entry_disk);
+  cps_flatfile_toc_entry_disk *entries = (cps_flatfile_toc_entry_disk *)malloc(entries_size);
+  if (!entries) {
+    return CPS_ERR_NOMEM;
+  }
+  rc = cps_flatfile_read_exact_fd(idx_fd, toc_ofs + sizeof toc_header, entries, entries_size);
+  if (rc != CPS_OK) {
+    free(entries);
+    return rc;
+  }
+
+  *entries_out = entries;
+  *entry_count = toc_header.entry_count;
+  return CPS_OK;
+}
+
+static int cps_flatfile_lookup_frame_record_fd(int idx_fd,
+                                               int dat_fd,
+                                               uint64_t frame_ofs,
+                                               uint64_t frame_len,
+                                               cps_slice key,
+                                               cps_buf *out) {
+  if (idx_fd < 0 || dat_fd < 0 || !out) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  cps_flatfile_toc_entry_disk *entries = NULL;
+  uint32_t entry_count = 0u;
+  int rc = cps_flatfile_load_frame_entries(idx_fd, frame_ofs, frame_len, &entries, &entry_count);
+  if (rc != CPS_OK) {
+    return rc;
+  }
+
+  for (uint32_t i = 0; i < entry_count; ++i) {
+    rc = cps_flatfile_fetch_entry_value(idx_fd, dat_fd, &entries[i], key, out);
+    if (rc == CPS_OK || rc != CPS_ERR_NOT_FOUND) {
+      break;
+    }
+  }
+
+  free(entries);
+  return rc;
+}
 
 static int cps_flatfile_lookup_head_record(cps_flatfile_state *state, cps_slice key, cps_buf *out) {
   if (!state || !out) {
@@ -2069,116 +3417,333 @@ static int cps_flatfile_lookup_head_record(cps_flatfile_state *state, cps_slice 
     return CPS_ERR_IO;
   }
 
-  int rc = CPS_ERR_NOT_FOUND;
-  const uint64_t frame_ofs = state->meta.head_idx_ofs;
-  const uint64_t frame_len = state->meta.head_idx_len;
-  if (frame_len < sizeof(cps_flatfile_trailer_disk)) {
-    rc = CPS_ERR_VERIFY;
-    goto done;
-  }
-
-  const uint64_t trailer_ofs = frame_ofs + frame_len - sizeof(cps_flatfile_trailer_disk);
-  cps_flatfile_trailer_disk trailer = {0};
-  rc = cps_flatfile_read_exact_fd(idx_fd, trailer_ofs, &trailer, sizeof trailer);
-  if (rc != CPS_OK) {
-    goto done;
-  }
-  if (trailer.magic != CPS_FLATFILE_TRAIL_MAGIC) {
-    rc = CPS_ERR_VERIFY;
-    goto done;
-  }
-
-  const size_t toc_bytes = sizeof(cps_flatfile_toc_header_disk) + (size_t)trailer.toc_count * sizeof(cps_flatfile_toc_entry_disk);
-  if (frame_len < toc_bytes + sizeof(cps_flatfile_trailer_disk)) {
-    rc = CPS_ERR_VERIFY;
-    goto done;
-  }
-
-  const uint64_t toc_ofs = trailer_ofs - toc_bytes;
-  cps_flatfile_toc_header_disk toc_header;
-  rc = cps_flatfile_read_exact_fd(idx_fd, toc_ofs, &toc_header, sizeof toc_header);
-  if (rc != CPS_OK) {
-    goto done;
-  }
-  if (toc_header.magic != CPS_FLATFILE_TOC_MAGIC || toc_header.entry_count != trailer.toc_count) {
-    rc = CPS_ERR_VERIFY;
-    goto done;
-  }
-
-  if (toc_header.entry_count == 0u) {
-    rc = CPS_ERR_NOT_FOUND;
-    goto done;
-  }
-
-  const size_t entries_size = (size_t)toc_header.entry_count * sizeof(cps_flatfile_toc_entry_disk);
-  cps_flatfile_toc_entry_disk *entries = (cps_flatfile_toc_entry_disk *)malloc(entries_size);
-  if (!entries) {
-    rc = CPS_ERR_NOMEM;
-    goto done;
-  }
-
-  rc = cps_flatfile_read_exact_fd(idx_fd, toc_ofs + sizeof toc_header, entries, entries_size);
-  if (rc != CPS_OK) {
-    free(entries);
-    goto done;
-  }
-
-  for (uint32_t i = 0; i < toc_header.entry_count; ++i) {
-    rc = cps_flatfile_fetch_entry_value(idx_fd, dat_fd, &entries[i], key, out);
-    if (rc == CPS_OK || rc != CPS_ERR_NOT_FOUND) {
-      break;
-    }
-  }
-
-  free(entries);
-
-done:
+  int rc = cps_flatfile_lookup_frame_record_fd(idx_fd,
+                                               dat_fd,
+                                               state->meta.head_idx_ofs,
+                                               state->meta.head_idx_len,
+                                               key,
+                                               out);
   close(dat_fd);
   close(idx_fd);
   return rc;
+}
+
+typedef struct {
+  cps_slice key;
+  cps_buf *out;
+  int idx_fd;
+  int dat_fd;
+  uint64_t key_hash;
+  int rc;
+} cps_flatfile_checkpoint_lookup_ctx;
+
+static bool cps_flatfile_checkpoint_lookup_cb(const cps_flatfile_ckp_header_disk *header,
+                                              const cps_flatfile_toc_entry_disk *entries,
+                                              void *user) {
+  cps_flatfile_checkpoint_lookup_ctx *ctx = (cps_flatfile_checkpoint_lookup_ctx *)user;
+  if (!header || !ctx) {
+    if (ctx) ctx->rc = CPS_ERR_INVALID_ARGUMENT;
+    return false;
+  }
+  for (uint32_t i = 0; i < header->entry_count; ++i) {
+    const cps_flatfile_toc_entry_disk *entry = &entries[i];
+    if (entry->key_hash != ctx->key_hash || entry->key_len != ctx->key.len) {
+      continue;
+    }
+    ctx->rc = cps_flatfile_fetch_entry_value(ctx->idx_fd, ctx->dat_fd, entry, ctx->key, ctx->out);
+    if (ctx->rc == CPS_ERR_NOT_FOUND) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+static bool cps_flatfile_checkpoint_scan_cb(const cps_flatfile_ckp_header_disk *header,
+                                            const cps_flatfile_toc_entry_disk *entries,
+                                            void *user_ctx) {
+  cps_flatfile_checkpoint_scan_ctx *ctx = (cps_flatfile_checkpoint_scan_ctx *)user_ctx;
+  if (!ctx || !header) {
+    if (ctx) ctx->rc = CPS_ERR_INVALID_ARGUMENT;
+    return false;
+  }
+  if (header->entry_count == 0u || !entries) {
+    return true;
+  }
+  int scan_rc = cps_flatfile_scan_entries_with_prefix(ctx->state,
+                                                      ctx->idx_fd,
+                                                      ctx->dat_fd,
+                                                      entries,
+                                                      header->entry_count,
+                                                      ctx->prefix,
+                                                      ctx->cb,
+                                                      ctx->user,
+                                                      ctx->visited,
+                                                      ctx->visited_len,
+                                                      ctx->visited_cap);
+  if (scan_rc == CPS_OK) {
+    ctx->rc = CPS_OK;
+    return true;
+  }
+  if (scan_rc == CPS_ERR_NOT_FOUND) {
+    if (ctx->rc != CPS_OK) {
+      ctx->rc = CPS_ERR_NOT_FOUND;
+    }
+    return true;
+  }
+  ctx->rc = scan_rc;
+  return false;
 }
 
 static int cps_flatfile_lookup_checkpoint_record(cps_flatfile_state *state, cps_slice key, cps_buf *out) {
   if (!state || !out) {
     return CPS_ERR_INVALID_ARGUMENT;
   }
-  cps_flatfile_checkpoint_view view = {0};
-  int view_rc = cps_flatfile_load_last_checkpoint(state, &view);
-  if (view_rc != CPS_OK) {
-    return view_rc;
-  }
-
-  if (view.header.entry_count == 0u || !view.entries) {
-    cps_flatfile_checkpoint_view_destroy(&view);
-    return CPS_ERR_NOT_FOUND;
-  }
 
   int idx_fd = open(state->idx_path, O_RDONLY);
+  if (idx_fd < 0) {
+    return CPS_ERR_IO;
+  }
   int dat_fd = open(state->dat_path, O_RDONLY);
-  if (idx_fd < 0 || dat_fd < 0) {
-    if (idx_fd >= 0) close(idx_fd);
-    if (dat_fd >= 0) close(dat_fd);
-    cps_flatfile_checkpoint_view_destroy(&view);
+  if (dat_fd < 0) {
+    close(idx_fd);
     return CPS_ERR_IO;
   }
 
-  uint64_t target_hash = cps_flatfile_key_hash(key.data, key.len);
-  int rc = CPS_ERR_NOT_FOUND;
-  for (uint32_t i = 0; i < view.header.entry_count; ++i) {
-    const cps_flatfile_toc_entry_disk *entry = &view.entries[i];
-    if (entry->key_hash != target_hash || entry->key_len != key.len) {
-      continue;
-    }
-    rc = cps_flatfile_fetch_entry_value(idx_fd, dat_fd, entry, key, out);
-    if (rc == CPS_OK) {
-      break;
-    }
+  cps_flatfile_checkpoint_lookup_ctx ctx = {
+    .key = key,
+    .out = out,
+    .idx_fd = idx_fd,
+    .dat_fd = dat_fd,
+    .key_hash = cps_flatfile_key_hash(key.data, key.len),
+    .rc = CPS_ERR_NOT_FOUND,
+  };
+
+  int iter_rc = cps_flatfile_iterate_checkpoints(state, cps_flatfile_checkpoint_lookup_cb, &ctx);
+  close(dat_fd);
+  close(idx_fd);
+  if (iter_rc == CPS_ERR_NOT_FOUND && ctx.rc == CPS_ERR_NOT_FOUND) {
+    return CPS_ERR_NOT_FOUND;
+  }
+  if (iter_rc != CPS_OK && iter_rc != CPS_ERR_NOT_FOUND) {
+    return iter_rc;
+  }
+  return ctx.rc;
+}
+
+static int cps_flatfile_build_cas_chunk(cps_slice chunk_key,
+                                        uint8_t payload_kind,
+                                        uint64_t payload_fp,
+                                        const cps_flatfile_payload_ref_info *ref_info,
+                                        cps_buf *payload,
+                                        cps_buf *out) {
+  if (!chunk_key.data || chunk_key.len == 0u || !ref_info || !payload || !payload->data || !out) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  uint64_t total_size = ref_info->payload_size ? ref_info->payload_size : payload->len;
+  if (payload->len < total_size) {
+    return CPS_ERR_VERIFY;
+  }
+  size_t base_len = 0u;
+  uint64_t ordinal = 0u;
+  if (!cps_flatfile_decode_chunk_key(chunk_key.data, chunk_key.len, &base_len, &ordinal) || base_len == 0u) {
+    return CPS_ERR_NOT_FOUND;
+  }
+  const uint64_t chunk_limit = CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD ? CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD : 4096u;
+  uint64_t chunk_offset = chunk_limit * ordinal;
+  if (chunk_offset >= total_size) {
+    return CPS_ERR_NOT_FOUND;
+  }
+  uint64_t remaining = total_size - chunk_offset;
+  uint64_t chunk_size = remaining < chunk_limit ? remaining : chunk_limit;
+  if (chunk_offset + chunk_size > payload->len) {
+    return CPS_ERR_VERIFY;
   }
 
-  close(idx_fd);
-  close(dat_fd);
-  cps_flatfile_checkpoint_view_destroy(&view);
+  out->len = 0u;
+  if (!cps_flatfile_buf_append_u8(out, payload_kind) ||
+      !cps_flatfile_buf_append_varint(out, total_size) ||
+      !cps_flatfile_buf_append_varint(out, chunk_offset) ||
+      !cps_flatfile_buf_append_varint(out, chunk_size)) {
+    return CPS_ERR_NOMEM;
+  }
+
+  if (payload_fp != 0u) {
+    if (!cps_flatfile_buf_append_varint(out, sizeof payload_fp) ||
+        !cps_flatfile_buf_append(out, &payload_fp, sizeof payload_fp)) {
+      return CPS_ERR_NOMEM;
+    }
+  } else if (!cps_flatfile_buf_append_varint(out, 0u)) {
+    return CPS_ERR_NOMEM;
+  }
+
+  uint8_t aad_hash[CEP_FLAT_HASH_SIZE];
+  if (ref_info->aead_mode != CEP_FLAT_AEAD_NONE) {
+    if (!cep_flat_stream_aead_ready()) {
+      return CPS_ERR_VERIFY;
+    }
+    if (cep_flat_stream_active_aead_mode() != ref_info->aead_mode) {
+      return CPS_ERR_VERIFY;
+    }
+    uint8_t nonce_buf[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES] = {0};
+    size_t nonce_len = 0u;
+    uint8_t *cipher = NULL;
+    size_t cipher_len = 0u;
+    if (!cep_flat_stream_aead_encrypt_chunk(chunk_key.data,
+                                            chunk_key.len,
+                                            payload_fp,
+                                            chunk_offset,
+                                            chunk_size,
+                                            total_size,
+                                            payload->data + chunk_offset,
+                                            &cipher,
+                                            &cipher_len,
+                                            nonce_buf,
+                                            &nonce_len,
+                                            aad_hash)) {
+      if (cipher) {
+        sodium_memzero(cipher, cipher_len);
+        free(cipher);
+      }
+      return CPS_ERR_VERIFY;
+    }
+    bool ok = true;
+    ok &= cps_flatfile_buf_append_u8(out, (uint8_t)ref_info->aead_mode);
+    ok &= cps_flatfile_buf_append_varint(out, nonce_len);
+    if (ok && nonce_len) {
+      ok &= cps_flatfile_buf_append(out, nonce_buf, nonce_len);
+    }
+    ok &= cps_flatfile_buf_append(out, aad_hash, sizeof aad_hash);
+    if (ok) {
+      ok &= cps_flatfile_buf_append(out, cipher, cipher_len);
+    }
+    sodium_memzero(cipher, cipher_len);
+    free(cipher);
+    if (!ok) {
+      return CPS_ERR_NOMEM;
+    }
+  } else {
+    cep_flat_stream_compute_chunk_aad_hash(chunk_key.data, chunk_key.len, aad_hash);
+    if (!cps_flatfile_buf_append_u8(out, (uint8_t)ref_info->aead_mode) ||
+        !cps_flatfile_buf_append_varint(out, 0u) ||
+        !cps_flatfile_buf_append(out, aad_hash, sizeof aad_hash)) {
+      return CPS_ERR_NOMEM;
+    }
+    if (!cps_flatfile_buf_append(out, payload->data + chunk_offset, (size_t)chunk_size)) {
+      return CPS_ERR_NOMEM;
+    }
+  }
+  return CPS_OK;
+}
+
+static int cps_flatfile_build_cas_record(cps_flatfile_state *state, cps_slice key, cps_buf *out) {
+  if (!state || !out || !key.data || key.len == 0u) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  size_t base_len = 0u;
+  uint64_t ordinal = 0u;
+  if (!cps_flatfile_decode_chunk_key(key.data, key.len, &base_len, &ordinal) || base_len == 0u) {
+    return CPS_ERR_NOT_FOUND;
+  }
+  cps_slice base_key = {
+    .data = key.data,
+    .len = base_len,
+  };
+
+  cps_buf desc = {0};
+  int rc = cps_flatfile_lookup_head_record(state, base_key, &desc);
+  if (rc == CPS_ERR_NOT_FOUND) {
+    rc = cps_flatfile_lookup_checkpoint_record(state, base_key, &desc);
+  }
+
+  if (rc == CPS_ERR_NOT_FOUND) {
+    cps_flatfile_frame_dir_snapshot snapshot = {0};
+    int snap_rc = cps_flatfile_frame_dir_snapshot_load(state, &snapshot);
+    if (snap_rc == CPS_OK && snapshot.count > 0u) {
+      int idx_fd = open(state->idx_path, O_RDONLY);
+      int dat_fd = open(state->dat_path, O_RDONLY);
+      if (idx_fd < 0 || dat_fd < 0) {
+        if (idx_fd >= 0) close(idx_fd);
+        if (dat_fd >= 0) close(dat_fd);
+        snap_rc = CPS_ERR_IO;
+      } else {
+        for (size_t i = snapshot.count; i > 0u && rc == CPS_ERR_NOT_FOUND; --i) {
+          cps_flatfile_frame_dir_entry_disk *entry = &snapshot.entries[i - 1u];
+          if (entry->idx_len == 0u) {
+            continue;
+          }
+          if (entry->frame_id == state->meta.head_frame_id &&
+              entry->idx_ofs == state->meta.head_idx_ofs &&
+              entry->idx_len == state->meta.head_idx_len) {
+            continue;
+          }
+          rc = cps_flatfile_lookup_frame_record_fd(idx_fd,
+                                                   dat_fd,
+                                                   entry->idx_ofs,
+                                                   entry->idx_len,
+                                                   base_key,
+                                                   &desc);
+          if (rc == CPS_OK || rc != CPS_ERR_NOT_FOUND) {
+            break;
+          }
+        }
+        close(dat_fd);
+        close(idx_fd);
+      }
+    }
+    if (rc == CPS_ERR_NOT_FOUND && snap_rc != CPS_OK && snap_rc != CPS_ERR_NOT_FOUND) {
+      rc = snap_rc;
+    }
+    cps_flatfile_frame_dir_snapshot_destroy(&snapshot);
+  }
+
+  if (rc != CPS_OK) {
+    free(desc.data);
+    return rc;
+  }
+
+  cps_flatfile_payload_ref_info ref_info = {0};
+  uint8_t payload_kind = 0u;
+  uint64_t payload_fp = 0u;
+  if (!cps_flatfile_parse_cell_desc_payload_ref((cps_slice){ .data = desc.data, .len = desc.len },
+                                                &payload_kind,
+                                                &payload_fp,
+                                                &ref_info) ||
+      ref_info.kind != CEP_FLAT_PAYLOAD_REF_CAS) {
+    free(desc.data);
+    return CPS_ERR_NOT_FOUND;
+  }
+
+  cps_buf cas_payload = {0};
+  rc = cps_flatfile_fetch_cas_blob_bytes(state, &ref_info, &cas_payload);
+  if (rc != CPS_OK) {
+    free(desc.data);
+    free(cas_payload.data);
+    return rc;
+  }
+  rc = cps_flatfile_normalize_cas_payload(&ref_info, &cas_payload);
+  if (rc != CPS_OK) {
+    free(desc.data);
+    free(cas_payload.data);
+    return rc;
+  }
+
+  rc = cps_flatfile_build_cas_chunk(key, payload_kind, payload_fp, &ref_info, &cas_payload, out);
+  free(desc.data);
+  free(cas_payload.data);
   return rc;
+}
+
+static int cps_flatfile_try_cas_read(cps_engine *engine, cps_slice key, cps_buf *out) {
+  if (!engine || !out) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  cps_flatfile_state *state = cps_flatfile_state_from(engine);
+  if (!state) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  return cps_flatfile_build_cas_record(state, key, out);
 }
 static int cps_flatfile_read_exact_fd(int fd, uint64_t ofs, void *buf, size_t len) {
   uint8_t *cursor = (uint8_t *)buf;
@@ -2394,3 +3959,4 @@ static int cps_flatfile_mkdir_p(const char *path, mode_t mode) {
   free(dup);
   return 0;
 }
+#define CPS_FLATFILE_CAS_MAX_SUBDIR 256u

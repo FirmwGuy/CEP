@@ -32,6 +32,7 @@ typedef struct {
     size_t record_size;
     uint32_t checksum;
     uint8_t hash[CEP_FLAT_HASH_SIZE];
+    uint8_t record_type;
 } cepFlatDigestEntry;
 
 typedef struct {
@@ -89,6 +90,9 @@ struct cepFlatReader {
     size_t              trailer_record_offset;
     size_t              trailer_record_size;
     uint32_t            trailer_checksum;
+    cepFlatMiniTocEntry* mini_toc;
+    size_t              mini_toc_count;
+    size_t              mini_toc_capacity;
 };
 
 static bool cep_flat_append_record(cepFlatSerializer* serializer,
@@ -115,6 +119,8 @@ static bool cep_flat_reader_validate_chunk(cepFlatReader* reader,
                                            size_t body_size);
 static bool cep_flat_reader_finalize_chunks(cepFlatReader* reader);
 static void cep_flat_reader_clear_chunks(cepFlatReader* reader);
+static bool cep_flat_reader_mini_toc_reserve(cepFlatReader* reader, size_t count);
+static void cep_flat_reader_clear_mini_toc(cepFlatReader* reader);
 static bool cep_flat_reader_validate_chunk(cepFlatReader* reader,
                                            const uint8_t* key,
                                            size_t key_size,
@@ -168,6 +174,35 @@ static void cep_flat_reader_clear_chunks(cepFlatReader* reader) {
     reader->chunk_trackers = NULL;
     reader->chunk_tracker_count = 0u;
     reader->chunk_tracker_capacity = 0u;
+}
+
+static void cep_flat_reader_clear_mini_toc(cepFlatReader* reader) {
+    if (!reader)
+        return;
+    if (reader->mini_toc) {
+        cep_free(reader->mini_toc);
+    }
+    reader->mini_toc = NULL;
+    reader->mini_toc_capacity = 0u;
+    reader->mini_toc_count = 0u;
+}
+
+static bool cep_flat_reader_mini_toc_reserve(cepFlatReader* reader, size_t count) {
+    if (!reader)
+        return false;
+    if (count == 0u) {
+        reader->mini_toc_count = 0u;
+        return true;
+    }
+    if (reader->mini_toc_capacity < count) {
+        cepFlatMiniTocEntry* grown = cep_realloc(reader->mini_toc, count * sizeof *grown);
+        if (!grown)
+            return false;
+        reader->mini_toc = grown;
+        reader->mini_toc_capacity = count;
+    }
+    reader->mini_toc_count = 0u;
+    return true;
 }
 
 static cepFlatChunkTracker* cep_flat_reader_chunk_tracker_get(cepFlatReader* reader,
@@ -782,6 +817,7 @@ static bool cep_flat_append_record(cepFlatSerializer* serializer,
         entry->record_size = payload_size;
         entry->checksum = checksum;
         cep_flat_hash_bytes(dst, payload_size, entry->hash);
+        entry->record_type = spec->type;
         serializer->record_count++;
     }
 
@@ -790,46 +826,87 @@ static bool cep_flat_append_record(cepFlatSerializer* serializer,
 
 static bool cep_flat_emit_trailer(cepFlatSerializer* serializer,
                                   const uint8_t merkle_root[CEP_FLAT_HASH_SIZE]) {
-    uint8_t body[256];
-    uint8_t* cursor = body;
+    if (!serializer)
+        return false;
+
+    cepFlatBuffer body = {0};
+
+#define APPEND_BYTES(ptr, len)                                                        \
+    do {                                                                              \
+        size_t __len = (size_t)(len);                                                 \
+        if (!cep_flat_buffer_reserve(&body, __len))                                   \
+            goto fail;                                                                \
+        memcpy(body.data + body.size, (ptr), __len);                                  \
+        body.size += __len;                                                           \
+    } while (0)
+
+#define APPEND_U8(value)                                                              \
+    do {                                                                              \
+        if (!cep_flat_buffer_reserve(&body, 1u))                                      \
+            goto fail;                                                                \
+        body.data[body.size++] = (uint8_t)(value);                                    \
+    } while (0)
+
+#define APPEND_VARINT(value)                                                          \
+    do {                                                                              \
+        size_t __len = cep_flat_varint_length((uint64_t)(value));                     \
+        if (!cep_flat_buffer_reserve(&body, __len))                                   \
+            goto fail;                                                                \
+        cep_flat_write_varint((uint64_t)(value), body.data + body.size);              \
+        body.size += __len;                                                           \
+    } while (0)
 
     uint32_t magic = CEP_FLAT_MAGIC;
-    memcpy(cursor, &magic, sizeof magic);
-    cursor += sizeof magic;
+    APPEND_BYTES(&magic, sizeof magic);
+    APPEND_U8(CEP_FLAT_SERIALIZER_VERSION);
+    APPEND_VARINT(serializer->config.beat_number);
+    APPEND_VARINT(serializer->record_count);
+    APPEND_U8((uint8_t)serializer->config.apply_mode);
+    APPEND_U8((uint8_t)serializer->config.hash_algorithm);
+    APPEND_U8((uint8_t)serializer->config.compression_algorithm);
+    APPEND_U8((uint8_t)serializer->config.checksum_algorithm);
+    APPEND_VARINT(CEP_FLAT_HASH_SIZE);
+    APPEND_BYTES(merkle_root, CEP_FLAT_HASH_SIZE);
 
-    *cursor++ = CEP_FLAT_SERIALIZER_VERSION;
-    cursor = cep_flat_write_varint(serializer->config.beat_number, cursor);
-    cursor = cep_flat_write_varint(serializer->record_count, cursor);
-    *cursor++ = (uint8_t)serializer->config.apply_mode;
-    *cursor++ = (uint8_t)serializer->config.hash_algorithm;
-    *cursor++ = (uint8_t)serializer->config.compression_algorithm;
-    *cursor++ = (uint8_t)serializer->config.checksum_algorithm;
-    cursor = cep_flat_write_varint(CEP_FLAT_HASH_SIZE, cursor);
-    memcpy(cursor, merkle_root, CEP_FLAT_HASH_SIZE);
-    cursor += CEP_FLAT_HASH_SIZE;
-    cursor = cep_flat_write_varint(0u, cursor); /* mini_toc_count */
-    cursor = cep_flat_write_varint(serializer->config.payload_history_beats, cursor);
-    cursor = cep_flat_write_varint(serializer->config.manifest_history_beats, cursor);
+    size_t mini_toc_count = serializer->digest_count;
+    if (mini_toc_count)
+        cep_flat_serializer_add_caps(serializer, CEP_FLAT_CAP_FRAME_TOC);
+    APPEND_VARINT(mini_toc_count);
+    for (size_t i = 0; i < mini_toc_count; ++i) {
+        const cepFlatDigestEntry* entry = &serializer->digests[i];
+        const uint8_t* key = serializer->frame.data + entry->key_offset;
+        APPEND_U8(entry->record_type);
+        APPEND_VARINT(entry->key_size);
+        APPEND_BYTES(key, entry->key_size);
+        APPEND_VARINT(entry->record_offset);
+    }
+
+    APPEND_VARINT(serializer->config.payload_history_beats);
+    APPEND_VARINT(serializer->config.manifest_history_beats);
 
     uint32_t caps = serializer->config.capability_flags;
-    memcpy(cursor, &caps, sizeof caps);
-    cursor += sizeof caps;
+    APPEND_BYTES(&caps, sizeof caps);
+
+#undef APPEND_BYTES
+#undef APPEND_U8
+#undef APPEND_VARINT
 
     cepFlatRecordSpec trailer = {
         .type = CEP_FLAT_RECORD_FRAME_TRAILER,
         .version = CEP_FLAT_SERIALIZER_VERSION,
         .flags = 0u,
-        .key = {
-            .data = NULL,
-            .size = 0u,
-        },
-        .body = {
-            .data = body,
-            .size = (size_t)(cursor - body),
-        },
+        .key = {.data = NULL, .size = 0u},
+        .body = {.data = body.data, .size = body.size},
     };
 
-    return cep_flat_append_record(serializer, &trailer, false);
+    if (!cep_flat_append_record(serializer, &trailer, false))
+        goto fail;
+    cep_free(body.data);
+    return true;
+
+fail:
+    cep_free(body.data);
+    return false;
 }
 
 static int cep_flat_digest_leaf_cmp(const void* lhs, const void* rhs) {
@@ -925,6 +1002,7 @@ void cep_flat_reader_destroy(cepFlatReader* reader) {
     cep_free(reader->records);
     cep_free(reader->digests);
     cep_flat_reader_clear_chunks(reader);
+    cep_flat_reader_clear_mini_toc(reader);
     cep_free(reader);
 }
 
@@ -935,6 +1013,7 @@ void cep_flat_reader_reset(cepFlatReader* reader) {
     reader->record_count = 0u;
     reader->digest_count = 0u;
     cep_flat_reader_clear_chunks(reader);
+    cep_flat_reader_clear_mini_toc(reader);
     reader->committed = false;
     reader->trailer_verified = false;
     reader->trailer_record_count = 0u;
@@ -996,6 +1075,17 @@ const uint8_t* cep_flat_reader_merkle_root(const cepFlatReader* reader) {
     if (!reader || !reader->committed)
         return NULL;
     return reader->trailer_merkle;
+}
+
+const cepFlatMiniTocEntry* cep_flat_reader_mini_toc(const cepFlatReader* reader, size_t* count) {
+    if (!reader || !reader->committed) {
+        if (count)
+            *count = 0u;
+        return NULL;
+    }
+    if (count)
+        *count = reader->mini_toc_count;
+    return reader->mini_toc;
 }
 
 static bool cep_flat_reader_parse(cepFlatReader* reader) {
@@ -1198,20 +1288,30 @@ static bool cep_flat_reader_parse_trailer(cepFlatReader* reader, const uint8_t* 
     uint64_t mini_toc = 0u;
     if (!cep_flat_read_varint(body, body_size, &offset, &mini_toc))
         return false;
+    if (mini_toc > SIZE_MAX)
+        return false;
+    if (!cep_flat_reader_mini_toc_reserve(reader, (size_t)mini_toc))
+        return false;
     for (uint64_t i = 0; i < mini_toc; ++i) {
         if (body_size - offset < 1u)
             return false;
-        offset++; /* type */
+        uint8_t entry_type = body[offset++];
         uint64_t prefix_len = 0u;
         if (!cep_flat_read_varint(body, body_size, &offset, &prefix_len))
             return false;
         if (body_size - offset < prefix_len)
             return false;
-        offset += (size_t)prefix_len;
+        size_t prefix_size = (size_t)prefix_len;
+        const uint8_t* prefix_ptr = body + offset;
+        offset += prefix_size;
         uint64_t first_offset = 0u;
         if (!cep_flat_read_varint(body, body_size, &offset, &first_offset))
             return false;
-        (void)first_offset;
+        cepFlatMiniTocEntry* entry = &reader->mini_toc[reader->mini_toc_count++];
+        entry->record_type = entry_type;
+        entry->key_prefix.data = prefix_ptr;
+        entry->key_prefix.size = prefix_size;
+        entry->record_offset = first_offset;
     }
 
     uint64_t payload_history = 0u;

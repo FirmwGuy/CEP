@@ -75,7 +75,9 @@ MunitResult test_flat_serializer_round_trip(const MunitParameter params[], void*
     const cepFlatFrameConfig* parsed_config = cep_flat_reader_frame(reader);
     munit_assert_not_null(parsed_config);
     munit_assert_uint64(parsed_config->beat_number, ==, config.beat_number);
-    munit_assert_uint(parsed_config->capability_flags, ==, config.capability_flags);
+    uint32_t parsed_caps = parsed_config->capability_flags;
+    munit_assert_uint(parsed_caps & config.capability_flags, ==, config.capability_flags);
+    munit_assert_true((parsed_caps & CEP_FLAT_CAP_FRAME_TOC) != 0u);
     munit_assert_uint(parsed_config->apply_mode, ==, config.apply_mode);
 
     const uint8_t* merkle = cep_flat_reader_merkle_root(reader);
@@ -97,6 +99,19 @@ MunitResult test_flat_serializer_round_trip(const MunitParameter params[], void*
     munit_assert_memory_equal(sizeof key_b, parsed[1].key.data, key_b);
     munit_assert_size(parsed[1].body.size, ==, sizeof body_b);
     munit_assert_memory_equal(sizeof body_b, parsed[1].body.data, body_b);
+
+    size_t toc_count = 0u;
+    const cepFlatMiniTocEntry* toc = cep_flat_reader_mini_toc(reader, &toc_count);
+    munit_assert_not_null(toc);
+    munit_assert_size(toc_count, ==, parsed_count);
+    munit_assert_uint(toc[0].record_type, ==, record_a.type);
+    munit_assert_size(toc[0].key_prefix.size, ==, sizeof key_a);
+    munit_assert_memory_equal(sizeof key_a, toc[0].key_prefix.data, key_a);
+    munit_assert_size(toc[0].record_offset, <, frame_size);
+    munit_assert_uint(toc[1].record_type, ==, record_b.type);
+    munit_assert_size(toc[1].key_prefix.size, ==, sizeof key_b);
+    munit_assert_memory_equal(sizeof key_b, toc[1].key_prefix.data, key_b);
+    munit_assert_size(toc[1].record_offset, <, frame_size);
 
     cep_flat_reader_destroy(reader);
     cep_flat_serializer_destroy(serializer);

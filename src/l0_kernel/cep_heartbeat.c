@@ -14,6 +14,7 @@
 #include "cep_flat_stream.h"
 #include "../enzymes/cep_cell_operations.h"
 #include "../enzymes/cep_l0_organs.h"
+#include "../cps/cps_storage_service.h"
 #include "cep_mailbox.h"
 #include "cep_ops.h"
 #include "cep_organ.h"
@@ -4621,6 +4622,12 @@ bool cep_heartbeat_stage_commit(void) {
     }
 
     cep_executor_service();
+
+    if (!cps_storage_commit_current_beat()) {
+        CEP_DEBUG_PRINTF("[stage_commit] storage commit failed\n");
+        fflush(stderr);
+        return false;
+    }
 
     if (CEP_RUNTIME.current != CEP_BEAT_INVALID) {
         cepOpCount stamp = cep_cell_timestamp();

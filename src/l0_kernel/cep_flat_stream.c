@@ -105,6 +105,9 @@ static bool cep_serialization_collect_children_snapshot(const cepCell* parent,
                                                         cepFlatChildDescriptor** out_children,
                                                         size_t* out_count,
                                                         uint8_t* organiser);
+static bool cep_serialization_hash_payload_blake3(const void* payload,
+                                                  size_t size,
+                                                  uint8_t out[CEP_FLAT_HASH_SIZE]);
 static bool cep_serialization_emit_manifest_history(const cepCell* cell,
                                                     cepFlatSerializer* serializer,
                                                     cepFlatNamepoolCollector* names,
@@ -165,6 +168,8 @@ static bool cep_serialization_build_cell_desc_body(const cepCell* cell,
                                                    uint64_t payload_fp,
                                                    const void* inline_payload,
                                                    size_t inline_length,
+                                                   size_t payload_size,
+                                                   const uint8_t* payload_hash,
                                                    cepFlatNamepoolCollector* names,
                                                    uint8_t** out_body,
                                                    size_t* out_body_size);
@@ -479,6 +484,58 @@ static void cep_serialization_compute_aad_hash(const uint8_t* chunk_key,
     blake3_hasher_finalize(&hasher, aad_hash, CEP_FLAT_HASH_SIZE);
 }
 
+bool cep_flat_stream_aead_ready(void) {
+    return cep_serialization_aead_ready();
+}
+
+cepFlatAeadMode cep_flat_stream_active_aead_mode(void) {
+    return (cepFlatAeadMode)cep_serialization_aead_mode();
+}
+
+bool cep_flat_stream_aead_encrypt_chunk(const uint8_t* chunk_key,
+                                        size_t chunk_key_size,
+                                        uint64_t payload_fp,
+                                        size_t chunk_offset,
+                                        size_t chunk_size,
+                                        size_t total_size,
+                                        const uint8_t* plaintext,
+                                        uint8_t** out_ciphertext,
+                                        size_t* out_ciphertext_size,
+                                        uint8_t* nonce_out,
+                                        size_t* nonce_len_out,
+                                        uint8_t aad_hash[CEP_FLAT_HASH_SIZE]) {
+    return cep_serialization_aead_encrypt_chunk(chunk_key,
+                                                chunk_key_size,
+                                                payload_fp,
+                                                chunk_offset,
+                                                chunk_size,
+                                                total_size,
+                                                plaintext,
+                                                out_ciphertext,
+                                                out_ciphertext_size,
+                                                nonce_out,
+                                                nonce_len_out,
+                                                aad_hash);
+}
+
+void cep_flat_stream_compute_chunk_aad_hash(const uint8_t* chunk_key,
+                                            size_t chunk_key_size,
+                                            uint8_t aad_hash[CEP_FLAT_HASH_SIZE]) {
+    cep_serialization_compute_aad_hash(chunk_key, chunk_key_size, aad_hash);
+}
+
+static bool cep_serialization_hash_payload_blake3(const void* payload,
+                                                  size_t size,
+                                                  uint8_t out[CEP_FLAT_HASH_SIZE]) {
+    if (!payload || !size || !out)
+        return false;
+    blake3_hasher hasher;
+    blake3_hasher_init(&hasher);
+    blake3_hasher_update(&hasher, payload, size);
+    blake3_hasher_finalize(&hasher, out, CEP_FLAT_HASH_SIZE);
+    return true;
+}
+
 static bool cep_serialization_aead_encrypt_chunk(const uint8_t* chunk_key,
                                                  size_t chunk_key_size,
                                                  uint64_t payload_fp,
@@ -612,6 +669,10 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
     bool inline_allowed = data && data->datatype == CEP_DATATYPE_VALUE && payload_size && payload_size <= 64u;
     size_t inline_len = inline_allowed ? payload_size : 0u;
     uint64_t payload_fp = data ? cep_data_compute_hash(data) : 0u;
+    uint8_t payload_hash[CEP_FLAT_HASH_SIZE];
+    bool has_payload_hash = false;
+    if (payload_bytes && payload_size)
+        has_payload_hash = cep_serialization_hash_payload_blake3(payload_bytes, payload_size, payload_hash);
     size_t chunk_limit = blob_payload_bytes ? blob_payload_bytes : CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD;
     if (!chunk_limit)
         chunk_limit = CEP_SERIALIZATION_DEFAULT_BLOB_PAYLOAD;
@@ -628,6 +689,8 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
                                                 payload_fp,
                                                 inline_len ? payload_bytes : NULL,
                                                 inline_len,
+                                                payload_size,
+                                                has_payload_hash ? payload_hash : NULL,
                                                 &names,
                                                 &body_bytes,
                                                 &body_size))
@@ -635,6 +698,8 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
 
     if (payload_fp)
         cep_flat_serializer_add_caps(serializer, CEP_FLAT_CAP_PAYLOAD_FP);
+    if (has_payload_hash && payload_size)
+        cep_flat_serializer_add_caps(serializer, CEP_FLAT_CAP_PAYLOAD_REF);
 
     /* TODO(2025-11-09T22:31Z): populate the body payload with the actual cell
        metadata (store hints, beats, payload fingerprints). */
@@ -852,6 +917,8 @@ static bool cep_serialization_build_cell_desc_body(const cepCell* cell,
                                                    uint64_t payload_fp,
                                                    const void* inline_payload,
                                                    size_t inline_length,
+                                                   size_t payload_size,
+                                                   const uint8_t* payload_hash,
                                                    cepFlatNamepoolCollector* names,
                                                    uint8_t** out_body,
                                                    size_t* out_body_size) {
@@ -956,6 +1023,35 @@ static bool cep_serialization_build_cell_desc_body(const cepCell* cell,
     BODY_APPEND_VARINT(inline_length);
     if (inline_length)
         BODY_APPEND_BYTES(inline_payload, inline_length);
+
+    if (payload_hash && payload_size) {
+        uint8_t payload_ref_buf[4u + (2u * 10u) + CEP_FLAT_HASH_SIZE];
+        size_t payload_ref_len = 0u;
+        payload_ref_buf[payload_ref_len++] = (uint8_t)CEP_FLAT_PAYLOAD_REF_INLINE;
+        payload_ref_buf[payload_ref_len++] = (uint8_t)CEP_FLAT_HASH_BLAKE3_256;
+        payload_ref_buf[payload_ref_len++] = (uint8_t)CEP_FLAT_COMPRESSION_NONE;
+        payload_ref_buf[payload_ref_len++] = (uint8_t)cep_serialization_aead_mode();
+
+        size_t size_len = cep_serialization_varint_length(payload_size);
+        if (payload_ref_len + size_len > sizeof payload_ref_buf)
+            goto exit;
+        cep_serialization_write_varint(payload_size, payload_ref_buf + payload_ref_len);
+        payload_ref_len += size_len;
+
+        size_t hash_len = CEP_FLAT_HASH_SIZE;
+        size_t hash_len_var = cep_serialization_varint_length(hash_len);
+        if (payload_ref_len + hash_len_var + hash_len > sizeof payload_ref_buf)
+            goto exit;
+        cep_serialization_write_varint(hash_len, payload_ref_buf + payload_ref_len);
+        payload_ref_len += hash_len_var;
+        memcpy(payload_ref_buf + payload_ref_len, payload_hash, hash_len);
+        payload_ref_len += hash_len;
+
+        BODY_APPEND_VARINT(payload_ref_len);
+        BODY_APPEND_BYTES(payload_ref_buf, payload_ref_len);
+    } else {
+        BODY_APPEND_VARINT(0u);
+    }
 
     BODY_APPEND_VARINT(0u); /* namepool_map_ref placeholder */
 

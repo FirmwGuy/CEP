@@ -19,13 +19,15 @@ Each record has a canonical key (`type || path_key || subkey`), a body, and an I
 | `manifest_history_pg (0x07)` | Historical manifest pages keyed by `{parent path, page_id, revision}`. Controlled by `CEP_SERIALIZATION_FLAT_MANIFEST_HISTORY_BEATS`. | `type || parent_path_key || page_id || revision_id`. |
 | `frame_trailer (0xFF)` | Closure certificate: beat number, record count, apply mode, hash/checksum IDs, Merkle root, optional mini-TOC, history selectors, and capability bitmap. | `0xFF`. |
 
+`cell_desc` bodies append a **payload reference block** (length-prefixed varints) immediately after the inline payload bytes. When the block length is non-zero it contains `{ref_kind, hash_alg, codec, aead_mode, payload_size, hash_len, hash}` where the hash is the BLAKE3-256 fingerprint of the payload. `ref_kind=0` advertises inline payload bytes (hash is advisory), while `ref_kind=1` will point at `/cas/<hash>` once the CAS lifter swaps payload chunks for blobs. Writers raise `CEP_FLAT_CAP_PAYLOAD_REF` whenever the block is populated so older readers can reject the frame deterministically instead of misparsing the payload metadata.
+
 The canonical specification (fields, varints, AEAD layout) lives in the flat serializer wire-level spec. This topic explains how the pieces are used inside the runtime.
 
 ## Frame lifecycle and invariants
 
 ### Apply modes & capabilities
 - `apply_mode` in the trailer tells the reader whether it must insert-only, overwrite existing state, or enforce CAS semantics. Every record in the frame is validated before the apply-set becomes visible.
-- Capability flags advertise optional features: split manifests, order projections, payload fingerprints, frame compression, namepool deltas, payload history, manifest history, etc. Readers that do not understand a bit must reject the frame *before* touching any state.
+- Capability flags advertise optional features: split manifests, order projections, payload fingerprints, payload references, frame compression, namepool deltas, payload history, manifest history, or the frame mini-TOC. Readers that do not understand a bit must reject the frame *before* touching any state.
 
 ### Chunk ordering
 - `payload_chunk` records must appear with strictly increasing ordinals per cell, and each chunk’s `chunk_offset` must equal the sum of the previous chunk sizes. The reader enforces this with chunk trackers and fails the frame if a chunk is duplicated, skipped, or sealed early.
@@ -47,12 +49,16 @@ The canonical specification (fields, varints, AEAD layout) lives in the flat ser
 
 ### Namepool & CAS
 - Every record key is expressed in DT-segment form. If a path references a namepool entry the reader may not have, the writer emits `namepool_delta` records and sets `CEP_FLAT_CAP_NAMEPOOL_MAP`. Readers ingest those deltas first, ensuring the rest of the frame resolves cleanly.
-- Payload fingerprints surface the CAS ID for non-inline payloads; historical payload records reuse the same fingerprint so CAS consumers can prune duplicates efficiently.
+- Payload fingerprints surface the CAS ID for non-inline payloads; historical payload records reuse the same fingerprint so CAS consumers can prune duplicates efficiently. When `CEP_FLAT_CAP_PAYLOAD_REF` is present, the reference block supplies the BLAKE3-256 fingerprint, payload length, codec, and AEAD mode so `/cas` readers can fetch and verify blobs without touching `branch.dat`.
+
+### Trailer mini-TOC
+- The trailer’s mini-TOC count now matches the number of tracked records in the frame whenever `CEP_FLAT_CAP_FRAME_TOC` is asserted. Each entry stores `record_type`, the full key prefix, and the byte offset of the record relative to the beginning of the frame. `cep_flat_reader_mini_toc()` exposes these entries so persistence layers (CPS, federation replay, import/export tooling) can seek directly to the relevant records without replaying the entire frame payload.
 
 ## Streams & adapters
 
 - `cep_flat_stream_emit_cell` (and the federation emitters layered on top) always build a flat frame. Feature toggles now enable/disable optional records within that frame rather than swapping whole serializers.
 - Streams, CAS adapters, and federation transports simply forward the frame bytes. Replay paths call `cep_flat_reader_feed`/`commit` to validate and iterate records.
+- `cep_flat_reader_mini_toc()` exposes the trailer mini-TOC so tooling can locate specific records or payload chunks without scanning the entire frame.
 - Test helpers such as `serialization_capture_sink` or `flat_assert_chunk_records` in `src/test/l0_kernel/test_serialization.c` show how to capture a frame and inspect specific record types.
 
 ## Testing cues

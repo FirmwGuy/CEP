@@ -26,6 +26,9 @@ CEP_DEFINE_STATIC_DT(dt_cps_runtime_sev_warn, CEP_ACRO("CEP"), CEP_WORD("sev:war
 typedef struct {
   cps_engine *engine;
   bool ready;
+  char *branch_name;
+  char *root_dir;
+  char *branch_path;
 } cpsRuntimeState;
 
 static cpsRuntimeState g_cps_state = {0};
@@ -68,6 +71,69 @@ static void cps_runtime_emit_cei(const char *detail) {
   (void)cep_cei_emit(&req);
 }
 
+static void cps_runtime_clear_paths(void) {
+  free(g_cps_state.branch_name);
+  g_cps_state.branch_name = NULL;
+  free(g_cps_state.root_dir);
+  g_cps_state.root_dir = NULL;
+  free(g_cps_state.branch_path);
+  g_cps_state.branch_path = NULL;
+}
+
+static char *cps_runtime_join_branch_path(const char *root_dir, const char *branch_name) {
+  const char *safe_root = (root_dir && *root_dir) ? root_dir : CPS_RUNTIME_DEFAULT_ROOT;
+  const char *safe_branch = (branch_name && *branch_name) ? branch_name : CPS_RUNTIME_DEFAULT_BRANCH;
+  size_t root_len = strlen(safe_root);
+  size_t branch_len = strlen(safe_branch);
+  bool needs_sep = true;
+  if (root_len == 0u) {
+    needs_sep = false;
+  } else {
+    char last = safe_root[root_len - 1u];
+    if (last == '/' || last == '\\') {
+      needs_sep = false;
+    }
+  }
+  size_t total = root_len + (needs_sep ? 1u : 0u) + branch_len + 1u;
+  char *joined = (char *)malloc(total);
+  if (!joined) {
+    return NULL;
+  }
+  size_t pos = 0u;
+  if (root_len > 0u) {
+    memcpy(joined, safe_root, root_len);
+    pos += root_len;
+  }
+  if (needs_sep) {
+    joined[pos++] = '/';
+  }
+  if (branch_len > 0u) {
+    memcpy(joined + pos, safe_branch, branch_len);
+    pos += branch_len;
+  }
+  joined[pos] = '\0';
+  return joined;
+}
+
+static bool cps_runtime_store_paths(const char *root_dir, const char *branch_name) {
+  const char *effective_root = (root_dir && *root_dir) ? root_dir : CPS_RUNTIME_DEFAULT_ROOT;
+  const char *effective_branch = (branch_name && *branch_name) ? branch_name : CPS_RUNTIME_DEFAULT_BRANCH;
+  char *root_copy = strdup(effective_root);
+  char *branch_copy = strdup(effective_branch);
+  char *branch_path = cps_runtime_join_branch_path(effective_root, effective_branch);
+  if (!root_copy || !branch_copy || !branch_path) {
+    free(root_copy);
+    free(branch_copy);
+    free(branch_path);
+    return false;
+  }
+  cps_runtime_clear_paths();
+  g_cps_state.root_dir = root_copy;
+  g_cps_state.branch_name = branch_copy;
+  g_cps_state.branch_path = branch_path;
+  return true;
+}
+
 bool cps_runtime_bootstrap(void) {
   if (g_cps_state.engine) {
     return true;
@@ -95,22 +161,24 @@ bool cps_runtime_bootstrap(void) {
 
   g_cps_state.engine = engine;
   g_cps_state.ready = true;
+  if (!cps_runtime_store_paths(root_dir, branch_name)) {
+    cps_runtime_shutdown();
+    return false;
+  }
   return true;
 }
 
 void cps_runtime_shutdown(void) {
-  if (!g_cps_state.engine) {
-    g_cps_state.ready = false;
-    return;
+  if (g_cps_state.engine) {
+    if (g_cps_state.engine->ops && g_cps_state.engine->ops->close) {
+      g_cps_state.engine->ops->close(g_cps_state.engine);
+    } else {
+      free(g_cps_state.engine);
+    }
+    g_cps_state.engine = NULL;
   }
-
-  if (g_cps_state.engine->ops && g_cps_state.engine->ops->close) {
-    g_cps_state.engine->ops->close(g_cps_state.engine);
-  } else {
-    free(g_cps_state.engine);
-  }
-  g_cps_state.engine = NULL;
   g_cps_state.ready = false;
+  cps_runtime_clear_paths();
 }
 
 bool cps_runtime_is_ready(void) {
@@ -119,4 +187,25 @@ bool cps_runtime_is_ready(void) {
 
 cps_engine *cps_runtime_engine(void) {
   return g_cps_state.engine;
+}
+
+const char *cps_runtime_branch_name(void) {
+  if (g_cps_state.branch_name && g_cps_state.branch_name[0] != '\0') {
+    return g_cps_state.branch_name;
+  }
+  return CPS_RUNTIME_DEFAULT_BRANCH;
+}
+
+const char *cps_runtime_root_dir(void) {
+  if (g_cps_state.root_dir && g_cps_state.root_dir[0] != '\0') {
+    return g_cps_state.root_dir;
+  }
+  return CPS_RUNTIME_DEFAULT_ROOT;
+}
+
+const char *cps_runtime_branch_dir(void) {
+  if (g_cps_state.branch_path && g_cps_state.branch_path[0] != '\0') {
+    return g_cps_state.branch_path;
+  }
+  return NULL;
 }

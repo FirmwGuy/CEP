@@ -50,14 +50,16 @@ typedef enum {
 } cepFlatChecksumAlgorithm;
 
 typedef enum {
-    CEP_FLAT_CAP_SPLIT_DESC     = 0x00000001u,
-    CEP_FLAT_CAP_NAMEPOOL_MAP   = 0x00000002u,
-    CEP_FLAT_CAP_PAYLOAD_FP     = 0x00000004u,
-    CEP_FLAT_CAP_PAGED_CHILDSET = 0x00000008u,
-    CEP_FLAT_CAP_PAGED_ORDER    = 0x00000010u,
+    CEP_FLAT_CAP_SPLIT_DESC        = 0x00000001u,
+    CEP_FLAT_CAP_NAMEPOOL_MAP      = 0x00000002u,
+    CEP_FLAT_CAP_PAYLOAD_FP        = 0x00000004u,
+    CEP_FLAT_CAP_PAGED_CHILDSET    = 0x00000008u,
+    CEP_FLAT_CAP_PAGED_ORDER       = 0x00000010u,
     CEP_FLAT_CAP_FRAME_COMPRESSION = 0x00000020u,
-    CEP_FLAT_CAP_PAYLOAD_HISTORY = 0x00000040u,
-    CEP_FLAT_CAP_MANIFEST_HISTORY = 0x00000080u,
+    CEP_FLAT_CAP_PAYLOAD_HISTORY   = 0x00000040u,
+    CEP_FLAT_CAP_MANIFEST_HISTORY  = 0x00000080u,
+    CEP_FLAT_CAP_PAYLOAD_REF       = 0x00000100u,
+    CEP_FLAT_CAP_FRAME_TOC         = 0x00000200u,
 } cepFlatCapabilityFlag;
 
 typedef enum {
@@ -101,6 +103,17 @@ typedef struct {
 typedef struct cepFlatSerializer cepFlatSerializer;
 typedef struct cepFlatReader cepFlatReader;
 
+typedef enum {
+    CEP_FLAT_PAYLOAD_REF_INLINE = 0u,
+    CEP_FLAT_PAYLOAD_REF_CAS    = 1u,
+} cepFlatPayloadRefKind;
+
+typedef struct {
+    uint8_t     record_type;
+    cepFlatSlice key_prefix;
+    uint64_t    record_offset;
+} cepFlatMiniTocEntry;
+
 cepFlatSerializer* cep_flat_serializer_create(void);
 void                cep_flat_serializer_destroy(cepFlatSerializer* serializer);
 void                cep_flat_serializer_reset(cepFlatSerializer* serializer);
@@ -126,6 +139,25 @@ bool                cep_flat_reader_ready(const cepFlatReader* reader);
 const cepFlatRecordView* cep_flat_reader_records(const cepFlatReader* reader, size_t* count);
 const cepFlatFrameConfig* cep_flat_reader_frame(const cepFlatReader* reader);
 const uint8_t*      cep_flat_reader_merkle_root(const cepFlatReader* reader);
+const cepFlatMiniTocEntry* cep_flat_reader_mini_toc(const cepFlatReader* reader, size_t* count);
+
+bool cep_flat_stream_aead_ready(void);
+cepFlatAeadMode cep_flat_stream_active_aead_mode(void);
+bool cep_flat_stream_aead_encrypt_chunk(const uint8_t* chunk_key,
+                                        size_t chunk_key_size,
+                                        uint64_t payload_fp,
+                                        size_t chunk_offset,
+                                        size_t chunk_size,
+                                        size_t total_size,
+                                        const uint8_t* plaintext,
+                                        uint8_t** out_ciphertext,
+                                        size_t* out_ciphertext_size,
+                                        uint8_t* nonce_out,
+                                        size_t* nonce_len_out,
+                                        uint8_t aad_hash[CEP_FLAT_HASH_SIZE]);
+void cep_flat_stream_compute_chunk_aad_hash(const uint8_t* chunk_key,
+                                            size_t chunk_key_size,
+                                            uint8_t aad_hash[CEP_FLAT_HASH_SIZE]);
 
 #ifdef __cplusplus
 }

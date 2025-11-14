@@ -213,6 +213,17 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 
 **Where it lives.** `src/enzymes/fed_transport_manager.c` implements negotiation, schema, and CEI hooks. Provider stubs plus mock helpers are in `src/enzymes/fed_transport_providers.c`. Tests covering negotiation, coalescing, and inbound delivery sit in `src/test/federation/test_fed_transport.c`.
 
+## 15) CPS CAS cache lookup & metrics publishing
+
+**Why it exists.** CPS needs fast replay in addition to durable persistence. The flatfile engine therefore consults a branch-local CAS cache first, then falls back to the runtime `/cas` tree when blobs are missing. Operators and tests rely on `/data/persist/<branch>/metrics/{cas_hits,cas_miss,cas_lat_ns}` to observe cache behaviour, so metrics must refresh immediately after each lookup.
+
+**What it does.**
+
+* `cps_flatfile_fetch_cas_blob_bytes` consults `branch/cas/manifest.bin` plus hashed blob files. Cache hits increment `stat_cas_hits`.
+* Cache misses call `cps_flatfile_fetch_cas_blob_runtime`, which scans the runtime CAS tree (`cep_heartbeat_cas_root`) for a payload whose BLAKE3 fingerprint matches the `cell_desc.payload_ref`. Successful fallbacks write the blob back into the branch cache and increment `stat_cas_misses`.
+* Each lookup measures elapsed nanoseconds (`stat_cas_lookup_ns`) and immediately invokes `cps_flatfile_publish_metrics`, ensuring `/data/persist/<branch>/metrics` stays up to date even if no new beat commits.
+
+**Where it lives.** `src/cps/cps_flatfile.c` (`cps_flatfile_fetch_cas_blob_bytes`, `cps_flatfile_fetch_cas_blob_runtime`, `cps_flatfile_publish_metrics`). Tests: `/CEP/cps/replay/cas_cache` (cache hits) and `/CEP/cps/replay/cas_runtime` (runtime fallback).
 
 * **History & snapshots:** `cep_cell_update`, `cep_data_history_push`, `cep_store_history_push/clear` 
 * **Links & shadows:** `cep_link_set/pull`, `cep_cell_shadow_mark_target_dead`, `cep_shadow_*` helpers 

@@ -22,6 +22,7 @@ This L0 Kernel API gives you a **hierarchical, time‑aware data kernel** (“ce
 * **Pause / Rollback / Resume (PRR) controls** that gate non-essential work, rewind the visible beat horizon, and deterministically drain queued impulses from a mailbox-backed backlog.
 * **Episodic Enzyme Engine (E³)** that runs long-lived workloads deterministically, with the ability to promote episodes from threaded RO slices to cooperative RW slices and demote them back without breaking replay or budget accounting.
 * **Runtime contexts (`cepRuntime`)** so multiple CEP kernels can coexist in one process; activate an instance with `cep_runtime_set_active()` before calling the usual Layer 0 APIs.
+* **CPS persistence with replay fixtures** so every beat is durably mirrored to `branch/` directories, CAS cache hits/misses get published under `/data/persist/<branch>/metrics`, and tests can regenerate deterministic flat frames and CAS blobs (`fixtures/cps/{frames,cas}`) whenever the serializer evolves. See `docs/L0_KERNEL/design/L0-DESIGN-CPS.md` for the full architecture and `docs/L0_KERNEL/L0-INTEGRATION-GUIDE.md` (§2.5) for the regeneration flow.
 
 
 Together, these pieces let you build **local‑first trees, reactive dataflows, digital‑twin graphs, scene graphs with spatial indexing, and distributed state pipelines**—without giving up determinism, history, or zero‑copy performance where it matters.
@@ -43,6 +44,9 @@ Standard organ and cell operations surface as reusable enzymes. This chapter doc
 
 ### Developer Handbook
 The handbook is the pragmatic orientation for contributors working inside `cep_cell.*` and its storage backends. It maps repository layout, highlights coding conventions, and lists the tests and fixtures that prove new work. Consult it whenever you are preparing a kernel patch or onboarding a teammate.
+
+### Persistence & Replay Fixtures
+Layer 0’s persistence service (CPS) now expects deterministic flat serializer frames and CAS blobs. The fixture workflow lives under `fixtures/cps/` and is exercised by `/CEP/serialization/flat_payload_ref_fixtures` plus `/CEP/cps/replay/*`. Regenerate fixtures by running those tests with `CEP_UPDATE_PAYLOAD_REF_FIXTURES=1`; commits must include both the refreshed frames and blobs so replay harnesses stay hermetic. Metrics such as `cas_hits`, `cas_miss`, and `cas_lat_ns` are republished after every lookup, ensuring `/data/persist/<branch>/metrics` reflects cache behaviour even on read-heavy beats. Refer to `docs/L0_KERNEL/design/L0-DESIGN-CPS.md` (Fixture & Replay Workflow) for the rationale and to `docs/L0_KERNEL/L0-INTEGRATION-GUIDE.md` (§2.5) for the exact regeneration steps.
 
 ### Debug Macros
 Layer 0’s debug wrappers keep guardrails active in debug builds without polluting release binaries. The debug macros topic explains when `CEP_DEBUG`, `CEP_ASSERT`, and `CEP_NOT_ASSERT` execute, how they interact with control flow, and the logging helpers that stay behind the `CEP_ENABLE_DEBUG` flag.

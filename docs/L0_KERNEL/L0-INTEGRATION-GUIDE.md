@@ -22,6 +22,32 @@ Before this change, short-lived runtimes (especially inside tests) could leak or
 - *Do I need to call the new helpers directly?* Not when you rely on `cep_runtime_shutdown()`—it now calls them for you. Only hand-written teardown code (for example, in a minimal reproducer) should invoke `cep_l0_organs_unbind_roots()`, `cep_cell_clear_bindings()`, or `cep_heartbeat_release_runtime()` manually.
 - *Why wasn’t this an issue before multiple runtimes?* Long-running processes reused the default runtime, so bindings and scratch buffers stayed alive for the process lifetime. Once tests started creating and destroying runtimes rapidly, those caches became observable leaks without the explicit cleanup.
 
+### Scoped persistence & test runtimes
+
+CPS and the serializer fixture suites run each test inside a fresh runtime so `/sys`, `/rt`, `/data`, `/cas`, and `/tmp` start empty and publish metrics deterministically. The pattern mirrors the `CpsRuntimeScope` helper from `/CEP/cps/replay/*`:
+
+1. `cepRuntime* runtime = cep_runtime_create();`
+2. `cepRuntime* previous = cep_runtime_set_active(runtime);`
+3. `cep_cell_system_initiate();`
+4. `munit_assert_true(cep_l0_bootstrap());`
+5. `munit_assert_true(cep_namepool_bootstrap());`
+6. `munit_assert_true(cep_runtime_attach_metadata(runtime));`
+7. Configure the heartbeat:
+   ```c
+   cepHeartbeatPolicy policy = {
+       .start_at = 0,
+       .ensure_directories = true,
+       .enforce_visibility = false,
+       .boot_ops = true,
+   };
+   cep_heartbeat_configure(NULL, &policy);
+   cep_heartbeat_startup();
+   ```
+8. Run the test/integration logic (install CAS blobs, ingest frames, poll `/data/persist/<branch>/metrics`).
+9. Teardown: close CPS engines, `unsetenv()` serializer overrides, call `cep_stream_clear_pending();`, `cep_runtime_shutdown(runtime);`, `cep_runtime_restore_active(previous);`, then `cep_runtime_destroy(runtime);`.
+
+Following these steps guarantees that helpers such as `cep_heartbeat_data_root()` and `cep_heartbeat_cas_root()` always resolve, CPS metrics are republished after every lookup, and serializer env overrides (AEAD/compression) never leak into other suites like `/CEP/fed_transport/*`.
+
 ---
 
 ## 0) Reading map
@@ -312,6 +338,16 @@ Control headers now carry a tiny record of “which beat emitted this?” so dow
 - During write, the header encodes a 16-byte metadata block: beat (big-endian `uint64_t`), a flag byte (`0x01` for decision replay), and padding. Readers parse it back and set the struct fields when `metadata_length` matches the pattern.
 - You can still inject arbitrary metadata: provide `metadata_length`/`metadata` and leave `journal_metadata_present` `false`; the serializer simply copies your payload.
 - `void cep_flat_stream_mark_decision_replay(void)` flips the global flag so the next serialized batch advertises that it originated from a replay, mirroring what higher layers use during forensic exports.
+
+### 2.5 Fixture regeneration & CPS replay
+
+Flat serializer fixtures live under `fixtures/cps/{frames,cas}` and back both `/CEP/serialization/flat_payload_ref_fixtures` and the CPS replay suite. Keep them in sync with serializer changes:
+
+1. Run `CEP_UPDATE_PAYLOAD_REF_FIXTURES=1 build/cep_tests --no-fork --single /CEP/serialization/flat_payload_ref_fixtures` to regenerate the `.frame` and `.blob` files.
+2. Review/commit the new artifacts. They are small, textual (frames) or binary (CAS blobs) and should change only when the serializer layout evolves.
+3. Execute `/CEP/cps/replay/*` (or the full `meson test -C build cep_unit_tests`) to prove both CAS cache hydration and runtime lookups succeed with the refreshed fixtures.
+
+The generator fails fast with explicit log messages whenever a fixture is missing, mismatched in size, or byte-different, and the CPS replay harness now bootstraps its own runtime scope so `/data/persist/<branch>/metrics/{cas_hits,cas_miss,cas_lat_ns}` can be asserted reliably.
 
 ---
 

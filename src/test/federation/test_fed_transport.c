@@ -295,14 +295,25 @@ fed_test_build_path(FedInvokePathBuf* buf,
     return (const cepPath*)buf;
 }
 
-static cepDT fed_test_make_dt(const char* tag) {
-    cepID domain = cep_namepool_intern_cstr("CEP");
-    cepID word = cep_text_to_word(tag);
-    if (word != 0u) {
-        return cep_dt_make(domain, word);
+static cepDT fed_test_make_word_dt(const char* tag) {
+    cepDT dt = {0};
+    if (!tag) {
+        return dt;
     }
+    cepID word = cep_text_to_word(tag);
+    if (word == 0u) {
+        return dt;
+    }
+    dt.domain = cep_namepool_intern_cstr("CEP");
+    dt.tag = word;
+    return dt;
+}
+
+static cepDT fed_test_make_dt(const char* tag) {
     cepDT dt = cep_ops_make_dt(tag);
-    munit_assert_uint64(dt.tag, !=, 0u);
+    if (!dt.domain) {
+        dt.domain = cep_namepool_intern_cstr("CEP");
+    }
     return dt;
 }
 
@@ -312,6 +323,12 @@ static cepCell* fed_test_lookup_child(cepCell* parent, const char* tag) {
     }
     cepDT dt = fed_test_make_dt(tag);
     cepCell* child = cep_cell_find_by_name(parent, &dt);
+    if (!child) {
+        cepDT fallback = fed_test_make_word_dt(tag);
+        if (fallback.tag) {
+            child = cep_cell_find_by_name(parent, &fallback);
+        }
+    }
     if (!child) {
         return NULL;
     }

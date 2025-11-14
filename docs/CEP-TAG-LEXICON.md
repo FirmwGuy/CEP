@@ -48,7 +48,16 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `beats` | Runtime platform | metric recording the number of beats persisted under `/data/persist/<branch>/metrics`. |
 | `bytes_idx` | Runtime platform | metric tracking cumulative bytes written to `branch.idx` under `/data/persist/<branch>/metrics`. |
 | `bytes_dat` | Runtime platform | metric tracking cumulative bytes written to `branch.dat` under `/data/persist/<branch>/metrics`. |
+| `cas_hits` | Runtime platform | metric tracking how many CAS payload lookups were served from the branch cache (`/data/persist/<branch>/metrics`). |
+| `cas_miss` | Runtime platform | metric counting CAS payload misses that required a runtime scan (`/data/persist/<branch>/metrics`). |
+| `cas_lat_ns` | Runtime platform | metric reporting the average CAS lookup latency in nanoseconds for the active branch. |
 | `persist_branch` | Runtime platform | fallback tag used when a branch name cannot be interned; hosts CPS metrics if needed. |
+| `bundle` | Runtime platform | envelope field used by `op/import` to specify the filesystem path to an exported CPS bundle. |
+| `persist.commit` | Runtime platform | CEI topic emitted when CPS finishes persisting a beat (`cps_storage_commit_current_beat`). |
+| `persist.frame.io` | Runtime platform | CEI topic emitted when frame staging, fsync, or copy operations fail on the CPS backend. |
+| `persist.checkpoint` | Runtime platform | CEI topic emitted when CPS writes checkpoint TOCs or reports errors during `op/checkpt`. |
+| `persist.recover` | Runtime platform | CEI topic emitted when CPS detects branch corruption and runs crash-recovery sweeps. |
+| `persist.bootstrap` | Runtime platform | CEI topic emitted when CPS bootstrap/engine activation surfaces warnings before `ist:store`. |
 | `dictionary` | Runtime platform | canonical store tag for dictionary nodes. |
 | `dtor` | Runtime platform | spec field storing the optional organ destructor enzyme name. |
 | `ctor` | Runtime platform | spec field storing the optional organ constructor enzyme name. |
@@ -129,6 +138,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `ist:plan` | OPS timeline | control operation planning state recorded when the dossier opens. |
 | `ist:quiesce` | Pause/Rollback/Resume | pause operation state marking non-essential work being parked. |
 | `ist:run` | OPS timeline | resume operation state confirming backlog drain has restarted the agenda. |
+| `ist:exec` | OPS timeline | intermediate state recorded while an OPS verb (checkpoint/compact/sync) is executing. |
 | `ist:stop` | OPS timeline | shutdown operation state marking teardown start. |
 | `ist:store` | OPS timeline | boot operation state marking persistent stores ready. |
 | `note` | OPS timeline | optional textual note attached to a history entry. |
@@ -136,6 +146,10 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `op/cont` | OPS timeline | continuation signal emitted when an awaiter fires. |
 | `op/ct` | OPS timeline | constructor operation verb routed to organ roots. |
 | `op/dt` | OPS timeline | destructor operation verb routed to organ roots. |
+| `op/checkpt` | OPS timeline | persistence verb that asks CPS to write a checkpoint snapshot immediately. |
+| `op/compact` | OPS timeline | persistence verb requesting CPS compaction/retention maintenance. |
+| `op/sync` | OPS timeline | persistence verb signalling an explicit sync/export of CPS state. |
+| `op/import` | OPS timeline | persistence verb instructing CPS to verify + stage an exported bundle under the branch’s `imports/` directory. |
 | `op/pause` | Pause/Rollback/Resume | pause control operation verb that gates the heartbeat agenda. |
 | `op/resume` | Pause/Rollback/Resume | resume control operation verb that re-opens the agenda. |
 | `op/rollback` | Pause/Rollback/Resume | rollback control operation verb that re-points the view horizon. |

@@ -57,6 +57,7 @@ void*       test_ovh_watchdog_setup(const MunitParameter params[], void* user_da
 void        test_ovh_watchdog_tear_down(void* fixture);
 MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_flat_serializer_round_trip(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_flat_serializer_payload_ref_fixtures(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization_flat_chunk_offset_violation(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization_flat_chunk_order_violation(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_serialization_flat_randomized_corruption(const MunitParameter params[], void* user_data_or_fixture);
@@ -83,6 +84,9 @@ MunitResult test_cei_fatal_shutdown(const MunitParameter params[], void* user_da
 MunitResult test_prr_pause_resume_backlog(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_pause_rollback_backlog_guard(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_soft_delete_lookup(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_cps_replay_inline(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_cps_replay_cas_cache(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_cps_replay_cas_runtime(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_view_horizon_snapshot(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_soft_deleted_dictionary_revives(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_history_autoid_monotonic(const MunitParameter params[], void* user_data_or_fixture);

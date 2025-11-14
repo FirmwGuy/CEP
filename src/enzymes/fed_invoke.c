@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "fed_invoke.h"
+#include "fed_schema_helpers.h"
 
 #include "fed_transport.h"
 
@@ -865,12 +866,13 @@ cep_fed_invoke_read_text(cepCell* request_cell,
 static bool
 cep_fed_invoke_read_bool(cepCell* parent,
                          const cepDT* field,
+                         const char* tag_text,
                          bool* out_value)
 {
     if (!parent || !field || !out_value) {
         return false;
     }
-    cepCell* node = cep_cell_find_by_name(parent, field);
+    cepCell* node = cep_fed_schema_find_field(parent, field, tag_text);
     if (!node) {
         return false;
     }
@@ -897,13 +899,14 @@ cep_fed_invoke_read_bool(cepCell* parent,
 static bool
 cep_fed_invoke_read_u32(cepCell* parent,
                         const cepDT* field,
+                        const char* tag_text,
                         bool required,
                         uint32_t* out_value)
 {
     if (!parent || !field || !out_value) {
         return false;
     }
-    cepCell* node = cep_cell_find_by_name(parent, field);
+    cepCell* node = cep_fed_schema_find_field(parent, field, tag_text);
     if (!node) {
         return !required;
     }
@@ -945,31 +948,31 @@ cep_fed_invoke_read_serializer_caps(cepCell* request_cell,
         return;
     }
     bool bool_value = false;
-    if (cep_fed_invoke_read_bool(serializer, dt_ser_crc32c_ok_name(), &bool_value)) {
+    if (cep_fed_invoke_read_bool(serializer, dt_ser_crc32c_ok_name(), CEP_FED_TAG_SER_CRC32C_OK, &bool_value)) {
         policy->allow_crc32c = bool_value;
     }
-    if (cep_fed_invoke_read_bool(serializer, dt_ser_deflate_ok_name(), &bool_value)) {
+    if (cep_fed_invoke_read_bool(serializer, dt_ser_deflate_ok_name(), CEP_FED_TAG_SER_DEFLATE_OK, &bool_value)) {
         policy->allow_deflate = bool_value;
     }
-    if (cep_fed_invoke_read_bool(serializer, dt_ser_aead_ok_name(), &bool_value)) {
+    if (cep_fed_invoke_read_bool(serializer, dt_ser_aead_ok_name(), CEP_FED_TAG_SER_AEAD_OK, &bool_value)) {
         policy->allow_aead = bool_value;
     }
-    if (cep_fed_invoke_read_bool(serializer, dt_ser_warn_down_name(), &bool_value)) {
+    if (cep_fed_invoke_read_bool(serializer, dt_ser_warn_down_name(), CEP_FED_TAG_SER_WARN_DOWN, &bool_value)) {
         policy->warn_on_downgrade = bool_value;
     }
     uint32_t cmp_max = policy->comparator_max_version;
-    if (cep_fed_invoke_read_u32(serializer, dt_ser_cmpmax_name(), false, &cmp_max)) {
+    if (cep_fed_invoke_read_u32(serializer, dt_ser_cmpmax_name(), CEP_FED_TAG_SER_CMP_MAX, false, &cmp_max)) {
         policy->comparator_max_version = cmp_max;
     }
     if (payload_history_beats) {
         uint32_t beats = *payload_history_beats;
-        if (cep_fed_invoke_read_u32(serializer, dt_ser_pay_hist_name(), false, &beats)) {
+        if (cep_fed_invoke_read_u32(serializer, dt_ser_pay_hist_name(), CEP_FED_TAG_SER_PAY_HIST, false, &beats)) {
             *payload_history_beats = beats;
         }
     }
     if (manifest_history_beats) {
         uint32_t beats = *manifest_history_beats;
-        if (cep_fed_invoke_read_u32(serializer, dt_ser_man_hist_name(), false, &beats)) {
+        if (cep_fed_invoke_read_u32(serializer, dt_ser_man_hist_name(), CEP_FED_TAG_SER_MAN_HIST, false, &beats)) {
             *manifest_history_beats = beats;
         }
     }

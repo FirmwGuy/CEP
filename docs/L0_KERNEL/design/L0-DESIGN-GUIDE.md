@@ -28,7 +28,7 @@ Design documents capture the architectural story behind Layer 0 implementation
 
 - **Workflow expectations**  
   - Draft a design doc when introducing a new subsystem, altering observable behaviour, or locking in a major trade-off.  
-  - Reference open TODOs (`TODO.md` files) so ongoing work stays synchronised.  
+  - Cross-link the relevant planning notes so ongoing work stays synchronised without sending readers hunting through ad-hoc task lists.  
   - Update `docs/DOCS-INDEX.md` and `docs/DOCS-ORIENTATION-GUIDE.md` after adding a Design doc so navigation remains current.
 
 ## Global Q&A

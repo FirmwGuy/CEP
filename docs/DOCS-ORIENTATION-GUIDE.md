@@ -18,6 +18,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/topics/LOCKING.md` — Store/data lock propagation to respect when touching concurrency-sensitive code.
   - `docs/L0_KERNEL/topics/LINKS-AND-SHADOWING.md` — Link lifecycle and backlink invariants that moves/clones/deletes rely on.
   - `docs/CEP-TAG-LEXICON.md` — Canonical tag catalog; extend here before introducing new identifiers.
+  - `docs/L0_KERNEL/design/L0-DESIGN-CPS.md` — CPS storage architecture, CAS caching, metrics, fixtures, and operational guidance.
 
 - **Runtime & Lifecycle**
   - `docs/LAYER-BOOTSTRAP-POLICY.md` — Kernel vs. pack responsibilities during bootstrap.
@@ -61,6 +62,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - `docs/L0_KERNEL/design/L0-DESIGN-ORGANS-AND-LIFECYCLE.md` — Organ descriptors, constructors/validators, and teardown guarantees.
 - `docs/L0_KERNEL/design/L0-DESIGN-CEI.md` — Rationale for centralising CEI emission, diagnostics mailbox bootstrap, and severity-to-shutdown policies.
   - `docs/L0_KERNEL/design/L0-DESIGN-MAILBOX-LIFECYCLE.md` — Rationale behind mailbox identity precedence, TTL policy resolution, and retention buckets.
+  - `docs/L0_KERNEL/design/L0-DESIGN-CPS.md` — Persistent storage layer design, CAS cache behaviour, metrics, ops verbs, and fixture workflow.
 
 - **Contextual (Read Once, Revisit When Needed)**
   - `docs/LICENSING.md` — Licensing split across core, tests, and third-party components.

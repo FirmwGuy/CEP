@@ -100,6 +100,7 @@ l0_srcs = files(
   'src/enzymes/fed_transport_manager.c',
   'src/enzymes/fed_transport_providers.c',
   'src/cps/cps_flatfile.c',
+  'src/cps/cps_storage_service.c',
   'src/cps/cps_runtime.c',
 )
 
@@ -238,6 +239,7 @@ if zip_dep.found()
 endif
 
 exe_cargs = []
+exe_cargs += ['-DCEP_SOURCE_ROOT="@0@"'.format(meson.project_source_root())]
 if host_sys == 'windows'
   # Workaround: define only for test builds on Windows due to munit atomics bug.
   exe_cargs += ['-D__STDC_NO_ATOMICS__']
@@ -294,6 +296,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_episode.c',
     'src/test/federation/test_fed_transport.c',
     'src/test/l0_kernel/test_flat_serialization.c',
+    'src/test/l0_kernel/test_flat_serializer_fixtures.c',
     'src/test/l0_kernel/test_flat_serializer.c',
     'src/test/l0_kernel/test_locking.c',
     'src/test/l0_kernel/test_cells_randomized.c',
@@ -305,6 +308,8 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_prr.c',
     'src/test/l0_kernel/test_runtime_dual.c',
     'src/test/poc/l0_integration_poc.c',
+    'src/test/cps/cps_fixture_defs.c',
+    'src/test/cps/test_cps_replay.c',
     )
   test_dependencies = []
   if zip_dep.found()

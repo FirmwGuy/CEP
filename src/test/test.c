@@ -307,6 +307,30 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/cps/replay/inline",
+        test_cps_replay_inline,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/cps/replay/cas_cache",
+        test_cps_replay_cas_cache,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/cps/replay/cas_runtime",
+        test_cps_replay_cas_runtime,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/ops",
         test_ops,
         NULL,
@@ -389,6 +413,14 @@ MunitTest tests[] = {
     {
         "/serialization/flat_multi_chunk",
         test_serialization_flat_multi_chunk,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/serialization/flat_payload_ref_fixtures",
+        test_flat_serializer_payload_ref_fixtures,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,

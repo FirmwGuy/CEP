@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "fed_mirror_organ.h"
+#include "fed_schema_helpers.h"
 
 #include "fed_pack.h"
 
@@ -387,15 +388,12 @@ static bool cep_fed_mirror_read_text(cepCell* parent,
 
 static bool cep_fed_mirror_read_bool(cepCell* parent,
                                      const cepDT* field,
+                                     const char* tag_text,
                                      bool* out_value) {
     if (!parent || !field || !out_value) {
         return false;
     }
-    cepCell* node = cep_cell_find_by_name(parent, field);
-    if (!node) {
-        return false;
-    }
-    node = cep_cell_resolve(node);
+    cepCell* node = cep_fed_schema_find_field(parent, field, tag_text);
     if (!node) {
         return false;
     }
@@ -417,12 +415,13 @@ static bool cep_fed_mirror_read_bool(cepCell* parent,
 
 static bool cep_fed_mirror_read_u32(cepCell* parent,
                                     const cepDT* field,
+                                    const char* tag_text,
                                     bool required,
                                     uint32_t* out_value) {
     if (!parent || !field || !out_value) {
         return false;
     }
-    cepCell* node = cep_cell_find_by_name(parent, field);
+    cepCell* node = cep_fed_schema_find_field(parent, field, tag_text);
     if (!node) {
         if (!required) {
             return true;
@@ -463,20 +462,20 @@ static void cep_fed_mirror_read_serializer_caps(cepCell* request_cell,
         return;
     }
     bool bool_value = false;
-    if (cep_fed_mirror_read_bool(serializer, dt_ser_crc32c_ok_name(), &bool_value)) {
+    if (cep_fed_mirror_read_bool(serializer, dt_ser_crc32c_ok_name(), CEP_FED_TAG_SER_CRC32C_OK, &bool_value)) {
         ctx->flat_allow_crc32c = bool_value;
     }
-    if (cep_fed_mirror_read_bool(serializer, dt_ser_deflate_ok_name(), &bool_value)) {
+    if (cep_fed_mirror_read_bool(serializer, dt_ser_deflate_ok_name(), CEP_FED_TAG_SER_DEFLATE_OK, &bool_value)) {
         ctx->flat_allow_deflate = bool_value;
     }
-    if (cep_fed_mirror_read_bool(serializer, dt_ser_aead_ok_name(), &bool_value)) {
+    if (cep_fed_mirror_read_bool(serializer, dt_ser_aead_ok_name(), CEP_FED_TAG_SER_AEAD_OK, &bool_value)) {
         ctx->flat_allow_aead = bool_value;
     }
-    if (cep_fed_mirror_read_bool(serializer, dt_ser_warn_down_name(), &bool_value)) {
+    if (cep_fed_mirror_read_bool(serializer, dt_ser_warn_down_name(), CEP_FED_TAG_SER_WARN_DOWN, &bool_value)) {
         ctx->flat_warn_on_downgrade = bool_value;
     }
     uint32_t cmp_max = ctx->flat_comparator_max_version;
-    if (cep_fed_mirror_read_u32(serializer, dt_ser_cmpmax_name(), false, &cmp_max)) {
+    if (cep_fed_mirror_read_u32(serializer, dt_ser_cmpmax_name(), CEP_FED_TAG_SER_CMP_MAX, false, &cmp_max)) {
         ctx->flat_comparator_max_version = cmp_max;
     }
 }
@@ -1026,6 +1025,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
                                    sizeof preferred_provider);
     (void)cep_fed_mirror_read_bool(request_cell,
                                    dt_allow_upd(),
+                                   CEP_FED_TAG_UPD_LATEST,
                                    &allow_upd_latest);
 
     bool deadline_present = false;
@@ -1075,6 +1075,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
         }
         (void)cep_fed_mirror_read_u32(bundle,
                                       dt_beat_window_name(),
+                                      "beat_window",
                                       false,
                                       &beat_window);
         (void)cep_fed_mirror_read_u16(bundle,
@@ -1092,7 +1093,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
                                        resume_token,
                                        sizeof resume_token);
         bool history_cap = false;
-        if (!cep_fed_mirror_read_bool(bundle, dt_bundle_hist_cap_name(), &history_cap) || !history_cap) {
+        if (!cep_fed_mirror_read_bool(bundle, dt_bundle_hist_cap_name(), "hist_cap", &history_cap) || !history_cap) {
             cep_fed_mirror_publish_state(request_cell,
                                          "error",
                                          "bundle missing hist_cap capability",
@@ -1103,7 +1104,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
             return CEP_ENZYME_FATAL;
         }
         bool deltas_cap = false;
-        if (!cep_fed_mirror_read_bool(bundle, dt_bundle_delta_cap_name(), &deltas_cap) || !deltas_cap) {
+        if (!cep_fed_mirror_read_bool(bundle, dt_bundle_delta_cap_name(), "delta_cap", &deltas_cap) || !deltas_cap) {
             cep_fed_mirror_publish_state(request_cell,
                                          "error",
                                          "bundle missing delta_cap capability",
@@ -1115,10 +1116,12 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
         }
         (void)cep_fed_mirror_read_u32(bundle,
                                       dt_payload_hist_beats_name(),
+                                      CEP_FED_TAG_SER_PAY_HIST,
                                       false,
                                       &payload_history_beats);
         (void)cep_fed_mirror_read_u32(bundle,
                                       dt_manifest_hist_beats_name(),
+                                      CEP_FED_TAG_SER_MAN_HIST,
                                       false,
                                       &manifest_history_beats);
         if (payload_history_beats == 0u || manifest_history_beats == 0u) {

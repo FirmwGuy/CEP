@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "fed_link_organ.h"
+#include "fed_schema_helpers.h"
 
 #include "fed_pack.h"
 
@@ -91,16 +92,17 @@ static const char* const CEP_FED_LINK_NOTE_TRAILER        = "link frame missing 
 static const struct {
     const cepDT* (*dt)(void);
     cepFedTransportCaps flag;
+    const char*          tag;
 } cep_fed_link_cap_table[] = {
-    { dt_cap_reliable_name,   CEP_FED_TRANSPORT_CAP_RELIABLE    },
-    { dt_cap_ordered_name,    CEP_FED_TRANSPORT_CAP_ORDERED     },
-    { dt_cap_streaming_name,  CEP_FED_TRANSPORT_CAP_STREAMING   },
-    { dt_cap_datagram_name,   CEP_FED_TRANSPORT_CAP_DATAGRAM    },
-    { dt_cap_multicast_name,  CEP_FED_TRANSPORT_CAP_MULTICAST   },
-    { dt_cap_latency_name,    CEP_FED_TRANSPORT_CAP_LOW_LATENCY },
-    { dt_cap_local_ipc_name,  CEP_FED_TRANSPORT_CAP_LOCAL_IPC   },
-    { dt_cap_remote_net_name, CEP_FED_TRANSPORT_CAP_REMOTE_NET  },
-    { dt_cap_unreliable_name, CEP_FED_TRANSPORT_CAP_UNRELIABLE  },
+    { dt_cap_reliable_name,   CEP_FED_TRANSPORT_CAP_RELIABLE,    CEP_FED_TAG_CAP_RELIABLE    },
+    { dt_cap_ordered_name,    CEP_FED_TRANSPORT_CAP_ORDERED,     CEP_FED_TAG_CAP_ORDERED     },
+    { dt_cap_streaming_name,  CEP_FED_TRANSPORT_CAP_STREAMING,   CEP_FED_TAG_CAP_STREAMING   },
+    { dt_cap_datagram_name,   CEP_FED_TRANSPORT_CAP_DATAGRAM,    CEP_FED_TAG_CAP_DATAGRAM    },
+    { dt_cap_multicast_name,  CEP_FED_TRANSPORT_CAP_MULTICAST,   CEP_FED_TAG_CAP_MULTICAST   },
+    { dt_cap_latency_name,    CEP_FED_TRANSPORT_CAP_LOW_LATENCY, CEP_FED_TAG_CAP_LOW_LATENCY },
+    { dt_cap_local_ipc_name,  CEP_FED_TRANSPORT_CAP_LOCAL_IPC,   CEP_FED_TAG_CAP_LOCAL_IPC   },
+    { dt_cap_remote_net_name, CEP_FED_TRANSPORT_CAP_REMOTE_NET,  CEP_FED_TAG_CAP_REMOTE_NET  },
+    { dt_cap_unreliable_name, CEP_FED_TRANSPORT_CAP_UNRELIABLE,  CEP_FED_TAG_CAP_UNRELIABLE  },
 };
 
 static cepFedLinkRequestCtx* cep_fed_link_find_ctx(cepCell* request_cell) {
@@ -232,15 +234,12 @@ static bool cep_fed_link_read_text(cepCell* parent,
 
 static bool cep_fed_link_read_bool(cepCell* parent,
                                    const cepDT* field,
+                                   const char* tag_text,
                                    bool* out_value) {
     if (!parent || !field || !out_value) {
         return false;
     }
-    cepCell* node = cep_cell_find_by_name(parent, field);
-    if (!node) {
-        return false;
-    }
-    node = cep_cell_resolve(node);
+    cepCell* node = cep_fed_schema_find_field(parent, field, tag_text);
     if (!node) {
         return false;
     }
@@ -262,18 +261,15 @@ static bool cep_fed_link_read_bool(cepCell* parent,
 
 static bool cep_fed_link_read_u32(cepCell* parent,
                                   const cepDT* field,
+                                  const char* tag_text,
                                   bool required,
                                   uint32_t* out_value) {
     if (!parent || !field || !out_value) {
         return false;
     }
-    cepCell* node = cep_cell_find_by_name(parent, field);
+    cepCell* node = cep_fed_schema_find_field(parent, field, tag_text);
     if (!node) {
         return !required;
-    }
-    node = cep_cell_resolve(node);
-    if (!node) {
-        return false;
     }
     cepData* data = NULL;
     if (!cep_cell_require_data(&node, &data)) {
@@ -300,12 +296,13 @@ static cepFedTransportCaps cep_fed_link_read_cap_flags(cepCell* caps_dict) {
         return caps;
     }
     for (size_t i = 0; i < cep_lengthof(cep_fed_link_cap_table); ++i) {
-        cepCell* node = cep_cell_find_by_name(caps_dict, cep_fed_link_cap_table[i].dt());
+        const cepDT* dt = cep_fed_link_cap_table[i].dt();
+        const char* tag_text = cep_fed_link_cap_table[i].tag;
+        cepCell* node = cep_fed_schema_find_field(caps_dict, dt, tag_text);
         if (!node) {
             continue;
         }
-        node = cep_cell_resolve(node);
-        if (!node || !node->data) {
+        if (!node->data) {
             continue;
         }
         cepData* data = node->data;
@@ -393,31 +390,31 @@ static void cep_fed_link_read_serializer_caps(cepCell* request_cell,
         return;
     }
     bool bool_value = false;
-    if (cep_fed_link_read_bool(serializer, dt_ser_crc32c_ok_name(), &bool_value)) {
+    if (cep_fed_link_read_bool(serializer, dt_ser_crc32c_ok_name(), CEP_FED_TAG_SER_CRC32C_OK, &bool_value)) {
         policy->allow_crc32c = bool_value;
     }
-    if (cep_fed_link_read_bool(serializer, dt_ser_deflate_ok_name(), &bool_value)) {
+    if (cep_fed_link_read_bool(serializer, dt_ser_deflate_ok_name(), CEP_FED_TAG_SER_DEFLATE_OK, &bool_value)) {
         policy->allow_deflate = bool_value;
     }
-    if (cep_fed_link_read_bool(serializer, dt_ser_aead_ok_name(), &bool_value)) {
+    if (cep_fed_link_read_bool(serializer, dt_ser_aead_ok_name(), CEP_FED_TAG_SER_AEAD_OK, &bool_value)) {
         policy->allow_aead = bool_value;
     }
-    if (cep_fed_link_read_bool(serializer, dt_ser_warn_down_name(), &bool_value)) {
+    if (cep_fed_link_read_bool(serializer, dt_ser_warn_down_name(), CEP_FED_TAG_SER_WARN_DOWN, &bool_value)) {
         policy->warn_on_downgrade = bool_value;
     }
     uint32_t cmp_max = policy->comparator_max_version;
-    if (cep_fed_link_read_u32(serializer, dt_ser_cmpmax_name(), false, &cmp_max)) {
+    if (cep_fed_link_read_u32(serializer, dt_ser_cmpmax_name(), CEP_FED_TAG_SER_CMP_MAX, false, &cmp_max)) {
         policy->comparator_max_version = cmp_max;
     }
     if (payload_history_beats) {
         uint32_t beats = *payload_history_beats;
-        if (cep_fed_link_read_u32(serializer, dt_ser_pay_hist_name(), false, &beats)) {
+        if (cep_fed_link_read_u32(serializer, dt_ser_pay_hist_name(), CEP_FED_TAG_SER_PAY_HIST, false, &beats)) {
             *payload_history_beats = beats;
         }
     }
     if (manifest_history_beats) {
         uint32_t beats = *manifest_history_beats;
-        if (cep_fed_link_read_u32(serializer, dt_ser_man_hist_name(), false, &beats)) {
+        if (cep_fed_link_read_u32(serializer, dt_ser_man_hist_name(), CEP_FED_TAG_SER_MAN_HIST, false, &beats)) {
             *manifest_history_beats = beats;
         }
     }
@@ -705,7 +702,7 @@ int cep_fed_link_validator(const cepPath* signal_path, const cepPath* target_pat
     }
 
     (void)cep_fed_link_read_text(request_cell, dt_pref_provider(), false, preferred_provider, sizeof preferred_provider);
-    (void)cep_fed_link_read_bool(request_cell, dt_allow_upd(), &allow_upd_latest);
+    (void)cep_fed_link_read_bool(request_cell, dt_allow_upd(), "allow_upd", &allow_upd_latest);
     uint32_t payload_history_beats = 0u;
     uint32_t manifest_history_beats = 0u;
     cep_fed_link_read_serializer_caps(request_cell,
