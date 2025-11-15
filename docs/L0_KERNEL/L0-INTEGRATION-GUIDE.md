@@ -540,6 +540,17 @@ for (;;) {
 
 The emitter outputs: **header → manifest → (data inline or BLOB records) → trailer**. The reader validates **sequence**, reconstructs data, **verifies hashes**, and restores **proxy snapshots** when present.
 
+#### Async persistence sinks
+
+Production builds should call `cep_flat_stream_emit_cell_async()` instead of the synchronous helper. The async variant:
+
+1. Buffers the full frame in memory (same staging logic as the synchronous emitter).
+2. Registers `begin`/`write`/`finish` OPS requests under the active async channel (CPS uses `chn:serial`) and submits the work to `cep_io_reactor`.
+3. Accepts a `cepFlatStreamAsyncStats` that lets you declare whether the serializer must also run the synchronous sink (`require_sync_copy=true` keeps current CPS semantics) and surface a completion callback.
+4. Returns only after the buffer is queued; the heartbeat later observes the CQ completion, and CPS only marks `ist:store` once the completion callback reports success. Failures emit `persist.async` or `persist.async.tmo` and the beat is aborted.
+
+Callers that still need the blocking bytes (for example, the CPS reader) can set `.require_sync_copy = true` so the async helper writes to both the reactor buffer and the immediate sink. Everyone else should leave it `false` to avoid the double-copy penalty. There is no synchronous fallback path anymore; if the reactor cannot process requests the helper emits CEI and reports an error to the caller so tests surface the regression immediately.
+
 ### C) Wrap a file handle as a proxy
 
 ```c
@@ -639,7 +650,7 @@ Heartbeat init/shutdown operations now mirror production beats, so tooling and t
 - Initialise once per runtime with `cep_fed_transport_manager_init(net_root)`. The helper captures `/net`, the transport registry, and the diagnostics mailbox so later CEI emissions have a landing zone.
 - Populate a `cepFedTransportMountConfig`, then call `cep_fed_transport_manager_configure_mount()`. The manager resolves providers, seeds `caps/required` & `caps/preferred`, records `transport/provider`, copies the provider’s caps into `transport/prov_caps/`, and opens the channel using the provider’s vtable.
 - Backpressure sets `mount->backpressured` and caches the latest `upd_latest` gauge. When providers signal readiness the cache is flushed immediately. Reliable transports log a warning when `upd_latest` frames appear so callers know nothing will be dropped.
-- Providers can advertise `CEP_FED_TRANSPORT_CAP_SEND_ASYNC` / `CEP_FED_TRANSPORT_CAP_RECV_ASYNC` along with optional `send_async` / `request_receive_async` hooks. The manager registers an async OPS request for each submission, hands the provider an opaque handle, and expects the provider to call `cep_fed_transport_async_send_complete()` or `cep_fed_transport_async_receive_ready()` once the underlying IO finishes. Providers that skip the async hooks automatically fall back to the worker-thread shim—`/net/telemetry/<peer>/<mount>/` reflects the shim usage, and the first fallback emits a `tp_asyncun` CEI fact so you can spot capability gaps quickly.
+- Providers can advertise `CEP_FED_TRANSPORT_CAP_SEND_ASYNC` / `CEP_FED_TRANSPORT_CAP_RECV_ASYNC` along with optional `send_async` / `request_receive_async` hooks. The manager registers an async OPS request for each submission, hands the provider an opaque handle, and expects the provider to call `cep_fed_transport_async_send_complete()` or `cep_fed_transport_async_receive_ready()` once the underlying IO finishes. Providers that skip the async hooks automatically fall back to the worker-thread shim—`/net/telemetry/<peer>/<mount>/` reflects the shim usage, and the first fallback emits a `tp_async_unsp` CEI fact so you can spot capability gaps quickly.
 - Tests can interrogate the mock provider via `cep_fed_transport_mock_*` helpers to inject inbound payloads, pop outbound queues, or pulse READY/BACKPRESSURE events deterministically.
 
 **Q&A**

@@ -40,6 +40,8 @@ bool cep_async_post_completion(cepOID oid,
                                const cepDT* request_name,
                                const cepOpsAsyncIoReqInfo* info);
 
+void cep_async_reset_ops_oid(void);
+
 #ifdef __cplusplus
 }
 #endif

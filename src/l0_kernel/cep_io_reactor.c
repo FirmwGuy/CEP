@@ -11,12 +11,27 @@
 #include "cep_ops.h"
 #include "cep_cei.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <inttypes.h>
+#include <stdio.h>
+
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#endif
 
 #define CEP_IO_REACTOR_WORKER_COUNT        2u
 #define CEP_IO_REACTOR_COMPLETION_CAPACITY 256u
+#define CEP_IO_REACTOR_BACKEND_ENV         "CEP_IO_REACTOR_BACKEND"
+
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+#define CEP_IO_REACTOR_EPOLL_MAX_EVENTS 32
+#endif
 
 typedef struct cepIoReactorJob {
     cepIoReactorWork       work;
@@ -28,6 +43,9 @@ typedef struct cepIoReactorJob {
     bool                   has_bytes_expected;
     struct cepIoReactorJob* next_pending;
     struct cepIoReactorJob* next_active;
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+    bool                   native_registered;
+#endif
 } cepIoReactorJob;
 
 typedef struct {
@@ -53,9 +71,392 @@ typedef struct {
     uint64_t        jobs_timed_out;
     uint64_t        completions_this_beat;
     cepCell*        analytics_root;
+    cepIoReactorBackendKind backend_kind;
+    bool            backend_initialized;
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+    int             epoll_fd;
+    int             epoll_wake_fd;
+    pthread_t       epoll_thread;
+    bool            epoll_thread_started;
+#endif
 } cepIoReactorState;
 
 static cepIoReactorState* g_io_reactor = NULL;
+static bool g_io_reactor_trace_cache = false;
+static bool g_io_reactor_trace_enabled = false;
+
+static void cep_io_reactor_decrement_pending_bytes(cepIoReactorState* state, uint64_t amount);
+static bool cep_io_reactor_completion_enqueue_locked(cepIoReactorState* state,
+                                                     const cepIoReactorCompletion* completion);
+static bool cep_io_reactor_remove_active_locked(cepIoReactorState* state, cepIoReactorJob* target);
+static void cep_io_reactor_timeout_job_locked(cepIoReactorState* state, cepIoReactorJob* job);
+
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+static bool cep_io_reactor_epoll_setup(cepIoReactorState* state);
+static void cep_io_reactor_epoll_teardown(cepIoReactorState* state);
+static void* cep_io_reactor_epoll_thread(void* arg);
+static bool cep_io_reactor_register_native_locked(cepIoReactorState* state, cepIoReactorJob* job);
+static void cep_io_reactor_deregister_native_locked(cepIoReactorState* state, cepIoReactorJob* job);
+static void cep_io_reactor_epoll_wake(cepIoReactorState* state);
+#endif
+
+static bool
+cep_io_reactor_trace(void)
+{
+    if (!g_io_reactor_trace_cache) {
+        const char* env = getenv("CEP_IO_REACTOR_TRACE");
+        g_io_reactor_trace_enabled = env && *env && env[0] != '0';
+        g_io_reactor_trace_cache = true;
+    }
+    return g_io_reactor_trace_enabled;
+}
+
+static bool
+cep_io_reactor_epoll_supported(void)
+{
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+    return true;
+#else
+    return false;
+#endif
+}
+
+static bool
+cep_io_reactor_streq_icase(const char* lhs, const char* rhs)
+{
+    if (!lhs || !rhs) {
+        return false;
+    }
+    while (*lhs && *rhs) {
+        if (tolower((unsigned char)*lhs) != tolower((unsigned char)*rhs)) {
+            return false;
+        }
+        lhs += 1;
+        rhs += 1;
+    }
+    return *lhs == '\0' && *rhs == '\0';
+}
+
+static cepIoReactorBackendKind
+cep_io_reactor_backend_default_kind(void)
+{
+#if defined(CEP_IO_REACTOR_BACKEND_DEFAULT_EPOLL)
+    return CEP_IO_REACTOR_BACKEND_EPOLL;
+#else
+    return CEP_IO_REACTOR_BACKEND_PORTABLE;
+#endif
+}
+
+static cepIoReactorBackendKind
+cep_io_reactor_backend_preference(void)
+{
+    static bool cached = false;
+    static cepIoReactorBackendKind cached_kind = CEP_IO_REACTOR_BACKEND_PORTABLE;
+    if (cached) {
+        return cached_kind;
+    }
+    cached_kind = cep_io_reactor_backend_default_kind();
+    const char* env = getenv(CEP_IO_REACTOR_BACKEND_ENV);
+    if (env && *env) {
+        if (cep_io_reactor_streq_icase(env, "portable") ||
+            cep_io_reactor_streq_icase(env, "shim") ||
+            cep_io_reactor_streq_icase(env, "threaded")) {
+            cached_kind = CEP_IO_REACTOR_BACKEND_PORTABLE;
+        } else if (cep_io_reactor_streq_icase(env, "epoll") ||
+                   cep_io_reactor_streq_icase(env, "native")) {
+            cached_kind = CEP_IO_REACTOR_BACKEND_EPOLL;
+        } else if (cep_io_reactor_streq_icase(env, "auto")) {
+            cached_kind = cep_io_reactor_backend_default_kind();
+        }
+    }
+    if (cached_kind == CEP_IO_REACTOR_BACKEND_EPOLL && !cep_io_reactor_epoll_supported()) {
+        cached_kind = CEP_IO_REACTOR_BACKEND_PORTABLE;
+    }
+    cached = true;
+    return cached_kind;
+}
+
+static bool
+cep_io_reactor_job_used_shim(const cepIoReactorState* state, const cepIoReactorJob* job)
+{
+    if (!state || !job) {
+        return true;
+    }
+    if (job->work.kind == CEP_IO_REACTOR_WORK_KIND_NATIVE_FD) {
+        return false;
+    }
+    if (job->work.shim_fallback) {
+        return true;
+    }
+    return state->backend_kind == CEP_IO_REACTOR_BACKEND_PORTABLE;
+}
+
+static bool
+cep_io_reactor_state_init_backend(cepIoReactorState* state)
+{
+    if (!state) {
+        return false;
+    }
+    if (state->backend_initialized) {
+        return true;
+    }
+    state->backend_kind = cep_io_reactor_backend_preference();
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+    if (state->backend_kind == CEP_IO_REACTOR_BACKEND_EPOLL) {
+        if (!cep_io_reactor_epoll_supported() || !cep_io_reactor_epoll_setup(state)) {
+            state->backend_kind = CEP_IO_REACTOR_BACKEND_PORTABLE;
+        }
+    }
+#else
+    state->backend_kind = CEP_IO_REACTOR_BACKEND_PORTABLE;
+#endif
+    state->backend_initialized = true;
+    return true;
+}
+
+static void
+cep_io_reactor_finalize_completion_locked(cepIoReactorState* state,
+                                          cepIoReactorJob* job,
+                                          bool job_ok,
+                                          const cepIoReactorResult* result)
+{
+    if (!state || !job || job->timed_out) {
+        return;
+    }
+    uint64_t bytes_done = result ? result->bytes_done : 0u;
+    bool has_bytes_done = result ? result->bytes_done > 0u : false;
+    if (!has_bytes_done && job->has_bytes_expected) {
+        bytes_done = job->bytes_expected;
+        has_bytes_done = job->has_bytes_expected;
+    }
+    if (has_bytes_done) {
+        cep_io_reactor_decrement_pending_bytes(state, bytes_done);
+        job->has_bytes_expected = false;
+    }
+    int completion_error = job_ok ? 0 : ((result && result->error_code) ? result->error_code : -EIO);
+    cepIoReactorCompletion completion = {
+        .owner = job->work.owner,
+        .request_name = job->work.request_name,
+        .info = job_ok ? job->work.success_info : job->work.failure_info,
+        .timed_out = false,
+        .shim_fallback = cep_io_reactor_job_used_shim(state, job),
+        .timeout_topic = job->work.timeout_topic,
+        .has_timeout_topic = job->work.has_timeout_topic,
+        .on_complete = job->work.on_complete,
+        .on_complete_context = job->work.on_complete_context,
+        .bytes_done = bytes_done,
+        .has_bytes_done = has_bytes_done,
+        .has_result = true,
+        .result = {
+            .success = job_ok,
+            .bytes_done = job_ok ? bytes_done : 0u,
+            .error_code = job_ok ? 0 : completion_error,
+        },
+    };
+    if (has_bytes_done) {
+        completion.info.has_bytes_done = true;
+        completion.info.bytes_done = bytes_done;
+    }
+    if (!job_ok) {
+        completion.info.has_errno = true;
+        completion.info.errno_code = completion_error;
+    }
+    if (!cep_io_reactor_completion_enqueue_locked(state, &completion)) {
+        CEP_DEBUG_PRINTF("[io_reactor] completion queue full\n");
+    } else {
+        state->jobs_completed += 1u;
+    }
+}
+
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+static bool
+cep_io_reactor_epoll_setup(cepIoReactorState* state)
+{
+    if (!state) {
+        return false;
+    }
+    if (state->epoll_fd >= 0 && state->epoll_wake_fd >= 0) {
+        return true;
+    }
+    state->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (state->epoll_fd < 0) {
+        return false;
+    }
+    state->epoll_wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (state->epoll_wake_fd < 0) {
+        close(state->epoll_fd);
+        state->epoll_fd = -1;
+        return false;
+    }
+    struct epoll_event wake_event = {
+        .events = EPOLLIN,
+        .data.ptr = NULL,
+    };
+    if (epoll_ctl(state->epoll_fd, EPOLL_CTL_ADD, state->epoll_wake_fd, &wake_event) != 0) {
+        close(state->epoll_wake_fd);
+        close(state->epoll_fd);
+        state->epoll_wake_fd = -1;
+        state->epoll_fd = -1;
+        return false;
+    }
+    return true;
+}
+
+static void
+cep_io_reactor_epoll_teardown(cepIoReactorState* state)
+{
+    if (!state) {
+        return;
+    }
+    if (state->epoll_fd >= 0) {
+        close(state->epoll_fd);
+        state->epoll_fd = -1;
+    }
+    if (state->epoll_wake_fd >= 0) {
+        close(state->epoll_wake_fd);
+        state->epoll_wake_fd = -1;
+    }
+}
+
+static void
+cep_io_reactor_epoll_wake(cepIoReactorState* state)
+{
+    if (!state || state->epoll_wake_fd < 0) {
+        return;
+    }
+    uint64_t one = 1u;
+    ssize_t wrote = write(state->epoll_wake_fd, &one, sizeof one);
+    (void)wrote;
+}
+
+static void
+cep_io_reactor_deregister_native_locked(cepIoReactorState* state, cepIoReactorJob* job)
+{
+    if (!state || !job || !job->native_registered) {
+        return;
+    }
+    if (state->epoll_fd >= 0 && job->work.native_fd.fd >= 0) {
+        (void)epoll_ctl(state->epoll_fd, EPOLL_CTL_DEL, job->work.native_fd.fd, NULL);
+    }
+    job->native_registered = false;
+}
+
+static bool
+cep_io_reactor_register_native_locked(cepIoReactorState* state, cepIoReactorJob* job)
+{
+    if (!state || !job) {
+        return false;
+    }
+    if (state->backend_kind != CEP_IO_REACTOR_BACKEND_EPOLL) {
+        return false;
+    }
+    if (job->work.native_fd.fd < 0 || !job->work.native_fd.handler) {
+        return false;
+    }
+    if (state->epoll_fd < 0 || state->epoll_wake_fd < 0) {
+        if (!cep_io_reactor_epoll_setup(state)) {
+            return false;
+        }
+    }
+    if (!state->epoll_thread_started) {
+        if (pthread_create(&state->epoll_thread, NULL, cep_io_reactor_epoll_thread, state) == 0) {
+            state->epoll_thread_started = true;
+        } else {
+            return false;
+        }
+    }
+    job->next_active = state->active_head;
+    state->active_head = job;
+    state->active_count += 1u;
+    struct epoll_event ev = {
+        .events = job->work.native_fd.events ? job->work.native_fd.events : (uint32_t)EPOLLOUT,
+        .data.ptr = job,
+    };
+    if (job->work.native_fd.oneshot || !job->work.native_fd.events) {
+        ev.events |= EPOLLONESHOT;
+    }
+    if (epoll_ctl(state->epoll_fd, EPOLL_CTL_ADD, job->work.native_fd.fd, &ev) != 0) {
+        cep_io_reactor_remove_active_locked(state, job);
+        return false;
+    }
+    job->native_registered = true;
+    if (job->has_bytes_expected) {
+        state->pending_bytes += job->bytes_expected;
+    }
+    state->jobs_queued += 1u;
+    return true;
+}
+
+static void*
+cep_io_reactor_epoll_thread(void* arg)
+{
+    cepIoReactorState* state = (cepIoReactorState*)arg;
+    if (!state) {
+        return NULL;
+    }
+    struct epoll_event events[CEP_IO_REACTOR_EPOLL_MAX_EVENTS];
+    while (true) {
+        int ready = epoll_wait(state->epoll_fd,
+                               events,
+                               CEP_IO_REACTOR_EPOLL_MAX_EVENTS,
+                               50);
+        if (ready < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        if (ready == 0) {
+            if (state->shutting_down) {
+                break;
+            }
+            continue;
+        }
+        for (int i = 0; i < ready; ++i) {
+            if (!events[i].data.ptr) {
+                uint64_t drained = 0u;
+                (void)read(state->epoll_wake_fd, &drained, sizeof drained);
+                continue;
+            }
+            cepIoReactorJob* job = (cepIoReactorJob*)events[i].data.ptr;
+            if (!job) {
+                continue;
+            }
+            cepIoReactorResult result = {0};
+            bool job_ok = false;
+            if (job->work.native_fd.handler) {
+                job_ok = job->work.native_fd.handler(job->work.native_fd.fd,
+                                                     events[i].events,
+                                                     job->work.native_fd.handler_context,
+                                                     &result);
+            }
+            pthread_mutex_lock(&state->lock);
+            cep_io_reactor_deregister_native_locked(state, job);
+            bool timed_out = job->timed_out;
+            cep_io_reactor_remove_active_locked(state, job);
+            if (!timed_out) {
+                cep_io_reactor_finalize_completion_locked(state, job, job_ok, &result);
+            }
+            pthread_mutex_unlock(&state->lock);
+
+            if (job->work.native_fd.close_fd && job->work.native_fd.fd >= 0) {
+                close(job->work.native_fd.fd);
+            }
+            if (job->work.destroy) {
+                job->work.destroy(job->work.worker_context);
+            }
+            cep_free(job);
+        }
+        if (state->shutting_down) {
+            break;
+        }
+    }
+    pthread_mutex_lock(&state->lock);
+    state->epoll_thread_started = false;
+    pthread_mutex_unlock(&state->lock);
+    return NULL;
+}
+#endif
 
 CEP_DEFINE_STATIC_DT(dt_reactor_sev_warn, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
 CEP_DEFINE_STATIC_DT(dt_rt_root_name_io, CEP_ACRO("CEP"), CEP_WORD("rt"));
@@ -284,12 +685,19 @@ cep_io_reactor_timeout_job_locked(cepIoReactorState* state, cepIoReactorJob* job
         return;
     }
     job->timed_out = true;
+    bool is_native = (job->work.kind == CEP_IO_REACTOR_WORK_KIND_NATIVE_FD);
+    if (is_native) {
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+        cep_io_reactor_deregister_native_locked(state, job);
+#endif
+        cep_io_reactor_remove_active_locked(state, job);
+    }
     cepIoReactorCompletion completion = {
         .owner = job->work.owner,
         .request_name = job->work.request_name,
         .info = job->work.failure_info,
         .timed_out = true,
-        .shim_fallback = job->work.shim_fallback,
+        .shim_fallback = cep_io_reactor_job_used_shim(state, job),
         .timeout_topic = job->work.timeout_topic,
         .has_timeout_topic = job->work.has_timeout_topic,
         .has_bytes_done = false,
@@ -315,6 +723,15 @@ cep_io_reactor_timeout_job_locked(cepIoReactorState* state, cepIoReactorJob* job
         state->jobs_timed_out += 1u;
     }
     pthread_cond_broadcast(&state->cond);
+    if (is_native) {
+        if (job->work.native_fd.close_fd && job->work.native_fd.fd >= 0) {
+            close(job->work.native_fd.fd);
+        }
+        if (job->work.destroy) {
+            job->work.destroy(job->work.worker_context);
+        }
+        cep_free(job);
+    }
 }
 
 static void*
@@ -353,49 +770,7 @@ cep_io_reactor_worker_main(void* arg)
         cep_io_reactor_remove_active_locked(state, job);
         bool timed_out = job->timed_out;
         if (!timed_out) {
-            uint64_t bytes_done = result.bytes_done;
-            bool has_bytes_done = (bytes_done > 0u);
-            if (!has_bytes_done && job->has_bytes_expected) {
-                bytes_done = job->bytes_expected;
-                has_bytes_done = job->has_bytes_expected;
-            }
-            if (has_bytes_done) {
-                cep_io_reactor_decrement_pending_bytes(state, bytes_done);
-                job->has_bytes_expected = false;
-            }
-            int completion_error = job_ok ? 0 : (result.error_code ? result.error_code : -EIO);
-            cepIoReactorCompletion completion = {
-                .owner = job->work.owner,
-                .request_name = job->work.request_name,
-                .info = job_ok ? job->work.success_info : job->work.failure_info,
-                .timed_out = false,
-                .shim_fallback = job->work.shim_fallback,
-                .timeout_topic = job->work.timeout_topic,
-                .has_timeout_topic = job->work.has_timeout_topic,
-                .on_complete = job->work.on_complete,
-                .on_complete_context = job->work.on_complete_context,
-                .bytes_done = bytes_done,
-                .has_bytes_done = has_bytes_done,
-                .has_result = true,
-                .result = {
-                    .success = job_ok,
-                    .bytes_done = job_ok ? bytes_done : 0u,
-                    .error_code = job_ok ? 0 : completion_error,
-                },
-            };
-            if (has_bytes_done) {
-                completion.info.has_bytes_done = true;
-                completion.info.bytes_done = bytes_done;
-            }
-            if (!job_ok) {
-                completion.info.has_errno = true;
-                completion.info.errno_code = completion_error;
-            }
-            if (!cep_io_reactor_completion_enqueue_locked(state, &completion)) {
-                CEP_DEBUG_PRINTF("[io_reactor] completion queue full\n");
-            } else {
-                state->jobs_completed += 1u;
-            }
+            cep_io_reactor_finalize_completion_locked(state, job, job_ok, &result);
         }
         pthread_mutex_unlock(&state->lock);
 
@@ -419,6 +794,11 @@ cep_io_reactor_state(void)
     }
     pthread_mutex_init(&state->lock, NULL);
     pthread_cond_init(&state->cond, NULL);
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+    state->epoll_fd = -1;
+    state->epoll_wake_fd = -1;
+#endif
+    cep_io_reactor_state_init_backend(state);
     g_io_reactor = state;
     return g_io_reactor;
 }
@@ -467,6 +847,15 @@ cep_io_reactor_submit(const cepIoReactorWork* work)
     }
     cepIoReactorState* state = cep_io_reactor_state();
     if (!state) {
+        if (cep_io_reactor_trace()) {
+            fprintf(stderr, "[io_reactor] submit failed: no state\n");
+        }
+        return false;
+    }
+    if (!cep_io_reactor_state_init_backend(state)) {
+        if (cep_io_reactor_trace()) {
+            fprintf(stderr, "[io_reactor] submit failed: backend init error\n");
+        }
         return false;
     }
     cepIoReactorJob* job = cep_malloc0(sizeof *job);
@@ -474,6 +863,9 @@ cep_io_reactor_submit(const cepIoReactorWork* work)
         return false;
     }
     job->work = *work;
+    if (job->work.kind != CEP_IO_REACTOR_WORK_KIND_NATIVE_FD) {
+        job->work.kind = CEP_IO_REACTOR_WORK_KIND_SHIM;
+    }
     job->bytes_expected = work->has_bytes_expected ? work->bytes_expected : 0u;
     job->has_bytes_expected = work->has_bytes_expected;
     job->enqueue_beat = cep_beat_index();
@@ -483,11 +875,35 @@ cep_io_reactor_submit(const cepIoReactorWork* work)
         job->deadline_beat = base + (cepBeatNumber)work->beats_budget;
         job->has_deadline = true;
     }
+    bool is_native = (job->work.kind == CEP_IO_REACTOR_WORK_KIND_NATIVE_FD);
+    if (is_native && state->backend_kind != CEP_IO_REACTOR_BACKEND_EPOLL) {
+        if (cep_io_reactor_trace()) {
+            fprintf(stderr, "[io_reactor] submit failed: native job without epoll backend\n");
+        }
+        if (work->destroy) {
+            work->destroy(work->worker_context);
+        }
+        cep_free(job);
+        return false;
+    }
     pthread_mutex_lock(&state->lock);
-    cep_io_reactor_start_workers(state);
-    bool queued = cep_io_reactor_schedule_job(state, job);
+    bool queued = false;
+    if (is_native) {
+        queued = cep_io_reactor_register_native_locked(state, job);
+    } else {
+        cep_io_reactor_start_workers(state);
+        queued = cep_io_reactor_schedule_job(state, job);
+    }
     pthread_mutex_unlock(&state->lock);
     if (!queued) {
+        if (cep_io_reactor_trace()) {
+            fprintf(stderr,
+                    "[io_reactor] submit failed: queue miss native=%d backend=%d pending=%zu active=%zu\n",
+                    is_native ? 1 : 0,
+                    (int)state->backend_kind,
+                    state->pending_count,
+                    state->active_count);
+        }
         if (work->destroy) {
             work->destroy(work->worker_context);
         }
@@ -506,14 +922,18 @@ cep_io_reactor_check_timeouts_locked(cepIoReactorState* state)
     if (current == CEP_BEAT_INVALID) {
         return;
     }
-    for (cepIoReactorJob* job = state->active_head; job; job = job->next_active) {
+    for (cepIoReactorJob* job = state->active_head; job;) {
+        cepIoReactorJob* next = job->next_active;
         if (!job->has_deadline || job->timed_out) {
+            job = next;
             continue;
         }
         if (current < job->deadline_beat) {
+            job = next;
             continue;
         }
         cep_io_reactor_timeout_job_locked(state, job);
+        job = next;
     }
 }
 
@@ -576,8 +996,15 @@ cep_io_reactor_quiesce(uint32_t deadline_beats)
     state->draining = true;
     cepBeatNumber start = state->current_beat;
     bool timed_out = false;
-    while ((state->pending_head || state->active_head || state->completion_count) &&
-           !state->shutting_down) {
+    while (!state->shutting_down) {
+        /* Completions that have already been produced but not yet ingested by
+           the async runtime should not block quiesce: they will be processed
+           once the heartbeat resumes, so only pending/active work keeps the
+           reactor busy here. */
+        bool has_inflight = state->pending_head || state->active_head;
+        if (!has_inflight) {
+            break;
+        }
         if (deadline_beats > 0u && start != CEP_BEAT_INVALID) {
             cepBeatNumber now = state->current_beat;
             if (now != CEP_BEAT_INVALID &&
@@ -585,6 +1012,15 @@ cep_io_reactor_quiesce(uint32_t deadline_beats)
                 timed_out = true;
                 break;
             }
+        }
+        if (cep_io_reactor_trace()) {
+            fprintf(stderr,
+                    "[io_reactor] quiesce wait pending=%zu active=%zu completions=%zu beat=%" PRIi64 "\n",
+                    state->pending_count,
+                    state->active_count,
+                    state->completion_count,
+                    (int64_t)state->current_beat);
+            fflush(stderr);
         }
         pthread_cond_wait(&state->cond, &state->lock);
     }
@@ -622,6 +1058,9 @@ cep_io_reactor_shutdown(void)
     pthread_mutex_lock(&state->lock);
     state->shutting_down = true;
     pthread_cond_broadcast(&state->cond);
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+    cep_io_reactor_epoll_wake(state);
+#endif
     pthread_mutex_unlock(&state->lock);
     if (state->workers_started) {
         for (size_t i = 0; i < CEP_IO_REACTOR_WORKER_COUNT; ++i) {
@@ -630,6 +1069,12 @@ cep_io_reactor_shutdown(void)
             }
         }
     }
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+    if (state->epoll_thread_started) {
+        (void)pthread_join(state->epoll_thread, NULL);
+        state->epoll_thread_started = false;
+    }
+#endif
     pthread_mutex_destroy(&state->lock);
     pthread_cond_destroy(&state->cond);
     while (state->pending_head) {
@@ -650,6 +1095,19 @@ cep_io_reactor_shutdown(void)
         }
         cep_free(job);
     }
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
+    cep_io_reactor_epoll_teardown(state);
+#endif
     g_io_reactor = NULL;
     cep_free(state);
+}
+
+cepIoReactorBackendKind
+cep_io_reactor_active_backend(void)
+{
+    cepIoReactorState* state = g_io_reactor;
+    if (state && state->backend_initialized) {
+        return state->backend_kind;
+    }
+    return cep_io_reactor_backend_preference();
 }

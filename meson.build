@@ -263,6 +263,24 @@ if executor_backend == 'threaded'
 else
   add_project_arguments('-DCEP_EXECUTOR_BACKEND_STUB=1', language: 'c')
 endif
+
+io_reactor_backend = get_option('io_reactor_backend')
+epoll_supported = host_sys == 'linux'
+if io_reactor_backend == 'auto'
+  io_reactor_backend = epoll_supported ? 'epoll' : 'portable'
+endif
+if io_reactor_backend == 'epoll' and not epoll_supported
+  warning('epoll reactor backend unavailable on ' + host_sys + '; falling back to portable shim backend')
+  io_reactor_backend = 'portable'
+endif
+if epoll_supported
+  add_project_arguments('-DCEP_IO_REACTOR_HAS_EPOLL=1', language: 'c')
+endif
+if io_reactor_backend == 'epoll'
+  add_project_arguments('-DCEP_IO_REACTOR_BACKEND_DEFAULT_EPOLL=1', language: 'c')
+else
+  add_project_arguments('-DCEP_IO_REACTOR_BACKEND_DEFAULT_PORTABLE=1', language: 'c')
+endif
 lib_kw = {
   'include_directories': inc,
   'install': true,
@@ -335,6 +353,7 @@ if get_option('tests').enabled()
     args: ['--no-fork', '--single', '/CEP/integration_poc/l0/integration'],
     timeout: 240,
     suite: ['integration_poc'],
+    is_parallel: false,
   )
 
   test('runtime_dual_default', exe,

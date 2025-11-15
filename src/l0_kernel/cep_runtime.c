@@ -526,6 +526,7 @@ cep_runtime_shutdown(cepRuntime* runtime)
         cep_async_state_destroy(runtime->async_state);
         runtime->async_state = NULL;
     }
+    cep_async_reset_ops_oid();
 
     if (runtime->serialization_state.comparator_registry.entries) {
         cep_free(runtime->serialization_state.comparator_registry.entries);

@@ -17,6 +17,7 @@ Layer 0 increasingly needs to juggle persistence, federation, and serializatio
 - `cep_io_cq` is the completion queue drained once per beat transition (Capture→Compute) and before pause/rollback. Each completion includes request id, byte counts, status, errno/diagnostics, and optionally telemetry deltas.
 - `cep_io_timer` harmonizes beat and wall-clock deadlines and emits `op/tmo` CEI topics via watchers when a request exceeds its allowances.
 
+Shipping builds currently run exclusively on the worker-thread shim so targets without epoll/kqueue/IOCP stay deterministic; the POSIX epoll backend is planned next so native async paths can bypass the shim entirely.
 ### Control-plane directories
 - Every async-capable OPS dossier gains `/rt/ops/<oid>/io_req/<rid>/` with deterministic VALUE or CAS payloads:
   - `state` (`val/dt`): `pending`, `complete`, `cnl`, `fail`.
@@ -78,6 +79,8 @@ Layer 0 increasingly needs to juggle persistence, federation, and serializatio
   - Replay enforces the same CEI order; decisions recorded in OPS/TODO cells ensure deterministic re-run.
 - Metrics: `/data/persist/<branch>/metrics` gains `async_inflight`, `async_cq_latency`, `async_retries`, `async_shim_jobs`.
 
+`cps_storage_commit_current_beat()` drives this FSM and then calls `cps_storage_async_wait_for_commit()` to poll the reactor (via `cep_async_runtime_on_phase`) until the `finish_async` request completes or the watchdog expires. Failures surface `persist.async` / `persist.async.tmo` CEI alongside the offending request id so tooling can correlate OPS state with telemetry.
+
 ### POC & regression testing
 - **POC test upgrade**
   - Add async mode selectors so the POC suite runs the new reactor-backed path in parallel with its existing sync assertions (same inputs, deterministic outputs).
@@ -87,7 +90,7 @@ Layer 0 increasingly needs to juggle persistence, federation, and serializatio
   - Default build: run targeted suites (POC async, persistence, federation, runtime_dual_default) both with async disabled and enabled.
   - Sanitizer sweep: rebuild via `meson setup build-asan -Dasan=true`, rerun all async-touching suites (POC async, persistence async, federation async) under ASAN, confirm clean exit, then rerun the same selectors under Valgrind on the non-ASAN build.
   - Logging: capture CQ drain traces and CEI output for every failure; attach logs to TODO/bug reports per replication guardrail.
-- Rollout happens behind feature gates and env toggles. Serialization and federation adopt async paths first, followed by CPS commits once telemetry proves stable. Feature toggles stay documented in `docs/L0_KERNEL/L0-TUNING-NOTES.md` once implementation lands.
+- Async I/O is now the default for serialization, federation, and CPS. Shim vs. native backends remain selectable (portable shim today, epoll backend forthcoming) so CI can force specific combinations; document any temporary override flags in `docs/L0_KERNEL/L0-TUNING-NOTES.md`.
 
 ## Q&A
 **Q: How does this keep deterministic replay intact?**  
@@ -103,4 +106,4 @@ Yes. The quiesce protocol drains CQs, cancels remaining requests with `sts:cnl`,
 They continue to emit existing CEI topics (`tp_backpressure`, `persist.frame.io`, etc.), plus the new `persist.async` informational events when async queues grow. Watchers convert beat overruns into `op/tmo`.
 
 **Q: When is this design considered “fully rolled out”?**  
-After serialization, federation, and CPS all run through reactors by default, telemetry shows no unexpected shim usage, and the regression suite passes in both sync-compat and async modes. Until then, feature gates keep the async path opt-in.
+We are already routing serialization, federation, and CPS through reactors by default; the remaining milestone is shipping native epoll/kqueue/IOCP backends (so shim usage drops to zero on capable hosts) and proving the async-enabled regression suite (POC + PRR + federation) passes under both normal and sanitizer builds.

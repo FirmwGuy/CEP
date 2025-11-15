@@ -788,6 +788,11 @@ MunitTest tests[] = {
 
 
 int main(int argC, char* argV[MUNIT_ARRAY_PARAM(argC + 1)]) {
+    const char* seed_env = getenv("MUNIT_SEED");
+    unsigned long override_seed = 0u;
+    if (seed_env && *seed_env) {
+        override_seed = strtoul(seed_env, NULL, 0);
+    }
     MunitSuite sub_suites[3];
     size_t suite_index = 0u;
 
@@ -805,5 +810,15 @@ int main(int argC, char* argV[MUNIT_ARRAY_PARAM(argC + 1)]) {
         MUNIT_SUITE_OPTION_NONE
     };
 
+    if (override_seed) {
+        static char seed_buf[32];
+        snprintf(seed_buf, sizeof seed_buf, "0x%lx", override_seed);
+        char* argv_with_seed[argC + 3];
+        memcpy(argv_with_seed, argV, sizeof(char*) * argC);
+        argv_with_seed[argC] = "--seed";
+        argv_with_seed[argC + 1] = seed_buf;
+        argv_with_seed[argC + 2] = NULL;
+        return munit_suite_main(&root, NULL, argC + 2, argv_with_seed);
+    }
     return munit_suite_main(&root, NULL, argC, argV);
 }

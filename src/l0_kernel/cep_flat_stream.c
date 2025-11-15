@@ -21,6 +21,7 @@
 #include "stream/cep_stream_internal.h"
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <sodium.h>
 
 /* Storage backends expose inline helpers that depend on internal Layer 0
@@ -62,9 +63,73 @@ static int cell_compare_by_name(const cepCell* restrict key,
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
 #include <strings.h>
 #include <limits.h>
+
+#define CEP_ASYNC_SYNC_COPY_ENV "CEP_ASYNC_SYNC_COPY"
+
+typedef enum {
+    CEP_FLAT_STREAM_SYNC_COPY_AUTO = 0,
+    CEP_FLAT_STREAM_SYNC_COPY_FORCE,
+    CEP_FLAT_STREAM_SYNC_COPY_DISABLE,
+} cepFlatStreamSyncCopyOverride;
+
+static bool
+cep_flat_stream_env_equals(const char* value, const char* token)
+{
+    if (!value || !token) {
+        return false;
+    }
+    while (*value && *token) {
+        if (tolower((unsigned char)*value) != tolower((unsigned char)*token)) {
+            return false;
+        }
+        value += 1;
+        token += 1;
+    }
+    return *value == '\0' && *token == '\0';
+}
+
+static cepFlatStreamSyncCopyOverride
+cep_flat_stream_sync_copy_override(void)
+{
+    static bool cached = false;
+    static cepFlatStreamSyncCopyOverride override_mode = CEP_FLAT_STREAM_SYNC_COPY_AUTO;
+    if (cached) {
+        return override_mode;
+    }
+    const char* env = getenv(CEP_ASYNC_SYNC_COPY_ENV);
+    if (env && *env) {
+        if (cep_flat_stream_env_equals(env, "force") ||
+            cep_flat_stream_env_equals(env, "required")) {
+            override_mode = CEP_FLAT_STREAM_SYNC_COPY_FORCE;
+        } else if (cep_flat_stream_env_equals(env, "disable") ||
+                   cep_flat_stream_env_equals(env, "off") ||
+                   cep_flat_stream_env_equals(env, "false")) {
+            override_mode = CEP_FLAT_STREAM_SYNC_COPY_DISABLE;
+        }
+    }
+    cached = true;
+    return override_mode;
+}
+
+static bool
+cep_flat_stream_should_require_sync_copy(bool requested)
+{
+    cepFlatStreamSyncCopyOverride mode = cep_flat_stream_sync_copy_override();
+    if (mode == CEP_FLAT_STREAM_SYNC_COPY_FORCE) {
+        return true;
+    }
+    if (mode == CEP_FLAT_STREAM_SYNC_COPY_DISABLE) {
+        return false;
+    }
+    if (cep_io_reactor_active_backend() == CEP_IO_REACTOR_BACKEND_EPOLL && !requested) {
+        return false;
+    }
+    return requested;
+}
 
 CEP_DEFINE_STATIC_DT(dt_flat_async_channel, CEP_ACRO("CEP"), CEP_WORD("chn:serial"));
 CEP_DEFINE_STATIC_DT(dt_flat_async_provider, CEP_ACRO("CEP"), CEP_WORD("prov:serial"));
@@ -5084,7 +5149,8 @@ cep_flat_stream_emit_cell_async(const cepCell* cell,
 
     cepFlatStreamAsyncStats local_stats = {0};
     cepFlatStreamAsyncStats* out_stats = stats ? stats : &local_stats;
-    bool require_sync_copy = out_stats->require_sync_copy;
+    bool require_sync_copy = cep_flat_stream_should_require_sync_copy(out_stats->require_sync_copy);
+    out_stats->require_sync_copy = require_sync_copy;
 
     cepFlatFrameSinkContext sink = {
         .write = cep_flat_frame_buffer_write,
@@ -5173,7 +5239,7 @@ cep_flat_stream_emit_cell_async(const cepCell* cell,
         .has_beats_budget = true,
         .bytes_expected = (uint64_t)sink.bytes_written,
         .has_bytes_expected = true,
-        .shim_fallback = true,
+        .shim_fallback = (cep_io_reactor_active_backend() != CEP_IO_REACTOR_BACKEND_EPOLL),
         .worker = cep_flat_frame_async_worker,
         .worker_context = job,
         .destroy = NULL,

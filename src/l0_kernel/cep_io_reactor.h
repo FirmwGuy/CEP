@@ -16,6 +16,16 @@ extern "C" {
 
 #define CEP_IO_REACTOR_PAUSE_DEADLINE_BEATS 2u
 
+typedef enum {
+    CEP_IO_REACTOR_BACKEND_PORTABLE = 0,
+    CEP_IO_REACTOR_BACKEND_EPOLL = 1,
+} cepIoReactorBackendKind;
+
+typedef enum {
+    CEP_IO_REACTOR_WORK_KIND_SHIM = 0,
+    CEP_IO_REACTOR_WORK_KIND_NATIVE_FD = 1,
+} cepIoReactorWorkKind;
+
 typedef struct cepIoReactorJobContext cepIoReactorJobContext;
 
 typedef struct {
@@ -27,6 +37,19 @@ typedef struct {
 typedef bool (*cepIoReactorJobFn)(void* context, cepIoReactorResult* out_result);
 typedef void (*cepIoReactorJobDestroyFn)(void* context);
 typedef void (*cepIoReactorCompletionFn)(void* context, const cepIoReactorResult* result);
+typedef bool (*cepIoReactorFdCallback)(int fd,
+                                       uint32_t events,
+                                       void* context,
+                                       cepIoReactorResult* out_result);
+
+typedef struct {
+    int                    fd;
+    uint32_t               events;
+    bool                   oneshot;
+    bool                   close_fd;
+    cepIoReactorFdCallback handler;
+    void*                  handler_context;
+} cepIoReactorFdWork;
 
 typedef struct {
     cepOID                   owner;
@@ -45,6 +68,8 @@ typedef struct {
     cepIoReactorJobDestroyFn destroy;
     cepIoReactorCompletionFn on_complete;
     void*                    on_complete_context;
+    cepIoReactorWorkKind     kind;
+    cepIoReactorFdWork       native_fd;
 } cepIoReactorWork;
 
 typedef struct {
@@ -68,6 +93,7 @@ bool cep_io_reactor_next_completion(cepIoReactorCompletion* out_completion);
 void cep_io_reactor_on_phase(cepBeatPhase phase);
 bool cep_io_reactor_quiesce(uint32_t deadline_beats);
 void cep_io_reactor_shutdown(void);
+cepIoReactorBackendKind cep_io_reactor_active_backend(void);
 
 #ifdef __cplusplus
 }

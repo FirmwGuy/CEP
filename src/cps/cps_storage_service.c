@@ -45,6 +45,8 @@ static const char k_cps_topic_storage_async[] = "persist.async";
 #define CPS_STORAGE_ASYNC_COMMIT_TIMEOUT_MS 500u
 #define CPS_STORAGE_ASYNC_WAIT_POLL_NS 1000000L
 
+static void cps_storage_emit_async_cei(const char *detail);
+
 CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_warn, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
 CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_crit, CEP_ACRO("CEP"), CEP_WORD("sev:crit"));
 CEP_DEFINE_STATIC_DT(dt_ops_root_name_cps, CEP_ACRO("CEP"), CEP_WORD("ops"));
@@ -1116,6 +1118,11 @@ typedef struct {
   cepDT    request_name;
 } cpsStorageAsyncCommitCtx;
 
+static void cps_storage_async_mark_failed(cpsStorageAsyncCommitCtx* ctx,
+                                          uint64_t bytes,
+                                          int error_code,
+                                          const char* detail);
+
 static void cps_storage_async_ensure_channel(void) {
   cepOID current_oid = cep_async_ops_oid();
   if (!cep_oid_is_valid(current_oid)) {
@@ -1203,19 +1210,15 @@ static void cps_storage_async_commit_on_complete(bool success,
   if (!commit) {
     return;
   }
+  if (!success) {
+    cps_storage_async_mark_failed(commit, bytes, error_code, "serializer async completion failed");
+    return;
+  }
   commit->pending = false;
   commit->completed = true;
-  commit->success = success;
+  commit->success = true;
   commit->error_code = error_code;
   commit->bytes_done = bytes;
-  if (commit->registered) {
-    cps_storage_async_finish_request(&commit->request_name,
-                                     dt_cps_async_op_commit(),
-                                     success,
-                                     bytes,
-                                     error_code);
-    commit->registered = false;
-  }
 }
 
 static cpsStorageAsyncCommitCtx*
@@ -1242,6 +1245,21 @@ static void cps_storage_async_commit_ctx_destroy(cpsStorageAsyncCommitCtx* ctx) 
     return;
   }
   cep_free(ctx);
+}
+
+static void cps_storage_async_finalize_success(cpsStorageAsyncCommitCtx* ctx) {
+  if (!ctx) {
+    return;
+  }
+  ctx->pending = false;
+  if (ctx->registered) {
+    cps_storage_async_finish_request(&ctx->request_name,
+                                     dt_cps_async_op_commit(),
+                                     true,
+                                     ctx->bytes_done,
+                                     ctx->error_code);
+    ctx->registered = false;
+  }
 }
 
 static void cps_storage_async_mark_failed(cpsStorageAsyncCommitCtx* ctx,
@@ -1285,14 +1303,13 @@ static uint64_t cps_storage_elapsed_ms(const struct timespec* start,
   return elapsed;
 }
 
-static bool cps_storage_async_wait_for_commit(cpsStorageAsyncCommitCtx* ctx,
-                                              uint64_t bytes_written) {
+static bool cps_storage_async_wait_for_commit(cpsStorageAsyncCommitCtx* ctx) {
   if (!ctx) {
     return true;
   }
   cepAsyncRuntimeState* async_state = cep_runtime_async_state(cep_runtime_default());
   if (!async_state) {
-    cps_storage_async_mark_failed(ctx, bytes_written, -EIO, "async runtime unavailable");
+    cps_storage_async_mark_failed(ctx, ctx->bytes_done, -EIO, "async runtime unavailable");
     return false;
   }
   struct timespec start = {0};
@@ -1306,14 +1323,14 @@ static bool cps_storage_async_wait_for_commit(cpsStorageAsyncCommitCtx* ctx,
     (void)clock_gettime(CLOCK_MONOTONIC, &now);
     uint64_t elapsed_ms = cps_storage_elapsed_ms(&start, &now);
     if (elapsed_ms >= CPS_STORAGE_ASYNC_COMMIT_TIMEOUT_MS) {
-      cps_storage_async_mark_failed(ctx, bytes_written, -ETIMEDOUT, "async commit timed out");
+      cps_storage_async_mark_failed(ctx, ctx->bytes_done, -ETIMEDOUT, "async commit timed out");
       return false;
     }
     struct timespec sleep_ts = {.tv_sec = 0, .tv_nsec = CPS_STORAGE_ASYNC_WAIT_POLL_NS};
     (void)nanosleep(&sleep_ts, NULL);
   }
   if (!ctx->completed) {
-    cps_storage_async_mark_failed(ctx, bytes_written, -EIO, "async commit callback missing");
+    cps_storage_async_mark_failed(ctx, ctx->bytes_done, -EIO, "async commit callback missing");
     return false;
   }
   return ctx->success;
@@ -1955,7 +1972,7 @@ bool cps_storage_commit_current_beat(void) {
   }
 
   cepFlatStreamAsyncStats stream_stats = {
-    .require_sync_copy = true,
+    .require_sync_copy = false,
     .completion_cb = cps_storage_async_commit_on_complete,
     .completion_ctx = async_commit_ctx,
   };
@@ -1966,7 +1983,7 @@ bool cps_storage_commit_current_beat(void) {
                                                  &sink,
                                                  CEP_FLAT_STREAM_DEFAULT_BLOB_PAYLOAD,
                                                  &stream_stats);
-  if (!emitted || !cep_flat_reader_commit(reader) || !cep_flat_reader_ready(reader)) {
+  if (!emitted) {
     cps_storage_emit_cei(dt_cps_storage_sev_crit(), "serializer frame emit/parse failed");
     cps_storage_async_mark_failed(async_commit_ctx,
                                   sink.bytes_written,
@@ -1980,6 +1997,20 @@ bool cps_storage_commit_current_beat(void) {
                                   sink.bytes_written,
                                   -EIO,
                                   "serializer fallback triggered");
+    goto out;
+  }
+
+  bool io_ok = cps_storage_async_wait_for_commit(async_commit_ctx);
+  if (!io_ok) {
+    goto out;
+  }
+
+  if (!cep_flat_reader_commit(reader) || !cep_flat_reader_ready(reader)) {
+    cps_storage_emit_cei(dt_cps_storage_sev_crit(), "serializer frame emit/parse failed");
+    cps_storage_async_mark_failed(async_commit_ctx,
+                                  sink.bytes_written,
+                                  -EIO,
+                                  "serializer async reader incomplete");
     goto out;
   }
 
@@ -1998,16 +2029,15 @@ bool cps_storage_commit_current_beat(void) {
     } else {
       cps_storage_emit_cei(dt_cps_storage_sev_crit(), "CPS engine commit failed");
     }
-  }
-
-  if (ok) {
-    ok = cps_storage_async_wait_for_commit(async_commit_ctx, sink.bytes_written);
-  } else {
     cps_storage_async_mark_failed(async_commit_ctx,
                                   sink.bytes_written,
                                   -EIO,
-                                  "CPS commit failed before async completion");
+                                  "CPS commit failed after async completion");
+    goto out;
   }
+
+  cps_storage_async_finalize_success(async_commit_ctx);
+  ok = true;
 
 out:
   if (async_commit_ctx) {

@@ -109,6 +109,7 @@ Cloning routines and the special cases for handles/streams are in the core imple
 
   * `cep_flat_stream_reader_ingest` validates each record, reorders nothing, and **stages** manifests, data headers, blobs, and library snapshots in a per-frame structure. For blob data it allocates a buffer of the final size and copies each slice at the declared offset; hashes are verified against `(dt,size,payload)`.
   * When the **trailer** arrives, `commit` applies all staged changes: it materializes nodes at the path (creating intermediate dictionaries when necessary), writes payloads, and calls proxy restore hooks for library‑backed cells. Only successful commits mutate the tree; otherwise the reader is failed/reset. The apply code respects existing types and replaces payloads with correct destructors.
+* **Async sink.** `cep_flat_stream_emit_cell_async()` wraps the emitter so every frame is staged in memory, registered as `begin`/`write`/`finish` requests under `/rt/ops/<oid>/io_req`, and handed to `cep_io_reactor` for execution. Callers provide a `cepFlatStreamAsyncStats` with optional completion callbacks; CPS passes a watcher context so persistence waits for the CQ completion before updating `ist:store`. There is no synchronous fallback—the reactor (portable shim today, epoll/kqueue/IOCP later) is the only way frames reach CPS or federation.
 
 **Where it lives.**
 All emitter/reader algorithms, record format, and integrity checks (hashes, path, sequencing) are in the serialization module; cell/path helpers are used extensively from the cell layer.
@@ -225,7 +226,19 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 
 **Where it lives.** `src/cps/cps_flatfile.c` (`cps_flatfile_fetch_cas_blob_bytes`, `cps_flatfile_fetch_cas_blob_runtime`, `cps_flatfile_publish_metrics`). Tests: `/CEP/cps/replay/cas_cache` (cache hits) and `/CEP/cps/replay/cas_runtime` (runtime fallback).
 
-## 16) Async telemetry mirrors (net + /rt/analytics)
+## 16) CPS async commit gating
+
+**Why it exists.** Persistence can only advance `ist:store` after the async serializer sinks and fsync stages have finished. Waiting on the reactor keeps Capture/Compute non-blocking without exposing partially written frames.
+
+**What it does.**
+
+* `cps_storage_commit_current_beat()` registers the async commit request before emitting the frame, attaches a `cpsStorageAsyncCommitCtx` to the serializer stats, and calls `cps_storage_async_wait_for_commit()` once the CPS engine applies the frame.
+* `cps_storage_async_wait_for_commit()` pumps `cep_async_runtime_on_phase()` (Compute phase) until the reactor posts a completion, or until the monotonic timeout hits. Success sets `ist:store`; timeouts emit `persist.async.tmo`, abort the beat, and surface CEI that points back to the offending request name (`/rt/ops/<oid>/io_req/<req>`).
+* Fallback attempts (for example, trying to route serializer output through the legacy synchronous sink) are rejected; instead the helper emits a `persist.async` info CEI and marks the async request failed so tooling can capture the shim backlog.
+
+**Where it lives.** `src/cps/cps_storage_service.c` (`cps_storage_commit_current_beat`, `cps_storage_async_wait_for_commit`, `cps_storage_async_mark_failed`). Tests: `/CEP/cps/replay/*` plus any integration suite that exercises persistence (`/CEP/prr/*`, integration POC).
+
+## 17) Async telemetry mirrors (net + /rt/analytics)
 
 **Why it exists.** The async I/O fabric needs deterministic observability so operators can correlate OPS request state, federation transport load, and shim usage without scraping individual dossiers.
 
@@ -233,7 +246,7 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 
 * Every federation mount writes `async_pnd`, `async_shm`, and `async_nat` under `/net/telemetry/<peer>/<mount>/`, mirroring the OPS async requests in a beat-friendly dictionary.
 * The same counters land under `/rt/analytics/async/(shim|native)/<provider>/<mount>/jobs_total`, giving tooling a single branch to inspect when tracking shim vs. provider-native completions.
-* When a provider lacks async hooks, the manager emits `tp_asyncun` once per mount and marks the associated async handle as a shim so telemetry stays honest about the fallback.
+* When a provider lacks async hooks, the manager emits `tp_async_unsp` once per mount and marks the associated async handle as a shim so telemetry stays honest about the fallback.
 
 **Where it lives.** `src/enzymes/fed_transport_manager.c` refreshes both the telemetry and analytics trees whenever mount state changes.
 

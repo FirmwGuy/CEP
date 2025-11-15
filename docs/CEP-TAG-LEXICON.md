@@ -276,7 +276,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `tp_catsync` | Federation transport | CEI topic for catalog/telemetry publication failures. |
 | `tp_fatal` | Federation transport | CEI topic recording fatal transport channel events. |
 | `tp_noprov` | Federation transport | CEI topic recorded when no provider satisfies mount requirements. |
-| `tp_asyncun` | Federation transport | CEI topic emitted when a mount falls back to the async shim because the provider lacks async hooks. |
+| `tp_async_unsp` | Federation transport | CEI topic emitted when a mount falls back to the async shim because the provider lacks async hooks. |
 | `tp_openfail` | Federation transport | CEI topic emitted when provider channel negotiation fails. |
 | `tp_provcell` | Federation transport | CEI topic noting provider cell resolution failures. |
 | `tp_provid` | Federation transport | CEI topic emitted when provider identifiers cannot be encoded. |

@@ -236,3 +236,9 @@ cep_async_post_completion(cepOID oid,
     cepAsyncRuntimeState* state = cep_async_default_state();
     return cep_async_runtime_enqueue_completion(state, oid, request_name, info);
 }
+
+void
+cep_async_reset_ops_oid(void)
+{
+    g_async_ops_oid = (cepOID){0};
+}

@@ -248,7 +248,7 @@ static const char* const CEP_FED_TOPIC_BACKPRESSURE     = "tp_backpr";
 static const char* const CEP_FED_TOPIC_SEND_FAILED      = "tp_sendfail";
 static const char* const CEP_FED_TOPIC_FATAL_EVENT      = "tp_fatal";
 static const char* const CEP_FED_TOPIC_FLAT_NEGOTIATION = "tp_flatneg";
-static const char* const CEP_FED_TOPIC_ASYNC_UNSUPPORTED = "tp_asyncun";
+static const char* const CEP_FED_TOPIC_ASYNC_UNSUPPORTED = "tp_async_unsp";
 
 static inline unsigned cep_fed_transport_popcount(cepFedTransportCaps value) {
     unsigned count = 0u;
@@ -1115,6 +1115,7 @@ static bool cep_fed_transport_manager_flush_pending(cepFedTransportManagerMount*
                                               CEP_FED_FRAME_MODE_UPD_LATEST,
                                               deadline_beat);
     if (sent) {
+        bool recorded = false;
         if (mount->async_pending_handle) {
             cep_fed_transport_async_record_send_success(mount->async_pending_handle);
             cep_fed_transport_async_handle_finish(mount->async_pending_handle,
@@ -1122,6 +1123,7 @@ static bool cep_fed_transport_manager_flush_pending(cepFedTransportManagerMount*
                                                   mount->pending_len,
                                                   0);
             mount->async_pending_handle = NULL;
+            recorded = true;
         } else if (mount->async_pending_active) {
             cep_fed_transport_mount_async_complete_request(mount,
                                                            &mount->async_pending_request,
@@ -1139,9 +1141,11 @@ static bool cep_fed_transport_manager_flush_pending(cepFedTransportManagerMount*
         }
         mount->pending_len = 0u;
         mount->backpressured = false;
-        ++mount->frame_count;
-        mount->last_frame_mode = CEP_FED_FRAME_MODE_UPD_LATEST;
-        mount->last_frame_sample = sample;
+        if (!recorded) {
+            ++mount->frame_count;
+            mount->last_frame_mode = CEP_FED_FRAME_MODE_UPD_LATEST;
+            mount->last_frame_sample = sample;
+        }
         if (mount->manager) {
             (void)cep_fed_transport_manager_refresh_telemetry(mount->manager,
                                                               mount,

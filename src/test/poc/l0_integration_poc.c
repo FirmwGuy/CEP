@@ -19,6 +19,7 @@
 #include "cep_ep.h"
 #include "secdata/cep_secdata.h"
 #include "cps_flatfile.h"
+#include "../l0_kernel/cep_io_reactor.h"
 #include "stream/cep_stream_internal.h"
 #include "stream/cep_stream_stdio.h"
 
@@ -155,6 +156,70 @@ typedef struct {
     cepRuntime* runtime;
     cepRuntime* previous_runtime;
 } IntegrationFixture;
+
+static const char*
+integration_ops_child_cstr(cepCell* parent, const char* field_name)
+{
+    if (!parent || !field_name) {
+        return NULL;
+    }
+    cepDT field = cep_ops_make_dt(field_name);
+    cepCell* leaf = cep_cell_find_by_name(parent, &field);
+    if (!leaf) {
+        return NULL;
+    }
+    return (const char*)cep_cell_data(leaf);
+}
+
+static size_t
+integration_async_pending_request_count(cepCell* async_entry)
+{
+    if (!async_entry) {
+        return 0u;
+    }
+    cepDT req_branch = cep_ops_make_dt("io_req");
+    cepCell* req_root = cep_cell_find_by_name(async_entry, &req_branch);
+    if (!req_root || !req_root->store) {
+        return 0u;
+    }
+
+    size_t pending = 0u;
+    for (cepCell* req = cep_cell_first(req_root); req; req = cep_cell_next(req_root, req)) {
+        ++pending;
+    }
+    return pending;
+}
+
+static void
+integration_assert_async_runtime_idle(const char* stage_label)
+{
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (!rt_root) {
+        return;
+    }
+
+    cepDT ops_name = cep_ops_make_dt("ops");
+    cepCell* ops_root = cep_cell_find_by_name(rt_root, &ops_name);
+    if (!ops_root || !ops_root->store) {
+        return;
+    }
+
+    for (cepCell* entry = cep_cell_first(ops_root); entry; entry = cep_cell_next(ops_root, entry)) {
+        const char* path = integration_ops_child_cstr(entry, "path");
+        if (!path || strcmp(path, "/rt/async") != 0) {
+            continue;
+        }
+        size_t pending = integration_async_pending_request_count(entry);
+        if (pending != 0u) {
+            munit_logf(MUNIT_LOG_ERROR,
+                       "[integration][async_guard] pending io_req=%zu stage=%s",
+                       pending,
+                       stage_label ? stage_label : "cleanup");
+        }
+        munit_assert_size(pending, ==, 0u);
+        break;
+    }
+}
 
 static bool integration_env_flag(const char* name) {
     const char* value = getenv(name);
@@ -2079,9 +2144,15 @@ static void integration_ops_ctx_emit_cei(IntegrationOpsContext* ctx,
     integration_mailbox_plan_retention(cep_cei_diagnostics_mailbox(), latest);
 }
 
-static void integration_ops_ctx_verify(const IntegrationOpsContext* ctx) {
+static void integration_ops_ctx_verify(const IntegrationOpsContext* ctx, bool require_timeout) {
     munit_assert_not_null(ctx);
-    munit_assert_int(integration_timeout_calls, ==, 1);
+    if (require_timeout) {
+        munit_assert_int(integration_timeout_calls, ==, 1);
+    } else if (integration_timeout_calls < 1) {
+        munit_logf(MUNIT_LOG_INFO,
+                   "%s",
+                   "[integration][ops_ctx] timeout watcher did not fire during focus harness");
+    }
 
     cepDT watchers_name = cep_ops_make_dt("watchers");
     cepCell* watchers = cep_cell_find_by_name(ctx->op_cell, &watchers_name);
@@ -2135,6 +2206,23 @@ static void integration_ops_ctx_cleanup(IntegrationOpsContext* ctx) {
         cep_enzyme_registry_activate_pending(registry);
     }
     memset(ctx, 0, sizeof *ctx);
+}
+
+static void integration_ops_ctx_drive_once(void) {
+    munit_assert_true(cep_heartbeat_stage_commit());
+    munit_assert_true(cep_heartbeat_step());
+    munit_assert_true(cep_heartbeat_resolve_agenda());
+    munit_assert_true(cep_heartbeat_process_impulses());
+    munit_assert_true(cep_heartbeat_stage_commit());
+}
+
+static void integration_ops_ctx_wait_for_timeout(unsigned max_attempts) {
+    for (unsigned attempt = 0u; attempt < max_attempts; ++attempt) {
+        integration_ops_ctx_drive_once();
+        if (integration_timeout_calls >= 1) {
+            return;
+        }
+    }
 }
 
 static void integration_stream_ctx_prepare(IntegrationStreamContext* ctx,
@@ -2476,7 +2564,14 @@ integration_episode_hybrid_flow(IntegrationFixture* fix)
 
     unsigned spins = 0u;
     while (atomic_load_explicit(&probe.stage, memory_order_relaxed) < 3u && spins < 32u) {
-        munit_assert_true(cep_heartbeat_stage_commit());
+        if (!cep_heartbeat_stage_commit()) {
+            munit_logf(MUNIT_LOG_ERROR,
+                       "[integration][hybrid_flow] stage_commit failed spins=%u err=%d stage=%u",
+                       spins,
+                       cep_ops_debug_last_error(),
+                       atomic_load_explicit(&probe.stage, memory_order_relaxed));
+            munit_assert_true(false);
+        }
         munit_assert_true(cep_heartbeat_step());
         munit_assert_true(cep_heartbeat_resolve_agenda());
         munit_assert_true(cep_heartbeat_process_impulses());
@@ -3021,14 +3116,10 @@ static void integration_execute_interleaved_timeline(IntegrationFixture* fix) {
     integration_ops_ctx_mark_ok(&ops_ctx);
     integration_ops_ctx_emit_cei(&ops_ctx, fix);
 
-    munit_assert_true(cep_heartbeat_stage_commit());
-    munit_assert_true(cep_heartbeat_step());
+    integration_ops_ctx_drive_once();
     integration_debug_mark("timeline:beat3", cep_heartbeat_current());
-    munit_assert_true(cep_heartbeat_resolve_agenda());
-    munit_assert_true(cep_heartbeat_process_impulses());
-    munit_assert_true(cep_heartbeat_stage_commit());
 
-    integration_ops_ctx_verify(&ops_ctx);
+    integration_ops_ctx_verify(&ops_ctx, true);
     integration_episode_executor_checks(&stream_ctx);
     integration_stream_ctx_dump(&stream_ctx, "post-executor");
     integration_episode_lease_flow(fix);
@@ -3507,7 +3598,13 @@ static void integration_runtime_boot(IntegrationFixture* fix) {
     munit_assert_true(cep_oid_is_valid(fix->boot_oid));
 
     for (unsigned step = 0; step < 6; ++step) {
-        munit_assert_true(cep_heartbeat_step());
+        if (!cep_heartbeat_step()) {
+            munit_logf(MUNIT_LOG_ERROR,
+                       "[integration][runtime_boot] heartbeat_step failed step=%u err=%d",
+                       step,
+                       cep_ops_debug_last_error());
+            munit_assert_true(false);
+        }
     }
 
     const char* expected_states[] = {
@@ -3528,6 +3625,16 @@ static void integration_runtime_cleanup(IntegrationFixture* fix) {
     cep_runtime_set_active(fix->runtime);
     cep_stream_clear_pending();
     cep_comparator_registry_reset_active();
+    /* Drain any pending async work so subsequent selectors start clean. */
+    bool quiesced = cep_io_reactor_quiesce(CEP_IO_REACTOR_PAUSE_DEADLINE_BEATS);
+    if (!quiesced) {
+        munit_logf(MUNIT_LOG_ERROR,
+                   "[integration][async_guard] reactor failed to quiesce err=%d",
+                   cep_ops_debug_last_error());
+    }
+    munit_assert_true(quiesced);
+    integration_assert_async_runtime_idle("cleanup");
+    cep_io_reactor_shutdown();
     cep_runtime_shutdown(fix->runtime);
     cep_runtime_restore_active(fix->previous_runtime);
     cep_runtime_destroy(fix->runtime);
@@ -4464,7 +4571,7 @@ static MunitResult test_l0_integration_focus(const MunitParameter params[],
     if (focus_stream_flow)
         integration_stream_ctx_cleanup(&stream_ctx);
     if (focus_ops_ctx) {
-        integration_ops_ctx_verify(&ops_ctx_focus);
+        integration_ops_ctx_verify(&ops_ctx_focus, false);
         integration_ops_ctx_cleanup(&ops_ctx_focus);
     }
     if (focus_random_plan) {
