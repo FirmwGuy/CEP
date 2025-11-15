@@ -6,7 +6,9 @@
 #ifndef CEP_OPS_H
 #define CEP_OPS_H
 
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "cep_cell.h"
 #include "cep_heartbeat.h"
@@ -57,6 +59,61 @@ bool cep_ops_stage_commit(void);
 int cep_ops_debug_last_error(void);
 
 cepDT cep_ops_make_dt(const char* tag);
+
+typedef struct {
+    cepDT   state;
+    cepDT   channel;
+    cepDT   opcode;
+    uint32_t beats_budget;
+    bool    has_beats_budget;
+    uint64_t deadline_beat;
+    bool    has_deadline_beat;
+    uint64_t deadline_unix_ns;
+    bool    has_deadline_unix_ns;
+    uint64_t bytes_expected;
+    bool    has_bytes_expected;
+    uint64_t bytes_done;
+    bool    has_bytes_done;
+    int32_t errno_code;
+    bool    has_errno;
+    cepDT   telemetry;
+    bool    has_telemetry;
+} cepOpsAsyncIoReqInfo;
+
+typedef struct {
+    const char* target_path;
+    bool        has_target_path;
+    cepDT       provider;
+    bool        has_provider;
+    cepDT       reactor;
+    bool        has_reactor;
+    cepDT       caps;
+    bool        has_caps;
+    bool        shim;
+    bool        shim_known;
+} cepOpsAsyncChannelInfo;
+
+typedef struct {
+    bool     draining;
+    bool     draining_known;
+    bool     paused;
+    bool     paused_known;
+    bool     shutting_down;
+    bool     shutting_known;
+    uint32_t deadline_beats;
+    bool     deadline_known;
+} cepOpsAsyncReactorState;
+
+bool cep_op_async_record_request(cepOID oid,
+                                 const cepDT* request_name,
+                                 const cepOpsAsyncIoReqInfo* info);
+
+bool cep_op_async_record_channel(cepOID oid,
+                                 const cepDT* channel_name,
+                                 const cepOpsAsyncChannelInfo* info);
+
+bool cep_op_async_set_reactor_state(cepOID oid,
+                                    const cepOpsAsyncReactorState* state);
 
 #ifdef __cplusplus
 }

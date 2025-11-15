@@ -63,6 +63,8 @@ The heartbeat topic narrates the capture → compute → commit lifecycle, impul
 ### Federation Transport Manager
 Federation mounts lean on a dedicated manager to select transports, seed `/net/mounts` and `/net/transports`, and police `upd_latest` semantics. Read the topic when editing negotiation logic, adding providers, or wiring federation enzymes that publish capability preferences.
 
+Async I/O brings new observability to this manager. Each mount now publishes `async_pnd`, `async_shm`, and `async_nat` counters under `/net/telemetry/<peer>/<mount>/` so operators can see how many requests are inflight, how many completions ran through shim threads, and how many were satisfied by provider-native async hooks. The same data lands in `/rt/analytics/async/(shim|native)/<provider>/<mount>/jobs_total`, letting tooling subscribe to a single runtime branch when correlating OPS dossiers or CEI facts with cluster health.
+
 ### Episodic Engine (E³)
 The engine described in `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` lets episodes span beats, yield, await other operations, and—when configured—promote from threaded RO slices to cooperative RW slices (and demote back again) without sacrificing determinism. Read it before wiring long-lived jobs that blend read-heavy analysis with targeted mutations.
 

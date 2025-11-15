@@ -8,6 +8,8 @@
 #include "cep_cei.h"
 #include "cep_heartbeat_internal.h"
 #include "cep_runtime.h"
+#include "cep_async.h"
+#include "cep_io_reactor.h"
 #include "cep_executor.h"
 #include "cep_ep.h"
 #include "cep_namepool.h"
@@ -31,6 +33,7 @@
 #define CEP_RUNTIME          (*cep_runtime_heartbeat(cep_runtime_default()))
 #define CEP_CONTROL_STATE    (*cep_runtime_control_state(cep_runtime_default()))
 #define CEP_DEFAULT_TOPOLOGY (*cep_runtime_default_topology(cep_runtime_default()))
+#define CEP_ASYNC_STATE      (cep_runtime_async_state(cep_runtime_default()))
 
 
 static const cepDT* dt_state_root(void);
@@ -1911,14 +1914,20 @@ static bool cep_control_progress(void) {
                 ok = false;
             } else {
                 CEP_CONTROL_STATE.gating_active = true;
-                cepDT quiesce = *dt_ist_quiesce();
-                if (!cep_op_state_set(op->oid, quiesce, 0, NULL)) {
+                if (!cep_io_reactor_quiesce(CEP_IO_REACTOR_PAUSE_DEADLINE_BEATS)) {
                     op->failed = true;
-                    cep_control_emit_failure_cei(op, "quiesce", "state transition failed");
+                    cep_control_emit_failure_cei(op, "quiesce", "async reactor drain timeout");
                     ok = false;
                 } else {
-                    op->phase = CEP_CTRL_PHASE_APPLY;
-                    op->last_beat = current;
+                    cepDT quiesce = *dt_ist_quiesce();
+                    if (!cep_op_state_set(op->oid, quiesce, 0, NULL)) {
+                        op->failed = true;
+                        cep_control_emit_failure_cei(op, "quiesce", "state transition failed");
+                        ok = false;
+                    } else {
+                        op->phase = CEP_CTRL_PHASE_APPLY;
+                        op->last_beat = current;
+                    }
                 }
             }
         }
@@ -4692,6 +4701,7 @@ void cep_beat_begin_capture(void) {
     CEP_RUNTIME.phase = CEP_BEAT_CAPTURE;
     CEP_RUNTIME.deferred_activations = 0u;
     CEP_CONTROL_STATE.agenda_noted = false;
+    cep_async_runtime_on_phase(CEP_ASYNC_STATE, CEP_BEAT_CAPTURE);
 }
 
 
@@ -4699,6 +4709,7 @@ void cep_beat_begin_capture(void) {
     execution can proceed while asserts keep an eye on phase transitions. */
 void cep_beat_begin_compute(void) {
     CEP_RUNTIME.phase = CEP_BEAT_COMPUTE;
+    cep_async_runtime_on_phase(CEP_ASYNC_STATE, CEP_BEAT_COMPUTE);
 }
 
 
@@ -4706,6 +4717,7 @@ void cep_beat_begin_compute(void) {
     can confirm that agenda execution reached the last step for the beat. */
 void cep_beat_begin_commit(void) {
     CEP_RUNTIME.phase = CEP_BEAT_COMMIT;
+    cep_async_runtime_on_phase(CEP_ASYNC_STATE, CEP_BEAT_COMMIT);
 }
 
 

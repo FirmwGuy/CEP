@@ -15,11 +15,14 @@
 #include "../l0_kernel/cep_molecule.h"
 #include "../l0_kernel/cep_namepool.h"
 #include "../l0_kernel/cep_ops.h"
+#include "../l0_kernel/cep_async.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <inttypes.h>
+#include <errno.h>
 
 struct cepFedTransportManagerMount {
     cepFedTransportManager*        manager;
@@ -57,6 +60,32 @@ struct cepFedTransportManagerMount {
     bool                           flat_warn_compression_emitted;
     bool                           flat_warn_aead_emitted;
     uint32_t                       flat_comparator_max_version;
+    cepDT                          async_channel_dt;
+    bool                           async_channel_registered;
+    uint64_t                       async_req_counter;
+    char*                          async_target_path;
+    bool                           async_pending_active;
+    cepDT                          async_pending_request;
+    size_t                         async_pending_bytes;
+    cepFedTransportAsyncHandle*    async_pending_handle;
+    bool                           async_receive_pending;
+    cepDT                          async_receive_request;
+    cepFedTransportAsyncHandle*    async_receive_handle;
+    uint64_t                       async_pending_requests;
+    uint64_t                       async_shim_jobs;
+    uint64_t                       async_native_jobs;
+    bool                           async_warn_emitted;
+};
+
+struct cepFedTransportAsyncHandle {
+    cepFedTransportManagerMount* mount;
+    cepDT                        request_name;
+    cepDT                        opcode;
+    cepFedFrameMode              frame_mode;
+    uint8_t                      frame_sample;
+    size_t                       expected_bytes;
+    bool                         shim;
+    bool                         active;
 };
 
 typedef struct {
@@ -112,6 +141,15 @@ CEP_DEFINE_STATIC_DT(dt_preferred_name, CEP_ACRO("CEP"), CEP_WORD("preferred"));
 CEP_DEFINE_STATIC_DT(dt_transport_name, CEP_ACRO("CEP"), CEP_WORD("transport"));
 CEP_DEFINE_STATIC_DT(dt_provider_name, CEP_ACRO("CEP"), CEP_WORD("provider"));
 CEP_DEFINE_STATIC_DT(dt_selected_caps_name, CEP_ACRO("CEP"), CEP_WORD("prov_caps"));
+CEP_DEFINE_STATIC_DT(dt_async_pending_field_name, CEP_ACRO("CEP"), CEP_WORD("async_pnd"));
+CEP_DEFINE_STATIC_DT(dt_async_shim_field_name, CEP_ACRO("CEP"), CEP_WORD("async_shm"));
+CEP_DEFINE_STATIC_DT(dt_async_native_field_name, CEP_ACRO("CEP"), CEP_WORD("async_nat"));
+CEP_DEFINE_STATIC_DT(dt_rt_root_name_fed, CEP_ACRO("CEP"), CEP_WORD("rt"));
+CEP_DEFINE_STATIC_DT(dt_analytics_root_name, CEP_ACRO("CEP"), CEP_WORD("analytics"));
+CEP_DEFINE_STATIC_DT(dt_async_root_name, CEP_ACRO("CEP"), CEP_WORD("async"));
+CEP_DEFINE_STATIC_DT(dt_shim_branch_name, CEP_ACRO("CEP"), CEP_WORD("shim"));
+CEP_DEFINE_STATIC_DT(dt_native_branch_name, CEP_ACRO("CEP"), CEP_WORD("native"));
+CEP_DEFINE_STATIC_DT(dt_jobs_total_name, CEP_ACRO("CEP"), CEP_WORD("jobs_total"));
 CEP_DEFINE_STATIC_DT(dt_upd_latest_name, CEP_ACRO("CEP"), CEP_WORD("upd_latest"));
 CEP_DEFINE_STATIC_DT(dt_cap_reliable_name, CEP_ACRO("CEP"), CEP_WORD("reliable"));
 CEP_DEFINE_STATIC_DT(dt_cap_ordered_name, CEP_ACRO("CEP"), CEP_WORD("ordered"));
@@ -122,6 +160,14 @@ CEP_DEFINE_STATIC_DT(dt_cap_latency_name, CEP_ACRO("CEP"), CEP_WORD("low_latency
 CEP_DEFINE_STATIC_DT(dt_cap_local_ipc_name, CEP_ACRO("CEP"), CEP_WORD("local_ipc"));
 CEP_DEFINE_STATIC_DT(dt_cap_remote_net_name, CEP_ACRO("CEP"), CEP_WORD("remote_net"));
 CEP_DEFINE_STATIC_DT(dt_cap_unreliable_name, CEP_ACRO("CEP"), CEP_WORD("unreliable"));
+CEP_DEFINE_STATIC_DT(dt_fed_async_provider, CEP_ACRO("CEP"), CEP_WORD("prov:fed"));
+CEP_DEFINE_STATIC_DT(dt_fed_async_reactor, CEP_ACRO("CEP"), CEP_WORD("react:fed"));
+CEP_DEFINE_STATIC_DT(dt_fed_async_caps, CEP_ACRO("CEP"), CEP_WORD("caps:net"));
+CEP_DEFINE_STATIC_DT(dt_fed_async_opcode_send, CEP_ACRO("CEP"), CEP_WORD("op:send"));
+CEP_DEFINE_STATIC_DT(dt_fed_async_opcode_recv, CEP_ACRO("CEP"), CEP_WORD("op:recv"));
+CEP_DEFINE_STATIC_DT(dt_fed_async_state_exec, CEP_ACRO("CEP"), CEP_WORD("ist:exec"));
+CEP_DEFINE_STATIC_DT(dt_fed_async_state_ok, CEP_ACRO("CEP"), CEP_WORD("ist:ok"));
+CEP_DEFINE_STATIC_DT(dt_fed_async_state_fail, CEP_ACRO("CEP"), CEP_WORD("ist:fail"));
 #define CEP_DEFINE_DYNAMIC_DT(fn_name, literal)                                 \
     static const cepDT* fn_name(void) {                                         \
         static cepDT value = {0};                                               \
@@ -202,6 +248,7 @@ static const char* const CEP_FED_TOPIC_BACKPRESSURE     = "tp_backpr";
 static const char* const CEP_FED_TOPIC_SEND_FAILED      = "tp_sendfail";
 static const char* const CEP_FED_TOPIC_FATAL_EVENT      = "tp_fatal";
 static const char* const CEP_FED_TOPIC_FLAT_NEGOTIATION = "tp_flatneg";
+static const char* const CEP_FED_TOPIC_ASYNC_UNSUPPORTED = "tp_asyncun";
 
 static inline unsigned cep_fed_transport_popcount(cepFedTransportCaps value) {
     unsigned count = 0u;
@@ -217,6 +264,9 @@ static void cep_fed_transport_manager_update_health(cepFedTransportManager* mana
                                                     const cepDT* severity,
                                                     const char* note,
                                                     const char* topic);
+static bool cep_fed_transport_manager_refresh_telemetry(cepFedTransportManager* manager,
+                                                        cepFedTransportManagerMount* mount,
+                                                        const char* last_event);
 
 static void cep_fed_transport_manager_mount_reset_pending(cepFedTransportManagerMount* mount);
 static bool cep_fed_env_push_override(const char* name, uint32_t value, char** previous_copy);
@@ -226,11 +276,29 @@ static void cep_fed_transport_manager_warn_flat_downgrade(cepFedTransportManager
                                                           cepFedTransportManagerMount* mount,
                                                           bool* warned_flag,
                                                           const char* note);
+static bool cep_fed_transport_mount_prepare_async_target(cepFedTransportManagerMount* mount);
+static void cep_fed_transport_mount_async_ensure_channel(cepFedTransportManagerMount* mount);
+static void cep_fed_transport_mount_async_cancel_pending(cepFedTransportManagerMount* mount, int error_code);
+static void cep_fed_transport_mount_async_cancel_receive(cepFedTransportManagerMount* mount, int error_code);
+static cepDT cep_fed_transport_mount_next_request_dt(cepFedTransportManagerMount* mount, const char prefix[3]);
+static bool cep_fed_transport_mount_async_begin_request(cepFedTransportManagerMount* mount,
+                                                        const char prefix[3],
+                                                        const cepDT* opcode,
+                                                        size_t expected_bytes,
+                                                        cepDT* out_name);
+static void cep_fed_transport_mount_async_complete_request(cepFedTransportManagerMount* mount,
+                                                           const cepDT* request_name,
+                                                           const cepDT* opcode,
+                                                           bool success,
+                                                           size_t bytes_done,
+                                                           int error_code);
 
 static void cep_fed_transport_manager_mount_reset_pending(cepFedTransportManagerMount* mount) {
     if (!mount) {
         return;
     }
+    cep_fed_transport_mount_async_cancel_pending(mount, -ECANCELED);
+    cep_fed_transport_mount_async_cancel_receive(mount, -ECANCELED);
     if (mount->pending_payload) {
         cep_free(mount->pending_payload);
         mount->pending_payload = NULL;
@@ -449,6 +517,23 @@ static const char* cep_fed_transport_frame_mode_text(cepFedFrameMode mode) {
     }
 }
 
+static cepCell* cep_fed_transport_manager_ensure_async_root(cepFedTransportManager* manager);
+static bool cep_fed_transport_manager_refresh_async_analytics(cepFedTransportManager* manager,
+                                                              cepFedTransportManagerMount* mount);
+
+static cepFedTransportAsyncHandle* cep_fed_transport_async_handle_create(cepFedTransportManagerMount* mount,
+                                                                         const char prefix[3],
+                                                                         const cepDT* opcode,
+                                                                         size_t expected_bytes,
+                                                                         cepFedFrameMode mode,
+                                                                         uint8_t frame_sample,
+                                                                         bool shim);
+static void cep_fed_transport_async_handle_finish(cepFedTransportAsyncHandle* handle,
+                                                  bool success,
+                                                  size_t bytes_done,
+                                                  int error_code);
+static void cep_fed_transport_async_record_send_success(cepFedTransportAsyncHandle* handle);
+
 static bool cep_fed_transport_manager_write_caps_branch(cepCell* parent,
                                                         const cepDT* branch,
                                                         cepFedTransportCaps caps) {
@@ -478,6 +563,209 @@ static bool cep_fed_transport_manager_write_caps_branch(cepCell* parent,
     return ok;
 }
 
+static cepCell*
+cep_fed_transport_manager_ensure_async_root(cepFedTransportManager* manager)
+{
+    if (!manager) {
+        return NULL;
+    }
+    if (manager->analytics_async_root && manager->analytics_root) {
+        return manager->analytics_async_root;
+    }
+    cepCell* root = cep_root();
+    if (!root) {
+        return NULL;
+    }
+    cepCell* rt = cep_cell_ensure_dictionary_child(root, dt_rt_root_name_fed(), CEP_STORAGE_RED_BLACK_T);
+    if (!rt) {
+        return NULL;
+    }
+    rt = cep_cell_resolve(rt);
+    if (!rt || !cep_cell_require_dictionary_store(&rt)) {
+        return NULL;
+    }
+    cepCell* analytics = cep_cell_ensure_dictionary_child(rt, dt_analytics_root_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!analytics) {
+        return NULL;
+    }
+    analytics = cep_cell_resolve(analytics);
+    if (!analytics || !cep_cell_require_dictionary_store(&analytics)) {
+        return NULL;
+    }
+    cepCell* async_root = cep_cell_ensure_dictionary_child(analytics, dt_async_root_name(), CEP_STORAGE_RED_BLACK_T);
+    if (!async_root) {
+        return NULL;
+    }
+    async_root = cep_cell_resolve(async_root);
+    if (!async_root || !cep_cell_require_dictionary_store(&async_root)) {
+        return NULL;
+    }
+    manager->analytics_root = analytics;
+    manager->analytics_async_root = async_root;
+    return manager->analytics_async_root;
+}
+
+static bool
+cep_fed_transport_manager_write_async_counter(cepCell* async_root,
+                                              const cepDT* branch,
+                                              const char* provider,
+                                              const char* mount_id,
+                                              uint64_t value)
+{
+    if (!async_root || !branch || !provider || !mount_id) {
+        return false;
+    }
+    cepCell* branch_cell = cep_cell_ensure_dictionary_child(async_root, branch, CEP_STORAGE_RED_BLACK_T);
+    if (!branch_cell) {
+        return false;
+    }
+    branch_cell = cep_cell_resolve(branch_cell);
+    if (!branch_cell || !cep_cell_require_dictionary_store(&branch_cell)) {
+        return false;
+    }
+    cepCell* provider_cell = cep_fed_transport_manager_ensure_word_child(branch_cell, provider);
+    if (!provider_cell) {
+        return false;
+    }
+    cepCell* mount_cell = cep_fed_transport_manager_ensure_word_child(provider_cell, mount_id);
+    if (!mount_cell) {
+        return false;
+    }
+    cep_store_delete_children_hard(mount_cell->store);
+    return cep_fed_transport_manager_write_u64(mount_cell,
+                                               dt_jobs_total_name(),
+                                               "jobs_total",
+                                               value);
+}
+
+static bool
+cep_fed_transport_manager_refresh_async_analytics(cepFedTransportManager* manager,
+                                                  cepFedTransportManagerMount* mount)
+{
+    if (!manager || !mount) {
+        return true;
+    }
+    if (!manager->analytics_async_root) {
+        manager->analytics_async_root = cep_fed_transport_manager_ensure_async_root(manager);
+    }
+    if (!manager->analytics_async_root) {
+        return false;
+    }
+    const char* provider = mount->provider_id ? mount->provider_id : "provider";
+    const char* mount_id = mount->mount_id ? mount->mount_id : "mount";
+    bool ok = true;
+    ok = cep_fed_transport_manager_write_async_counter(manager->analytics_async_root,
+                                                       dt_shim_branch_name(),
+                                                       provider,
+                                                       mount_id,
+                                                       mount->async_shim_jobs) && ok;
+    ok = cep_fed_transport_manager_write_async_counter(manager->analytics_async_root,
+                                                       dt_native_branch_name(),
+                                                       provider,
+                                                       mount_id,
+                                                       mount->async_native_jobs) && ok;
+    return ok;
+}
+
+static cepFedTransportAsyncHandle*
+cep_fed_transport_async_handle_create(cepFedTransportManagerMount* mount,
+                                      const char prefix[3],
+                                      const cepDT* opcode,
+                                      size_t expected_bytes,
+                                      cepFedFrameMode mode,
+                                      uint8_t frame_sample,
+                                      bool shim)
+{
+    if (!mount || !opcode) {
+        return NULL;
+    }
+    cepDT request_name = {0};
+    if (!cep_fed_transport_mount_async_begin_request(mount,
+                                                     prefix,
+                                                     opcode,
+                                                     expected_bytes,
+                                                     &request_name)) {
+        return NULL;
+    }
+    cepFedTransportAsyncHandle* handle = cep_malloc(sizeof *handle);
+    if (!handle) {
+        cep_fed_transport_mount_async_complete_request(mount,
+                                                       &request_name,
+                                                       opcode,
+                                                       false,
+                                                       0u,
+                                                       -ENOMEM);
+        return NULL;
+    }
+    *handle = (cepFedTransportAsyncHandle){
+        .mount = mount,
+        .request_name = request_name,
+        .opcode = *opcode,
+        .frame_mode = mode,
+        .frame_sample = frame_sample,
+        .expected_bytes = expected_bytes,
+        .shim = shim,
+        .active = true,
+    };
+    mount->async_pending_requests += 1u;
+    return handle;
+}
+
+static void
+cep_fed_transport_async_record_send_success(cepFedTransportAsyncHandle* handle)
+{
+    if (!handle || !handle->mount) {
+        return;
+    }
+    cepFedTransportManagerMount* mount = handle->mount;
+    ++mount->frame_count;
+    mount->last_frame_mode = handle->frame_mode;
+    mount->last_frame_sample = handle->frame_sample;
+    if (mount->manager) {
+        (void)cep_fed_transport_manager_refresh_telemetry(mount->manager,
+                                                          mount,
+                                                          cep_fed_transport_frame_mode_text(handle->frame_mode));
+    }
+}
+
+static void
+cep_fed_transport_async_handle_finish(cepFedTransportAsyncHandle* handle,
+                                      bool success,
+                                      size_t bytes_done,
+                                      int error_code)
+{
+    if (!handle || !handle->active) {
+        return;
+    }
+    cepFedTransportManagerMount* mount = handle->mount;
+    if (mount->async_pending_requests > 0u) {
+        mount->async_pending_requests -= 1u;
+    }
+    if (handle->shim) {
+        mount->async_shim_jobs += 1u;
+    } else {
+        mount->async_native_jobs += 1u;
+    }
+    if (handle == mount->async_pending_handle) {
+        mount->async_pending_handle = NULL;
+        mount->async_pending_active = false;
+        mount->async_pending_request = (cepDT){0};
+        mount->async_pending_bytes = 0u;
+    }
+    if (handle == mount->async_receive_handle) {
+        mount->async_receive_handle = NULL;
+        mount->async_receive_pending = false;
+        mount->async_receive_request = (cepDT){0};
+    }
+    cep_fed_transport_mount_async_complete_request(mount,
+                                                   &handle->request_name,
+                                                   &handle->opcode,
+                                                   success,
+                                                   bytes_done,
+                                                   error_code);
+    handle->active = false;
+    cep_free(handle);
+}
 static bool cep_fed_transport_manager_refresh_catalog(cepFedTransportManager* manager,
                                                       cepFedTransportManagerMount* mount) {
     if (!manager || !mount || !manager->catalog_root) {
@@ -583,6 +871,10 @@ static bool cep_fed_transport_manager_refresh_telemetry(cepFedTransportManager* 
     ok = cep_fed_transport_manager_write_u64(mount_cell, dt_frame_count_name(), "frame_count", mount->frame_count) && ok;
     ok = cep_fed_transport_manager_write_text(mount_cell, dt_last_frame_mode_name(), "last_mode", cep_fed_transport_frame_mode_text(mount->last_frame_mode)) && ok;
     ok = cep_fed_transport_manager_write_u64(mount_cell, dt_last_frame_sample_name(), "last_sample", (uint64_t)mount->last_frame_sample) && ok;
+    ok = cep_fed_transport_manager_write_u64(mount_cell, dt_async_pending_field_name(), "async_pending", mount->async_pending_requests) && ok;
+    ok = cep_fed_transport_manager_write_u64(mount_cell, dt_async_shim_field_name(), "async_shim", mount->async_shim_jobs) && ok;
+    ok = cep_fed_transport_manager_write_u64(mount_cell, dt_async_native_field_name(), "async_native", mount->async_native_jobs) && ok;
+    ok = cep_fed_transport_manager_refresh_async_analytics(manager, mount) && ok;
     return ok;
 }
 
@@ -774,6 +1066,13 @@ static void cep_fed_transport_manager_mount_detach(cepFedTransportManagerMount* 
         mount->provider->vtable->close(mount->provider_ctx, mount->channel, "manager-detach");
     }
     cep_fed_transport_manager_mount_reset_pending(mount);
+    if (mount->async_target_path) {
+        cep_free(mount->async_target_path);
+        mount->async_target_path = NULL;
+    }
+    mount->async_channel_registered = false;
+    mount->async_channel_dt = (cepDT){0};
+    mount->async_req_counter = 0u;
     if (mount->peer_id) {
         cep_free(mount->peer_id);
         mount->peer_id = NULL;
@@ -816,7 +1115,29 @@ static bool cep_fed_transport_manager_flush_pending(cepFedTransportManagerMount*
                                               CEP_FED_FRAME_MODE_UPD_LATEST,
                                               deadline_beat);
     if (sent) {
-        cep_fed_transport_manager_mount_reset_pending(mount);
+        if (mount->async_pending_handle) {
+            cep_fed_transport_async_record_send_success(mount->async_pending_handle);
+            cep_fed_transport_async_handle_finish(mount->async_pending_handle,
+                                                  true,
+                                                  mount->pending_len,
+                                                  0);
+            mount->async_pending_handle = NULL;
+        } else if (mount->async_pending_active) {
+            cep_fed_transport_mount_async_complete_request(mount,
+                                                           &mount->async_pending_request,
+                                                           dt_fed_async_opcode_send(),
+                                                           true,
+                                                           mount->async_pending_bytes,
+                                                           0);
+            mount->async_pending_active = false;
+            mount->async_pending_request = (cepDT){0};
+            mount->async_pending_bytes = 0u;
+        }
+        if (mount->pending_payload) {
+            cep_free(mount->pending_payload);
+            mount->pending_payload = NULL;
+        }
+        mount->pending_len = 0u;
         mount->backpressured = false;
         ++mount->frame_count;
         mount->last_frame_mode = CEP_FED_FRAME_MODE_UPD_LATEST;
@@ -839,10 +1160,38 @@ static bool cep_fed_transport_manager_on_frame(void* manager_ctx,
     if (!mount || channel != mount->channel) {
         return false;
     }
+    bool handled = true;
     if (mount->callbacks.on_frame) {
-        return mount->callbacks.on_frame(mount->callbacks.user_ctx, mount, payload, payload_len, mode);
+        handled = mount->callbacks.on_frame(mount->callbacks.user_ctx, mount, payload, payload_len, mode);
     }
-    return true;
+    if (mount->async_receive_pending) {
+        if (mount->async_receive_handle) {
+            cep_fed_transport_async_handle_finish(mount->async_receive_handle,
+                                                  handled,
+                                                  handled ? payload_len : 0u,
+                                                  handled ? 0 : -EIO);
+            mount->async_receive_handle = NULL;
+        } else {
+            if (handled) {
+                cep_fed_transport_mount_async_complete_request(mount,
+                                                               &mount->async_receive_request,
+                                                               dt_fed_async_opcode_recv(),
+                                                               true,
+                                                               payload_len,
+                                                               0);
+            } else {
+                cep_fed_transport_mount_async_complete_request(mount,
+                                                               &mount->async_receive_request,
+                                                               dt_fed_async_opcode_recv(),
+                                                               false,
+                                                               0u,
+                                                               -EIO);
+            }
+        }
+        mount->async_receive_pending = false;
+        mount->async_receive_request = (cepDT){0};
+    }
+    return handled;
 }
 
 static void cep_fed_transport_manager_on_event(void* manager_ctx,
@@ -1009,7 +1358,12 @@ bool cep_fed_transport_manager_init(cepFedTransportManager* manager,
     }
 
     manager->diagnostics_mailbox = cep_cei_diagnostics_mailbox();
-    return manager->diagnostics_mailbox != NULL;
+    if (!manager->diagnostics_mailbox) {
+        return false;
+    }
+    manager->analytics_root = NULL;
+    manager->analytics_async_root = cep_fed_transport_manager_ensure_async_root(manager);
+    return manager->analytics_async_root != NULL;
 }
 
 /* cep_fed_transport_manager_configure_mount selects a provider that satisfies the mount
@@ -1062,6 +1416,12 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
     mount->frame_count = 0u;
     mount->last_frame_mode = CEP_FED_FRAME_MODE_DATA;
     mount->last_frame_sample = 0u;
+    mount->async_pending_requests = 0u;
+    mount->async_shim_jobs = 0u;
+    mount->async_native_jobs = 0u;
+    mount->async_warn_emitted = false;
+    mount->async_pending_handle = NULL;
+    mount->async_receive_handle = NULL;
     mount->payload_history_beats = 0u;
     mount->manifest_history_beats = 0u;
     mount->flat_allow_crc32c = true;
@@ -1073,6 +1433,19 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
     mount->flat_warn_aead_emitted = false;
     mount->flat_comparator_max_version = UINT32_MAX;
     cep_fed_transport_manager_mount_reset_pending(mount);
+    if (mount->async_target_path) {
+        cep_free(mount->async_target_path);
+        mount->async_target_path = NULL;
+    }
+    mount->async_channel_registered = false;
+    mount->async_channel_dt = (cepDT){0};
+    mount->async_req_counter = 0u;
+    mount->async_pending_active = false;
+    mount->async_pending_request = (cepDT){0};
+    mount->async_pending_bytes = 0u;
+    mount->async_receive_pending = false;
+    mount->async_receive_request = (cepDT){0};
+    (void)cep_fed_transport_mount_prepare_async_target(mount);
 
     const char* provider_id = NULL;
     const cepFedTransportProvider* provider = NULL;
@@ -1233,12 +1606,53 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
     }
 
     cepFedTransportManager* owning_manager = mount->manager;
+    bool provider_async = mount->provider && mount->provider->vtable && mount->provider->vtable->send_async;
+    uint8_t frame_sample = payload_len > 0u ? payload[0] : 0u;
+    cepFedTransportAsyncHandle* async_handle = NULL;
+    if (mount->provider && mount->channel && mount->provider->vtable && payload_len > 0u) {
+        async_handle = cep_fed_transport_async_handle_create(mount,
+                                                             "fs",
+                                                             dt_fed_async_opcode_send(),
+                                                             payload_len,
+                                                             mode,
+                                                             frame_sample,
+                                                             !provider_async);
+    }
+
+    if (provider_async && async_handle) {
+        if (mount->provider->vtable->send_async(mount->provider_ctx,
+                                                mount->channel,
+                                                payload,
+                                                payload_len,
+                                                mode,
+                                                deadline_beat,
+                                                async_handle)) {
+            return true;
+        }
+        async_handle->shim = true;
+    } else if (!provider_async && async_handle && !mount->async_warn_emitted) {
+        cep_fed_transport_manager_emit_diag(manager,
+                                            mount,
+                                            dt_sev_warn_name(),
+                                            "Transport lacks async send support; using shim",
+                                            CEP_FED_TOPIC_ASYNC_UNSUPPORTED);
+        mount->async_warn_emitted = true;
+    }
+
     bool immediate_sent = false;
 
     if (mode == CEP_FED_FRAME_MODE_UPD_LATEST && mount->supports_upd_latest) {
         if (mount->backpressured) {
             uint8_t* snapshot = cep_malloc(payload_len);
             memcpy(snapshot, payload, payload_len);
+            cep_fed_transport_mount_async_cancel_pending(mount, -ECANCELED);
+            if (async_handle) {
+                mount->async_pending_handle = async_handle;
+                mount->async_pending_request = async_handle->request_name;
+                mount->async_pending_active = true;
+                mount->async_pending_bytes = payload_len;
+                async_handle = NULL;
+            }
             if (mount->pending_payload) {
                 cep_free(mount->pending_payload);
             }
@@ -1260,6 +1674,14 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
         if (!immediate_sent) {
             uint8_t* snapshot = cep_malloc(payload_len);
             memcpy(snapshot, payload, payload_len);
+            cep_fed_transport_mount_async_cancel_pending(mount, -ECANCELED);
+            if (async_handle) {
+                mount->async_pending_handle = async_handle;
+                mount->async_pending_request = async_handle->request_name;
+                mount->async_pending_active = true;
+                mount->async_pending_bytes = payload_len;
+                async_handle = NULL;
+            }
             if (mount->pending_payload) {
                 cep_free(mount->pending_payload);
             }
@@ -1286,6 +1708,13 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
                                                        mode,
                                                        deadline_beat);
         if (!immediate_sent) {
+            if (async_handle) {
+                cep_fed_transport_async_handle_finish(async_handle,
+                                                      false,
+                                                      0u,
+                                                      -EIO);
+                async_handle = NULL;
+            }
             cep_fed_transport_manager_emit_diag(manager,
                                                 mount,
                                                 dt_sev_error_name(),
@@ -1296,27 +1725,76 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
     }
 
     if (immediate_sent) {
-        ++mount->frame_count;
-        mount->last_frame_mode = mode;
-        mount->last_frame_sample = payload_len > 0u ? payload[0] : 0u;
-        if (owning_manager) {
-            (void)cep_fed_transport_manager_refresh_telemetry(owning_manager,
-                                                               mount,
-                                                               cep_fed_transport_frame_mode_text(mode));
+        if (async_handle) {
+            cep_fed_transport_async_record_send_success(async_handle);
+            cep_fed_transport_async_handle_finish(async_handle,
+                                                  true,
+                                                  payload_len,
+                                                  0);
+        } else {
+            ++mount->frame_count;
+            mount->last_frame_mode = mode;
+            mount->last_frame_sample = frame_sample;
+            if (owning_manager) {
+                (void)cep_fed_transport_manager_refresh_telemetry(owning_manager,
+                                                                   mount,
+                                                                   cep_fed_transport_frame_mode_text(mode));
+            }
         }
     }
 
     return true;
 }
 
-/* cep_fed_transport_manager_request_receive bridges the provider's receive hook so
+/* cep_fed_transport_manager_request_receive/* cep_fed_transport_manager_request_receive bridges the provider's receive hook so
    mounts can ask for more input frames without touching the provider vtable directly. */
 bool cep_fed_transport_manager_request_receive(cepFedTransportManager* manager,
                                                cepFedTransportManagerMount* mount) {
     if (!manager || !mount || !mount->provider || !mount->channel || !mount->provider->vtable || !mount->provider->vtable->request_receive) {
         return false;
     }
-    return mount->provider->vtable->request_receive(mount->provider_ctx, mount->channel);
+    bool provider_async = mount->provider->vtable->request_receive_async != NULL;
+    cepFedTransportAsyncHandle* async_handle = cep_fed_transport_async_handle_create(mount,
+                                                                                     "fr",
+                                                                                     dt_fed_async_opcode_recv(),
+                                                                                     0u,
+                                                                                     CEP_FED_FRAME_MODE_DATA,
+                                                                                     0u,
+                                                                                     !provider_async);
+    if (provider_async && async_handle) {
+        if (mount->provider->vtable->request_receive_async(mount->provider_ctx,
+                                                           mount->channel,
+                                                           async_handle)) {
+            if (mount->async_receive_pending) {
+                cep_fed_transport_mount_async_cancel_receive(mount, -ECANCELED);
+            }
+            mount->async_receive_pending = true;
+            mount->async_receive_request = async_handle->request_name;
+            mount->async_receive_handle = async_handle;
+            return true;
+        }
+        async_handle->shim = true;
+    }
+
+    bool requested = mount->provider->vtable->request_receive(mount->provider_ctx, mount->channel);
+    if (!requested) {
+        if (async_handle) {
+            cep_fed_transport_async_handle_finish(async_handle,
+                                                  false,
+                                                  0u,
+                                                  -EIO);
+        }
+        return false;
+    }
+    if (async_handle) {
+        if (mount->async_receive_pending) {
+            cep_fed_transport_mount_async_cancel_receive(mount, -ECANCELED);
+        }
+        mount->async_receive_pending = true;
+        mount->async_receive_request = async_handle->request_name;
+        mount->async_receive_handle = async_handle;
+    }
+    return true;
 }
 
 /* cep_fed_transport_manager_close closes the active provider channel while keeping the
@@ -1368,6 +1846,31 @@ const char* cep_fed_transport_manager_mount_provider_id(const cepFedTransportMan
         return NULL;
     }
     return mount->provider_id;
+}
+
+void cep_fed_transport_async_send_complete(cepFedTransportAsyncHandle* handle,
+                                           bool success,
+                                           size_t bytes_done,
+                                           int error_code)
+{
+    if (!handle) {
+        return;
+    }
+    if (success) {
+        cep_fed_transport_async_record_send_success(handle);
+    }
+    cep_fed_transport_async_handle_finish(handle, success, bytes_done, error_code);
+}
+
+void cep_fed_transport_async_receive_ready(cepFedTransportAsyncHandle* handle,
+                                           bool success,
+                                           size_t bytes_ready,
+                                           int error_code)
+{
+    if (!handle) {
+        return;
+    }
+    cep_fed_transport_async_handle_finish(handle, success, bytes_ready, error_code);
 }
 
 bool cep_fed_transport_manager_send_cell(cepFedTransportManager* manager,
@@ -1628,4 +2131,173 @@ static void cep_fed_transport_manager_warn_flat_downgrade(cepFedTransportManager
                                         note,
                                         CEP_FED_TOPIC_FLAT_NEGOTIATION);
     *warned_flag = true;
+}
+
+static bool cep_fed_transport_mount_prepare_async_target(cepFedTransportManagerMount* mount) {
+    if (!mount) {
+        return false;
+    }
+    if (mount->async_target_path) {
+        return true;
+    }
+    if (!mount->peer_id || !mount->mount_mode || !mount->mount_id) {
+        return false;
+    }
+    int needed = snprintf(NULL, 0, "/net/mounts/%s/%s/%s", mount->peer_id, mount->mount_mode, mount->mount_id);
+    if (needed <= 0) {
+        return false;
+    }
+    size_t size = (size_t)needed + 1u;
+    char* path = cep_malloc(size);
+    if (!path) {
+        return false;
+    }
+    snprintf(path, size, "/net/mounts/%s/%s/%s", mount->peer_id, mount->mount_mode, mount->mount_id);
+    mount->async_target_path = path;
+    return true;
+}
+
+static cepDT cep_fed_transport_mount_next_request_dt(cepFedTransportManagerMount* mount,
+                                                     const char prefix[3]) {
+    char tag[12] = {0};
+    uint32_t suffix = (uint32_t)(mount->async_req_counter++ % 1000000u);
+    if (prefix && prefix[0] && prefix[1]) {
+        snprintf(tag, sizeof tag, "%c%c%06u", prefix[0], prefix[1], suffix);
+    } else {
+        snprintf(tag, sizeof tag, "fx%06u", suffix);
+    }
+    return cep_ops_make_dt(tag);
+}
+
+static void cep_fed_transport_mount_async_complete_request(cepFedTransportManagerMount* mount,
+                                                           const cepDT* request_name,
+                                                           const cepDT* opcode,
+                                                           bool success,
+                                                           size_t bytes_done,
+                                                           int error_code) {
+    if (!mount || !request_name || !opcode || !cep_dt_is_valid(request_name)) {
+        return;
+    }
+    cepOpsAsyncIoReqInfo info = {
+        .state = success ? *dt_fed_async_state_ok() : *dt_fed_async_state_fail(),
+        .channel = mount->async_channel_dt,
+        .opcode = *opcode,
+    };
+    if (bytes_done > 0u) {
+        info.has_bytes_done = true;
+        info.bytes_done = bytes_done;
+    }
+    if (!success) {
+        info.has_errno = true;
+        info.errno_code = error_code;
+    }
+    (void)cep_async_post_completion(cep_async_ops_oid(), request_name, &info);
+}
+
+static void cep_fed_transport_mount_async_cancel_pending(cepFedTransportManagerMount* mount, int error_code) {
+    if (!mount || !mount->async_pending_active) {
+        return;
+    }
+    if (mount->async_pending_handle) {
+        cep_fed_transport_async_handle_finish(mount->async_pending_handle,
+                                              false,
+                                              mount->async_pending_bytes,
+                                              error_code);
+        mount->async_pending_handle = NULL;
+        mount->async_pending_active = false;
+        mount->async_pending_request = (cepDT){0};
+        mount->async_pending_bytes = 0u;
+        return;
+    }
+    cep_fed_transport_mount_async_complete_request(mount,
+                                                   &mount->async_pending_request,
+                                                   dt_fed_async_opcode_send(),
+                                                   false,
+                                                   mount->async_pending_bytes,
+                                                   error_code);
+    mount->async_pending_active = false;
+    mount->async_pending_request = (cepDT){0};
+    mount->async_pending_bytes = 0u;
+}
+
+static void cep_fed_transport_mount_async_cancel_receive(cepFedTransportManagerMount* mount, int error_code) {
+    if (!mount || !mount->async_receive_pending) {
+        return;
+    }
+    if (mount->async_receive_handle) {
+        cep_fed_transport_async_handle_finish(mount->async_receive_handle,
+                                              false,
+                                              0u,
+                                              error_code);
+        mount->async_receive_handle = NULL;
+        mount->async_receive_pending = false;
+        mount->async_receive_request = (cepDT){0};
+        return;
+    }
+    cep_fed_transport_mount_async_complete_request(mount,
+                                                   &mount->async_receive_request,
+                                                   dt_fed_async_opcode_recv(),
+                                                   false,
+                                                   0u,
+                                                   error_code);
+    mount->async_receive_pending = false;
+    mount->async_receive_request = (cepDT){0};
+}
+
+static void cep_fed_transport_mount_async_ensure_channel(cepFedTransportManagerMount* mount) {
+    if (!mount || mount->async_channel_registered) {
+        return;
+    }
+    if (!cep_dt_is_valid(&mount->async_channel_dt)) {
+        uintptr_t ptr = (uintptr_t)mount;
+        unsigned hash = (unsigned)((ptr >> 4) & 0xFFFFFFu);
+        char tag[12];
+        snprintf(tag, sizeof tag, "fc%06X", hash);
+        mount->async_channel_dt = cep_ops_make_dt(tag);
+    }
+    if (!cep_fed_transport_mount_prepare_async_target(mount)) {
+        return;
+    }
+    cepOpsAsyncChannelInfo info = {
+        .target_path = mount->async_target_path,
+        .has_target_path = (mount->async_target_path != NULL),
+        .provider = *dt_fed_async_provider(),
+        .has_provider = true,
+        .reactor = *dt_fed_async_reactor(),
+        .has_reactor = true,
+        .caps = *dt_fed_async_caps(),
+        .has_caps = true,
+        .shim = true,
+        .shim_known = true,
+    };
+    if (cep_async_register_channel(cep_async_ops_oid(), &mount->async_channel_dt, &info)) {
+        mount->async_channel_registered = true;
+    }
+}
+
+static bool cep_fed_transport_mount_async_begin_request(cepFedTransportManagerMount* mount,
+                                                        const char prefix[3],
+                                                        const cepDT* opcode,
+                                                        size_t expected_bytes,
+                                                        cepDT* out_name) {
+    if (!mount || !opcode || !out_name) {
+        return false;
+    }
+    cep_fed_transport_mount_async_ensure_channel(mount);
+    if (!mount->async_channel_registered) {
+        return false;
+    }
+    *out_name = cep_fed_transport_mount_next_request_dt(mount, prefix);
+    cepOpsAsyncIoReqInfo info = {
+        .state = *dt_fed_async_state_exec(),
+        .channel = mount->async_channel_dt,
+        .opcode = *opcode,
+        .has_beats_budget = true,
+        .beats_budget = 1u,
+    };
+    if (expected_bytes > 0u) {
+        info.has_bytes_expected = true;
+        info.bytes_expected = expected_bytes;
+    }
+    return cep_async_register_request(cep_async_ops_oid(), out_name, &info);
 }

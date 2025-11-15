@@ -9,6 +9,8 @@
 #include "cep_ep.h"
 #include "cep_heartbeat.h"
 #include "cep_heartbeat_internal.h"
+#include "cep_async.h"
+#include "cep_io_reactor.h"
 #include "../enzymes/cep_l0_organs.h"
 #include "cep_namepool.h"
 #include "cep_namepool_runtime.h"
@@ -62,6 +64,7 @@ struct cepRuntime {
     struct cepOrganRegistryState*   organ_registry;
     struct cepExecutorRuntimeState* executor_state;
     struct cepFederationRuntimeState* federation_state;
+    struct cepAsyncRuntimeState* async_state;
     cepMailboxRuntimeSettings   mailbox_settings;
     cepSerializationRuntimeState serialization_state;
     cepEpRuntimeState           ep_state;
@@ -298,6 +301,16 @@ cep_runtime_federation_state(cepRuntime* runtime)
     return target->federation_state;
 }
 
+struct cepAsyncRuntimeState*
+cep_runtime_async_state(cepRuntime* runtime)
+{
+    cepRuntime* target = runtime ? runtime : cep_runtime_default();
+    if (!target->async_state) {
+        target->async_state = cep_async_state_create();
+    }
+    return target->async_state;
+}
+
 bool
 cep_runtime_bootstrap_is_done(cepRuntime* runtime)
 {
@@ -458,6 +471,7 @@ cep_runtime_shutdown(cepRuntime* runtime)
     cep_executor_context_set(&shim_ctx);
 
     cep_runtime_detach_metadata(runtime);
+    (void)cep_io_reactor_quiesce(0u);
     cep_ep_runtime_reset();
     cep_organ_runtime_reset();
     cep_l0_organs_unbind_roots();
@@ -505,6 +519,12 @@ cep_runtime_shutdown(cepRuntime* runtime)
     if (runtime->federation_state) {
         cep_federation_state_destroy(runtime->federation_state);
         runtime->federation_state = NULL;
+    }
+    cep_io_reactor_shutdown();
+
+    if (runtime->async_state) {
+        cep_async_state_destroy(runtime->async_state);
+        runtime->async_state = NULL;
     }
 
     if (runtime->serialization_state.comparator_registry.entries) {

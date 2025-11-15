@@ -45,6 +45,26 @@ CEP_DEFINE_STATIC_DT(dt_origin_field,       CEP_ACRO("CEP"), CEP_WORD("origin"))
 CEP_DEFINE_STATIC_DT(dt_origin_enzyme,      CEP_ACRO("CEP"), CEP_WORD("enzyme"));
 CEP_DEFINE_STATIC_DT(dt_ready_field,        CEP_ACRO("CEP"), CEP_WORD("armed"));
 CEP_DEFINE_STATIC_DT(dt_sev_warn,           CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
+CEP_DEFINE_STATIC_DT(dt_io_req_name,        CEP_ACRO("CEP"), CEP_WORD("io_req"));
+CEP_DEFINE_STATIC_DT(dt_io_chan_name,       CEP_ACRO("CEP"), CEP_WORD("io_chan"));
+CEP_DEFINE_STATIC_DT(dt_io_reactor_name,    CEP_ACRO("CEP"), CEP_WORD("io_reactor"));
+CEP_DEFINE_STATIC_DT(dt_channel_field_ops,  CEP_ACRO("CEP"), CEP_WORD("channel"));
+CEP_DEFINE_STATIC_DT(dt_opcode_field_ops,   CEP_ACRO("CEP"), CEP_WORD("opcode"));
+CEP_DEFINE_STATIC_DT(dt_beats_budget_field, CEP_ACRO("CEP"), CEP_WORD("beat_budget"));
+CEP_DEFINE_STATIC_DT(dt_deadline_bt_field,  CEP_ACRO("CEP"), CEP_WORD("deadline_bt"));
+CEP_DEFINE_STATIC_DT(dt_deadline_ns_field,  CEP_ACRO("CEP"), CEP_WORD("deadline_ns"));
+CEP_DEFINE_STATIC_DT(dt_bytes_expected,     CEP_ACRO("CEP"), CEP_WORD("bytes_exp"));
+CEP_DEFINE_STATIC_DT(dt_bytes_done,         CEP_ACRO("CEP"), CEP_WORD("bytes_done"));
+CEP_DEFINE_STATIC_DT(dt_errno_field,        CEP_ACRO("CEP"), CEP_WORD("errno_code"));
+CEP_DEFINE_STATIC_DT(dt_telemetry_field,    CEP_ACRO("CEP"), CEP_WORD("telemetry"));
+CEP_DEFINE_STATIC_DT(dt_target_path_field,  CEP_ACRO("CEP"), CEP_WORD("target_path"));
+CEP_DEFINE_STATIC_DT(dt_provider_field,     CEP_ACRO("CEP"), CEP_WORD("provider"));
+CEP_DEFINE_STATIC_DT(dt_reactor_field,      CEP_ACRO("CEP"), CEP_WORD("reactor"));
+CEP_DEFINE_STATIC_DT(dt_caps_field,         CEP_ACRO("CEP"), CEP_WORD("caps"));
+CEP_DEFINE_STATIC_DT(dt_shim_field,         CEP_ACRO("CEP"), CEP_WORD("shim"));
+CEP_DEFINE_STATIC_DT(dt_draining_field,     CEP_ACRO("CEP"), CEP_WORD("draining"));
+CEP_DEFINE_STATIC_DT(dt_paused_field_ops,   CEP_ACRO("CEP"), CEP_WORD("paused"));
+CEP_DEFINE_STATIC_DT(dt_shutdn_field,       CEP_ACRO("CEP"), CEP_WORD("shutdn"));
 
 static bool cep_ops_read_dt(const cepCell* parent, const cepDT* field, cepDT* out);
 
@@ -342,6 +362,16 @@ static bool cep_ops_write_string(cepCell* parent, const cepDT* field, const char
     return cep_ops_write_value(parent, field, "val/str", text, len);
 }
 
+static bool cep_ops_write_dt_if_valid(cepCell* parent,
+                                      const cepDT* field,
+                                      const cepDT* value) {
+    if (!value || !cep_dt_is_valid(value)) {
+        return true;
+    }
+    cepDT cleaned = cep_ops_clean_dt(value);
+    return cep_ops_write_dt(parent, field, &cleaned);
+}
+
 static bool cep_ops_read_value(const cepCell* parent, const cepDT* field, void* out, size_t size) {
     if (!parent || !field || !out || !size) {
         return false;
@@ -542,6 +572,13 @@ static cepCell* cep_ops_watchers_root(cepCell* op) {
     }
 
     return resolved;
+}
+
+static cepCell* cep_ops_async_branch(cepCell* op, const cepDT* branch_name) {
+    if (!op || !branch_name) {
+        return NULL;
+    }
+    return cep_cell_ensure_dictionary_child(op, branch_name, CEP_STORAGE_RED_BLACK_T);
 }
 
 static bool cep_ops_has_close(cepCell* op) {
@@ -1384,6 +1421,191 @@ bool cep_op_get(cepOID oid, char* buffer, size_t capacity) {
                            (unsigned long long)status.tag,
                            watcher_count);
     return written > 0 && (size_t)written < capacity;
+}
+
+bool cep_op_async_record_request(cepOID oid,
+                                 const cepDT* request_name,
+                                 const cepOpsAsyncIoReqInfo* info) {
+    cep_ops_debug_last_error_code = 0;
+    if (!info || !request_name || !cep_oid_is_valid(oid)) {
+        cep_ops_debug_last_error_code = 200;
+        return false;
+    }
+    if (!cep_dt_is_valid(request_name) || !cep_dt_is_valid(&info->state)) {
+        cep_ops_debug_last_error_code = 201;
+        return false;
+    }
+    cepCell* op = cep_ops_find(oid);
+    if (!op) {
+        cep_ops_debug_last_error_code = 202;
+        return false;
+    }
+    cepCell* req_root = cep_ops_async_branch(op, dt_io_req_name());
+    if (!req_root) {
+        cep_ops_debug_last_error_code = 203;
+        return false;
+    }
+    cepDT clean_name = cep_ops_clean_dt(request_name);
+    cepCell* req_entry = cep_cell_ensure_dictionary_child(req_root,
+                                                         &clean_name,
+                                                         CEP_STORAGE_RED_BLACK_T);
+    if (!req_entry) {
+        cep_ops_debug_last_error_code = 204;
+        return false;
+    }
+    cepDT clean_state = cep_ops_clean_dt(&info->state);
+    if (!cep_ops_write_dt(req_entry, dt_state_field(), &clean_state)) {
+        cep_ops_debug_last_error_code = 205;
+        return false;
+    }
+    if (!cep_ops_write_dt_if_valid(req_entry, dt_channel_field_ops(), &info->channel)) {
+        cep_ops_debug_last_error_code = 206;
+        return false;
+    }
+    if (!cep_ops_write_dt_if_valid(req_entry, dt_opcode_field_ops(), &info->opcode)) {
+        cep_ops_debug_last_error_code = 207;
+        return false;
+    }
+    if (info->has_beats_budget &&
+        !cep_ops_write_u64(req_entry, dt_beats_budget_field(), (uint64_t)info->beats_budget)) {
+        cep_ops_debug_last_error_code = 208;
+        return false;
+    }
+    if (info->has_deadline_beat &&
+        !cep_ops_write_u64(req_entry, dt_deadline_bt_field(), info->deadline_beat)) {
+        cep_ops_debug_last_error_code = 209;
+        return false;
+    }
+    if (info->has_deadline_unix_ns &&
+        !cep_ops_write_u64(req_entry, dt_deadline_ns_field(), info->deadline_unix_ns)) {
+        cep_ops_debug_last_error_code = 210;
+        return false;
+    }
+    if (info->has_bytes_expected &&
+        !cep_ops_write_u64(req_entry, dt_bytes_expected(), info->bytes_expected)) {
+        cep_ops_debug_last_error_code = 211;
+        return false;
+    }
+    if (info->has_bytes_done &&
+        !cep_ops_write_u64(req_entry, dt_bytes_done(), info->bytes_done)) {
+        cep_ops_debug_last_error_code = 212;
+        return false;
+    }
+    if (info->has_errno &&
+        !cep_ops_write_i64(req_entry, dt_errno_field(), (int64_t)info->errno_code)) {
+        cep_ops_debug_last_error_code = 213;
+        return false;
+    }
+    if (info->has_telemetry &&
+        !cep_ops_write_dt_if_valid(req_entry, dt_telemetry_field(), &info->telemetry)) {
+        cep_ops_debug_last_error_code = 214;
+        return false;
+    }
+    return true;
+}
+
+bool cep_op_async_record_channel(cepOID oid,
+                                 const cepDT* channel_name,
+                                 const cepOpsAsyncChannelInfo* info) {
+    cep_ops_debug_last_error_code = 0;
+    if (!info || !channel_name || !cep_oid_is_valid(oid)) {
+        cep_ops_debug_last_error_code = 220;
+        return false;
+    }
+    if (!cep_dt_is_valid(channel_name)) {
+        cep_ops_debug_last_error_code = 221;
+        return false;
+    }
+    cepCell* op = cep_ops_find(oid);
+    if (!op) {
+        cep_ops_debug_last_error_code = 222;
+        return false;
+    }
+    cepCell* chan_root = cep_ops_async_branch(op, dt_io_chan_name());
+    if (!chan_root) {
+        cep_ops_debug_last_error_code = 223;
+        return false;
+    }
+    cepDT clean_name = cep_ops_clean_dt(channel_name);
+    cepCell* chan_entry = cep_cell_ensure_dictionary_child(chan_root,
+                                                          &clean_name,
+                                                          CEP_STORAGE_RED_BLACK_T);
+    if (!chan_entry) {
+        cep_ops_debug_last_error_code = 224;
+        return false;
+    }
+    if (info->has_target_path &&
+        !cep_ops_write_string(chan_entry, dt_target_path_field(), info->target_path)) {
+        cep_ops_debug_last_error_code = 225;
+        return false;
+    }
+    if (info->has_provider &&
+        !cep_ops_write_dt_if_valid(chan_entry, dt_provider_field(), &info->provider)) {
+        cep_ops_debug_last_error_code = 226;
+        return false;
+    }
+    if (info->has_reactor &&
+        !cep_ops_write_dt_if_valid(chan_entry, dt_reactor_field(), &info->reactor)) {
+        cep_ops_debug_last_error_code = 227;
+        return false;
+    }
+    if (info->has_caps &&
+        !cep_ops_write_dt_if_valid(chan_entry, dt_caps_field(), &info->caps)) {
+        cep_ops_debug_last_error_code = 228;
+        return false;
+    }
+    if (info->shim_known &&
+        !cep_ops_write_bool(chan_entry, dt_shim_field(), info->shim)) {
+        cep_ops_debug_last_error_code = 229;
+        return false;
+    }
+    if (!cep_cell_ensure_dictionary_child(chan_entry,
+                                          dt_watchers_name(),
+                                          CEP_STORAGE_RED_BLACK_T)) {
+        cep_ops_debug_last_error_code = 230;
+        return false;
+    }
+    return true;
+}
+
+bool cep_op_async_set_reactor_state(cepOID oid,
+                                    const cepOpsAsyncReactorState* state) {
+    cep_ops_debug_last_error_code = 0;
+    if (!state || !cep_oid_is_valid(oid)) {
+        cep_ops_debug_last_error_code = 240;
+        return false;
+    }
+    cepCell* op = cep_ops_find(oid);
+    if (!op) {
+        cep_ops_debug_last_error_code = 241;
+        return false;
+    }
+    cepCell* reactor_root = cep_ops_async_branch(op, dt_io_reactor_name());
+    if (!reactor_root) {
+        cep_ops_debug_last_error_code = 242;
+        return false;
+    }
+    if (state->draining_known &&
+        !cep_ops_write_bool(reactor_root, dt_draining_field(), state->draining)) {
+        cep_ops_debug_last_error_code = 243;
+        return false;
+    }
+    if (state->paused_known &&
+        !cep_ops_write_bool(reactor_root, dt_paused_field_ops(), state->paused)) {
+        cep_ops_debug_last_error_code = 244;
+        return false;
+    }
+    if (state->shutting_known &&
+        !cep_ops_write_bool(reactor_root, dt_shutdn_field(), state->shutting_down)) {
+        cep_ops_debug_last_error_code = 245;
+        return false;
+    }
+    if (state->deadline_known &&
+        !cep_ops_write_u64(reactor_root, dt_deadline_bt_field(), (uint64_t)state->deadline_beats)) {
+        cep_ops_debug_last_error_code = 246;
+        return false;
+    }
+    return true;
 }
 
 bool cep_ops_stage_commit(void) {

@@ -33,6 +33,9 @@ enum {
     CEP_FED_TRANSPORT_CAP_COMPRESSION_DEFLATE  = 1u << 10,
     CEP_FED_TRANSPORT_CAP_ENCRYPTION_AEAD      = 1u << 11,
     CEP_FED_TRANSPORT_CAP_COMPARATOR_VERSIONED = 1u << 12,
+    CEP_FED_TRANSPORT_CAP_SEND_ASYNC           = 1u << 13,
+    CEP_FED_TRANSPORT_CAP_RECV_ASYNC           = 1u << 14,
+    CEP_FED_TRANSPORT_CAP_FLUSH_ASYNC          = 1u << 15,
 };
 
 typedef enum {
@@ -70,6 +73,8 @@ typedef struct {
     uint64_t deadline_beat;
 } cepFedTransportOpenArgs;
 
+typedef struct cepFedTransportAsyncHandle cepFedTransportAsyncHandle;
+
 typedef struct {
     bool (*open)(void* provider_ctx,
                  const cepFedTransportOpenArgs* args,
@@ -82,8 +87,18 @@ typedef struct {
                  size_t payload_len,
                  cepFedFrameMode mode,
                  uint64_t deadline_beat);
+    bool (*send_async)(void* provider_ctx,
+                       cepFedTransportChannel* channel,
+                       const uint8_t* payload,
+                       size_t payload_len,
+                       cepFedFrameMode mode,
+                       uint64_t deadline_beat,
+                       cepFedTransportAsyncHandle* handle);
     bool (*request_receive)(void* provider_ctx,
                             cepFedTransportChannel* channel);
+    bool (*request_receive_async)(void* provider_ctx,
+                                  cepFedTransportChannel* channel,
+                                  cepFedTransportAsyncHandle* handle);
     bool (*close)(void* provider_ctx,
                   cepFedTransportChannel* channel,
                   const char* reason);
@@ -104,6 +119,15 @@ const cepFedTransportProvider* cep_fed_transport_provider_lookup(const char* pro
 size_t cep_fed_transport_provider_enumerate(const cepFedTransportProvider** out_array,
                                             size_t capacity,
                                             void** out_contexts);
+
+void cep_fed_transport_async_send_complete(cepFedTransportAsyncHandle* handle,
+                                           bool success,
+                                           size_t bytes_done,
+                                           int error_code);
+void cep_fed_transport_async_receive_ready(cepFedTransportAsyncHandle* handle,
+                                           bool success,
+                                           size_t bytes_ready,
+                                           int error_code);
 
 cepCell* cep_fed_transport_ensure_transports_root(cepCell* net_root);
 bool cep_fed_transport_schema_seed_provider(cepCell* transports_root,

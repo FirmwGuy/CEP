@@ -120,6 +120,33 @@ static uint64_t ops_child_u64(cepCell* parent, const char* field) {
     return *payload;
 }
 
+static int64_t ops_child_i64(cepCell* parent, const char* field) {
+    cepDT name = cep_ops_make_dt(field);
+    cepCell* leaf = cep_cell_find_by_name(parent, &name);
+    munit_assert_not_null(leaf);
+    const int64_t* payload = cep_cell_data(leaf);
+    munit_assert_not_null(payload);
+    return *payload;
+}
+
+static cepDT ops_child_dt_value(cepCell* parent, const char* field) {
+    cepDT name = cep_ops_make_dt(field);
+    cepCell* leaf = cep_cell_find_by_name(parent, &name);
+    munit_assert_not_null(leaf);
+    const cepDT* payload = cep_cell_data(leaf);
+    munit_assert_not_null(payload);
+    return *payload;
+}
+
+static const char* ops_child_str(cepCell* parent, const char* field) {
+    cepDT name = cep_ops_make_dt(field);
+    cepCell* leaf = cep_cell_find_by_name(parent, &name);
+    munit_assert_not_null(leaf);
+    const char* payload = cep_cell_data(leaf);
+    munit_assert_not_null(payload);
+    return payload;
+}
+
 static void test_ops_direct_close_case(void) {
     OpsRuntimeScope scope = ops_runtime_start(false);
 
@@ -220,6 +247,106 @@ static void test_ops_stateful_history_case(void) {
     }
 
     munit_assert_size(index, ==, cep_lengthof(expected));
+
+    cepDT channel_name = cep_ops_make_dt("chn:001");
+    cepDT channel_provider = cep_ops_make_dt("tp:async");
+    cepDT channel_reactor = cep_ops_make_dt("reactor:0");
+    cepDT channel_caps = cep_ops_make_dt("caps:all");
+    cepOpsAsyncChannelInfo channel_info = {
+        .target_path = "/net/peer/channel0",
+        .has_target_path = true,
+        .provider = channel_provider,
+        .has_provider = true,
+        .reactor = channel_reactor,
+        .has_reactor = true,
+        .caps = channel_caps,
+        .has_caps = true,
+        .shim = true,
+        .shim_known = true,
+    };
+    munit_assert_true(cep_op_async_record_channel(oid, &channel_name, &channel_info));
+
+    cepDT req_state = cep_ops_make_dt("ist:pend");
+    cepDT req_opcode = cep_ops_make_dt("op:send");
+    cepDT telemetry_dt = cep_ops_make_dt("tele:001");
+    cepDT req_name = cep_ops_make_dt("req:001");
+    cepOpsAsyncIoReqInfo req_info = {
+        .state = req_state,
+        .channel = channel_name,
+        .opcode = req_opcode,
+        .beats_budget = 7u,
+        .has_beats_budget = true,
+        .deadline_beat = 12u,
+        .has_deadline_beat = true,
+        .deadline_unix_ns = 33u,
+        .has_deadline_unix_ns = true,
+        .bytes_expected = 2048u,
+        .has_bytes_expected = true,
+        .bytes_done = 128u,
+        .has_bytes_done = true,
+        .errno_code = -13,
+        .has_errno = true,
+        .telemetry = telemetry_dt,
+        .has_telemetry = true,
+    };
+    munit_assert_true(cep_op_async_record_request(oid, &req_name, &req_info));
+
+    cepOpsAsyncReactorState reactor_state = {
+        .draining = true,
+        .draining_known = true,
+        .paused = false,
+        .paused_known = true,
+        .shutting_down = false,
+        .shutting_known = true,
+        .deadline_beats = 3u,
+        .deadline_known = true,
+    };
+    munit_assert_true(cep_op_async_set_reactor_state(oid, &reactor_state));
+
+    cepDT io_chan_dt = cep_ops_make_dt("io_chan");
+    cepCell* io_chan_root = cep_cell_find_by_name(op_cell, &io_chan_dt);
+    munit_assert_not_null(io_chan_root);
+    cepCell* channel_entry = cep_cell_find_by_name(io_chan_root, &channel_name);
+    munit_assert_not_null(channel_entry);
+    munit_assert_string_equal(ops_child_str(channel_entry, "target_path"), "/net/peer/channel0");
+    cepDT recorded_provider = ops_child_dt_value(channel_entry, "provider");
+    munit_assert_int(cep_dt_compare(&recorded_provider, &channel_provider), ==, 0);
+    cepDT recorded_reactor = ops_child_dt_value(channel_entry, "reactor");
+    munit_assert_int(cep_dt_compare(&recorded_reactor, &channel_reactor), ==, 0);
+    cepDT recorded_caps = ops_child_dt_value(channel_entry, "caps");
+    munit_assert_int(cep_dt_compare(&recorded_caps, &channel_caps), ==, 0);
+    munit_assert_true(ops_child_bool(channel_entry, "shim"));
+    cepDT watchers_dt = cep_ops_make_dt("watchers");
+    cepCell* chan_watchers = cep_cell_find_by_name(channel_entry, &watchers_dt);
+    munit_assert_not_null(chan_watchers);
+
+    cepDT io_req_dt = cep_ops_make_dt("io_req");
+    cepCell* io_req_root = cep_cell_find_by_name(op_cell, &io_req_dt);
+    munit_assert_not_null(io_req_root);
+    cepCell* req_entry = cep_cell_find_by_name(io_req_root, &req_name);
+    munit_assert_not_null(req_entry);
+    cepDT recorded_state = ops_child_dt_value(req_entry, "state");
+    munit_assert_int(cep_dt_compare(&recorded_state, &req_state), ==, 0);
+    cepDT recorded_channel = ops_child_dt_value(req_entry, "channel");
+    munit_assert_int(cep_dt_compare(&recorded_channel, &channel_name), ==, 0);
+    cepDT recorded_opcode = ops_child_dt_value(req_entry, "opcode");
+    munit_assert_int(cep_dt_compare(&recorded_opcode, &req_opcode), ==, 0);
+    munit_assert_uint(ops_child_u64(req_entry, "beat_budget"), ==, req_info.beats_budget);
+    munit_assert_uint(ops_child_u64(req_entry, "deadline_bt"), ==, req_info.deadline_beat);
+    munit_assert_uint(ops_child_u64(req_entry, "deadline_ns"), ==, req_info.deadline_unix_ns);
+    munit_assert_uint(ops_child_u64(req_entry, "bytes_exp"), ==, req_info.bytes_expected);
+    munit_assert_uint(ops_child_u64(req_entry, "bytes_done"), ==, req_info.bytes_done);
+    munit_assert_int(ops_child_i64(req_entry, "errno_code"), ==, req_info.errno_code);
+    cepDT recorded_telemetry = ops_child_dt_value(req_entry, "telemetry");
+    munit_assert_int(cep_dt_compare(&recorded_telemetry, &telemetry_dt), ==, 0);
+
+    cepDT io_reactor_dt = cep_ops_make_dt("io_reactor");
+    cepCell* reactor_entry = cep_cell_find_by_name(op_cell, &io_reactor_dt);
+    munit_assert_not_null(reactor_entry);
+    munit_assert_true(ops_child_bool(reactor_entry, "draining"));
+    munit_assert_false(ops_child_bool(reactor_entry, "paused"));
+    munit_assert_false(ops_child_bool(reactor_entry, "shutdn"));
+    munit_assert_uint(ops_child_u64(reactor_entry, "deadline_bt"), ==, reactor_state.deadline_beats);
 
     ops_runtime_cleanup(&scope);
 }

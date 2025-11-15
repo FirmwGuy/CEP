@@ -18,6 +18,7 @@
 #include "cep_ops.h"
 #include "cep_runtime.h"
 #include "../l0_kernel/cep_namepool.h"
+#include "../l0_kernel/cep_async.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -25,6 +26,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +40,10 @@
 #endif
 
 static const char k_cps_topic_storage_commit[] = "persist.commit";
+static const char k_cps_topic_storage_async[] = "persist.async";
+
+#define CPS_STORAGE_ASYNC_COMMIT_TIMEOUT_MS 500u
+#define CPS_STORAGE_ASYNC_WAIT_POLL_NS 1000000L
 
 CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_warn, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
 CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_crit, CEP_ACRO("CEP"), CEP_WORD("sev:crit"));
@@ -58,6 +64,12 @@ CEP_DEFINE_STATIC_DT(dt_ist_ok_dt, CEP_ACRO("CEP"), CEP_WORD("ist:ok"));
 CEP_DEFINE_STATIC_DT(dt_ist_fail_dt, CEP_ACRO("CEP"), CEP_WORD("ist:fail"));
 CEP_DEFINE_STATIC_DT(dt_sts_ok_dt, CEP_ACRO("CEP"), CEP_WORD("sts:ok"));
 CEP_DEFINE_STATIC_DT(dt_sts_fail_dt, CEP_ACRO("CEP"), CEP_WORD("sts:fail"));
+CEP_DEFINE_STATIC_DT(dt_cps_async_chan_serial, CEP_ACRO("CEP"), CEP_WORD("chn:serial"));
+CEP_DEFINE_STATIC_DT(dt_cps_async_op_serial, CEP_ACRO("CEP"), CEP_WORD("op:serial"));
+CEP_DEFINE_STATIC_DT(dt_cps_async_op_commit, CEP_ACRO("CEP"), CEP_WORD("op:commit"));
+CEP_DEFINE_STATIC_DT(dt_cps_async_provider, CEP_ACRO("CEP"), CEP_WORD("prov:cps"));
+CEP_DEFINE_STATIC_DT(dt_cps_async_reactor, CEP_ACRO("CEP"), CEP_WORD("react:cps"));
+CEP_DEFINE_STATIC_DT(dt_cps_async_caps, CEP_ACRO("CEP"), CEP_WORD("caps:sync"));
 
 #define CPS_STORAGE_COPY_CHUNK 65536u
 
@@ -1088,7 +1100,224 @@ static int cps_storage_promote_bundle(const char *stage_dir) {
 
 typedef struct {
   cepFlatReader *reader;
+  uint64_t bytes_written;
 } cpsStorageSink;
+
+static atomic_uint_fast64_t g_cps_async_req_counter = 0;
+static cepOID g_cps_async_channel_oid = {0};
+
+typedef struct {
+  bool     registered;
+  bool     pending;
+  bool     completed;
+  bool     success;
+  int      error_code;
+  uint64_t bytes_done;
+  cepDT    request_name;
+} cpsStorageAsyncCommitCtx;
+
+static void cps_storage_async_ensure_channel(void) {
+  cepOID current_oid = cep_async_ops_oid();
+  if (!cep_oid_is_valid(current_oid)) {
+    return;
+  }
+  if (cep_oid_is_valid(g_cps_async_channel_oid) &&
+      current_oid.domain == g_cps_async_channel_oid.domain &&
+      current_oid.tag == g_cps_async_channel_oid.tag) {
+    return;
+  }
+  cepOpsAsyncChannelInfo info = {
+    .target_path = "/data/persist",
+    .has_target_path = true,
+    .provider = *dt_cps_async_provider(),
+    .has_provider = true,
+    .reactor = *dt_cps_async_reactor(),
+    .has_reactor = true,
+    .caps = *dt_cps_async_caps(),
+    .has_caps = true,
+    .shim = true,
+    .shim_known = true,
+  };
+  if (cep_async_register_channel(current_oid, dt_cps_async_chan_serial(), &info)) {
+    g_cps_async_channel_oid = current_oid;
+  }
+}
+
+static cepDT cps_storage_async_make_request_name(void) {
+  uint64_t id = atomic_fetch_add(&g_cps_async_req_counter, 1u);
+  char label[12];
+  uint64_t suffix = id % 100000000ULL;
+  (void)snprintf(label, sizeof label, "sr%08" PRIu64, (uint64_t)suffix);
+  return cep_ops_make_dt(label);
+}
+
+static bool cps_storage_async_register_request(const cepDT* opcode,
+                                               size_t expected_bytes,
+                                               cepDT* out_name) {
+  if (!out_name || !opcode) {
+    return false;
+  }
+  cps_storage_async_ensure_channel();
+  *out_name = cps_storage_async_make_request_name();
+  cepOpsAsyncIoReqInfo info = {
+    .state = *dt_ist_exec_dt(),
+    .channel = *dt_cps_async_chan_serial(),
+    .opcode = *opcode,
+    .beats_budget = 1u,
+    .has_beats_budget = true,
+  };
+  if (expected_bytes > 0u) {
+    info.has_bytes_expected = true;
+    info.bytes_expected = expected_bytes;
+  }
+  return cep_async_register_request(cep_async_ops_oid(), out_name, &info);
+}
+
+static void cps_storage_async_finish_request(const cepDT* name,
+                                             const cepDT* opcode,
+                                             bool success,
+                                             uint64_t bytes,
+                                             int error_code) {
+  if (!name) {
+    return;
+  }
+  cepOpsAsyncIoReqInfo done = {
+    .state = success ? *dt_ist_ok_dt() : *dt_ist_fail_dt(),
+    .channel = *dt_cps_async_chan_serial(),
+    .opcode = opcode ? *opcode : *dt_cps_async_op_serial(),
+    .has_bytes_done = true,
+    .bytes_done = bytes,
+  };
+  if (!success) {
+    done.has_errno = true;
+    done.errno_code = error_code;
+  }
+  (void)cep_async_post_completion(cep_async_ops_oid(), name, &done);
+}
+
+static void cps_storage_async_commit_on_complete(bool success,
+                                                 uint64_t bytes,
+                                                 int error_code,
+                                                 void* context) {
+  cpsStorageAsyncCommitCtx* commit = (cpsStorageAsyncCommitCtx*)context;
+  if (!commit) {
+    return;
+  }
+  commit->pending = false;
+  commit->completed = true;
+  commit->success = success;
+  commit->error_code = error_code;
+  commit->bytes_done = bytes;
+  if (commit->registered) {
+    cps_storage_async_finish_request(&commit->request_name,
+                                     dt_cps_async_op_commit(),
+                                     success,
+                                     bytes,
+                                     error_code);
+    commit->registered = false;
+  }
+}
+
+static cpsStorageAsyncCommitCtx*
+cps_storage_async_commit_ctx_create(const cepDT* request_name) {
+  if (!request_name) {
+    return NULL;
+  }
+  cpsStorageAsyncCommitCtx* ctx = cep_malloc0(sizeof *ctx);
+  if (!ctx) {
+    return NULL;
+  }
+  ctx->registered = true;
+  ctx->pending = true;
+  ctx->completed = false;
+  ctx->success = false;
+  ctx->error_code = 0;
+  ctx->bytes_done = 0u;
+  ctx->request_name = *request_name;
+  return ctx;
+}
+
+static void cps_storage_async_commit_ctx_destroy(cpsStorageAsyncCommitCtx* ctx) {
+  if (!ctx) {
+    return;
+  }
+  cep_free(ctx);
+}
+
+static void cps_storage_async_mark_failed(cpsStorageAsyncCommitCtx* ctx,
+                                          uint64_t bytes,
+                                          int error_code,
+                                          const char* detail) {
+  if (detail) {
+    cps_storage_emit_async_cei(detail);
+  }
+  if (!ctx) {
+    return;
+  }
+  ctx->pending = false;
+  ctx->completed = true;
+  ctx->success = false;
+  ctx->error_code = error_code;
+  ctx->bytes_done = bytes;
+  if (ctx->registered) {
+    cps_storage_async_finish_request(&ctx->request_name,
+                                     dt_cps_async_op_commit(),
+                                     false,
+                                     bytes,
+                                     error_code);
+    ctx->registered = false;
+  }
+}
+
+static uint64_t cps_storage_elapsed_ms(const struct timespec* start,
+                                       const struct timespec* now) {
+  if (!start || !now) {
+    return 0u;
+  }
+  time_t sec = now->tv_sec - start->tv_sec;
+  long nsec = now->tv_nsec - start->tv_nsec;
+  if (nsec < 0) {
+    --sec;
+    nsec += 1000000000L;
+  }
+  uint64_t elapsed = (uint64_t)sec * 1000u;
+  elapsed += (uint64_t)(nsec / 1000000L);
+  return elapsed;
+}
+
+static bool cps_storage_async_wait_for_commit(cpsStorageAsyncCommitCtx* ctx,
+                                              uint64_t bytes_written) {
+  if (!ctx) {
+    return true;
+  }
+  cepAsyncRuntimeState* async_state = cep_runtime_async_state(cep_runtime_default());
+  if (!async_state) {
+    cps_storage_async_mark_failed(ctx, bytes_written, -EIO, "async runtime unavailable");
+    return false;
+  }
+  struct timespec start = {0};
+  (void)clock_gettime(CLOCK_MONOTONIC, &start);
+  while (ctx->pending) {
+    cep_async_runtime_on_phase(async_state, CEP_BEAT_COMPUTE);
+    if (!ctx->pending) {
+      break;
+    }
+    struct timespec now = {0};
+    (void)clock_gettime(CLOCK_MONOTONIC, &now);
+    uint64_t elapsed_ms = cps_storage_elapsed_ms(&start, &now);
+    if (elapsed_ms >= CPS_STORAGE_ASYNC_COMMIT_TIMEOUT_MS) {
+      cps_storage_async_mark_failed(ctx, bytes_written, -ETIMEDOUT, "async commit timed out");
+      return false;
+    }
+    struct timespec sleep_ts = {.tv_sec = 0, .tv_nsec = CPS_STORAGE_ASYNC_WAIT_POLL_NS};
+    (void)nanosleep(&sleep_ts, NULL);
+  }
+  if (!ctx->completed) {
+    cps_storage_async_mark_failed(ctx, bytes_written, -EIO, "async commit callback missing");
+    return false;
+  }
+  return ctx->success;
+}
 
 static void cps_storage_emit_cei(const cepDT *severity, const char *detail) {
   if (!severity || !detail) {
@@ -1109,15 +1338,41 @@ static void cps_storage_emit_cei(const cepDT *severity, const char *detail) {
   (void)cep_cei_emit(&req);
 }
 
+static void cps_storage_emit_async_cei(const char *detail) {
+  if (!detail) {
+    return;
+  }
+  cepCeiRequest req = {
+    .severity = *dt_cps_storage_sev_warn(),
+    .topic = k_cps_topic_storage_async,
+    .topic_len = 0u,
+    .topic_intern = true,
+    .note = detail,
+    .note_len = 0u,
+    .origin_kind = "cps_storage",
+    .emit_signal = false,
+    .attach_to_op = false,
+    .ttl_forever = true,
+  };
+  (void)cep_cei_emit(&req);
+}
+
 static bool cps_storage_reader_sink(void *context, const uint8_t *chunk, size_t size) {
   cpsStorageSink *sink = (cpsStorageSink *)context;
   if (!sink || !sink->reader || !chunk || size == 0u) {
     return false;
   }
-  return cep_flat_reader_feed(sink->reader, chunk, size);
+  if (!cep_flat_reader_feed(sink->reader, chunk, size)) {
+    return false;
+  }
+  sink->bytes_written += size;
+  return true;
 }
 
-static bool cps_storage_apply_reader(cps_engine *engine, cepFlatReader *reader) {
+static bool cps_storage_apply_reader(cps_engine *engine,
+                                     cepFlatReader *reader,
+                                     const char** error_stage,
+                                     int* error_code) {
   if (!engine || !engine->ops || !reader) {
     return false;
   }
@@ -1139,6 +1394,10 @@ static bool cps_storage_apply_reader(cps_engine *engine, cepFlatReader *reader) 
   }
   int rc = engine->ops->begin_beat(engine, beat_no, &txn);
   if (rc != CPS_OK || !txn) {
+    if (error_stage)
+      *error_stage = "begin_beat";
+    if (error_code)
+      *error_code = rc;
     return false;
   }
 
@@ -1156,6 +1415,10 @@ static bool cps_storage_apply_reader(cps_engine *engine, cepFlatReader *reader) 
       if (engine->ops->abort_beat) {
         engine->ops->abort_beat(txn);
       }
+      if (error_stage)
+        *error_stage = "put_record";
+      if (error_code)
+        *error_code = rc;
       return false;
     }
   }
@@ -1168,6 +1431,10 @@ static bool cps_storage_apply_reader(cps_engine *engine, cepFlatReader *reader) 
   }
   rc = engine->ops->commit_beat(txn, &meta);
   if (rc != CPS_OK) {
+    if (error_stage)
+      *error_stage = "commit_beat";
+    if (error_code)
+      *error_code = rc;
     return false;
   }
   txn = NULL;
@@ -1662,22 +1929,97 @@ bool cps_storage_commit_current_beat(void) {
 
   cpsStorageSink sink = {
     .reader = reader,
+    .bytes_written = 0u,
   };
 
-  bool emitted = cep_flat_stream_emit_cell(root,
-                                           NULL,
-                                           cps_storage_reader_sink,
-                                           &sink,
-                                           CEP_FLAT_STREAM_DEFAULT_BLOB_PAYLOAD);
-  if (!emitted || !cep_flat_reader_commit(reader) || !cep_flat_reader_ready(reader)) {
-    cps_storage_emit_cei(dt_cps_storage_sev_crit(), "serializer frame emit/parse failed");
-    cep_flat_reader_destroy(reader);
-    return false;
+  cepDT async_commit_req = {0};
+  cpsStorageAsyncCommitCtx* async_commit_ctx = NULL;
+  bool ok = false;
+
+  if (!cps_storage_async_register_request(dt_cps_async_op_commit(),
+                                          0u,
+                                          &async_commit_req)) {
+    cps_storage_emit_async_cei("async commit registration failed");
+    goto out;
   }
 
-  bool ok = cps_storage_apply_reader(engine, reader);
+  async_commit_ctx = cps_storage_async_commit_ctx_create(&async_commit_req);
+  if (!async_commit_ctx) {
+    cps_storage_emit_async_cei("async commit context allocation failed");
+    cps_storage_async_finish_request(&async_commit_req,
+                                     dt_cps_async_op_commit(),
+                                     false,
+                                     0u,
+                                     -ENOMEM);
+    goto out;
+  }
+
+  cepFlatStreamAsyncStats stream_stats = {
+    .require_sync_copy = true,
+    .completion_cb = cps_storage_async_commit_on_complete,
+    .completion_ctx = async_commit_ctx,
+  };
+
+  bool emitted = cep_flat_stream_emit_cell_async(root,
+                                                 NULL,
+                                                 cps_storage_reader_sink,
+                                                 &sink,
+                                                 CEP_FLAT_STREAM_DEFAULT_BLOB_PAYLOAD,
+                                                 &stream_stats);
+  if (!emitted || !cep_flat_reader_commit(reader) || !cep_flat_reader_ready(reader)) {
+    cps_storage_emit_cei(dt_cps_storage_sev_crit(), "serializer frame emit/parse failed");
+    cps_storage_async_mark_failed(async_commit_ctx,
+                                  sink.bytes_written,
+                                  -EIO,
+                                  "serializer async emission failed");
+    goto out;
+  }
+
+  if (!stream_stats.async_mode || stream_stats.fallback_used) {
+    cps_storage_async_mark_failed(async_commit_ctx,
+                                  sink.bytes_written,
+                                  -EIO,
+                                  "serializer fallback triggered");
+    goto out;
+  }
+
+  const char* commit_error_stage = NULL;
+  int commit_error_code = CPS_OK;
+  ok = cps_storage_apply_reader(engine, reader, &commit_error_stage, &commit_error_code);
   if (!ok) {
-    cps_storage_emit_cei(dt_cps_storage_sev_crit(), "CPS engine commit failed");
+    char note[128];
+    if (commit_error_stage) {
+      snprintf(note,
+               sizeof note,
+               "CPS engine commit failed stage=%s rc=%d",
+               commit_error_stage,
+               commit_error_code);
+      cps_storage_emit_cei(dt_cps_storage_sev_crit(), note);
+    } else {
+      cps_storage_emit_cei(dt_cps_storage_sev_crit(), "CPS engine commit failed");
+    }
+  }
+
+  if (ok) {
+    ok = cps_storage_async_wait_for_commit(async_commit_ctx, sink.bytes_written);
+  } else {
+    cps_storage_async_mark_failed(async_commit_ctx,
+                                  sink.bytes_written,
+                                  -EIO,
+                                  "CPS commit failed before async completion");
+  }
+
+out:
+  if (async_commit_ctx) {
+    if (async_commit_ctx->registered) {
+      cps_storage_async_finish_request(&async_commit_ctx->request_name,
+                                       dt_cps_async_op_commit(),
+                                       false,
+                                       sink.bytes_written,
+                                       async_commit_ctx->error_code ? async_commit_ctx->error_code : -EIO);
+      async_commit_ctx->registered = false;
+    }
+    cps_storage_async_commit_ctx_destroy(async_commit_ctx);
   }
   cep_flat_reader_destroy(reader);
   cps_storage_process_ops();

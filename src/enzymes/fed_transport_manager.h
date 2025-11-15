@@ -51,6 +51,8 @@ typedef struct {
     cepCell* peers_root;
     cepCell* catalog_root;
     cepCell* telemetry_root;
+    cepCell* analytics_root;
+    cepCell* analytics_async_root;
     cepCell* diagnostics_mailbox;
     cepFedTransportManagerMount* mounts;
     size_t mount_count;

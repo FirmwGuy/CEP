@@ -24,6 +24,19 @@ typedef cepSerializationReader cepFlatStreamReader;
 
 typedef struct _cepCell cepCell;
 
+typedef void (*cepFlatStreamAsyncCompletionFn)(bool success,
+                                               uint64_t bytes,
+                                               int error_code,
+                                               void* context);
+
+typedef struct {
+    bool                               async_mode;
+    bool                               fallback_used;
+    bool                               require_sync_copy;
+    cepFlatStreamAsyncCompletionFn     completion_cb;
+    void*                              completion_ctx;
+} cepFlatStreamAsyncStats;
+
 #define CEP_SERIALIZATION_MAGIC   UINT64_C(0x4345503000000000)
 #define CEP_SERIALIZATION_VERSION UINT16_C(0x0002)
 
@@ -110,6 +123,13 @@ bool cep_serialization_emit_cell(const cepCell* cell,
                                  cepSerializationWriteFn write,
                                  void* context,
                                  size_t blob_payload_bytes);
+
+bool cep_flat_stream_emit_cell_async(const cepCell* cell,
+                                     const cepSerializationHeader* header,
+                                     cepSerializationWriteFn write,
+                                     void* context,
+                                     size_t blob_payload_bytes,
+                                     cepFlatStreamAsyncStats* stats);
 
 void cep_serialization_mark_decision_replay(void);
 cepSerializationReader* cep_serialization_reader_create(cepCell* root);

@@ -71,6 +71,8 @@ l0_srcs = files(
   'src/l0_kernel/cep_cell_system.c',
   'src/l0_kernel/cep_flat_helpers.c',
   'src/l0_kernel/cep_runtime.c',
+  'src/l0_kernel/cep_async.c',
+  'src/l0_kernel/cep_io_reactor.c',
   'src/l0_kernel/cep_l0.c',
   'src/l0_kernel/cep_identifier.c',
   'src/l0_kernel/cep_cei.c',

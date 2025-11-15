@@ -10,6 +10,9 @@
 #include "cep_flat_helpers.h"
 #include "cep_cei.h"
 #include "cep_heartbeat.h"
+#include "cep_async.h"
+#include "cep_io_reactor.h"
+#include "cep_ops.h"
 #include "cep_namepool.h"
 #include "cep_crc32c.h"
 #include "cep_runtime.h"
@@ -62,6 +65,17 @@ static int cell_compare_by_name(const cepCell* restrict key,
 #include <string.h>
 #include <strings.h>
 #include <limits.h>
+
+CEP_DEFINE_STATIC_DT(dt_flat_async_channel, CEP_ACRO("CEP"), CEP_WORD("chn:serial"));
+CEP_DEFINE_STATIC_DT(dt_flat_async_provider, CEP_ACRO("CEP"), CEP_WORD("prov:serial"));
+CEP_DEFINE_STATIC_DT(dt_flat_async_reactor, CEP_ACRO("CEP"), CEP_WORD("react:ser"));
+CEP_DEFINE_STATIC_DT(dt_flat_async_caps, CEP_ACRO("CEP"), CEP_WORD("caps:sync"));
+CEP_DEFINE_STATIC_DT(dt_flat_async_opcode_begin, CEP_ACRO("CEP"), CEP_WORD("op:begin"));
+CEP_DEFINE_STATIC_DT(dt_flat_async_opcode_write, CEP_ACRO("CEP"), CEP_WORD("op:write"));
+CEP_DEFINE_STATIC_DT(dt_flat_async_opcode_finish, CEP_ACRO("CEP"), CEP_WORD("op:finish"));
+CEP_DEFINE_STATIC_DT(dt_flat_async_state_exec, CEP_ACRO("CEP"), CEP_WORD("ist:exec"));
+CEP_DEFINE_STATIC_DT(dt_flat_async_state_ok, CEP_ACRO("CEP"), CEP_WORD("ist:ok"));
+CEP_DEFINE_STATIC_DT(dt_flat_async_state_fail, CEP_ACRO("CEP"), CEP_WORD("ist:fail"));
 
 #define CEP_FLAT_CELL_META_TOMBSTONE 0x0001u
 #define CEP_FLAT_CELL_META_VEILED    0x0002u
@@ -4724,6 +4738,470 @@ exit:
         cep_serialization_emitter_clear_namepool(&emitter);
     cep_serialization_emit_scope_exit(emit_scope_entered);
     return success;
+}
+
+typedef struct {
+    cepFlatStreamWriteFn write;
+    void*                context;
+    size_t               bytes_written;
+    cepOID               ops_oid;
+    bool                 channel_ready;
+    bool                 begin_registered;
+    bool                 write_registered;
+    bool                 finish_registered;
+    cepDT                begin_req;
+    cepDT                write_req;
+    cepDT                finish_req;
+} cepFlatFrameSinkContext;
+
+static atomic_uint_fast64_t g_flat_frame_sink_req_counter = 0u;
+static cepOID               g_flat_frame_sink_channel_oid = {0};
+
+typedef struct {
+    uint8_t* data;
+    size_t   size;
+    size_t   capacity;
+} cepFlatFrameBuffer;
+
+typedef struct {
+    cepFlatFrameSinkContext          sink;
+    uint8_t*                         buffer;
+    size_t                           buffer_size;
+    cepSerializationWriteFn          target_write;
+    void*                            target_context;
+    bool                             perform_write;
+    cepFlatStreamAsyncCompletionFn   completion_cb;
+    void*                            completion_ctx;
+} cepFlatFrameAsyncJob;
+
+static void
+cep_flat_frame_buffer_reset(cepFlatFrameBuffer* buffer)
+{
+    if (!buffer) {
+        return;
+    }
+    if (buffer->data) {
+        cep_free(buffer->data);
+    }
+    *buffer = (cepFlatFrameBuffer){0};
+}
+
+static bool
+cep_flat_frame_buffer_reserve(cepFlatFrameBuffer* buffer, size_t additional)
+{
+    if (!buffer) {
+        return false;
+    }
+    size_t required = buffer->size + additional;
+    if (required <= buffer->capacity) {
+        return true;
+    }
+    size_t new_capacity = buffer->capacity ? buffer->capacity : 4096u;
+    while (new_capacity < required) {
+        new_capacity *= 2u;
+    }
+    uint8_t* grown = buffer->data ? cep_realloc(buffer->data, new_capacity)
+                                  : cep_malloc(new_capacity);
+    if (!grown) {
+        return false;
+    }
+    buffer->data = grown;
+    buffer->capacity = new_capacity;
+    return true;
+}
+
+static bool
+cep_flat_frame_buffer_write(void* context, const uint8_t* chunk, size_t size)
+{
+    cepFlatFrameBuffer* buffer = (cepFlatFrameBuffer*)context;
+    if (!buffer) {
+        return false;
+    }
+    if (size == 0u) {
+        return true;
+    }
+    if (!chunk) {
+        return false;
+    }
+    if (!cep_flat_frame_buffer_reserve(buffer, size)) {
+        return false;
+    }
+    memcpy(buffer->data + buffer->size, chunk, size);
+    buffer->size += size;
+    return true;
+}
+
+static bool
+cep_flat_frame_sink_write_proxy(void* context, const uint8_t* chunk, size_t size)
+{
+    cepFlatFrameSinkContext* sink = (cepFlatFrameSinkContext*)context;
+    if (!sink || !sink->write) {
+        return false;
+    }
+    if (size == 0u) {
+        return true;
+    }
+    if (!chunk) {
+        return false;
+    }
+    if (!sink->write(sink->context, chunk, size)) {
+        return false;
+    }
+    sink->bytes_written += size;
+    return true;
+}
+
+static cepDT
+cep_flat_frame_sink_make_request_name(const char prefix[3])
+{
+    uint64_t id = atomic_fetch_add_explicit(&g_flat_frame_sink_req_counter, 1u, memory_order_relaxed);
+    uint64_t suffix = id % 100000000ULL;
+    char tag[12];
+    char first = (prefix && prefix[0]) ? prefix[0] : 's';
+    char second = (prefix && prefix[1]) ? prefix[1] : 'x';
+    snprintf(tag, sizeof tag, "%c%c%08" PRIu64, first, second, suffix);
+    return cep_ops_make_dt(tag);
+}
+
+static bool
+cep_flat_frame_sink_register_channel(cepFlatFrameSinkContext* sink)
+{
+    if (!sink) {
+        return false;
+    }
+    if (sink->channel_ready) {
+        return true;
+    }
+    if (sink->channel_ready &&
+        cep_oid_is_valid(g_flat_frame_sink_channel_oid) &&
+        sink->ops_oid.domain == g_flat_frame_sink_channel_oid.domain &&
+        sink->ops_oid.tag == g_flat_frame_sink_channel_oid.tag) {
+        return true;
+    }
+    cepOpsAsyncChannelInfo info = {
+        .target_path = "/data/persist",
+        .has_target_path = true,
+        .provider = *dt_flat_async_provider(),
+        .has_provider = true,
+        .reactor = *dt_flat_async_reactor(),
+        .has_reactor = true,
+        .caps = *dt_flat_async_caps(),
+        .has_caps = true,
+        .shim = true,
+        .shim_known = true,
+    };
+    if (!cep_async_register_channel(sink->ops_oid, dt_flat_async_channel(), &info)) {
+        return false;
+    }
+    sink->channel_ready = true;
+    g_flat_frame_sink_channel_oid = sink->ops_oid;
+    return true;
+}
+
+static bool
+cep_flat_frame_sink_register_request(cepFlatFrameSinkContext* sink,
+                                     const char prefix[3],
+                                     const cepDT* opcode,
+                                     cepDT* out_name)
+{
+    if (!sink || !opcode || !out_name || !cep_oid_is_valid(sink->ops_oid)) {
+        return false;
+    }
+    *out_name = cep_flat_frame_sink_make_request_name(prefix);
+    cepOpsAsyncIoReqInfo info = {
+        .state = *dt_flat_async_state_exec(),
+        .channel = *dt_flat_async_channel(),
+        .opcode = *opcode,
+        .has_beats_budget = true,
+        .beats_budget = 1u,
+    };
+    return cep_async_register_request(sink->ops_oid, out_name, &info);
+}
+
+static void
+cep_flat_frame_sink_post_completion(cepFlatFrameSinkContext* sink,
+                                    const cepDT* request_name,
+                                    const cepDT* opcode,
+                                    bool success,
+                                    uint64_t bytes_done,
+                                    int error_code)
+{
+    if (!sink || !request_name || !opcode) {
+        return;
+    }
+    if (!cep_oid_is_valid(sink->ops_oid) || !cep_dt_is_valid(request_name)) {
+        return;
+    }
+    cepOpsAsyncIoReqInfo info = {
+        .state = success ? *dt_flat_async_state_ok() : *dt_flat_async_state_fail(),
+        .channel = *dt_flat_async_channel(),
+        .opcode = *opcode,
+    };
+    if (bytes_done > 0u) {
+        info.has_bytes_done = true;
+        info.bytes_done = bytes_done;
+    }
+    if (!success) {
+        info.has_errno = true;
+        info.errno_code = error_code;
+    }
+    (void)cep_async_post_completion(sink->ops_oid, request_name, &info);
+}
+
+static void
+cep_flat_frame_sink_finalize(cepFlatFrameSinkContext* sink,
+                             bool success,
+                             int error_code,
+                             bool include_finish)
+{
+    if (!sink) {
+        return;
+    }
+    if (sink->begin_registered) {
+        cep_flat_frame_sink_post_completion(sink,
+                                            &sink->begin_req,
+                                            dt_flat_async_opcode_begin(),
+                                            success,
+                                            0u,
+                                            error_code);
+        sink->begin_registered = false;
+    }
+    if (sink->write_registered) {
+        cep_flat_frame_sink_post_completion(sink,
+                                            &sink->write_req,
+                                            dt_flat_async_opcode_write(),
+                                            success,
+                                            (uint64_t)sink->bytes_written,
+                                            error_code);
+        sink->write_registered = false;
+    }
+    if (include_finish && sink->finish_registered) {
+        cep_flat_frame_sink_post_completion(sink,
+                                            &sink->finish_req,
+                                            dt_flat_async_opcode_finish(),
+                                            success,
+                                            0u,
+                                            error_code);
+        sink->finish_registered = false;
+    }
+}
+
+static bool
+cep_flat_frame_sink_prepare(cepFlatFrameSinkContext* sink)
+{
+    if (!sink || !sink->write) {
+        return false;
+    }
+    sink->ops_oid = cep_async_ops_oid();
+    if (!cep_oid_is_valid(sink->ops_oid)) {
+        return false;
+    }
+    if (!cep_flat_frame_sink_register_channel(sink)) {
+        return false;
+    }
+    if (!cep_flat_frame_sink_register_request(sink,
+                                              "sb",
+                                              dt_flat_async_opcode_begin(),
+                                              &sink->begin_req)) {
+        return false;
+    }
+    sink->begin_registered = true;
+    if (!cep_flat_frame_sink_register_request(sink,
+                                              "sw",
+                                              dt_flat_async_opcode_write(),
+                                              &sink->write_req)) {
+        cep_flat_frame_sink_finalize(sink, false, -EIO, true);
+        return false;
+    }
+    sink->write_registered = true;
+    if (!cep_flat_frame_sink_register_request(sink,
+                                              "sf",
+                                              dt_flat_async_opcode_finish(),
+                                              &sink->finish_req)) {
+        cep_flat_frame_sink_finalize(sink, false, -EIO, true);
+        return false;
+    }
+    sink->finish_registered = true;
+    return true;
+}
+
+static bool
+cep_flat_frame_async_worker(void* context, cepIoReactorResult* out_result)
+{
+    cepFlatFrameAsyncJob* job = (cepFlatFrameAsyncJob*)context;
+    if (!job) {
+        if (out_result) {
+            *out_result = (cepIoReactorResult){ .success = false, .bytes_done = 0u, .error_code = -EIO };
+        }
+        return false;
+    }
+    bool success = true;
+    int error_code = 0;
+    if (job->perform_write && job->buffer && job->buffer_size > 0u) {
+        if (!job->target_write(job->target_context, job->buffer, job->buffer_size)) {
+            success = false;
+            error_code = -EIO;
+        }
+    }
+    if (out_result) {
+        out_result->success = success;
+        out_result->bytes_done = success ? job->sink.bytes_written : 0u;
+        out_result->error_code = success ? 0 : error_code;
+    }
+    return success;
+}
+
+static void
+cep_flat_frame_async_on_complete(void* context, const cepIoReactorResult* result)
+{
+    cepFlatFrameAsyncJob* job = (cepFlatFrameAsyncJob*)context;
+    if (!job) {
+        return;
+    }
+    bool success = result ? result->success : false;
+    int error_code = result ? result->error_code : -EIO;
+    cep_flat_frame_sink_finalize(&job->sink, success, error_code, false);
+    if (job->completion_cb) {
+        job->completion_cb(success, job->sink.bytes_written, error_code, job->completion_ctx);
+    }
+    if (job->buffer) {
+        cep_free(job->buffer);
+    }
+    cep_free(job);
+}
+
+bool
+cep_flat_stream_emit_cell_async(const cepCell* cell,
+                                const cepSerializationHeader* header,
+                                cepSerializationWriteFn write,
+                                void* context,
+                                size_t blob_payload_bytes,
+                                cepFlatStreamAsyncStats* stats)
+{
+    if (!cell || !write) {
+        return false;
+    }
+
+    cepFlatStreamAsyncStats local_stats = {0};
+    cepFlatStreamAsyncStats* out_stats = stats ? stats : &local_stats;
+    bool require_sync_copy = out_stats->require_sync_copy;
+
+    cepFlatFrameSinkContext sink = {
+        .write = cep_flat_frame_buffer_write,
+        .context = NULL,
+        .bytes_written = 0u,
+        .ops_oid = cep_oid_invalid(),
+        .channel_ready = false,
+        .begin_registered = false,
+        .write_registered = false,
+        .finish_registered = false,
+    };
+    cepFlatFrameBuffer buffer = {0};
+    sink.context = &buffer;
+
+    if (!cep_flat_frame_sink_prepare(&sink)) {
+        out_stats->async_mode = false;
+        out_stats->fallback_used = false;
+        cep_flat_frame_buffer_reset(&buffer);
+        return false;
+    }
+
+    bool emitted = cep_serialization_emit_cell(cell,
+                                               header,
+                                               cep_flat_frame_sink_write_proxy,
+                                               &sink,
+                                               blob_payload_bytes);
+    if (!emitted) {
+        cep_flat_frame_sink_finalize(&sink, false, -EIO, true);
+        out_stats->async_mode = false;
+        out_stats->fallback_used = true;
+        cep_flat_frame_buffer_reset(&buffer);
+        return false;
+    }
+
+    if (require_sync_copy) {
+        if (!write(context, buffer.data, buffer.size)) {
+            cep_flat_frame_sink_finalize(&sink, false, -EIO, true);
+            out_stats->async_mode = false;
+            out_stats->fallback_used = true;
+            cep_flat_frame_buffer_reset(&buffer);
+            return false;
+        }
+    }
+
+    cepFlatFrameAsyncJob* job = cep_malloc0(sizeof *job);
+    if (!job) {
+        cep_flat_frame_sink_finalize(&sink, false, -ENOMEM, true);
+        out_stats->async_mode = false;
+        out_stats->fallback_used = true;
+        cep_flat_frame_buffer_reset(&buffer);
+        return false;
+    }
+
+    job->sink = sink;
+    job->target_write = write;
+    job->target_context = context;
+    job->perform_write = !require_sync_copy;
+    job->completion_cb = out_stats->completion_cb;
+    job->completion_ctx = out_stats->completion_ctx;
+    if (job->perform_write) {
+        job->buffer = buffer.data;
+        job->buffer_size = buffer.size;
+    } else {
+        cep_flat_frame_buffer_reset(&buffer);
+    }
+
+    cepOpsAsyncIoReqInfo success_info = {
+        .state = *dt_flat_async_state_ok(),
+        .channel = *dt_flat_async_channel(),
+        .opcode = *dt_flat_async_opcode_finish(),
+        .has_bytes_done = true,
+        .bytes_done = (uint64_t)sink.bytes_written,
+    };
+    cepOpsAsyncIoReqInfo failure_info = {
+        .state = *dt_flat_async_state_fail(),
+        .channel = *dt_flat_async_channel(),
+        .opcode = *dt_flat_async_opcode_finish(),
+    };
+
+    cepIoReactorWork work = {
+        .owner = sink.ops_oid,
+        .request_name = sink.finish_req,
+        .success_info = success_info,
+        .failure_info = failure_info,
+        .beats_budget = 1u,
+        .has_beats_budget = true,
+        .bytes_expected = (uint64_t)sink.bytes_written,
+        .has_bytes_expected = true,
+        .shim_fallback = true,
+        .worker = cep_flat_frame_async_worker,
+        .worker_context = job,
+        .destroy = NULL,
+        .on_complete = cep_flat_frame_async_on_complete,
+        .on_complete_context = job,
+    };
+    if (!job->perform_write) {
+        work.bytes_expected = 0u;
+        work.has_bytes_expected = false;
+    }
+
+    if (!cep_io_reactor_submit(&work)) {
+        cep_flat_frame_sink_finalize(&sink, false, -EIO, true);
+        out_stats->async_mode = false;
+        out_stats->fallback_used = true;
+        if (!require_sync_copy && job->buffer) {
+            (void)write(context, job->buffer, job->buffer_size);
+        }
+        if (job->buffer) {
+            cep_free(job->buffer);
+        }
+        cep_free(job);
+        return false;
+    }
+
+    out_stats->async_mode = true;
+    out_stats->fallback_used = false;
+    return true;
 }
 
 

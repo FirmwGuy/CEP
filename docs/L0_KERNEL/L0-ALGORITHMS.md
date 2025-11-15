@@ -225,6 +225,18 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 
 **Where it lives.** `src/cps/cps_flatfile.c` (`cps_flatfile_fetch_cas_blob_bytes`, `cps_flatfile_fetch_cas_blob_runtime`, `cps_flatfile_publish_metrics`). Tests: `/CEP/cps/replay/cas_cache` (cache hits) and `/CEP/cps/replay/cas_runtime` (runtime fallback).
 
+## 16) Async telemetry mirrors (net + /rt/analytics)
+
+**Why it exists.** The async I/O fabric needs deterministic observability so operators can correlate OPS request state, federation transport load, and shim usage without scraping individual dossiers.
+
+**What it does.**
+
+* Every federation mount writes `async_pnd`, `async_shm`, and `async_nat` under `/net/telemetry/<peer>/<mount>/`, mirroring the OPS async requests in a beat-friendly dictionary.
+* The same counters land under `/rt/analytics/async/(shim|native)/<provider>/<mount>/jobs_total`, giving tooling a single branch to inspect when tracking shim vs. provider-native completions.
+* When a provider lacks async hooks, the manager emits `tp_asyncun` once per mount and marks the associated async handle as a shim so telemetry stays honest about the fallback.
+
+**Where it lives.** `src/enzymes/fed_transport_manager.c` refreshes both the telemetry and analytics trees whenever mount state changes.
+
 * **History & snapshots:** `cep_cell_update`, `cep_data_history_push`, `cep_store_history_push/clear` 
 * **Links & shadows:** `cep_link_set/pull`, `cep_cell_shadow_mark_target_dead`, `cep_shadow_*` helpers 
 * **Insertion & reindex:** `cep_store_add_child`, `cep_store_append_child`, `store_to_dictionary`, `store_sort` 

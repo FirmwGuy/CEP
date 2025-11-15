@@ -56,6 +56,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - `docs/L0_KERNEL/design/L0-DESIGN-FEDERATION.md` — Federation transport architecture, covering Beats 0–3, transport manager duties, and the link/mirror/invoke organ contracts plus diagnostics.
 - `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md` — Control-plane design for Pause/Rollback/Resume, backlog policy, and heartbeat gating.
 - `docs/L0_KERNEL/design/L0-DESIGN-SERIALIZATION.md` — Design trade-offs for manifests, chunking, and replay safety.
+- `docs/L0_KERNEL/design/L0-DESIGN-ASYNC-IO.md` — Async I/O fabric plan covering the reactor, serialization/federation integrations, CPS async commits, and telemetry expectations.
 - `docs/L0_KERNEL/design/L0-DESIGN-CELL-AND-STORE.md` — Why cells stay append-only and how store backends uphold invariants.
 - `docs/L0_KERNEL/design/L0-DESIGN-PROXY-AND-HANDLES.md` — Lifecycle rules for proxy payloads, adapters, and external handles.
 - `docs/L0_KERNEL/design/L0-DESIGN-NAMEPOOL-AND-NAMING.md` — Domain/Tag rationale, glob semantics, and namepool lifecycle.

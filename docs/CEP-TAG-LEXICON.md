@@ -58,6 +58,17 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `persist.checkpoint` | Runtime platform | CEI topic emitted when CPS writes checkpoint TOCs or reports errors during `op/checkpt`. |
 | `persist.recover` | Runtime platform | CEI topic emitted when CPS detects branch corruption and runs crash-recovery sweeps. |
 | `persist.bootstrap` | Runtime platform | CEI topic emitted when CPS bootstrap/engine activation surfaces warnings before `ist:store`. |
+| `chn:serial` | Async I/O fabric | OPS/telemetry channel name reserved for the flat serializer sink. |
+| `prov:serial` | Async I/O fabric | Async provider identifier recorded alongside serializer sink requests. |
+| `react:ser` | Async I/O fabric | Reactor identifier mirrored into serializer async metadata. |
+| `caps:sync` | Async I/O fabric | Capability tag marking that the synchronous shim handled a request. |
+| `reactor` | Async I/O fabric | `/rt/analytics/async/reactor/<id>` branch storing per-reactor metrics. |
+| `cq_depth` | Async I/O fabric | metric counting the number of pending + active requests assigned to the reactor. |
+| `pend_bytes` | Async I/O fabric | metric tracking cumulative bytes staged across pending async jobs. |
+| `comp_bt` | Async I/O fabric | per-beat counter of completions drained from the reactor CQ. |
+| `tp_async_unsp` | Async I/O fabric | CEI topic emitted when a provider falls back to the async shim because native async paths are unavailable. |
+| `persist.async` | Async I/O fabric | CEI topic emitted when CPS async pipelines detect backlog or throttle events. |
+| `persist.async.tmo` | Async I/O fabric | CEI topic emitted when async persistence or serializer sinks exceed their beat/time budgets. |
 | `enc_mode` | Runtime platform | Secdata metadata field describing the AEAD mode applied to the in-RAM payload. |
 | `codec` | Runtime platform | Secdata metadata field describing the compression codec applied to the secured payload. |
 | `key_id` | Runtime platform | Namepooled identifier recorded with secured payloads referencing the key selector used for sealing. |
@@ -81,6 +92,10 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `analytics` | Runtime platform | runtime analytics root under `/rt/analytics`. |
 | `spacing` | Runtime platform | beat-to-beat spacing metrics recorded by the heartbeat analytics helper. |
 | `interval_ns` | Runtime platform | nanosecond interval payload inside spacing analytics entries. |
+| `async` | Runtime platform | `/rt/analytics/async` root tracking shim/native async job summaries. |
+| `shim` | Runtime platform | analytics branch storing shim-job counters under `/rt/analytics/async`. |
+| `native` | Runtime platform | analytics branch storing provider-native async counters under `/rt/analytics/async`. |
+| `jobs_total` | Runtime platform | counter stored under `/rt/analytics/async/(shim|native)/<provider>/<mount>/` reflecting total jobs per mount. |
 | `issued_unix` | Runtime platform | unix timestamp captured alongside `issued_beat` inside a mailbox envelope. |
 | `unix_ts_ns` | Runtime platform | per-beat Unix timestamp stored under `/rt/beat/<n>/meta/unix_ts_ns` and mirrored into stage notes, OPS history, and stream journals. |
 | `paused` | Pause/Rollback/Resume | `val/bool` flag under `/sys/state` indicating the heartbeat agenda is currently gated. |
@@ -254,10 +269,14 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `bp_flag` | Federation transport | boolean flag indicating the mount is currently backpressured. |
 | `last_mode` | Federation transport | telemetry field recording the last transmitted frame mode. |
 | `last_sample` | Federation transport | telemetry field recording the first byte of the last transmitted frame. |
+| `async_pnd` | Federation transport | telemetry counter storing how many async requests are inflight for the mount. |
+| `async_shm` | Federation transport | telemetry counter tracking completions handled by shim worker threads. |
+| `async_nat` | Federation transport | telemetry counter tracking provider-native async completions. |
 | `tp_backpr` | Federation transport | CEI topic and health key for backpressure notifications. |
 | `tp_catsync` | Federation transport | CEI topic for catalog/telemetry publication failures. |
 | `tp_fatal` | Federation transport | CEI topic recording fatal transport channel events. |
 | `tp_noprov` | Federation transport | CEI topic recorded when no provider satisfies mount requirements. |
+| `tp_asyncun` | Federation transport | CEI topic emitted when a mount falls back to the async shim because the provider lacks async hooks. |
 | `tp_openfail` | Federation transport | CEI topic emitted when provider channel negotiation fails. |
 | `tp_provcell` | Federation transport | CEI topic noting provider cell resolution failures. |
 | `tp_provid` | Federation transport | CEI topic emitted when provider identifiers cannot be encoded. |
