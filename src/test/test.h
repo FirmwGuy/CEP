@@ -42,6 +42,7 @@ MunitResult test_domain_tag_naming(const MunitParameter params[], void* user_dat
 MunitResult test_identifier(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_ops(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_branch_controller_dirty_tracking(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_branch_controller_flush_policy(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_enzyme_setup(const MunitParameter params[], void* user_data);
@@ -139,6 +140,9 @@ extern MunitSuite integration_poc_suite;
 bool        test_executor_wait_until_empty(unsigned spins);
 bool        test_executor_wait_for_calls(atomic_uint* counter, unsigned target, unsigned spins);
 void        test_executor_relax(void);
+void        test_runtime_enable_mock_cps(void);
+void        test_runtime_disable_mock_cps(void);
+bool        test_runtime_mock_cps_enabled(void);
 
 static inline void test_runtime_shutdown(void) {
     cep_stream_clear_pending();

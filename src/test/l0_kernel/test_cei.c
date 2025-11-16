@@ -177,9 +177,14 @@ MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_f
     test_boot_cycle_prepare(params);
     CeiRuntimeScope scope = cei_runtime_start(true);
 
+    cepDT op_verb = cep_ops_make_dt("op/cei");
+    cepDT op_mode = cep_ops_make_dt("opm:states");
+    cepOID op_oid = cep_op_start(op_verb, "/test/cei/mailbox", op_mode, NULL, 0u, 0u);
+    munit_assert_true(cep_oid_is_valid(op_oid));
+
     cepCell* subject = cei_subject_cell();
     cepCeiRequest req = {
-        .severity = *CEP_DTAW("CEP", "sev:warn"),
+        .severity = *CEP_DTAW("CEP", "sev:crit"),
         .note = "diagnostics mailbox emission",
         .topic = "mailbox.ttl",
         .topic_intern = true,
@@ -190,7 +195,8 @@ MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_f
         .code = 42u,
         .payload_id = "CAS:deadbeef",
         .emit_signal = false,
-        .attach_to_op = false,
+        .attach_to_op = true,
+        .op = op_oid,
     };
 
     bool emitted = cep_cei_emit(&req);
@@ -215,7 +221,7 @@ MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_f
     cepCell* sev_cell = cep_cell_find_by_name(err, CEP_DTAW("CEP", "sev"));
     munit_assert_not_null(sev_cell);
     cepDT sev_value = cei_read_dt_cell(sev_cell);
-    cei_assert_dt_matches(&sev_value, CEP_DTAW("CEP", "sev:warn"));
+    cei_assert_dt_matches(&sev_value, CEP_DTAW("CEP", "sev:crit"));
 
     cepCell* note_cell = cep_cell_find_by_name(err, CEP_DTAW("CEP", "note"));
     munit_assert_not_null(note_cell);
@@ -253,6 +259,34 @@ MunitResult test_cei_mailbox(const MunitParameter params[], void* user_data_or_f
     munit_assert_true(cep_cell_is_link(subject_link));
     cepCell* resolved_subject = cep_link_pull(subject_link);
     munit_assert_ptr_equal(resolved_subject, subject);
+
+    cepCell* op_cell = cei_lookup_op_cell(op_oid);
+    munit_assert_not_null(op_cell);
+    op_cell = cep_cell_resolve(op_cell);
+    munit_assert_not_null(op_cell);
+
+    cepCell* state_cell = cep_cell_find_by_name(op_cell, CEP_DTAW("CEP", "state"));
+    munit_assert_not_null(state_cell);
+    state_cell = cep_cell_resolve(state_cell);
+    munit_assert_not_null(state_cell);
+    munit_assert_true(cep_cell_has_data(state_cell));
+    const cepDT* recorded_state = cep_cell_data(state_cell);
+    munit_assert_not_null(recorded_state);
+    cei_assert_dt_matches(recorded_state, CEP_DTAW("CEP", "ist:fail"));
+
+    cepCell* close_branch = cep_cell_find_by_name(op_cell, CEP_DTAW("CEP", "close"));
+    munit_assert_not_null(close_branch);
+    close_branch = cep_cell_resolve(close_branch);
+    munit_assert_not_null(close_branch);
+    munit_assert_true(cep_cell_is_immutable(close_branch));
+    cepCell* status_cell = cep_cell_find_by_name(close_branch, CEP_DTAW("CEP", "status"));
+    munit_assert_not_null(status_cell);
+    status_cell = cep_cell_resolve(status_cell);
+    munit_assert_not_null(status_cell);
+    munit_assert_true(cep_cell_has_data(status_cell));
+    const cepDT* status_value = cep_cell_data(status_cell);
+    munit_assert_not_null(status_value);
+    cei_assert_dt_matches(status_value, CEP_DTAW("CEP", "sts:fail"));
 
     cei_runtime_cleanup(&scope);
     return MUNIT_OK;

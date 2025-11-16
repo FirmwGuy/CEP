@@ -11,6 +11,7 @@
 #include "test.h"
 #include "cep_ops.h"
 #include "cep_executor.h"
+#include "../cps/cps_runtime.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
@@ -22,6 +23,27 @@ extern MunitSuite integration_poc_suite;
 
 static bool ovh_trace_initialized;
 static bool ovh_trace_enabled_flag;
+static unsigned test_mock_cps_depth;
+
+void test_runtime_enable_mock_cps(void) {
+    if (test_mock_cps_depth++ == 0u) {
+        cps_runtime_force_mock_mode(true);
+    }
+}
+
+void test_runtime_disable_mock_cps(void) {
+    if (test_mock_cps_depth == 0u) {
+        return;
+    }
+    test_mock_cps_depth--;
+    if (test_mock_cps_depth == 0u) {
+        cps_runtime_force_mock_mode(false);
+    }
+}
+
+bool test_runtime_mock_cps_enabled(void) {
+    return test_mock_cps_depth > 0u;
+}
 
 bool test_ovh_trace_enabled(void) {
     if (!ovh_trace_initialized) {
@@ -341,6 +363,14 @@ MunitTest tests[] = {
     {
         "/branch/dirty_tracking",
         test_branch_controller_dirty_tracking,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/branch/policy_flush",
+        test_branch_controller_flush_policy,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,

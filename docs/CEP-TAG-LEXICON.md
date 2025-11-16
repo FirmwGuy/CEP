@@ -53,16 +53,27 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `cas_lat_ns` | Runtime platform | metric reporting the average CAS lookup latency in nanoseconds for the active branch. |
 | `persist_branch` | Runtime platform | fallback tag used when a branch name cannot be interned; hosts CPS metrics if needed. |
 | `branch_stat` | Runtime platform | dictionary under `/data/persist/<branch>/branch_stat` exposing status fields for that branch’s persistence controller. |
+| `config` | Runtime platform | dictionary under `/data/persist/<branch>/config` capturing the branch controller’s current persistence policy and scheduler knobs. |
 | `last_bt` | Runtime platform | `branch_stat` field recording the last beat that reached CPS for the branch. |
 | `pend_mut` | Runtime platform | `branch_stat` field counting pending mutations for the branch controller. |
 | `dirty_ents` | Runtime platform | `branch_stat` field mirroring the controller’s dirty-entry count. |
 | `frame_last` | Runtime platform | `branch_stat` field recording the most recent frame ID persisted for the branch. |
+| `cause_last` | Runtime platform | `branch_stat` field indicating the last flush cause (`automatic`, `manual`, `scheduled`). |
+| `policy_mode` | Runtime platform | `config` field storing the active branch persistence policy label. |
+| `flush_every` | Runtime platform | `config` field reporting the `flush_every_beats` policy value. |
+| `flush_shdn` | Runtime platform | `config` field flagging whether the branch flushes when shutdown runs. |
+| `allow_vol` | Runtime platform | `config` field signalling whether volatile reads are permitted for the branch. |
+| `schedule_bt` | Runtime platform | `config` field recording the beat the next scheduled flush should run (0 when unscheduled). |
 | `bundle` | Runtime platform | envelope field used by `op/import` to specify the filesystem path to an exported CPS bundle. |
 | `persist.commit` | Runtime platform | CEI topic emitted when CPS finishes persisting a beat (`cps_storage_commit_current_beat`). |
 | `persist.frame.io` | Runtime platform | CEI topic emitted when frame staging, fsync, or copy operations fail on the CPS backend. |
 | `persist.checkpoint` | Runtime platform | CEI topic emitted when CPS writes checkpoint TOCs or reports errors during `op/checkpt`. |
 | `persist.recover` | Runtime platform | CEI topic emitted when CPS detects branch corruption and runs crash-recovery sweeps. |
 | `persist.bootstrap` | Runtime platform | CEI topic emitted when CPS bootstrap/engine activation surfaces warnings before `ist:store`. |
+| `persist.flush.begin` | Runtime platform | CEI topic emitted when a branch flush request begins emitting a frame. |
+| `persist.flush.done` | Runtime platform | CEI topic emitted when a branch flush request completes successfully. |
+| `persist.flush.fail` | Runtime platform | CEI topic emitted when a branch flush request fails to serialize or apply. |
+| `persist.defer` | Runtime platform | CEI topic emitted when a branch is placed into deferred/on-demand flush mode. |
 | `chn:serial` | Async I/O fabric | OPS/telemetry channel name reserved for the flat serializer sink. |
 | `prov:serial` | Async I/O fabric | Async provider identifier recorded alongside serializer sink requests. |
 | `react:ser` | Async I/O fabric | Reactor identifier mirrored into serializer async metadata. |
@@ -182,6 +193,9 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `op/compact` | OPS timeline | persistence verb requesting CPS compaction/retention maintenance. |
 | `op/sync` | OPS timeline | persistence verb signalling an explicit sync/export of CPS state. |
 | `op/import` | OPS timeline | persistence verb instructing CPS to verify + stage an exported bundle under the branch’s `imports/` directory. |
+| `op/br_flush` | OPS timeline | persistence verb that forces a specific branch to flush its dirty set on the next commit. |
+| `op/br_sched` | OPS timeline | persistence verb scheduling a branch to flush after a caller-provided beat offset. |
+| `op/br_defer` | OPS timeline | persistence verb that places a branch into on-demand/deferred flush mode. |
 | `op/pause` | Pause/Rollback/Resume | pause control operation verb that gates the heartbeat agenda. |
 | `op/resume` | Pause/Rollback/Resume | resume control operation verb that re-opens the agenda. |
 | `op/rollback` | Pause/Rollback/Resume | rollback control operation verb that re-points the view horizon. |

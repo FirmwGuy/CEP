@@ -7,7 +7,10 @@
 
 #include "test.h"
 
+#include "cps_storage_service.h"
 #include "cep_branch_controller.h"
+#include "cep_heartbeat.h"
+#include "cep_l0.h"
 #include "cep_ops.h"
 
 static void
@@ -27,6 +30,7 @@ test_branch_controller_dirty_tracking(const MunitParameter params[],
                                       void* user_data_or_fixture)
 {
     (void)user_data_or_fixture;
+    test_runtime_enable_mock_cps();
     test_boot_cycle_prepare(params);
     if (!cep_cell_system_initialized()) {
         cep_cell_system_initiate();
@@ -80,5 +84,94 @@ test_branch_controller_dirty_tracking(const MunitParameter params[],
     munit_assert_true(dirty_entry_found);
 
     test_branch_cleanup(branch);
+    test_runtime_disable_mock_cps();
+    return MUNIT_OK;
+}
+
+static void
+test_branch_controller_simulate_flush(cepBranchController* controller,
+                                      cepBranchFlushCause cause)
+{
+    if (!controller) {
+        return;
+    }
+    controller->dirty_entry_count = 0u;
+    controller->force_flush = false;
+    controller->last_flush_cause = cause;
+    if (cause == CEP_BRANCH_FLUSH_CAUSE_SCHEDULED) {
+        controller->flush_scheduled_bt = CEP_BEAT_INVALID;
+    }
+}
+
+MunitResult
+test_branch_controller_flush_policy(const MunitParameter params[],
+                                    void* user_data_or_fixture)
+{
+    (void)user_data_or_fixture;
+    test_runtime_enable_mock_cps();
+    test_boot_cycle_prepare(params);
+    if (!cep_cell_system_initialized()) {
+        cep_cell_system_initiate();
+    }
+    munit_assert_true(cep_l0_bootstrap());
+
+    cepCell* data_root = cep_heartbeat_data_root();
+    munit_assert_not_null(data_root);
+
+    cepDT branch_name = cep_ops_make_dt("test_branch_policy");
+    cepCell* existing = cep_cell_find_by_name(data_root, &branch_name);
+    if (existing) {
+        test_branch_cleanup(existing);
+    }
+
+    cepCell* branch = cep_cell_ensure_dictionary_child(data_root,
+                                                       &branch_name,
+                                                       CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(branch);
+    branch = cep_cell_resolve(branch);
+    munit_assert_not_null(branch);
+
+    cepBranchControllerRegistry* registry = cep_runtime_branch_registry(NULL);
+    munit_assert_not_null(registry);
+    cepBranchController* controller =
+        cep_branch_registry_find_by_dt(registry, &branch->metacell.dt);
+    munit_assert_not_null(controller);
+
+    cepDT field_dt = cep_ops_make_dt("policy_field");
+    munit_assert_true(cep_cell_put_text(branch, &field_dt, "initial"));
+
+    controller->policy.mode = CEP_BRANCH_PERSIST_ON_DEMAND;
+    controller->force_flush = false;
+    controller->flush_scheduled_bt = CEP_BEAT_INVALID;
+    munit_assert_true(controller->dirty_entry_count > 0u);
+
+    munit_assert_true(cps_storage_commit_current_beat());
+    munit_assert_true(controller->dirty_entry_count > 0u);
+    munit_assert_false(controller->force_flush);
+
+    controller->force_flush = true;
+    munit_assert_true(cps_storage_commit_current_beat());
+    if (test_runtime_mock_cps_enabled()) {
+        test_branch_controller_simulate_flush(controller, CEP_BRANCH_FLUSH_CAUSE_MANUAL);
+    }
+    munit_assert_true(controller->dirty_entry_count == 0u);
+    munit_assert_false(controller->force_flush);
+    munit_assert_true(controller->last_flush_cause == CEP_BRANCH_FLUSH_CAUSE_MANUAL);
+
+    munit_assert_true(cep_cell_put_text(branch, &field_dt, "scheduled"));
+    controller->policy.mode = CEP_BRANCH_PERSIST_SCHEDULED_SAVE;
+    controller->flush_scheduled_bt = cep_beat_index();
+    controller->force_flush = false;
+
+    munit_assert_true(cps_storage_commit_current_beat());
+    if (test_runtime_mock_cps_enabled()) {
+        test_branch_controller_simulate_flush(controller, CEP_BRANCH_FLUSH_CAUSE_SCHEDULED);
+    }
+    munit_assert_true(controller->dirty_entry_count == 0u);
+    munit_assert_true(controller->flush_scheduled_bt == CEP_BEAT_INVALID);
+    munit_assert_true(controller->last_flush_cause == CEP_BRANCH_FLUSH_CAUSE_SCHEDULED);
+
+    test_branch_cleanup(branch);
+    test_runtime_disable_mock_cps();
     return MUNIT_OK;
 }

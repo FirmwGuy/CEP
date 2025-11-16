@@ -46,6 +46,7 @@ static OpsRuntimeScope ops_runtime_start(bool ensure_dirs) {
     };
     munit_assert_not_null(scope.runtime);
     scope.previous_runtime = cep_runtime_set_active(scope.runtime);
+    test_runtime_enable_mock_cps();
     cep_cell_system_initiate();
     munit_assert_true(cep_l0_bootstrap());
     munit_assert_true(cep_namepool_bootstrap());
@@ -85,6 +86,7 @@ static void ops_runtime_cleanup(OpsRuntimeScope* scope) {
     cep_runtime_destroy(scope->runtime);
     scope->runtime = NULL;
     scope->previous_runtime = NULL;
+    test_runtime_disable_mock_cps();
 }
 
 static cepCell* ops_lookup_cell(cepOID oid) {

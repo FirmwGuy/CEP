@@ -42,6 +42,14 @@ typedef struct {
     bool                 allow_volatile_reads;
 } cepBranchPersistPolicy;
 
+typedef enum {
+    CEP_BRANCH_FLUSH_CAUSE_UNKNOWN = 0,
+    CEP_BRANCH_FLUSH_CAUSE_AUTOMATIC,
+    CEP_BRANCH_FLUSH_CAUSE_MANUAL,
+    CEP_BRANCH_FLUSH_CAUSE_SCHEDULED,
+    CEP_BRANCH_FLUSH_CAUSE_COUNT,
+} cepBranchFlushCause;
+
 typedef struct {
     cepCell*    cell;
     uint32_t    flags;
@@ -67,8 +75,10 @@ typedef struct cepBranchController {
     uint64_t               pins;
     uint64_t               version;
     cepOpCount             last_frame_id;
+    cepBranchFlushCause    last_flush_cause;
     bool                   registered;
     bool                   pinned;
+    bool                   force_flush;
 } cepBranchController;
 
 typedef struct cepBranchControllerRegistry cepBranchControllerRegistry;

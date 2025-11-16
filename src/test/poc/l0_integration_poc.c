@@ -679,6 +679,48 @@ static bool integration_capture_sink(void* ctx, const uint8_t* chunk, size_t siz
     return integration_capture_append((IntegrationSerializationCapture*)ctx, chunk, size);
 }
 
+static cepFlatBranchFrameInfo
+integration_branch_frame_info(IntegrationFixture* fix, cepCell* branch_root) {
+    cepFlatBranchFrameInfo info = {0};
+    if (!fix || !branch_root) {
+        return info;
+    }
+    cepCell* resolved = cep_cell_resolve(branch_root);
+    if (resolved) {
+        const cepDT* dt = cep_cell_get_name(resolved);
+        if (dt) {
+            cepDT clean = cep_dt_clean(dt);
+            info.branch_domain = (uint64_t)cep_id(clean.domain);
+            info.branch_tag = (uint64_t)cep_id(clean.tag);
+            info.branch_glob = clean.glob ? 1u : 0u;
+        }
+    }
+    info.frame_id = 1u;
+    return info;
+}
+
+static bool
+integration_capture_branch_frame(IntegrationFixture* fix,
+                                 cepCell* branch_root,
+                                 IntegrationSerializationCapture* capture) {
+    if (!fix || !branch_root || !capture) {
+        return false;
+    }
+    cepFlatBranchFrameInfo frame_info = integration_branch_frame_info(fix, branch_root);
+    cepFlatStreamAsyncStats stats = {
+        .require_sync_copy = true,
+        .completion_cb = NULL,
+        .completion_ctx = NULL,
+    };
+    return cep_flat_stream_emit_branch_async(branch_root,
+                                             &frame_info,
+                                             NULL,
+                                             integration_capture_sink,
+                                             capture,
+                                             0u,
+                                             &stats);
+}
+
 static void integration_capture_clear(IntegrationSerializationCapture* capture) {
     if (!capture) {
         return;
@@ -4198,11 +4240,7 @@ static void integration_serialize_and_replay(IntegrationFixture* fix) {
     integration_trace_reset_stage_log();
 
     IntegrationSerializationCapture primary_capture = {0};
-    munit_assert_true(cep_flat_stream_emit_cell(fix->poc_root,
-                                                NULL,
-                                                (cepFlatStreamWriteFn)integration_capture_sink,
-                                                &primary_capture,
-                                                0));
+    munit_assert_true(integration_capture_branch_frame(fix, fix->poc_root, &primary_capture));
     integration_dump_trace(&primary_capture, "integration_flat_primary.bin");
     integration_assert_flat_frame_contract(&primary_capture, "flat-primary");
     integration_log_space_flat_records(&primary_capture, "flat-primary");
@@ -4216,11 +4254,7 @@ static void integration_serialize_and_replay(IntegrationFixture* fix) {
     munit_assert_true(cep_heartbeat_stage_commit());
 
     IntegrationSerializationCapture repeat_capture = {0};
-    munit_assert_true(cep_flat_stream_emit_cell(fix->poc_root,
-                                                NULL,
-                                                (cepFlatStreamWriteFn)integration_capture_sink,
-                                                &repeat_capture,
-                                                0));
+    munit_assert_true(integration_capture_branch_frame(fix, fix->poc_root, &repeat_capture));
     integration_dump_trace(&repeat_capture, "integration_flat_repeat.bin");
     integration_assert_flat_frame_contract(&repeat_capture, "flat-repeat");
     integration_log_space_flat_records(&repeat_capture, "flat-repeat");

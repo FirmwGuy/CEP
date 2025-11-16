@@ -32,6 +32,7 @@ typedef struct {
 } cpsRuntimeState;
 
 static cpsRuntimeState g_cps_state = {0};
+static bool g_cps_force_mock_mode = false;
 
 static const char *cps_runtime_env_or_default(const char *name, const char *fallback) {
   const char *value = getenv(name);
@@ -134,8 +135,46 @@ static bool cps_runtime_store_paths(const char *root_dir, const char *branch_nam
   return true;
 }
 
+static bool cps_runtime_env_wants_mock_mode(void) {
+  const char *mode = getenv("CEP_TEST_MODE");
+  if (!mode || !*mode) {
+    return false;
+  }
+  const char *match = strstr(mode, "mock_cps");
+  if (!match) {
+    return false;
+  }
+  char prev = (match == mode) ? '\0' : match[-1];
+  char next = match[8];
+  bool prev_ok = (prev == '\0' || prev == ',' || prev == ':' || prev == ';' || prev == ' ');
+  bool next_ok = (next == '\0' || next == ',' || next == ':' || next == ';' || next == ' ');
+  return prev_ok && next_ok;
+}
+
+static bool cps_runtime_mock_mode_enabled(void) {
+  if (g_cps_force_mock_mode) {
+    return true;
+  }
+  return cps_runtime_env_wants_mock_mode();
+}
+
+void cps_runtime_force_mock_mode(bool enable) {
+  if (g_cps_force_mock_mode == enable) {
+    return;
+  }
+  g_cps_force_mock_mode = enable;
+  if (enable) {
+    cps_runtime_shutdown();
+  }
+}
+
 bool cps_runtime_bootstrap(void) {
   if (g_cps_state.engine) {
+    return true;
+  }
+
+  if (cps_runtime_mock_mode_enabled()) {
+    g_cps_state.ready = false;
     return true;
   }
 

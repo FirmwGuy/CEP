@@ -18,5 +18,6 @@ cps_engine* cps_runtime_engine(void);
 const char* cps_runtime_branch_name(void);
 const char* cps_runtime_root_dir(void);
 const char* cps_runtime_branch_dir(void);
+void        cps_runtime_force_mock_mode(bool enable);
 
 #endif /* CEP_CPS_RUNTIME_H */

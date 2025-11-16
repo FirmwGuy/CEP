@@ -42,12 +42,21 @@
 
 static const char k_cps_topic_storage_commit[] = "persist.commit";
 static const char k_cps_topic_storage_async[] = "persist.async";
+static const char k_cps_topic_branch_flush_begin[] = "persist.flush.begin";
+static const char k_cps_topic_branch_flush_done[] = "persist.flush.done";
+static const char k_cps_topic_branch_flush_fail[] = "persist.flush.fail";
+static const char k_cps_topic_branch_defer[] = "persist.defer";
 
 #define CPS_STORAGE_ASYNC_COMMIT_TIMEOUT_MS 500u
 #define CPS_STORAGE_ASYNC_WAIT_POLL_NS 1000000L
 
 static void cps_storage_emit_async_cei(const char *detail);
+static void cps_storage_emit_topic_cei(const cepDT* severity,
+                                       const char* topic,
+                                       const char* detail);
 static void cps_storage_emit_cei(const cepDT *severity, const char *detail);
+static const char* cps_storage_policy_mode_label(cepBranchPersistMode mode);
+static const char* cps_storage_flush_cause_label(cepBranchFlushCause cause);
 typedef struct cpsStorageAsyncCommitCtx cpsStorageAsyncCommitCtx;
 static bool cps_storage_async_register_request(const cepDT* opcode,
                                                size_t expected_bytes,
@@ -71,6 +80,7 @@ static void cps_storage_async_mark_failed(cpsStorageAsyncCommitCtx* ctx,
 static bool cps_storage_async_wait_for_commit(cpsStorageAsyncCommitCtx* ctx);
 
 CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_warn, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
+CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_info, CEP_ACRO("CEP"), CEP_WORD("sev:info"));
 CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_crit, CEP_ACRO("CEP"), CEP_WORD("sev:crit"));
 CEP_DEFINE_STATIC_DT(dt_ops_root_name_cps, CEP_ACRO("CEP"), CEP_WORD("ops"));
 CEP_DEFINE_STATIC_DT(dt_envelope_name_cps, CEP_ACRO("CEP"), CEP_WORD("envelope"));
@@ -78,11 +88,15 @@ CEP_DEFINE_STATIC_DT(dt_close_name_cps, CEP_ACRO("CEP"), CEP_WORD("close"));
 CEP_DEFINE_STATIC_DT(dt_state_field_cps, CEP_ACRO("CEP"), CEP_WORD("state"));
 CEP_DEFINE_STATIC_DT(dt_verb_field_cps, CEP_ACRO("CEP"), CEP_WORD("verb"));
 CEP_DEFINE_STATIC_DT(dt_target_field_cps, CEP_ACRO("CEP"), CEP_WORD("target"));
+CEP_DEFINE_STATIC_DT(dt_branch_beats_field, CEP_ACRO("CEP"), CEP_WORD("beats"));
 CEP_DEFINE_STATIC_DT(dt_bundle_field_cps, CEP_ACRO("CEP"), CEP_WORD("bundle"));
 CEP_DEFINE_STATIC_DT(dt_op_checkpt_dt, CEP_ACRO("CEP"), CEP_WORD("op/checkpt"));
 CEP_DEFINE_STATIC_DT(dt_op_compact_dt, CEP_ACRO("CEP"), CEP_WORD("op/compact"));
 CEP_DEFINE_STATIC_DT(dt_op_sync_dt, CEP_ACRO("CEP"), CEP_WORD("op/sync"));
 CEP_DEFINE_STATIC_DT(dt_op_import_dt, CEP_ACRO("CEP"), CEP_WORD("op/import"));
+CEP_DEFINE_STATIC_DT(dt_op_branch_flush_dt, CEP_ACRO("CEP"), CEP_WORD("op/br_flush"));
+CEP_DEFINE_STATIC_DT(dt_op_branch_schedule_dt, CEP_ACRO("CEP"), CEP_WORD("op/br_sched"));
+CEP_DEFINE_STATIC_DT(dt_op_branch_defer_dt, CEP_ACRO("CEP"), CEP_WORD("op/br_defer"));
 CEP_DEFINE_STATIC_DT(dt_ist_run_dt, CEP_ACRO("CEP"), CEP_WORD("ist:run"));
 CEP_DEFINE_STATIC_DT(dt_ist_exec_dt, CEP_ACRO("CEP"), CEP_WORD("ist:exec"));
 CEP_DEFINE_STATIC_DT(dt_ist_ok_dt, CEP_ACRO("CEP"), CEP_WORD("ist:ok"));
@@ -103,10 +117,17 @@ CEP_DEFINE_STATIC_DT(dt_persist_beats_field, CEP_ACRO("CEP"), CEP_WORD("beats"))
 CEP_DEFINE_STATIC_DT(dt_persist_bytes_idx_field, CEP_ACRO("CEP"), CEP_WORD("bytes_idx"));
 CEP_DEFINE_STATIC_DT(dt_persist_bytes_dat_field, CEP_ACRO("CEP"), CEP_WORD("bytes_dat"));
 CEP_DEFINE_STATIC_DT(dt_persist_status_name, CEP_ACRO("CEP"), CEP_WORD("branch_stat"));
+CEP_DEFINE_STATIC_DT(dt_persist_config_name, CEP_ACRO("CEP"), CEP_WORD("config"));
+CEP_DEFINE_STATIC_DT(dt_persist_mode_field, CEP_ACRO("CEP"), CEP_WORD("policy_mode"));
+CEP_DEFINE_STATIC_DT(dt_persist_flush_every_field, CEP_ACRO("CEP"), CEP_WORD("flush_every"));
+CEP_DEFINE_STATIC_DT(dt_persist_flush_on_shutdown_field, CEP_ACRO("CEP"), CEP_WORD("flush_shdn"));
+CEP_DEFINE_STATIC_DT(dt_persist_allow_volatile_field, CEP_ACRO("CEP"), CEP_WORD("allow_vol"));
+CEP_DEFINE_STATIC_DT(dt_persist_schedule_bt_field, CEP_ACRO("CEP"), CEP_WORD("schedule_bt"));
 CEP_DEFINE_STATIC_DT(dt_persist_last_bt_field, CEP_ACRO("CEP"), CEP_WORD("last_bt"));
 CEP_DEFINE_STATIC_DT(dt_persist_pending_mut_field, CEP_ACRO("CEP"), CEP_WORD("pend_mut"));
 CEP_DEFINE_STATIC_DT(dt_persist_dirty_ents_field, CEP_ACRO("CEP"), CEP_WORD("dirty_ents"));
 CEP_DEFINE_STATIC_DT(dt_persist_last_frame_field, CEP_ACRO("CEP"), CEP_WORD("frame_last"));
+CEP_DEFINE_STATIC_DT(dt_persist_last_cause_field, CEP_ACRO("CEP"), CEP_WORD("cause_last"));
 
 #define CPS_STORAGE_COPY_CHUNK 65536u
 
@@ -212,7 +233,8 @@ static bool
 cps_storage_ensure_persist_cells(const cepDT* branch_dt,
                                  cepCell** branch_cell_out,
                                  cepCell** metrics_cell_out,
-                                 cepCell** status_cell_out)
+                                 cepCell** status_cell_out,
+                                 cepCell** config_cell_out)
 {
   if (!branch_dt || !cep_dt_is_valid(branch_dt)) {
     return false;
@@ -242,6 +264,7 @@ cps_storage_ensure_persist_cells(const cepDT* branch_dt,
   }
   cepCell *metrics_cell = NULL;
   cepCell *status_cell = NULL;
+  cepCell *config_cell = NULL;
   if (metrics_cell_out) {
     metrics_cell = cep_cell_ensure_dictionary_child(branch_cell,
                                                     dt_persist_metrics_name(),
@@ -258,6 +281,14 @@ cps_storage_ensure_persist_cells(const cepDT* branch_dt,
       return false;
     }
   }
+  if (config_cell_out) {
+    config_cell = cep_cell_ensure_dictionary_child(branch_cell,
+                                                   dt_persist_config_name(),
+                                                   CEP_STORAGE_RED_BLACK_T);
+    if (!config_cell) {
+      return false;
+    }
+  }
   if (branch_cell_out) {
     *branch_cell_out = branch_cell;
   }
@@ -266,6 +297,9 @@ cps_storage_ensure_persist_cells(const cepDT* branch_dt,
   }
   if (status_cell_out) {
     *status_cell_out = status_cell;
+  }
+  if (config_cell_out) {
+    *config_cell_out = config_cell;
   }
   return true;
 }
@@ -281,10 +315,12 @@ cps_storage_publish_branch_metrics(cepBranchController* controller,
   cepCell *branch_cell = NULL;
   cepCell *metrics_cell = NULL;
   cepCell *status_cell = NULL;
+  cepCell *config_cell = NULL;
   if (!cps_storage_ensure_persist_cells(&controller->branch_dt,
                                         &branch_cell,
                                         &metrics_cell,
-                                        &status_cell)) {
+                                        &status_cell,
+                                        &config_cell)) {
     return false;
   }
 
@@ -326,6 +362,34 @@ cps_storage_publish_branch_metrics(cepBranchController* controller,
     ok &= cep_cell_put_uint64(status_cell,
                               dt_persist_last_frame_field(),
                               controller->last_frame_id);
+    const char* cause = cps_storage_flush_cause_label(controller->last_flush_cause);
+    ok &= cep_cell_put_text(status_cell,
+                            dt_persist_last_cause_field(),
+                            cause);
+  }
+
+  if (config_cell) {
+    const cepBranchPersistPolicy* policy = cep_branch_controller_policy(controller);
+    if (policy) {
+      ok &= cep_cell_put_text(config_cell,
+                              dt_persist_mode_field(),
+                              cps_storage_policy_mode_label(policy->mode));
+      ok &= cep_cell_put_uint64(config_cell,
+                                dt_persist_flush_every_field(),
+                                policy->flush_every_beats);
+      ok &= cep_cell_put_uint64(config_cell,
+                                dt_persist_flush_on_shutdown_field(),
+                                policy->flush_on_shutdown ? 1u : 0u);
+      ok &= cep_cell_put_uint64(config_cell,
+                                dt_persist_allow_volatile_field(),
+                                policy->allow_volatile_reads ? 1u : 0u);
+    }
+    uint64_t schedule_bt = (controller->flush_scheduled_bt == CEP_BEAT_INVALID)
+                             ? 0u
+                             : (uint64_t)controller->flush_scheduled_bt;
+    ok &= cep_cell_put_uint64(config_cell,
+                              dt_persist_schedule_bt_field(),
+                              schedule_bt);
   }
 
   return ok;
@@ -351,6 +415,61 @@ cps_storage_publish_branch_state(cepBranchController* controller,
     cps_storage_emit_cei(dt_cps_storage_sev_warn(),
                          "persist metrics publish failed");
   }
+}
+
+static const char*
+cps_storage_policy_mode_label(cepBranchPersistMode mode)
+{
+  switch (mode) {
+    case CEP_BRANCH_PERSIST_VOLATILE:
+      return "volatile";
+    case CEP_BRANCH_PERSIST_COMMIT_ONCE:
+      return "commit_once";
+    case CEP_BRANCH_PERSIST_LAZY_LOAD:
+      return "lazy_load";
+    case CEP_BRANCH_PERSIST_LAZY_SAVE:
+      return "lazy_save";
+    case CEP_BRANCH_PERSIST_SCHEDULED_SAVE:
+      return "scheduled";
+    case CEP_BRANCH_PERSIST_ON_DEMAND:
+      return "on_demand";
+    case CEP_BRANCH_PERSIST_DURABLE:
+    default:
+      return "durable";
+  }
+}
+
+static const char*
+cps_storage_flush_cause_label(cepBranchFlushCause cause)
+{
+  switch (cause) {
+    case CEP_BRANCH_FLUSH_CAUSE_MANUAL:
+      return "manual";
+    case CEP_BRANCH_FLUSH_CAUSE_SCHEDULED:
+      return "scheduled";
+    case CEP_BRANCH_FLUSH_CAUSE_AUTOMATIC:
+      return "automatic";
+    default:
+      return "unknown";
+  }
+}
+
+static const char*
+cps_storage_branch_label(const cepBranchController* controller,
+                         char* buffer,
+                         size_t capacity)
+{
+  if (!controller || !buffer || capacity == 0u) {
+    return "<unknown>";
+  }
+  const cepDT* dt = &controller->branch_dt;
+  unsigned long long domain = dt ? (unsigned long long)cep_id(dt->domain) : 0ull;
+  unsigned long long tag = dt ? (unsigned long long)cep_id(dt->tag) : 0ull;
+  int written = snprintf(buffer, capacity, "%016llx/%016llx", domain, tag);
+  if (written < 0) {
+    buffer[0] = '\0';
+  }
+  return buffer;
 }
 
 static bool cps_storage_path_exists(const char *path) {
@@ -1290,6 +1409,9 @@ typedef struct {
 typedef struct {
   cepBranchController* controller;
   cepFlatBranchFrameInfo frame_info;
+  cepBranchFlushCause reason;
+  bool clear_force_request;
+  bool clear_schedule_request;
 } cpsBranchFrameRequest;
 
 static bool
@@ -1328,13 +1450,6 @@ cps_storage_clear_dirty_flags_for_root(cepCell* root)
                                    NULL,
                                    NULL,
                                    &entry);
-}
-
-static void
-cps_storage_clear_data_dirty_flags(void)
-{
-  cepCell* data_root = cep_heartbeat_data_root();
-  cps_storage_clear_dirty_flags_for_root(data_root);
 }
 
 static void
@@ -1579,13 +1694,17 @@ static bool cps_storage_async_wait_for_commit(cpsStorageAsyncCommitCtx* ctx) {
   return ctx->success;
 }
 
-static void cps_storage_emit_cei(const cepDT *severity, const char *detail) {
-  if (!severity || !detail) {
+static void
+cps_storage_emit_topic_cei(const cepDT* severity,
+                           const char* topic,
+                           const char* detail)
+{
+  if (!severity || !topic || !detail) {
     return;
   }
   cepCeiRequest req = {
     .severity = *severity,
-    .topic = k_cps_topic_storage_commit,
+    .topic = topic,
     .topic_len = 0u,
     .topic_intern = true,
     .note = detail,
@@ -1596,6 +1715,12 @@ static void cps_storage_emit_cei(const cepDT *severity, const char *detail) {
     .ttl_forever = true,
   };
   (void)cep_cei_emit(&req);
+}
+
+static void
+cps_storage_emit_cei(const cepDT *severity, const char *detail)
+{
+  cps_storage_emit_topic_cei(severity, k_cps_topic_storage_commit, detail);
 }
 
 static void cps_storage_emit_async_cei(const char *detail) {
@@ -1726,11 +1851,17 @@ cps_storage_branch_requests_append(cpsBranchFrameRequest** requests,
 }
 
 static bool
-cps_storage_emit_frame_for_cell(cepCell* target,
-                                const cepFlatBranchFrameInfo* branch_info,
-                                cps_engine* engine)
+cps_storage_emit_branch_frame(cepCell* target,
+                              const cepFlatBranchFrameInfo* branch_info,
+                              cps_engine* engine)
 {
   if (!target || !engine || !engine->ops) {
+    return false;
+  }
+
+  if (!branch_info) {
+    cps_storage_emit_cei(dt_cps_storage_sev_warn(),
+                         "branch frame emission missing metadata");
     return false;
   }
 
@@ -1779,20 +1910,13 @@ cps_storage_emit_frame_for_cell(cepCell* target,
     .completion_ctx = async_commit_ctx,
   };
 
-  bool emitted = branch_info
-      ? cep_flat_stream_emit_branch_async(resolved,
-                                          branch_info,
-                                          NULL,
-                                          cps_storage_reader_sink,
-                                          &sink,
-                                          CEP_FLAT_STREAM_DEFAULT_BLOB_PAYLOAD,
-                                          &stream_stats)
-      : cep_flat_stream_emit_cell_async(resolved,
-                                        NULL,
-                                        cps_storage_reader_sink,
-                                        &sink,
-                                        CEP_FLAT_STREAM_DEFAULT_BLOB_PAYLOAD,
-                                        &stream_stats);
+  bool emitted = cep_flat_stream_emit_branch_async(resolved,
+                                                   branch_info,
+                                                   NULL,
+                                                   cps_storage_reader_sink,
+                                                   &sink,
+                                                   CEP_FLAT_STREAM_DEFAULT_BLOB_PAYLOAD,
+                                                   &stream_stats);
   if (!emitted) {
     cps_storage_emit_cei(dt_cps_storage_sev_crit(), "serializer frame emit/parse failed");
     cps_storage_async_mark_failed(async_commit_ctx,
@@ -1877,15 +2001,43 @@ cps_storage_commit_branch_requests(cpsBranchFrameRequest* requests,
     if (!request || !request->controller || !request->controller->branch_root) {
       return false;
     }
-    if (!cps_storage_emit_frame_for_cell(request->controller->branch_root,
-                                         &request->frame_info,
-                                         engine)) {
+    char branch_label[64];
+    const char* branch_str = cps_storage_branch_label(request->controller,
+                                                      branch_label,
+                                                      sizeof branch_label);
+    char note[192];
+    const char* cause_label = cps_storage_flush_cause_label(request->reason);
+    snprintf(note,
+             sizeof note,
+             "branch=%s cause=%s frame=%llu",
+             branch_str ? branch_str : "<unknown>",
+             cause_label ? cause_label : "unknown",
+             (unsigned long long)request->frame_info.frame_id);
+    cps_storage_emit_topic_cei(dt_cps_storage_sev_info(),
+                               k_cps_topic_branch_flush_begin,
+                               note);
+    if (!cps_storage_emit_branch_frame(request->controller->branch_root,
+                                       &request->frame_info,
+                                       engine)) {
+      cps_storage_emit_topic_cei(dt_cps_storage_sev_warn(),
+                                 k_cps_topic_branch_flush_fail,
+                                 note);
       return false;
     }
     request->controller->last_frame_id = (cepOpCount)request->frame_info.frame_id;
     request->controller->last_persisted_bt = cep_beat_index();
+    request->controller->last_flush_cause = request->reason;
+    if (request->clear_force_request) {
+      request->controller->force_flush = false;
+    }
+    if (request->clear_schedule_request) {
+      request->controller->flush_scheduled_bt = CEP_BEAT_INVALID;
+    }
     cps_storage_clear_branch_dirty_flags(request->controller);
     cps_storage_publish_branch_state(request->controller, engine);
+    cps_storage_emit_topic_cei(dt_cps_storage_sev_info(),
+                               k_cps_topic_branch_flush_done,
+                               note);
   }
   return true;
 }
@@ -2023,6 +2175,99 @@ static bool cps_storage_parse_branch(const char *target, char *out, size_t out_l
   }
   memcpy(out, cursor, span);
   out[span] = '\0';
+  return true;
+}
+
+static cepBranchController*
+cps_storage_find_controller_by_name(const char* branch_name)
+{
+  const char* effective = (branch_name && branch_name[0] != '\0')
+                            ? branch_name
+                            : cps_storage_active_branch();
+  if (!effective || effective[0] == '\0') {
+    return NULL;
+  }
+  cepBranchControllerRegistry* registry = cep_runtime_branch_registry(NULL);
+  if (!registry) {
+    return NULL;
+  }
+  cepDT branch_dt = cep_ops_make_dt(effective);
+  return cep_branch_registry_find_by_dt(registry, &branch_dt);
+}
+
+static bool
+cps_storage_read_beats_field(cepCell* envelope, uint64_t* beats_out)
+{
+  if (!beats_out) {
+    return false;
+  }
+  const char* text = cps_storage_read_text_field(envelope, dt_branch_beats_field());
+  if (!text || text[0] == '\0') {
+    *beats_out = 1u;
+    return true;
+  }
+  errno = 0;
+  char* end = NULL;
+  unsigned long long parsed = strtoull(text, &end, 10);
+  if (errno != 0 || !end || *end != '\0') {
+    return false;
+  }
+  *beats_out = parsed;
+  return true;
+}
+
+static bool
+cps_storage_branch_should_flush(cepBranchController* controller,
+                                cepBeatNumber current_beat,
+                                cepBranchFlushCause* cause_out,
+                                bool* clear_schedule_out,
+                                bool* clear_force_out)
+{
+  if (!controller) {
+    return false;
+  }
+  if (!controller->dirty_entry_count && !controller->pending_mutations) {
+    return false;
+  }
+  cepBeatNumber reference = (current_beat == CEP_BEAT_INVALID) ? 0u : current_beat;
+  bool scheduled = false;
+  if (controller->flush_scheduled_bt != CEP_BEAT_INVALID) {
+    scheduled = controller->flush_scheduled_bt <= reference;
+  }
+  bool forced = controller->force_flush;
+  const cepBranchPersistPolicy* policy = cep_branch_controller_policy(controller);
+  cepBranchPersistMode mode = policy ? policy->mode : CEP_BRANCH_PERSIST_DURABLE;
+  bool should_flush = true;
+  switch (mode) {
+    case CEP_BRANCH_PERSIST_VOLATILE:
+      should_flush = false;
+      break;
+    case CEP_BRANCH_PERSIST_ON_DEMAND:
+    case CEP_BRANCH_PERSIST_SCHEDULED_SAVE:
+      should_flush = scheduled || forced;
+      break;
+    default:
+      should_flush = true;
+      break;
+  }
+  if (!should_flush) {
+    return false;
+  }
+  if (clear_schedule_out) {
+    *clear_schedule_out = scheduled;
+  }
+  if (clear_force_out) {
+    *clear_force_out = forced;
+  }
+  if (cause_out) {
+    if (forced) {
+      *cause_out = CEP_BRANCH_FLUSH_CAUSE_MANUAL;
+    } else if (scheduled) {
+      *cause_out = CEP_BRANCH_FLUSH_CAUSE_SCHEDULED;
+    } else {
+      *cause_out = CEP_BRANCH_FLUSH_CAUSE_AUTOMATIC;
+    }
+  }
   return true;
 }
 
@@ -2206,6 +2451,85 @@ static bool cps_storage_run_import_op(cepOID oid, const char *branch, const char
   return true;
 }
 
+static bool
+cps_storage_run_branch_flush_op(cepOID oid, const char* branch_name)
+{
+  cepBranchController* controller = cps_storage_find_controller_by_name(branch_name);
+  if (!controller) {
+    cps_storage_fail_operation(oid, "branch flush", branch_name, CPS_ERR_INVALID_ARGUMENT, "branch missing");
+    return false;
+  }
+  controller->force_flush = true;
+  char label[64];
+  const char* branch_label = cps_storage_branch_label(controller, label, sizeof label);
+  char summary[128];
+  snprintf(summary,
+           sizeof summary,
+           "branch=%s flush queued",
+           branch_label ? branch_label : "<unknown>");
+  cps_storage_complete_success(oid, "branch flush", summary);
+  return true;
+}
+
+static bool
+cps_storage_run_branch_schedule_op(cepOID oid,
+                                   const char* branch_name,
+                                   cepCell* envelope)
+{
+  cepBranchController* controller = cps_storage_find_controller_by_name(branch_name);
+  if (!controller) {
+    cps_storage_fail_operation(oid, "branch schedule", branch_name, CPS_ERR_INVALID_ARGUMENT, "branch missing");
+    return false;
+  }
+  uint64_t beats = 1u;
+  if (!cps_storage_read_beats_field(envelope, &beats)) {
+    cps_storage_fail_operation(oid, "branch schedule", branch_name, CPS_ERR_INVALID_ARGUMENT, "beats parse failed");
+    return false;
+  }
+  cepBeatNumber current = cep_beat_index();
+  uint64_t base = (current == CEP_BEAT_INVALID) ? 0u : (uint64_t)current;
+  uint64_t target = (beats > (UINT64_MAX - base)) ? UINT64_MAX : (base + beats);
+  controller->flush_scheduled_bt = (cepBeatNumber)target;
+  controller->force_flush = false;
+  controller->policy.mode = CEP_BRANCH_PERSIST_SCHEDULED_SAVE;
+  char label[64];
+  const char* branch_label = cps_storage_branch_label(controller, label, sizeof label);
+  char summary[192];
+  snprintf(summary,
+           sizeof summary,
+           "branch=%s schedule_bt=%llu beats=%llu",
+           branch_label ? branch_label : "<unknown>",
+           (unsigned long long)controller->flush_scheduled_bt,
+           (unsigned long long)beats);
+  cps_storage_complete_success(oid, "branch schedule", summary);
+  return true;
+}
+
+static bool
+cps_storage_run_branch_defer_op(cepOID oid, const char* branch_name)
+{
+  cepBranchController* controller = cps_storage_find_controller_by_name(branch_name);
+  if (!controller) {
+    cps_storage_fail_operation(oid, "branch defer", branch_name, CPS_ERR_INVALID_ARGUMENT, "branch missing");
+    return false;
+  }
+  controller->policy.mode = CEP_BRANCH_PERSIST_ON_DEMAND;
+  controller->flush_scheduled_bt = CEP_BEAT_INVALID;
+  controller->force_flush = false;
+  char label[64];
+  const char* branch_label = cps_storage_branch_label(controller, label, sizeof label);
+  char summary[160];
+  snprintf(summary,
+           sizeof summary,
+           "branch=%s deferred",
+           branch_label ? branch_label : "<unknown>");
+  cps_storage_emit_topic_cei(dt_cps_storage_sev_info(),
+                             k_cps_topic_branch_defer,
+                             summary);
+  cps_storage_complete_success(oid, "branch defer", summary);
+  return true;
+}
+
 static bool cps_storage_state_allows_execution(cepCell *op) {
   cepDT state = {0};
   if (!cps_storage_read_dt_field(op, dt_state_field_cps(), &state)) {
@@ -2253,7 +2577,11 @@ static void cps_storage_handle_op(cepCell *op) {
   bool is_compact = (cep_dt_compare(&verb, dt_op_compact_dt()) == 0);
   bool is_sync = (cep_dt_compare(&verb, dt_op_sync_dt()) == 0);
   bool is_import = (cep_dt_compare(&verb, dt_op_import_dt()) == 0);
-  if (!is_checkpoint && !is_compact && !is_sync && !is_import) {
+  bool is_branch_flush = (cep_dt_compare(&verb, dt_op_branch_flush_dt()) == 0);
+  bool is_branch_schedule = (cep_dt_compare(&verb, dt_op_branch_schedule_dt()) == 0);
+  bool is_branch_defer = (cep_dt_compare(&verb, dt_op_branch_defer_dt()) == 0);
+  if (!is_checkpoint && !is_compact && !is_sync && !is_import &&
+      !is_branch_flush && !is_branch_schedule && !is_branch_defer) {
     return;
   }
 
@@ -2289,6 +2617,18 @@ static void cps_storage_handle_op(cepCell *op) {
     }
     if (cps_storage_mark_state(oid, dt_ist_exec_dt(), "processing", 0)) {
       (void)cps_storage_run_import_op(oid, branch_buf, bundle_path);
+    }
+  } else if (cep_dt_compare(&verb, dt_op_branch_flush_dt()) == 0) {
+    if (cps_storage_mark_state(oid, dt_ist_exec_dt(), "processing", 0)) {
+      (void)cps_storage_run_branch_flush_op(oid, branch_buf);
+    }
+  } else if (cep_dt_compare(&verb, dt_op_branch_schedule_dt()) == 0) {
+    if (cps_storage_mark_state(oid, dt_ist_exec_dt(), "processing", 0)) {
+      (void)cps_storage_run_branch_schedule_op(oid, branch_buf, envelope);
+    }
+  } else if (cep_dt_compare(&verb, dt_op_branch_defer_dt()) == 0) {
+    if (cps_storage_mark_state(oid, dt_ist_exec_dt(), "processing", 0)) {
+      (void)cps_storage_run_branch_defer_op(oid, branch_buf);
     }
   }
 }
@@ -2360,81 +2700,67 @@ bool cps_storage_commit_current_beat(void) {
   }
 
   cepBranchControllerRegistry* branch_registry = cep_runtime_branch_registry(NULL);
+  if (!branch_registry) {
+    cps_storage_emit_cei(dt_cps_storage_sev_warn(),
+                         "branch registry unavailable for persistence");
+    return false;
+  }
 
   cps_engine *engine = cps_runtime_engine();
   if (!engine || !engine->ops) {
     return false;
   }
 
-  cepCell *root = cep_root();
-  if (!root) {
-    cps_storage_emit_cei(dt_cps_storage_sev_warn(), "root cell missing during persistence");
-    return false;
-  }
+  cepBeatNumber current_beat = cep_beat_index();
 
-  bool ok = false;
-  bool dispatched_branch_frames = false;
+  bool ok = true;
   cpsBranchFrameRequest* requests = NULL;
   size_t request_count = 0u;
   size_t request_capacity = 0u;
 
-  if (branch_registry) {
-    size_t controller_count = cep_branch_registry_count(branch_registry);
-    for (size_t i = 0; i < controller_count; ++i) {
-      cepBranchController* controller = cep_branch_registry_controller(branch_registry, i);
-      if (!controller || !controller->branch_root) {
-        continue;
-      }
-      if (!controller->dirty_entry_count && !controller->pending_mutations) {
-        continue;
-      }
-      cepFlatBranchFrameInfo frame_info = {
-        .branch_domain = controller->branch_dt.domain,
-        .branch_tag = controller->branch_dt.tag,
-        .branch_glob = controller->branch_dt.glob ? 1u : 0u,
-        .frame_id = controller->last_frame_id ? (controller->last_frame_id + 1u) : 1u,
-      };
-      cpsBranchFrameRequest request = {
-        .controller = controller,
-        .frame_info = frame_info,
-      };
-      if (!cps_storage_branch_requests_append(&requests,
-                                              &request_count,
-                                              &request_capacity,
-                                              &request)) {
-        free(requests);
-        return false;
-      }
+  size_t controller_count = cep_branch_registry_count(branch_registry);
+  for (size_t i = 0; i < controller_count; ++i) {
+    cepBranchController* controller = cep_branch_registry_controller(branch_registry, i);
+    if (!controller || !controller->branch_root) {
+      continue;
     }
-    if (request_count > 0u) {
-      dispatched_branch_frames = true;
-      ok = cps_storage_commit_branch_requests(requests, request_count, engine);
+    cepBranchFlushCause reason = CEP_BRANCH_FLUSH_CAUSE_UNKNOWN;
+    bool clear_schedule = false;
+    bool clear_force = false;
+    if (!cps_storage_branch_should_flush(controller,
+                                         current_beat,
+                                         &reason,
+                                         &clear_schedule,
+                                         &clear_force)) {
+      continue;
     }
+    cepFlatBranchFrameInfo frame_info = {
+      .branch_domain = controller->branch_dt.domain,
+      .branch_tag = controller->branch_dt.tag,
+      .branch_glob = controller->branch_dt.glob ? 1u : 0u,
+      .frame_id = controller->last_frame_id ? (controller->last_frame_id + 1u) : 1u,
+    };
+    cpsBranchFrameRequest request = {
+      .controller = controller,
+      .frame_info = frame_info,
+      .reason = reason,
+      .clear_force_request = clear_force,
+      .clear_schedule_request = clear_schedule,
+    };
+    if (!cps_storage_branch_requests_append(&requests,
+                                            &request_count,
+                                            &request_capacity,
+                                            &request)) {
+      free(requests);
+      return false;
+    }
+  }
+
+  if (request_count > 0u) {
+    ok = cps_storage_commit_branch_requests(requests, request_count, engine);
   }
 
   free(requests);
-
-  if (dispatched_branch_frames) {
-    if (ok) {
-      cps_storage_clear_data_dirty_flags();
-    }
-  } else {
-    if (!root) {
-      cps_storage_emit_cei(dt_cps_storage_sev_warn(), "root cell missing during persistence");
-      return false;
-    }
-    ok = cps_storage_emit_frame_for_cell(root, NULL, engine);
-    if (ok && branch_registry) {
-      cps_storage_clear_data_dirty_flags();
-      size_t controller_count = cep_branch_registry_count(branch_registry);
-      for (size_t i = 0; i < controller_count; ++i) {
-        cepBranchController* controller = cep_branch_registry_controller(branch_registry, i);
-        if (controller) {
-          cep_branch_controller_clear_dirty(controller);
-        }
-      }
-    }
-  }
 
   cps_storage_process_ops();
   return ok;

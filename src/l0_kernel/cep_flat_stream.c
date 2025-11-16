@@ -5284,23 +5284,6 @@ cep_flat_stream_emit_cell_async_impl(const cepCell* cell,
 }
 
 bool
-cep_flat_stream_emit_cell_async(const cepCell* cell,
-                                const cepSerializationHeader* header,
-                                cepSerializationWriteFn write,
-                                void* context,
-                                size_t blob_payload_bytes,
-                                cepFlatStreamAsyncStats* stats)
-{
-    return cep_flat_stream_emit_cell_async_impl(cell,
-                                                NULL,
-                                                header,
-                                                write,
-                                                context,
-                                                blob_payload_bytes,
-                                                stats);
-}
-
-bool
 cep_flat_stream_emit_branch_async(const cepCell* cell,
                                   const cepFlatBranchFrameInfo* branch_info,
                                   const cepSerializationHeader* header,

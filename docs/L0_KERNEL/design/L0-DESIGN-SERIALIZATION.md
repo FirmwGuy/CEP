@@ -1,7 +1,7 @@
 # L0 Design: Serialization and Replay
 
 ## Nontechnical Summary
-Serialization is Layer 0’s shipping department. It turns a live tree into a stream of self-describing **flat records** so another process—or a later replay—can rebuild the exact same structure, payloads, and proxy states. The same machinery also ingests those records safely, staging them until every piece is present before touching the live tree. The goal: capture history faithfully, handle huge blobs without blocking, and keep proxies deterministic when they cross process boundaries. Federation now consumes these flat frames end-to-end; the transport manager wraps every emit in `cep_fed_transport_manager_send_cell()`, so link/mirror/invoke never see (or rely on) the legacy chunk serializer.
+Serialization is Layer 0’s shipping department. It turns a live tree into a stream of self-describing **flat records** so another process—or a later replay—can rebuild the exact same structure, payloads, and proxy states. The same machinery also ingests those records safely, staging them until every piece is present before touching the live tree. The goal: capture history faithfully, handle huge blobs without blocking, and keep proxies deterministic when they cross process boundaries. Federation now consumes these flat frames end-to-end; the transport manager wraps every emit in `cep_fed_transport_manager_send_cell()` so link/mirror/invoke all run through the same serializer.
 
 ## Decision Record
 - Manifest + payload separation keeps structural metadata small and allows large data blobs to stream with configurable window sizes.
@@ -41,7 +41,7 @@ Serialization is Layer 0’s shipping department. It turns a live tree into a 
 
 ## S2 Upgrade Field Notes
 ### Nontechnical summary
-S2 hardens serialization so manifests carry their own history, readers reject malformed ordering immediately, and leak hunting stays reproducible. Federation adoption is complete: every mount emits/ingests flat frames, and the legacy chunk serializer (and its override hook) have been retired entirely. Think of this section as the field guide: it lists the hot code paths, the gaps we still need to close, and the guardrails that keep replay deterministic.
+S2 hardens serialization so manifests carry their own history, readers reject malformed ordering immediately, and leak hunting stays reproducible. Federation adoption is complete: every mount emits/ingests flat frames. Think of this section as the field guide: it lists the hot code paths, the gaps we still need to close, and the guardrails that keep replay deterministic.
 
 ### Technical details
 - **Entry points worth bookmarking.**

@@ -131,12 +131,6 @@ bool cep_serialization_emit_cell(const cepCell* cell,
                                  void* context,
                                  size_t blob_payload_bytes);
 
-bool cep_flat_stream_emit_cell_async(const cepCell* cell,
-                                     const cepSerializationHeader* header,
-                                     cepSerializationWriteFn write,
-                                     void* context,
-                                     size_t blob_payload_bytes,
-                                     cepFlatStreamAsyncStats* stats);
 bool cep_flat_stream_emit_branch_async(const cepCell* cell,
                                        const cepFlatBranchFrameInfo* branch_info,
                                        const cepSerializationHeader* header,

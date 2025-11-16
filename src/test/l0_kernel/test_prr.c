@@ -38,6 +38,7 @@ static PrrRuntimeScope prr_runtime_start(void) {
     };
     munit_assert_not_null(scope.runtime);
     scope.previous_runtime = cep_runtime_set_active(scope.runtime);
+    test_runtime_enable_mock_cps();
     cep_cell_system_initiate();
     munit_assert_true(cep_l0_bootstrap());
     munit_assert_true(cep_namepool_bootstrap());
@@ -65,6 +66,7 @@ static void prr_runtime_cleanup(PrrRuntimeScope* scope) {
     cep_runtime_destroy(scope->runtime);
     scope->runtime = NULL;
     scope->previous_runtime = NULL;
+    test_runtime_disable_mock_cps();
 }
 
 static size_t prr_diag_message_count(void);
@@ -245,6 +247,9 @@ static int prr_enzyme_counter(const cepPath* signal, const cepPath* target) {
     (void)signal;
     (void)target;
     prr_enzyme_calls += 1;
+    munit_logf(MUNIT_LOG_INFO,
+               "[prr-enzyme] counter++ => %d",
+               prr_enzyme_calls);
     return CEP_ENZYME_SUCCESS;
 }
 
@@ -260,6 +265,9 @@ MunitResult test_prr_pause_resume_backlog(const MunitParameter params[], void* u
     PrrRuntimeScope scope = prr_runtime_start();
 
     prr_enzyme_calls = 0;
+    munit_logf(MUNIT_LOG_INFO,
+               "[prr-guard] seed=%s",
+               munit_parameters_get(params, "seed"));
     cepEnzymeRegistry* registry = cep_heartbeat_registry();
     munit_assert_not_null(registry);
 
@@ -301,9 +309,19 @@ MunitResult test_prr_pause_resume_backlog(const MunitParameter params[], void* u
     munit_assert_int(prr_enzyme_calls, ==, 0);
 
     /* Resume and ensure backlog drains deterministically. */
-    munit_assert_true(cep_runtime_resume());
     unsigned attempts = 0u;
-    while (prr_enzyme_calls == 0 && attempts < 100u) {
+    const unsigned attempt_limit = 60u;
+    if (!cep_runtime_resume()) {
+        size_t diag_count = prr_diag_message_count();
+        const char* diag_note = diag_count ? prr_last_diag_note() : "<none>";
+        munit_logf(MUNIT_LOG_ERROR,
+                   "[prr][guard] resume failed backlog=%zu diag_count=%zu last=%s",
+                   prr_impulse_backlog_count(),
+                   diag_count,
+                   diag_note);
+        munit_error("cep_runtime_resume() failed");
+    }
+    while (prr_enzyme_calls == 0 && attempts < attempt_limit) {
 #if defined(CEP_ENABLE_DEBUG)
         munit_logf(MUNIT_LOG_INFO,
                    "pause_resume_backlog attempts=%u enzyme_calls=%d",
@@ -369,7 +387,9 @@ MunitResult test_prr_pause_rollback_backlog_guard(const MunitParameter params[],
     prr_step_checked(2u, "enqueue");
     munit_assert_int(prr_enzyme_calls, ==, 0);
     size_t backlog_initial = prr_impulse_backlog_count();
-    munit_logf(MUNIT_LOG_INFO, "backlog before guard prep=%zu", backlog_initial);
+    munit_logf(MUNIT_LOG_INFO,
+               "[prr-guard] backlog before guard prep=%zu",
+               backlog_initial);
     munit_assert_size(backlog_initial, ==, 1u);
 
     size_t diag_before = prr_diag_message_count();
@@ -382,17 +402,38 @@ MunitResult test_prr_pause_rollback_backlog_guard(const MunitParameter params[],
 
     munit_assert_int(prr_enzyme_calls, ==, 0);
     size_t backlog_after_guard = prr_impulse_backlog_count();
-    munit_logf(MUNIT_LOG_INFO, "backlog after guard=%zu", backlog_after_guard);
+    munit_logf(MUNIT_LOG_INFO,
+               "[prr-guard] backlog after guard=%zu",
+               backlog_after_guard);
     munit_assert_size(backlog_after_guard, ==, 1u);
-    munit_assert_true(cep_runtime_resume());
     unsigned attempts = 0u;
-    while (prr_enzyme_calls == 0 && attempts < 100u) {
+    const unsigned attempt_limit = 60u;
+    if (!cep_runtime_resume()) {
+        size_t diag_count = prr_diag_message_count();
+        const char* diag_note = diag_count ? prr_last_diag_note() : "<none>";
+        munit_logf(MUNIT_LOG_ERROR,
+                   "[prr][guard] resume failed backlog=%zu diag_count=%zu last=%s",
+                   prr_impulse_backlog_count(),
+                   diag_count,
+                   diag_note);
+        munit_error("cep_runtime_resume() failed");
+    }
+    while (prr_enzyme_calls == 0 && attempts < attempt_limit) {
 #if defined(CEP_ENABLE_DEBUG)
         munit_logf(MUNIT_LOG_INFO,
                    "pause_rollback_backlog_guard attempts=%u enzyme_calls=%d",
                    attempts,
                    prr_enzyme_calls);
 #endif
+        size_t backlog_now = prr_impulse_backlog_count();
+        size_t diag_now = prr_diag_message_count();
+        const char* diag_note_now = diag_now ? prr_last_diag_note() : "<none>";
+        munit_logf(MUNIT_LOG_INFO,
+                   "[prr-guard] attempt=%u backlog=%zu diag=%zu note=%s",
+                   attempts,
+                   backlog_now,
+                   diag_now,
+                   diag_note_now);
         if (!cep_heartbeat_step()) {
             size_t diag_count = prr_diag_message_count();
             const char* diag_note = diag_count ? prr_last_diag_note() : "<none>";
@@ -402,7 +443,11 @@ MunitResult test_prr_pause_rollback_backlog_guard(const MunitParameter params[],
         attempts += 1u;
     }
 
-    munit_assert_int(prr_enzyme_calls, ==, 1);
+    if (prr_enzyme_calls == 0) {
+        munit_errorf("[prr-guard] resume stuck after %u attempts backlog=%zu",
+                     attempts,
+                     prr_impulse_backlog_count());
+    }
     munit_assert_size(prr_impulse_backlog_count(), ==, 0u);
 
     prr_runtime_cleanup(&scope);

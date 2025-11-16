@@ -268,35 +268,38 @@ static bool cep_mailbox_counter_claim(cepCell* msgs_root,
         return false;
     }
     *collision = false;
-    uint64_t value = 0u;
-    if (!cep_mailbox_counter_value(runtime, &value, true)) {
-        return false;
-    }
 
-    char slug[32];
-    if (!cep_mailbox_format_decimal(slug, sizeof slug, value)) {
-        return false;
-    }
-    char identifier[40];
-    int written = snprintf(identifier, sizeof identifier, "msg-%s", slug);
-    if (written <= 0 || (size_t)written >= sizeof identifier) {
-        return false;
-    }
+    for (;;) {
+        uint64_t value = 0u;
+        if (!cep_mailbox_counter_value(runtime, &value, true)) {
+            return false;
+        }
 
-    cepDT candidate = {0};
-    candidate.domain = cep_namepool_intern_cstr("CEP");
-    candidate.tag = cep_namepool_intern_cstr(identifier);
-    candidate.glob = 0u;
+        char slug[32];
+        if (!cep_mailbox_format_decimal(slug, sizeof slug, value)) {
+            return false;
+        }
+        char identifier[40];
+        int written = snprintf(identifier, sizeof identifier, "msg-%s", slug);
+        if (written <= 0 || (size_t)written >= sizeof identifier) {
+            return false;
+        }
 
-    if (cep_cell_find_by_name(msgs_root, &candidate)) {
-        *collision = true;
-        return cep_mailbox_counter_claim(msgs_root, runtime, out_id, collision);
+        cepDT candidate = {0};
+        candidate.domain = cep_namepool_intern_cstr("CEP");
+        candidate.tag = cep_namepool_intern_cstr(identifier);
+        candidate.glob = 0u;
+
+        if (cep_cell_find_by_name(msgs_root, &candidate)) {
+            *collision = true;
+            continue;
+        }
+
+        out_id->id = cep_dt_clean(&candidate);
+        out_id->mode = CEP_MAILBOX_ID_COUNTER;
+        out_id->collision_detected = *collision;
+        return true;
     }
-
-    out_id->id = cep_dt_clean(&candidate);
-    out_id->mode = CEP_MAILBOX_ID_COUNTER;
-    out_id->collision_detected = false;
-    return true;
 }
 
 bool cep_mailbox_select_message_id(cepCell* mailbox_root,

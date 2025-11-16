@@ -278,8 +278,10 @@ cep_branch_controller_init(cepBranchController* controller,
     controller->pins = 0u;
     controller->version = 0u;
     controller->last_frame_id = 0u;
+    controller->last_flush_cause = CEP_BRANCH_FLUSH_CAUSE_UNKNOWN;
     controller->registered = false;
     controller->pinned = false;
+    controller->force_flush = false;
     return true;
 }
 
