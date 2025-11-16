@@ -5,6 +5,7 @@
 
 
 #include "cep_heartbeat.h"
+#include "cep_branch_controller.h"
 #include "cep_cei.h"
 #include "cep_heartbeat_internal.h"
 #include "cep_runtime.h"
@@ -4310,6 +4311,12 @@ bool cep_heartbeat_bootstrap(void) {
     }
     if (!cep_cei_diagnostics_mailbox()) {
         CEP_BOOT_FAIL("cei diagnostics mailbox");
+    }
+
+    cepBranchControllerRegistry* branch_registry =
+        cep_runtime_branch_registry(cep_runtime_default());
+    if (branch_registry) {
+        (void)cep_branch_registry_bind_existing_children(branch_registry, data);
     }
 
     cepDT tmp_store = cep_organ_store_dt("tmp");

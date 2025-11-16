@@ -29,6 +29,8 @@ struct cepOrganRegistryState;
 struct cepExecutorRuntimeState;
 struct cepFederationRuntimeState;
 struct cepAsyncRuntimeState;
+typedef struct cepBranchController cepBranchController;
+typedef struct cepBranchControllerRegistry cepBranchControllerRegistry;
 typedef struct {
     bool      wallclock_disabled;
     uint32_t  beat_lookahead;
@@ -88,6 +90,8 @@ struct cepOrganRegistryState* cep_runtime_organ_registry(cepRuntime* runtime);
 struct cepExecutorRuntimeState* cep_runtime_executor_state(cepRuntime* runtime);
 struct cepFederationRuntimeState* cep_runtime_federation_state(cepRuntime* runtime);
 struct cepAsyncRuntimeState* cep_runtime_async_state(cepRuntime* runtime);
+cepBranchControllerRegistry* cep_runtime_branch_registry(cepRuntime* runtime);
+bool           cep_runtime_track_data_branch(cepCell* branch_root);
 bool           cep_runtime_bootstrap_is_done(cepRuntime* runtime);
 void           cep_runtime_bootstrap_mark_done(cepRuntime* runtime, bool done);
 cepRuntime*      cep_runtime_from_root(const struct _cepCell* root);

@@ -27,6 +27,7 @@ typedef struct _cepStore      cepStore;
 typedef struct _cepCell       cepCell;
 typedef struct _cepProxy      cepProxy;
 typedef struct cepCompareInfo cepCompareInfo;
+typedef struct cepBranchController cepBranchController;
 
 cepCell*    cep_root(void);
 
@@ -619,7 +620,8 @@ struct _cepData {
           cepID         writable:   1,  /**< If data can be updated. */
                         lock:       1,  /**< Lock on data content. */
                         binding_released: 1, /**< Adapter release already notified for HANDLE/STREAM payload. */
-                        _reserved:  2,
+                        dirty:      1,  /**< Flag recorded when payload mutated. */
+                        _reserved:  1,
                         glob:       1,  /**< Glob character present. */
                         
                         tag:        CEP_NAME_BITS;
@@ -635,10 +637,10 @@ struct _cepData {
     void*               sec_plaintext;   /**< Scratch plaintext view (if any). */
     size_t              sec_plaintext_size; /**< Size of plaintext view. */
     cepCell*            lockOwner;      /**< Cell that currently holds the payload lock (if any). */
-    struct {
-        CEP_DATA_NODE_MEMBERS;
+        struct {
+            CEP_DATA_NODE_MEMBERS;
+        };
     };
-};
 
 #undef CEP_DATA_NODE_MEMBERS
 
@@ -946,7 +948,8 @@ struct _cepStore {
         struct {
         cepID       writable:   1,              /**< If chidren can be added/deleted. */
                     lock:       1,              /**< Lock on children operations. */
-                    _reserved:  3,
+                    dirty:      1,              /**< Flag recorded when structure mutated. */
+                    _reserved:  2,
                     glob:       1,              /**< Glob character present. */
 
                     tag:        CEP_NAME_BITS;

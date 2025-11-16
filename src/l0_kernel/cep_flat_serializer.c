@@ -18,6 +18,7 @@
 #include <sodium.h>
 
 #define CEP_FLAT_MAGIC UINT32_C(0x43455046)
+#define CEP_FLAT_BRANCH_METADATA_BYTES (1u + sizeof(uint64_t) * 3u)
 
 typedef struct {
     uint8_t* data;
@@ -414,6 +415,11 @@ bool cep_flat_serializer_begin(cepFlatSerializer* serializer, const cepFlatFrame
     serializer->config.checksum_algorithm = config ? config->checksum_algorithm : CEP_FLAT_CHECKSUM_CRC32;
     serializer->config.payload_history_beats = config ? config->payload_history_beats : 0u;
     serializer->config.manifest_history_beats = config ? config->manifest_history_beats : 0u;
+    serializer->config.branch_info_present = config ? config->branch_info_present : false;
+    serializer->config.branch_glob = config ? config->branch_glob : 0u;
+    serializer->config.branch_domain = config ? config->branch_domain : 0u;
+    serializer->config.branch_tag = config ? config->branch_tag : 0u;
+    serializer->config.branch_frame_id = config ? config->branch_frame_id : 0u;
 
     if (serializer->config.hash_algorithm != CEP_FLAT_HASH_BLAKE3_256)
         return false;
@@ -885,7 +891,23 @@ static bool cep_flat_emit_trailer(cepFlatSerializer* serializer,
     APPEND_VARINT(serializer->config.manifest_history_beats);
 
     uint32_t caps = serializer->config.capability_flags;
+    if (serializer->config.branch_info_present)
+        caps |= CEP_FLAT_CAP_BRANCH_METADATA;
     APPEND_BYTES(&caps, sizeof caps);
+    if (serializer->config.branch_info_present) {
+        uint8_t branch_payload[CEP_FLAT_BRANCH_METADATA_BYTES];
+        uint8_t* branch_cursor = branch_payload;
+        *branch_cursor++ = serializer->config.branch_glob ? 1u : 0u;
+        memcpy(branch_cursor, &serializer->config.branch_domain, sizeof serializer->config.branch_domain);
+        branch_cursor += sizeof serializer->config.branch_domain;
+        memcpy(branch_cursor, &serializer->config.branch_tag, sizeof serializer->config.branch_tag);
+        branch_cursor += sizeof serializer->config.branch_tag;
+        memcpy(branch_cursor, &serializer->config.branch_frame_id, sizeof serializer->config.branch_frame_id);
+        branch_cursor += sizeof serializer->config.branch_frame_id;
+        size_t branch_len = (size_t)(branch_cursor - branch_payload);
+        APPEND_VARINT(branch_len);
+        APPEND_BYTES(branch_payload, branch_len);
+    }
 
 #undef APPEND_BYTES
 #undef APPEND_U8
@@ -1333,6 +1355,31 @@ static bool cep_flat_reader_parse_trailer(cepFlatReader* reader, const uint8_t* 
     uint32_t caps = 0u;
     memcpy(&caps, body + offset, sizeof caps);
     offset += sizeof caps;
+
+    reader->frame.branch_info_present = false;
+    reader->frame.branch_domain = 0u;
+    reader->frame.branch_tag = 0u;
+    reader->frame.branch_glob = 0u;
+    reader->frame.branch_frame_id = 0u;
+    if ((caps & CEP_FLAT_CAP_BRANCH_METADATA) != 0u) {
+        uint64_t branch_len = 0u;
+        if (!cep_flat_read_varint(body, body_size, &offset, &branch_len))
+            return false;
+        if (branch_len != CEP_FLAT_BRANCH_METADATA_BYTES)
+            return false;
+        if (body_size - offset < branch_len)
+            return false;
+        const uint8_t* branch_ptr = body + offset;
+        offset += (size_t)branch_len;
+        reader->frame.branch_info_present = true;
+        reader->frame.branch_glob = branch_ptr[0];
+        branch_ptr += 1u;
+        memcpy(&reader->frame.branch_domain, branch_ptr, sizeof reader->frame.branch_domain);
+        branch_ptr += sizeof reader->frame.branch_domain;
+        memcpy(&reader->frame.branch_tag, branch_ptr, sizeof reader->frame.branch_tag);
+        branch_ptr += sizeof reader->frame.branch_tag;
+        memcpy(&reader->frame.branch_frame_id, branch_ptr, sizeof reader->frame.branch_frame_id);
+    }
 
     if (offset != body_size)
         return false;

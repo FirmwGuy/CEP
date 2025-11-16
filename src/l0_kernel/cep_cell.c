@@ -7,6 +7,8 @@
 #include "cep_cell.h"
 #include "cep_cei.h"
 #include "cep_heartbeat.h"
+#include "cep_branch_controller.h"
+#include "cep_runtime.h"
 #include "cep_executor.h"
 #include "cep_namepool.h"
 #include "cep_ops.h"
@@ -18,6 +20,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+
+static void cep_store_mark_dirty(cepStore* store);
+static void cep_data_mark_dirty(cepCell* owner, cepData* data);
+static void cep_cell_maybe_register_data_branch(cepStore* parent_store, cepCell* inserted);
 
 typedef struct _cepStoreHistoryEntry cepStoreHistoryEntry;
 typedef struct _cepStoreHistory      cepStoreHistory;
@@ -978,6 +984,7 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
     data->modified  = timestamp;
     data->hash      = cep_data_compute_hash(data);
     data->bindings  = NULL;
+    data->dirty = 0u;
 
     CEP_PTR_SEC_SET(dataloc, address);
 
@@ -2409,6 +2416,9 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
 
     if (node) {
         cep_cell_content_hash(node);
+        if (node->data) {
+            cep_data_mark_dirty(node, node->data);
+        }
     }
 
     if (restore_writable) {
@@ -3106,6 +3116,7 @@ cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...) {
     store->totCount = 0;
     store->lock     = 0u;
     store->lockOwner = NULL;
+    store->dirty = 0u;
 
     cepOpCount timestamp = cep_cell_timestamp_next();
     store->created  = timestamp;
@@ -3262,6 +3273,10 @@ void cep_store_delete_children_hard(cepStore* store) {
 
     if (had_children)
         store->modified = cep_cell_timestamp_next();
+
+    if (had_children) {
+        cep_store_mark_dirty(store);
+    }
 }
 
 
@@ -3513,7 +3528,15 @@ cepCell* cep_store_add_child(cepStore* store, uintptr_t context, cepCell* child)
 #ifndef NDEBUG
     (void)context;
     if (store->storage == CEP_STORAGE_LINKED_LIST) {
-        assert(list_validate((cepList*)store));
+        cepList* list = (cepList*)store;
+        if (list->head && !list->tail) {
+            cepListNode* tail = list->head;
+            while (tail->next) {
+                tail = tail->next;
+            }
+            list->tail = tail;
+        }
+        assert(list_validate(list));
     }
 #endif
 
@@ -4948,6 +4971,8 @@ static inline void store_to_dictionary(cepStore* store) {
         break;
       }
     }
+
+    cep_store_mark_dirty(store);
 }
 
 
@@ -5006,6 +5031,8 @@ static inline void store_sort(cepStore* store, cepCompare compare, void* context
         break;
       }
     }
+
+    cep_store_mark_dirty(store);
 }
 
 
@@ -5057,6 +5084,7 @@ static inline bool store_take_cell(cepStore* store, cepCell* target) {
     store->chdCount--;
     store->modified = cep_cell_timestamp_next();   // Hard path still logs via timestamp only.
 
+    cep_store_mark_dirty(store);
     return true;
 }
 
@@ -5108,6 +5136,7 @@ static inline bool store_pop_child(cepStore* store, cepCell* target) {
     store->chdCount--;
     store->modified = cep_cell_timestamp_next();   // Hard path still logs via timestamp only.
 
+    cep_store_mark_dirty(store);
     return true;
 }
 
@@ -5178,6 +5207,8 @@ static inline void store_remove_child(cepStore* store, cepCell* cell, cepCell* t
 
     store->chdCount--;
     store->modified = cep_cell_timestamp_next();   // Even for GC deletes we only rely on timestamps.
+
+    cep_store_mark_dirty(store);
 }
 
 
@@ -5579,6 +5610,133 @@ void cep_cell_finalize_hard(cepCell* cell) {
    mechanics. Behaviour constraints described in
    docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md.
 */
+static cepBranchController* cep_cell_lookup_branch_controller(const cepCell* cell);
+static bool cep_cell_is_under_data_branch(const cepCell* cell);
+
+static void
+cep_store_mark_dirty(cepStore* store)
+{
+    if (!store) {
+        return;
+    }
+    if (!cep_cell_is_under_data_branch(store->owner)) {
+        return;
+    }
+    if (store->dirty) {
+        return;
+    }
+    store->dirty = 1u;
+    cepBranchController* controller =
+        cep_cell_lookup_branch_controller(store->owner);
+    if (!controller) {
+        return;
+    }
+    (void)cep_branch_controller_mark_dirty(controller,
+                                           store->owner,
+                                           CEP_BRANCH_DIRTY_FLAG_STORE);
+}
+
+static void
+cep_data_mark_dirty(cepCell* owner, cepData* data)
+{
+    if (!owner || !data) {
+        return;
+    }
+    if (!cep_cell_is_under_data_branch(owner)) {
+        return;
+    }
+    if (data->dirty) {
+        return;
+    }
+    data->dirty = 1u;
+    cepBranchController* controller =
+        cep_cell_lookup_branch_controller(owner);
+    if (!controller) {
+        return;
+    }
+    (void)cep_branch_controller_mark_dirty(controller, owner, CEP_BRANCH_DIRTY_FLAG_DATA);
+}
+
+static void
+cep_cell_maybe_register_data_branch(cepStore* parent_store, cepCell* inserted)
+{
+    if (!parent_store || !inserted) {
+        return;
+    }
+    cepCell* parent_cell = parent_store->owner;
+    if (!parent_cell) {
+        return;
+    }
+    cepCell* data_root = cep_heartbeat_data_root();
+    if (!data_root || parent_cell != data_root) {
+        return;
+    }
+    if (!inserted->store || inserted->store->indexing != CEP_INDEX_BY_NAME) {
+        return;
+    }
+    if (cep_runtime_track_data_branch(inserted)) {
+        if (inserted->data) {
+            cep_data_mark_dirty(inserted, inserted->data);
+        }
+        if (inserted->store) {
+            cep_store_mark_dirty(inserted->store);
+        }
+    }
+}
+
+static cepBranchController*
+cep_cell_lookup_branch_controller(const cepCell* cell)
+{
+    if (!cell) {
+        return NULL;
+    }
+    if (!cep_cell_system_initialized()) {
+        return NULL;
+    }
+    cepCell* data_root = cep_heartbeat_data_root();
+    if (!data_root) {
+        return NULL;
+    }
+    const cepCell* cursor = cell;
+    const cepCell* branch = NULL;
+    while (cursor) {
+        const cepCell* parent = cep_cell_parent(cursor);
+        if (parent == data_root) {
+            branch = cursor;
+            break;
+        }
+        cursor = parent;
+    }
+    if (!branch) {
+        return NULL;
+    }
+    cepBranchControllerRegistry* registry = cep_runtime_branch_registry(NULL);
+    if (!registry) {
+        return NULL;
+    }
+    return cep_branch_registry_find_by_dt(registry, &branch->metacell.dt);
+}
+
+static bool
+cep_cell_is_under_data_branch(const cepCell* cell)
+{
+    if (!cell || !cep_cell_system_initialized()) {
+        return false;
+    }
+    cepCell* data_root = cep_heartbeat_data_root();
+    if (!data_root) {
+        return false;
+    }
+    const cepCell* cursor = cell;
+    while (cursor) {
+        if (cursor == data_root) {
+            return true;
+        }
+        cursor = cep_cell_parent(cursor);
+    }
+    return false;
+}
+
 cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
     if (!cep_ep_require_rw()) {
@@ -5621,6 +5779,15 @@ cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
         cepCell* parentCell = store->owner;
         if (parentCell && !cep_cell_is_floating(parentCell) && !cep_cell_is_veiled(parentCell))
             inserted->created = store->modified;
+    }
+    if (store) {
+        cep_store_mark_dirty(store);
+    }
+    if (inserted) {
+        if (inserted->data) {
+            cep_data_mark_dirty(inserted, inserted->data);
+        }
+        cep_cell_maybe_register_data_branch(store, inserted);
     }
     return inserted;
 }
@@ -7269,6 +7436,7 @@ void cep_cell_remove_hard(cepCell* cell, cepCell* target) {
     if (!store || cep_store_owner_is_immutable(store) || cep_cell_is_immutable(cell))
         return;
     store_remove_child(store, cell, target);
+    cep_store_mark_dirty(store);
 }
 
 

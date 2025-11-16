@@ -339,6 +339,14 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/branch/dirty_tracking",
+        test_branch_controller_dirty_tracking,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
         "/heartbeat/single",
         test_heartbeat_single,
         NULL,

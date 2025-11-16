@@ -335,10 +335,14 @@ void cep_flat_compute_revision_id(const cepCell* cell,
     blake3_hasher hasher;
     blake3_hasher_init(&hasher);
     blake3_hasher_update(&hasher, &seed, sizeof seed);
-    if (cell && cell->store)
-        blake3_hasher_update(&hasher, &cell->store->dt, sizeof cell->store->dt);
-    if (data)
-        blake3_hasher_update(&hasher, &data->dt, sizeof data->dt);
+    if (cell && cell->store) {
+        cepDT cleaned = cep_dt_clean(&cell->store->dt);
+        blake3_hasher_update(&hasher, &cleaned, sizeof cleaned);
+    }
+    if (data) {
+        cepDT cleaned = cep_dt_clean(&data->dt);
+        blake3_hasher_update(&hasher, &cleaned, sizeof cleaned);
+    }
     blake3_hasher_finalize(&hasher, out, 16);
 }
 

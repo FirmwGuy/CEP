@@ -24,6 +24,8 @@
 #include <ctype.h>
 #include <sodium.h>
 
+static _Thread_local const cepFlatBranchFrameInfo* g_flat_branch_frame_info = NULL;
+
 /* Storage backends expose inline helpers that depend on internal Layer 0
    symbols such as `cep_shadow_rebind_links` and `cell_compare_by_name`. This
    translation unit only needs the struct layouts, so provide conservative
@@ -736,6 +738,13 @@ static bool cep_serialization_emit_cell_flat(const cepCell* cell,
         .payload_history_beats = payload_history_window,
         .manifest_history_beats = manifest_history_window,
     };
+    if (g_flat_branch_frame_info) {
+        config.branch_info_present = true;
+        config.branch_domain = g_flat_branch_frame_info->branch_domain;
+        config.branch_tag = g_flat_branch_frame_info->branch_tag;
+        config.branch_glob = g_flat_branch_frame_info->branch_glob;
+        config.branch_frame_id = g_flat_branch_frame_info->frame_id;
+    }
 
     if (!cep_flat_serializer_begin(serializer, &config))
         goto exit;
@@ -5135,13 +5144,14 @@ cep_flat_frame_async_on_complete(void* context, const cepIoReactorResult* result
     cep_free(job);
 }
 
-bool
-cep_flat_stream_emit_cell_async(const cepCell* cell,
-                                const cepSerializationHeader* header,
-                                cepSerializationWriteFn write,
-                                void* context,
-                                size_t blob_payload_bytes,
-                                cepFlatStreamAsyncStats* stats)
+static bool
+cep_flat_stream_emit_cell_async_impl(const cepCell* cell,
+                                     const cepFlatBranchFrameInfo* branch_info,
+                                     const cepSerializationHeader* header,
+                                     cepSerializationWriteFn write,
+                                     void* context,
+                                     size_t blob_payload_bytes,
+                                     cepFlatStreamAsyncStats* stats)
 {
     if (!cell || !write) {
         return false;
@@ -5172,11 +5182,14 @@ cep_flat_stream_emit_cell_async(const cepCell* cell,
         return false;
     }
 
+    const cepFlatBranchFrameInfo* previous_branch = g_flat_branch_frame_info;
+    g_flat_branch_frame_info = branch_info;
     bool emitted = cep_serialization_emit_cell(cell,
                                                header,
                                                cep_flat_frame_sink_write_proxy,
                                                &sink,
                                                blob_payload_bytes);
+    g_flat_branch_frame_info = previous_branch;
     if (!emitted) {
         cep_flat_frame_sink_finalize(&sink, false, -EIO, true);
         out_stats->async_mode = false;
@@ -5268,6 +5281,44 @@ cep_flat_stream_emit_cell_async(const cepCell* cell,
     out_stats->async_mode = true;
     out_stats->fallback_used = false;
     return true;
+}
+
+bool
+cep_flat_stream_emit_cell_async(const cepCell* cell,
+                                const cepSerializationHeader* header,
+                                cepSerializationWriteFn write,
+                                void* context,
+                                size_t blob_payload_bytes,
+                                cepFlatStreamAsyncStats* stats)
+{
+    return cep_flat_stream_emit_cell_async_impl(cell,
+                                                NULL,
+                                                header,
+                                                write,
+                                                context,
+                                                blob_payload_bytes,
+                                                stats);
+}
+
+bool
+cep_flat_stream_emit_branch_async(const cepCell* cell,
+                                  const cepFlatBranchFrameInfo* branch_info,
+                                  const cepSerializationHeader* header,
+                                  cepSerializationWriteFn write,
+                                  void* context,
+                                  size_t blob_payload_bytes,
+                                  cepFlatStreamAsyncStats* stats)
+{
+    if (!branch_info) {
+        return false;
+    }
+    return cep_flat_stream_emit_cell_async_impl(cell,
+                                                branch_info,
+                                                header,
+                                                write,
+                                                context,
+                                                blob_payload_bytes,
+                                                stats);
 }
 
 

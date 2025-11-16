@@ -17,6 +17,7 @@
 #include "cep_heartbeat.h"
 #include "cep_ops.h"
 #include "cep_runtime.h"
+#include "../l0_kernel/cep_branch_controller.h"
 #include "../l0_kernel/cep_namepool.h"
 #include "../l0_kernel/cep_async.h"
 
@@ -46,6 +47,28 @@ static const char k_cps_topic_storage_async[] = "persist.async";
 #define CPS_STORAGE_ASYNC_WAIT_POLL_NS 1000000L
 
 static void cps_storage_emit_async_cei(const char *detail);
+static void cps_storage_emit_cei(const cepDT *severity, const char *detail);
+typedef struct cpsStorageAsyncCommitCtx cpsStorageAsyncCommitCtx;
+static bool cps_storage_async_register_request(const cepDT* opcode,
+                                               size_t expected_bytes,
+                                               cepDT* out_name);
+static void cps_storage_async_finish_request(const cepDT* name,
+                                             const cepDT* opcode,
+                                             bool success,
+                                             uint64_t bytes,
+                                             int error_code);
+static void cps_storage_async_commit_on_complete(bool success,
+                                                 uint64_t bytes,
+                                                 int error_code,
+                                                 void* context);
+static cpsStorageAsyncCommitCtx* cps_storage_async_commit_ctx_create(const cepDT* request_name);
+static void cps_storage_async_commit_ctx_destroy(cpsStorageAsyncCommitCtx* ctx);
+static void cps_storage_async_finalize_success(cpsStorageAsyncCommitCtx* ctx);
+static void cps_storage_async_mark_failed(cpsStorageAsyncCommitCtx* ctx,
+                                          uint64_t bytes,
+                                          int error_code,
+                                          const char* detail);
+static bool cps_storage_async_wait_for_commit(cpsStorageAsyncCommitCtx* ctx);
 
 CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_warn, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
 CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_crit, CEP_ACRO("CEP"), CEP_WORD("sev:crit"));
@@ -72,8 +95,22 @@ CEP_DEFINE_STATIC_DT(dt_cps_async_op_commit, CEP_ACRO("CEP"), CEP_WORD("op:commi
 CEP_DEFINE_STATIC_DT(dt_cps_async_provider, CEP_ACRO("CEP"), CEP_WORD("prov:cps"));
 CEP_DEFINE_STATIC_DT(dt_cps_async_reactor, CEP_ACRO("CEP"), CEP_WORD("react:cps"));
 CEP_DEFINE_STATIC_DT(dt_cps_async_caps, CEP_ACRO("CEP"), CEP_WORD("caps:sync"));
+CEP_DEFINE_STATIC_DT(dt_persist_root_name, CEP_ACRO("CEP"), CEP_WORD("persist"));
+CEP_DEFINE_STATIC_DT(dt_persist_metrics_name, CEP_ACRO("CEP"), CEP_WORD("metrics"));
+CEP_DEFINE_STATIC_DT(dt_persist_engine_field, CEP_ACRO("CEP"), CEP_WORD("kv_eng"));
+CEP_DEFINE_STATIC_DT(dt_persist_frames_field, CEP_ACRO("CEP"), CEP_WORD("frames"));
+CEP_DEFINE_STATIC_DT(dt_persist_beats_field, CEP_ACRO("CEP"), CEP_WORD("beats"));
+CEP_DEFINE_STATIC_DT(dt_persist_bytes_idx_field, CEP_ACRO("CEP"), CEP_WORD("bytes_idx"));
+CEP_DEFINE_STATIC_DT(dt_persist_bytes_dat_field, CEP_ACRO("CEP"), CEP_WORD("bytes_dat"));
+CEP_DEFINE_STATIC_DT(dt_persist_status_name, CEP_ACRO("CEP"), CEP_WORD("branch_stat"));
+CEP_DEFINE_STATIC_DT(dt_persist_last_bt_field, CEP_ACRO("CEP"), CEP_WORD("last_bt"));
+CEP_DEFINE_STATIC_DT(dt_persist_pending_mut_field, CEP_ACRO("CEP"), CEP_WORD("pend_mut"));
+CEP_DEFINE_STATIC_DT(dt_persist_dirty_ents_field, CEP_ACRO("CEP"), CEP_WORD("dirty_ents"));
+CEP_DEFINE_STATIC_DT(dt_persist_last_frame_field, CEP_ACRO("CEP"), CEP_WORD("frame_last"));
 
 #define CPS_STORAGE_COPY_CHUNK 65536u
+
+static const char k_cps_storage_engine_name[] = "flatfile";
 
 typedef struct {
   const char *name;
@@ -169,6 +206,151 @@ static bool cps_storage_hex_to_hash(const char *hex, uint8_t out[32]) {
     out[i] = (uint8_t)((hv << 4u) | lv);
   }
   return true;
+}
+
+static bool
+cps_storage_ensure_persist_cells(const cepDT* branch_dt,
+                                 cepCell** branch_cell_out,
+                                 cepCell** metrics_cell_out,
+                                 cepCell** status_cell_out)
+{
+  if (!branch_dt || !cep_dt_is_valid(branch_dt)) {
+    return false;
+  }
+  cepCell *data_root = cep_heartbeat_data_root();
+  if (!data_root) {
+    return false;
+  }
+  cepCell *resolved_data = cep_cell_resolve(data_root);
+  if (!resolved_data) {
+    return false;
+  }
+  if (!cep_cell_require_dictionary_store(&resolved_data)) {
+    return false;
+  }
+  cepCell *persist_root = cep_cell_ensure_dictionary_child(resolved_data,
+                                                           dt_persist_root_name(),
+                                                           CEP_STORAGE_RED_BLACK_T);
+  if (!persist_root) {
+    return false;
+  }
+  cepCell *branch_cell = cep_cell_ensure_dictionary_child(persist_root,
+                                                          branch_dt,
+                                                          CEP_STORAGE_RED_BLACK_T);
+  if (!branch_cell) {
+    return false;
+  }
+  cepCell *metrics_cell = NULL;
+  cepCell *status_cell = NULL;
+  if (metrics_cell_out) {
+    metrics_cell = cep_cell_ensure_dictionary_child(branch_cell,
+                                                    dt_persist_metrics_name(),
+                                                    CEP_STORAGE_RED_BLACK_T);
+    if (!metrics_cell) {
+      return false;
+    }
+  }
+  if (status_cell_out) {
+    status_cell = cep_cell_ensure_dictionary_child(branch_cell,
+                                                   dt_persist_status_name(),
+                                                   CEP_STORAGE_RED_BLACK_T);
+    if (!status_cell) {
+      return false;
+    }
+  }
+  if (branch_cell_out) {
+    *branch_cell_out = branch_cell;
+  }
+  if (metrics_cell_out) {
+    *metrics_cell_out = metrics_cell;
+  }
+  if (status_cell_out) {
+    *status_cell_out = status_cell;
+  }
+  return true;
+}
+
+static bool
+cps_storage_publish_branch_metrics(cepBranchController* controller,
+                                   const cps_stats* stats)
+{
+  if (!controller || !controller->branch_root) {
+    return false;
+  }
+
+  cepCell *branch_cell = NULL;
+  cepCell *metrics_cell = NULL;
+  cepCell *status_cell = NULL;
+  if (!cps_storage_ensure_persist_cells(&controller->branch_dt,
+                                        &branch_cell,
+                                        &metrics_cell,
+                                        &status_cell)) {
+    return false;
+  }
+
+  bool ok = true;
+  ok &= cep_cell_put_text(branch_cell,
+                          dt_persist_engine_field(),
+                          k_cps_storage_engine_name);
+
+  const cps_stats zero_stats = {0};
+  const cps_stats *effective_stats = stats ? stats : &zero_stats;
+  if (metrics_cell) {
+    ok &= cep_cell_put_uint64(metrics_cell,
+                              dt_persist_frames_field(),
+                              effective_stats->stat_frames);
+    ok &= cep_cell_put_uint64(metrics_cell,
+                              dt_persist_beats_field(),
+                              effective_stats->stat_beats);
+    ok &= cep_cell_put_uint64(metrics_cell,
+                              dt_persist_bytes_idx_field(),
+                              effective_stats->stat_bytes_idx);
+    ok &= cep_cell_put_uint64(metrics_cell,
+                              dt_persist_bytes_dat_field(),
+                              effective_stats->stat_bytes_dat);
+  }
+
+  if (status_cell) {
+    uint64_t last_bt = (controller->last_persisted_bt == CEP_BEAT_INVALID)
+                         ? 0u
+                         : controller->last_persisted_bt;
+    ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_last_bt_field(),
+                              last_bt);
+    ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_pending_mut_field(),
+                              controller->pending_mutations);
+    ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_dirty_ents_field(),
+                              controller->dirty_entry_count);
+    ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_last_frame_field(),
+                              controller->last_frame_id);
+  }
+
+  return ok;
+}
+
+static void
+cps_storage_publish_branch_state(cepBranchController* controller,
+                                 cps_engine* engine)
+{
+  if (!controller) {
+    return;
+  }
+
+  cps_stats stats = {0};
+  const cps_stats *stats_ptr = NULL;
+  if (engine && engine->ops && engine->ops->stats) {
+    if (engine->ops->stats(engine, &stats) == CPS_OK) {
+      stats_ptr = &stats;
+    }
+  }
+
+  if (!cps_storage_publish_branch_metrics(controller, stats_ptr)) {
+    cps_storage_emit_cei(dt_cps_storage_sev_warn(),
+                         "persist metrics publish failed");
+  }
 }
 
 static bool cps_storage_path_exists(const char *path) {
@@ -1105,10 +1287,71 @@ typedef struct {
   uint64_t bytes_written;
 } cpsStorageSink;
 
+typedef struct {
+  cepBranchController* controller;
+  cepFlatBranchFrameInfo frame_info;
+} cpsBranchFrameRequest;
+
+static bool
+cps_storage_clear_dirty_entry_cb(cepEntry* entry, void* ctx)
+{
+  (void)ctx;
+  if (!entry || !entry->cell) {
+    return true;
+  }
+  cepCell* resolved = cep_cell_resolve(entry->cell);
+  if (!resolved) {
+    return true;
+  }
+  if (resolved->data) {
+    resolved->data->dirty = 0u;
+  }
+  if (resolved->store) {
+    resolved->store->dirty = 0u;
+  }
+  return true;
+}
+
+static void
+cps_storage_clear_dirty_flags_for_root(cepCell* root)
+{
+  if (!root) {
+    return;
+  }
+  cepCell* resolved = cep_cell_resolve(root);
+  if (!resolved) {
+    return;
+  }
+  cepEntry entry = {0};
+  (void)cep_cell_deep_traverse_all(resolved,
+                                   cps_storage_clear_dirty_entry_cb,
+                                   NULL,
+                                   NULL,
+                                   &entry);
+}
+
+static void
+cps_storage_clear_data_dirty_flags(void)
+{
+  cepCell* data_root = cep_heartbeat_data_root();
+  cps_storage_clear_dirty_flags_for_root(data_root);
+}
+
+static void
+cps_storage_clear_branch_dirty_flags(cepBranchController* controller)
+{
+  if (!controller || !controller->branch_root) {
+    return;
+  }
+  cps_storage_clear_dirty_flags_for_root(controller->branch_root);
+  cep_branch_controller_clear_dirty(controller);
+}
+
+
 static atomic_uint_fast64_t g_cps_async_req_counter = 0;
 static cepOID g_cps_async_channel_oid = {0};
 
-typedef struct {
+struct cpsStorageAsyncCommitCtx {
   bool     registered;
   bool     pending;
   bool     completed;
@@ -1116,7 +1359,7 @@ typedef struct {
   int      error_code;
   uint64_t bytes_done;
   cepDT    request_name;
-} cpsStorageAsyncCommitCtx;
+};
 
 static void cps_storage_async_mark_failed(cpsStorageAsyncCommitCtx* ctx,
                                           uint64_t bytes,
@@ -1455,6 +1698,195 @@ static bool cps_storage_apply_reader(cps_engine *engine,
     return false;
   }
   txn = NULL;
+  return true;
+}
+
+static bool
+cps_storage_branch_requests_append(cpsBranchFrameRequest** requests,
+                                   size_t* count,
+                                   size_t* capacity,
+                                   const cpsBranchFrameRequest* candidate)
+{
+  if (!requests || !count || !capacity || !candidate) {
+    return false;
+  }
+  if (*count == *capacity) {
+    size_t new_cap = *capacity ? (*capacity * 2u) : 4u;
+    cpsBranchFrameRequest* grown =
+        (cpsBranchFrameRequest*)realloc(*requests,
+                                        new_cap * sizeof **requests);
+    if (!grown) {
+      return false;
+    }
+    *requests = grown;
+    *capacity = new_cap;
+  }
+  (*requests)[(*count)++] = *candidate;
+  return true;
+}
+
+static bool
+cps_storage_emit_frame_for_cell(cepCell* target,
+                                const cepFlatBranchFrameInfo* branch_info,
+                                cps_engine* engine)
+{
+  if (!target || !engine || !engine->ops) {
+    return false;
+  }
+
+  cepCell* resolved = cep_cell_resolve(target);
+  if (!resolved) {
+    cps_storage_emit_cei(dt_cps_storage_sev_warn(), "serializer target resolve failed");
+    return false;
+  }
+
+  cepFlatReader* reader = cep_flat_reader_create();
+  if (!reader) {
+    cps_storage_emit_cei(dt_cps_storage_sev_warn(), "failed to allocate flat reader for persistence");
+    return false;
+  }
+
+  cpsStorageSink sink = {
+    .reader = reader,
+    .bytes_written = 0u,
+  };
+
+  cepDT async_commit_req = {0};
+  cpsStorageAsyncCommitCtx* async_commit_ctx = NULL;
+  bool ok = false;
+
+  if (!cps_storage_async_register_request(dt_cps_async_op_commit(),
+                                          0u,
+                                          &async_commit_req)) {
+    cps_storage_emit_async_cei("async commit registration failed");
+    goto out;
+  }
+
+  async_commit_ctx = cps_storage_async_commit_ctx_create(&async_commit_req);
+  if (!async_commit_ctx) {
+    cps_storage_emit_async_cei("async commit context allocation failed");
+    cps_storage_async_finish_request(&async_commit_req,
+                                     dt_cps_async_op_commit(),
+                                     false,
+                                     0u,
+                                     -ENOMEM);
+    goto out;
+  }
+
+  cepFlatStreamAsyncStats stream_stats = {
+    .require_sync_copy = false,
+    .completion_cb = cps_storage_async_commit_on_complete,
+    .completion_ctx = async_commit_ctx,
+  };
+
+  bool emitted = branch_info
+      ? cep_flat_stream_emit_branch_async(resolved,
+                                          branch_info,
+                                          NULL,
+                                          cps_storage_reader_sink,
+                                          &sink,
+                                          CEP_FLAT_STREAM_DEFAULT_BLOB_PAYLOAD,
+                                          &stream_stats)
+      : cep_flat_stream_emit_cell_async(resolved,
+                                        NULL,
+                                        cps_storage_reader_sink,
+                                        &sink,
+                                        CEP_FLAT_STREAM_DEFAULT_BLOB_PAYLOAD,
+                                        &stream_stats);
+  if (!emitted) {
+    cps_storage_emit_cei(dt_cps_storage_sev_crit(), "serializer frame emit/parse failed");
+    cps_storage_async_mark_failed(async_commit_ctx,
+                                  sink.bytes_written,
+                                  -EIO,
+                                  "serializer async emission failed");
+    goto out;
+  }
+
+  if (!stream_stats.async_mode || stream_stats.fallback_used) {
+    cps_storage_async_mark_failed(async_commit_ctx,
+                                  sink.bytes_written,
+                                  -EIO,
+                                  "serializer fallback triggered");
+    goto out;
+  }
+
+  if (!cps_storage_async_wait_for_commit(async_commit_ctx)) {
+    goto out;
+  }
+
+  if (!cep_flat_reader_commit(reader) || !cep_flat_reader_ready(reader)) {
+    cps_storage_emit_cei(dt_cps_storage_sev_crit(), "serializer frame emit/parse failed");
+    cps_storage_async_mark_failed(async_commit_ctx,
+                                  sink.bytes_written,
+                                  -EIO,
+                                  "serializer async reader incomplete");
+    goto out;
+  }
+
+  const char* commit_error_stage = NULL;
+  int commit_error_code = CPS_OK;
+  ok = cps_storage_apply_reader(engine, reader, &commit_error_stage, &commit_error_code);
+  if (!ok) {
+    char note[128];
+    if (commit_error_stage) {
+      snprintf(note,
+               sizeof note,
+               "CPS engine commit failed stage=%s rc=%d",
+               commit_error_stage,
+               commit_error_code);
+      cps_storage_emit_cei(dt_cps_storage_sev_crit(), note);
+    } else {
+      cps_storage_emit_cei(dt_cps_storage_sev_crit(), "CPS engine commit failed");
+    }
+    cps_storage_async_mark_failed(async_commit_ctx,
+                                  sink.bytes_written,
+                                  -EIO,
+                                  "CPS commit failed after async completion");
+    goto out;
+  }
+
+  cps_storage_async_finalize_success(async_commit_ctx);
+  ok = true;
+
+out:
+  if (async_commit_ctx) {
+    if (async_commit_ctx->registered) {
+      cps_storage_async_finish_request(&async_commit_ctx->request_name,
+                                       dt_cps_async_op_commit(),
+                                       false,
+                                       sink.bytes_written,
+                                       async_commit_ctx->error_code ? async_commit_ctx->error_code : -EIO);
+      async_commit_ctx->registered = false;
+    }
+    cps_storage_async_commit_ctx_destroy(async_commit_ctx);
+  }
+  cep_flat_reader_destroy(reader);
+  return ok;
+}
+
+static bool
+cps_storage_commit_branch_requests(cpsBranchFrameRequest* requests,
+                                   size_t request_count,
+                                   cps_engine* engine)
+{
+  if (!requests || !engine || !engine->ops) {
+    return false;
+  }
+  for (size_t i = 0; i < request_count; ++i) {
+    cpsBranchFrameRequest* request = &requests[i];
+    if (!request || !request->controller || !request->controller->branch_root) {
+      return false;
+    }
+    if (!cps_storage_emit_frame_for_cell(request->controller->branch_root,
+                                         &request->frame_info,
+                                         engine)) {
+      return false;
+    }
+    request->controller->last_frame_id = (cepOpCount)request->frame_info.frame_id;
+    request->controller->last_persisted_bt = cep_beat_index();
+    cps_storage_clear_branch_dirty_flags(request->controller);
+    cps_storage_publish_branch_state(request->controller, engine);
+  }
   return true;
 }
 
@@ -1927,6 +2359,8 @@ bool cps_storage_commit_current_beat(void) {
     return true;
   }
 
+  cepBranchControllerRegistry* branch_registry = cep_runtime_branch_registry(NULL);
+
   cps_engine *engine = cps_runtime_engine();
   if (!engine || !engine->ops) {
     return false;
@@ -1938,120 +2372,70 @@ bool cps_storage_commit_current_beat(void) {
     return false;
   }
 
-  cepFlatReader *reader = cep_flat_reader_create();
-  if (!reader) {
-    cps_storage_emit_cei(dt_cps_storage_sev_warn(), "failed to allocate flat reader for persistence");
-    return false;
-  }
-
-  cpsStorageSink sink = {
-    .reader = reader,
-    .bytes_written = 0u,
-  };
-
-  cepDT async_commit_req = {0};
-  cpsStorageAsyncCommitCtx* async_commit_ctx = NULL;
   bool ok = false;
+  bool dispatched_branch_frames = false;
+  cpsBranchFrameRequest* requests = NULL;
+  size_t request_count = 0u;
+  size_t request_capacity = 0u;
 
-  if (!cps_storage_async_register_request(dt_cps_async_op_commit(),
-                                          0u,
-                                          &async_commit_req)) {
-    cps_storage_emit_async_cei("async commit registration failed");
-    goto out;
-  }
-
-  async_commit_ctx = cps_storage_async_commit_ctx_create(&async_commit_req);
-  if (!async_commit_ctx) {
-    cps_storage_emit_async_cei("async commit context allocation failed");
-    cps_storage_async_finish_request(&async_commit_req,
-                                     dt_cps_async_op_commit(),
-                                     false,
-                                     0u,
-                                     -ENOMEM);
-    goto out;
-  }
-
-  cepFlatStreamAsyncStats stream_stats = {
-    .require_sync_copy = false,
-    .completion_cb = cps_storage_async_commit_on_complete,
-    .completion_ctx = async_commit_ctx,
-  };
-
-  bool emitted = cep_flat_stream_emit_cell_async(root,
-                                                 NULL,
-                                                 cps_storage_reader_sink,
-                                                 &sink,
-                                                 CEP_FLAT_STREAM_DEFAULT_BLOB_PAYLOAD,
-                                                 &stream_stats);
-  if (!emitted) {
-    cps_storage_emit_cei(dt_cps_storage_sev_crit(), "serializer frame emit/parse failed");
-    cps_storage_async_mark_failed(async_commit_ctx,
-                                  sink.bytes_written,
-                                  -EIO,
-                                  "serializer async emission failed");
-    goto out;
-  }
-
-  if (!stream_stats.async_mode || stream_stats.fallback_used) {
-    cps_storage_async_mark_failed(async_commit_ctx,
-                                  sink.bytes_written,
-                                  -EIO,
-                                  "serializer fallback triggered");
-    goto out;
-  }
-
-  bool io_ok = cps_storage_async_wait_for_commit(async_commit_ctx);
-  if (!io_ok) {
-    goto out;
-  }
-
-  if (!cep_flat_reader_commit(reader) || !cep_flat_reader_ready(reader)) {
-    cps_storage_emit_cei(dt_cps_storage_sev_crit(), "serializer frame emit/parse failed");
-    cps_storage_async_mark_failed(async_commit_ctx,
-                                  sink.bytes_written,
-                                  -EIO,
-                                  "serializer async reader incomplete");
-    goto out;
-  }
-
-  const char* commit_error_stage = NULL;
-  int commit_error_code = CPS_OK;
-  ok = cps_storage_apply_reader(engine, reader, &commit_error_stage, &commit_error_code);
-  if (!ok) {
-    char note[128];
-    if (commit_error_stage) {
-      snprintf(note,
-               sizeof note,
-               "CPS engine commit failed stage=%s rc=%d",
-               commit_error_stage,
-               commit_error_code);
-      cps_storage_emit_cei(dt_cps_storage_sev_crit(), note);
-    } else {
-      cps_storage_emit_cei(dt_cps_storage_sev_crit(), "CPS engine commit failed");
+  if (branch_registry) {
+    size_t controller_count = cep_branch_registry_count(branch_registry);
+    for (size_t i = 0; i < controller_count; ++i) {
+      cepBranchController* controller = cep_branch_registry_controller(branch_registry, i);
+      if (!controller || !controller->branch_root) {
+        continue;
+      }
+      if (!controller->dirty_entry_count && !controller->pending_mutations) {
+        continue;
+      }
+      cepFlatBranchFrameInfo frame_info = {
+        .branch_domain = controller->branch_dt.domain,
+        .branch_tag = controller->branch_dt.tag,
+        .branch_glob = controller->branch_dt.glob ? 1u : 0u,
+        .frame_id = controller->last_frame_id ? (controller->last_frame_id + 1u) : 1u,
+      };
+      cpsBranchFrameRequest request = {
+        .controller = controller,
+        .frame_info = frame_info,
+      };
+      if (!cps_storage_branch_requests_append(&requests,
+                                              &request_count,
+                                              &request_capacity,
+                                              &request)) {
+        free(requests);
+        return false;
+      }
     }
-    cps_storage_async_mark_failed(async_commit_ctx,
-                                  sink.bytes_written,
-                                  -EIO,
-                                  "CPS commit failed after async completion");
-    goto out;
-  }
-
-  cps_storage_async_finalize_success(async_commit_ctx);
-  ok = true;
-
-out:
-  if (async_commit_ctx) {
-    if (async_commit_ctx->registered) {
-      cps_storage_async_finish_request(&async_commit_ctx->request_name,
-                                       dt_cps_async_op_commit(),
-                                       false,
-                                       sink.bytes_written,
-                                       async_commit_ctx->error_code ? async_commit_ctx->error_code : -EIO);
-      async_commit_ctx->registered = false;
+    if (request_count > 0u) {
+      dispatched_branch_frames = true;
+      ok = cps_storage_commit_branch_requests(requests, request_count, engine);
     }
-    cps_storage_async_commit_ctx_destroy(async_commit_ctx);
   }
-  cep_flat_reader_destroy(reader);
+
+  free(requests);
+
+  if (dispatched_branch_frames) {
+    if (ok) {
+      cps_storage_clear_data_dirty_flags();
+    }
+  } else {
+    if (!root) {
+      cps_storage_emit_cei(dt_cps_storage_sev_warn(), "root cell missing during persistence");
+      return false;
+    }
+    ok = cps_storage_emit_frame_for_cell(root, NULL, engine);
+    if (ok && branch_registry) {
+      cps_storage_clear_data_dirty_flags();
+      size_t controller_count = cep_branch_registry_count(branch_registry);
+      for (size_t i = 0; i < controller_count; ++i) {
+        cepBranchController* controller = cep_branch_registry_controller(branch_registry, i);
+        if (controller) {
+          cep_branch_controller_clear_dirty(controller);
+        }
+      }
+    }
+  }
+
   cps_storage_process_ops();
   return ok;
 }

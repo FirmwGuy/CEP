@@ -6,6 +6,7 @@
 #include "cep_runtime.h"
 
 #include "cep_cell.h"
+#include "cep_branch_controller.h"
 #include "cep_ep.h"
 #include "cep_heartbeat.h"
 #include "cep_heartbeat_internal.h"
@@ -65,6 +66,7 @@ struct cepRuntime {
     struct cepExecutorRuntimeState* executor_state;
     struct cepFederationRuntimeState* federation_state;
     struct cepAsyncRuntimeState* async_state;
+    cepBranchControllerRegistry* branch_registry;
     cepMailboxRuntimeSettings   mailbox_settings;
     cepSerializationRuntimeState serialization_state;
     cepEpRuntimeState           ep_state;
@@ -311,6 +313,35 @@ cep_runtime_async_state(cepRuntime* runtime)
     return target->async_state;
 }
 
+cepBranchControllerRegistry*
+cep_runtime_branch_registry(cepRuntime* runtime)
+{
+    cepRuntime* target = runtime ? runtime : cep_runtime_default();
+    if (!target) {
+        return NULL;
+    }
+    if (!target->branch_registry) {
+        target->branch_registry = cep_branch_registry_create();
+    }
+    return target->branch_registry;
+}
+
+bool
+cep_runtime_track_data_branch(cepCell* branch_root)
+{
+    if (!branch_root) {
+        return false;
+    }
+    cepRuntime* runtime = cep_runtime_default();
+    cepBranchControllerRegistry* registry = cep_runtime_branch_registry(runtime);
+    if (!registry) {
+        return false;
+    }
+    const cepDT* branch_name =
+        cep_dt_is_valid(&branch_root->metacell.dt) ? &branch_root->metacell.dt : NULL;
+    return cep_branch_registry_register(registry, branch_root, branch_name) != NULL;
+}
+
 bool
 cep_runtime_bootstrap_is_done(cepRuntime* runtime)
 {
@@ -527,6 +558,11 @@ cep_runtime_shutdown(cepRuntime* runtime)
         runtime->async_state = NULL;
     }
     cep_async_reset_ops_oid();
+
+    if (runtime->branch_registry) {
+        cep_branch_registry_destroy(runtime->branch_registry);
+        runtime->branch_registry = NULL;
+    }
 
     if (runtime->serialization_state.comparator_registry.entries) {
         cep_free(runtime->serialization_state.comparator_registry.entries);

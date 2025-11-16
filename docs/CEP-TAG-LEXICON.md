@@ -52,6 +52,11 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `cas_miss` | Runtime platform | metric counting CAS payload misses that required a runtime scan (`/data/persist/<branch>/metrics`). |
 | `cas_lat_ns` | Runtime platform | metric reporting the average CAS lookup latency in nanoseconds for the active branch. |
 | `persist_branch` | Runtime platform | fallback tag used when a branch name cannot be interned; hosts CPS metrics if needed. |
+| `branch_stat` | Runtime platform | dictionary under `/data/persist/<branch>/branch_stat` exposing status fields for that branch’s persistence controller. |
+| `last_bt` | Runtime platform | `branch_stat` field recording the last beat that reached CPS for the branch. |
+| `pend_mut` | Runtime platform | `branch_stat` field counting pending mutations for the branch controller. |
+| `dirty_ents` | Runtime platform | `branch_stat` field mirroring the controller’s dirty-entry count. |
+| `frame_last` | Runtime platform | `branch_stat` field recording the most recent frame ID persisted for the branch. |
 | `bundle` | Runtime platform | envelope field used by `op/import` to specify the filesystem path to an exported CPS bundle. |
 | `persist.commit` | Runtime platform | CEI topic emitted when CPS finishes persisting a beat (`cps_storage_commit_current_beat`). |
 | `persist.frame.io` | Runtime platform | CEI topic emitted when frame staging, fsync, or copy operations fail on the CPS backend. |

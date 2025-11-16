@@ -67,6 +67,7 @@ zip_dep = dependency('libzip', required: zip_opt.enabled(), method: 'pkg-config'
 
 l0_srcs = files(
   'src/l0_kernel/cep_cell.c',
+  'src/l0_kernel/cep_branch_controller.c',
   'src/l0_kernel/cep_cell_stream.c',
   'src/l0_kernel/cep_cell_system.c',
   'src/l0_kernel/cep_flat_helpers.c',
@@ -308,6 +309,7 @@ if get_option('tests').enabled()
     'src/test/l0_kernel/test_domain_tag_naming.c',
     'src/test/l0_kernel/test_identifier.c',
     'src/test/l0_kernel/test_ops.c',
+    'src/test/l0_kernel/test_branch_controller.c',
       'src/test/l0_kernel/test_enzyme.c',
     'src/test/l0_kernel/test_heartbeat.c',
     'src/test/l0_kernel/test_mailbox.c',

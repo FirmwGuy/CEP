@@ -37,6 +37,13 @@ typedef struct {
     void*                              completion_ctx;
 } cepFlatStreamAsyncStats;
 
+typedef struct {
+    uint64_t branch_domain;
+    uint64_t branch_tag;
+    uint8_t  branch_glob;
+    uint64_t frame_id;
+} cepFlatBranchFrameInfo;
+
 #define CEP_SERIALIZATION_MAGIC   UINT64_C(0x4345503000000000)
 #define CEP_SERIALIZATION_VERSION UINT16_C(0x0002)
 
@@ -130,6 +137,13 @@ bool cep_flat_stream_emit_cell_async(const cepCell* cell,
                                      void* context,
                                      size_t blob_payload_bytes,
                                      cepFlatStreamAsyncStats* stats);
+bool cep_flat_stream_emit_branch_async(const cepCell* cell,
+                                       const cepFlatBranchFrameInfo* branch_info,
+                                       const cepSerializationHeader* header,
+                                       cepSerializationWriteFn write,
+                                       void* context,
+                                       size_t blob_payload_bytes,
+                                       cepFlatStreamAsyncStats* stats);
 
 void cep_serialization_mark_decision_replay(void);
 cepSerializationReader* cep_serialization_reader_create(cepCell* root);

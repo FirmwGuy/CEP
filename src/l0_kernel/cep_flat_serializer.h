@@ -60,6 +60,7 @@ typedef enum {
     CEP_FLAT_CAP_MANIFEST_HISTORY  = 0x00000080u,
     CEP_FLAT_CAP_PAYLOAD_REF       = 0x00000100u,
     CEP_FLAT_CAP_FRAME_TOC         = 0x00000200u,
+    CEP_FLAT_CAP_BRANCH_METADATA   = 0x00000400u,
 } cepFlatCapabilityFlag;
 
 typedef enum {
@@ -98,6 +99,11 @@ typedef struct {
     cepFlatChecksumAlgorithm    checksum_algorithm;
     uint32_t                   payload_history_beats;
     uint32_t                   manifest_history_beats;
+    bool                       branch_info_present;
+    uint8_t                    branch_glob;
+    uint64_t                   branch_domain;
+    uint64_t                   branch_tag;
+    uint64_t                   branch_frame_id;
 } cepFlatFrameConfig;
 
 typedef struct cepFlatSerializer cepFlatSerializer;
