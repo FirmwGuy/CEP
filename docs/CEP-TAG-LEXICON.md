@@ -57,8 +57,12 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `last_bt` | Runtime platform | `branch_stat` field recording the last beat that reached CPS for the branch. |
 | `pend_mut` | Runtime platform | `branch_stat` field counting pending mutations for the branch controller. |
 | `dirty_ents` | Runtime platform | `branch_stat` field mirroring the controller’s dirty-entry count. |
+| `dirty_bytes` | Runtime platform | `branch_stat` field estimating bytes currently pinned as dirty for the branch. |
+| `pin_count` | Runtime platform | `branch_stat` field counting dirty payload/store pins that block eviction. |
 | `frame_last` | Runtime platform | `branch_stat` field recording the most recent frame ID persisted for the branch. |
 | `cause_last` | Runtime platform | `branch_stat` field indicating the last flush cause (`automatic`, `manual`, `scheduled`). |
+| `flush_bytes` | Runtime platform | `branch_stat` field recording the byte estimate drained during the last flush. |
+| `flush_pins` | Runtime platform | `branch_stat` field recording how many pins the last flush cleared. |
 | `policy_mode` | Runtime platform | `config` field storing the active branch persistence policy label. |
 | `flush_every` | Runtime platform | `config` field reporting the `flush_every_beats` policy value. |
 | `flush_shdn` | Runtime platform | `config` field flagging whether the branch flushes when shutdown runs. |

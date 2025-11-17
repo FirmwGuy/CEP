@@ -7,6 +7,16 @@
 #include "cep_branch_controller.h"
 
 #include <string.h>
+#include <stdio.h>
+
+#include "cep_cei.h"
+
+CEP_DEFINE_STATIC_DT(dt_svo_sev_warn, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
+CEP_DEFINE_STATIC_DT(dt_svo_sev_info, CEP_ACRO("CEP"), CEP_WORD("sev:info"));
+
+static const char k_branch_policy_topic[] = "cell.cross_read";
+
+
 
 struct cepBranchControllerRegistry {
     cepBranchController** entries;
@@ -86,6 +96,73 @@ cep_branch_dirty_index_find(cepBranchDirtyIndex* index, const cepCell* cell)
         }
     }
     return NULL;
+}
+
+static uint32_t
+cep_branch_controller_pin_delta(uint32_t flags)
+{
+    uint32_t pins = 0u;
+    if (flags & CEP_BRANCH_DIRTY_FLAG_DATA) {
+        ++pins;
+    }
+    if (flags & CEP_BRANCH_DIRTY_FLAG_STORE) {
+        ++pins;
+    }
+    return pins;
+}
+
+static uint64_t
+cep_branch_controller_estimate_data_bytes(const cepCell* cell)
+{
+    if (!cell || !cep_cell_is_normal(cell)) {
+        return 0u;
+    }
+    const cepData* data = cell->data;
+    if (!data) {
+        return 0u;
+    }
+    return (uint64_t)data->size;
+}
+
+static uint64_t
+cep_branch_controller_estimate_store_bytes(const cepCell* cell)
+{
+    if (!cell || !cep_cell_is_normal(cell)) {
+        return 0u;
+    }
+    const cepStore* store = cell->store;
+    if (!store) {
+        return 0u;
+    }
+    uint64_t base = sizeof(*store);
+    uint64_t per_child = sizeof(cepStoreNode);
+    uint64_t logical_children = (uint64_t)store->totCount;
+    return base + (per_child * logical_children);
+}
+
+static uint64_t
+cep_branch_controller_estimate_bytes(const cepCell* cell, uint32_t flags)
+{
+    uint64_t total = 0u;
+    if (flags & CEP_BRANCH_DIRTY_FLAG_DATA) {
+        total += cep_branch_controller_estimate_data_bytes(cell);
+    }
+    if (flags & CEP_BRANCH_DIRTY_FLAG_STORE) {
+        total += cep_branch_controller_estimate_store_bytes(cell);
+    }
+    return total;
+}
+
+static void
+cep_branch_controller_apply_dirty_delta(cepBranchController* controller,
+                                        cepCell* cell,
+                                        uint32_t flags)
+{
+    if (!controller || !cell || !flags) {
+        return;
+    }
+    controller->dirty_bytes += cep_branch_controller_estimate_bytes(cell, flags);
+    controller->pins += cep_branch_controller_pin_delta(flags);
 }
 
 static bool
@@ -231,11 +308,12 @@ cep_branch_controller_mark_dirty(cepBranchController* controller,
     cepBranchDirtyIndex* index = &controller->dirty_index;
     cepBranchDirtyEntry* entry = cep_branch_dirty_index_find(index, cell);
     if (entry) {
-        uint32_t merged = entry->flags | flags;
-        if (merged == entry->flags) {
+        uint32_t new_bits = flags & ~entry->flags;
+        if (!new_bits) {
             return true;
         }
-        entry->flags = merged;
+        cep_branch_controller_apply_dirty_delta(controller, cell, new_bits);
+        entry->flags |= new_bits;
         controller->pending_mutations += 1u;
         return true;
     }
@@ -245,10 +323,13 @@ cep_branch_controller_mark_dirty(cepBranchController* controller,
     }
     cepBranchDirtyEntry new_entry = {
         .cell = cell,
-        .flags = flags,
+        .flags = 0u,
         .stamp = cep_cell_timestamp(),
     };
     index->entries[index->count++] = new_entry;
+    cepBranchDirtyEntry* inserted = &index->entries[index->count - 1u];
+    cep_branch_controller_apply_dirty_delta(controller, cell, flags);
+    inserted->flags = flags;
     controller->dirty_entry_count = index->count;
     controller->pending_mutations += 1u;
     return true;
@@ -272,10 +353,13 @@ cep_branch_controller_init(cepBranchController* controller,
     controller->dirty_index = (cepBranchDirtyIndex){0};
     controller->last_persisted_bt = CEP_BEAT_INVALID;
     controller->flush_scheduled_bt = CEP_BEAT_INVALID;
+    controller->periodic_anchor_bt = CEP_BEAT_INVALID;
     controller->dirty_entry_count = 0u;
     controller->dirty_bytes = 0u;
     controller->pending_mutations = 0u;
     controller->pins = 0u;
+    controller->last_flush_bytes = 0u;
+    controller->last_flush_pins = 0u;
     controller->version = 0u;
     controller->last_frame_id = 0u;
     controller->last_flush_cause = CEP_BRANCH_FLUSH_CAUSE_UNKNOWN;
@@ -399,4 +483,189 @@ cep_branch_controller_clear_dirty(cepBranchController* controller)
     controller->dirty_index.count = 0u;
     controller->dirty_entry_count = 0u;
     controller->pending_mutations = 0u;
+    controller->dirty_bytes = 0u;
+    controller->pins = 0u;
+    controller->periodic_anchor_bt = controller->last_persisted_bt;
+}
+
+static bool
+cep_branch_controller_risky_dirty(const cepBranchController* controller)
+{
+    if (!controller) {
+        return false;
+    }
+    return controller->dirty_entry_count > 0u || controller->pending_mutations > 0u;
+}
+
+static bool
+cep_branch_controller_risky_mode(const cepBranchController* controller)
+{
+    if (!controller) {
+        return false;
+    }
+    const cepBranchPersistPolicy* policy = cep_branch_controller_policy(controller);
+    if (!policy) {
+        return false;
+    }
+    return policy->mode == CEP_BRANCH_PERSIST_VOLATILE;
+}
+
+cepBranchPolicyResult
+cep_branch_policy_check_read(const cepBranchController* consumer,
+                             const cepBranchController* source)
+{
+    cepBranchPolicyResult result = {
+        .access = CEP_BRANCH_POLICY_ACCESS_ALLOW,
+        .risk = CEP_BRANCH_POLICY_RISK_NONE,
+    };
+
+    if (!consumer || !source || consumer == source) {
+        return result;
+    }
+
+    bool source_dirty = cep_branch_controller_risky_dirty(source);
+    bool source_volatile = cep_branch_controller_risky_mode(source);
+    if (!source_dirty && !source_volatile) {
+        return result;
+    }
+
+    result.risk = source_volatile ? CEP_BRANCH_POLICY_RISK_VOLATILE : CEP_BRANCH_POLICY_RISK_DIRTY;
+
+    const cepBranchPersistPolicy* consumer_policy = cep_branch_controller_policy(consumer);
+    bool allow_reads = consumer_policy && consumer_policy->allow_volatile_reads;
+    result.access = allow_reads ? CEP_BRANCH_POLICY_ACCESS_DECISION : CEP_BRANCH_POLICY_ACCESS_DENY;
+    return result;
+}
+
+const char*
+cep_branch_policy_risk_label(cepBranchPolicyRisk risk)
+{
+    switch (risk) {
+        case CEP_BRANCH_POLICY_RISK_DIRTY:
+            return "dirty";
+        case CEP_BRANCH_POLICY_RISK_VOLATILE:
+            return "volatile";
+        case CEP_BRANCH_POLICY_RISK_NONE:
+        default:
+            return "none";
+    }
+}
+
+void
+cep_branch_controller_format_label(const cepBranchController* controller,
+                                   char* buffer,
+                                   size_t capacity)
+{
+    if (!buffer || capacity == 0u) {
+        return;
+    }
+    if (!controller) {
+        (void)snprintf(buffer, capacity, "<none>");
+        return;
+    }
+    const cepDT* dt = &controller->branch_dt;
+    unsigned long long domain = dt ? (unsigned long long)cep_id(dt->domain) : 0ull;
+    unsigned long long tag = dt ? (unsigned long long)cep_id(dt->tag) : 0ull;
+    (void)snprintf(buffer, capacity, "%016llx/%016llx",
+                   domain,
+                   tag);
+}
+
+void
+cep_cell_svo_context_init(cepCellSvoContext* ctx, const char* verb)
+{
+    if (!ctx) {
+        return;
+    }
+    ctx->consumer = NULL;
+    ctx->source = NULL;
+    ctx->verb = verb;
+    ctx->last_result = (cepBranchPolicyResult){
+        .access = CEP_BRANCH_POLICY_ACCESS_ALLOW,
+        .risk = CEP_BRANCH_POLICY_RISK_NONE,
+    };
+}
+
+void
+cep_cell_svo_context_set_consumer(cepCellSvoContext* ctx, const cepCell* consumer_cell)
+{
+    if (!ctx) {
+        return;
+    }
+    ctx->consumer = cep_branch_controller_for_cell(consumer_cell);
+}
+
+void
+cep_cell_svo_context_set_source(cepCellSvoContext* ctx, const cepCell* source_cell)
+{
+    if (!ctx) {
+        return;
+    }
+    ctx->source = cep_branch_controller_for_cell(source_cell);
+}
+
+bool
+cep_cell_svo_context_guard(cepCellSvoContext* ctx,
+                           const cepCell* fallback_source,
+                           const char* topic)
+{
+    const cepBranchController* source_controller = NULL;
+    const cepBranchController* consumer_controller = NULL;
+    if (ctx) {
+        source_controller = ctx->source;
+        consumer_controller = ctx->consumer;
+    }
+    if (!source_controller && fallback_source) {
+        source_controller = cep_branch_controller_for_cell(fallback_source);
+    }
+
+    cepBranchPolicyResult policy =
+        cep_branch_policy_check_read(consumer_controller, source_controller);
+    if (ctx) {
+        ctx->last_result = policy;
+    }
+
+    if (policy.access == CEP_BRANCH_POLICY_ACCESS_ALLOW ||
+        policy.risk == CEP_BRANCH_POLICY_RISK_NONE) {
+        return true;
+    }
+
+    const char* resolved_topic = topic ? topic : k_branch_policy_topic;
+    const char* verb = (ctx && ctx->verb) ? ctx->verb : "cellop";
+
+    char consumer_label[64];
+    char source_label[64];
+    cep_branch_controller_format_label(consumer_controller, consumer_label, sizeof consumer_label);
+    cep_branch_controller_format_label(source_controller, source_label, sizeof source_label);
+    const char* risk_label = cep_branch_policy_risk_label(policy.risk);
+    const char* action = (policy.access == CEP_BRANCH_POLICY_ACCESS_DECISION) ? "decision" : "deny";
+
+    char note[256];
+    snprintf(note,
+             sizeof note,
+             "verb=%s consumer=%s source=%s risk=%s action=%s",
+             verb,
+             consumer_label,
+             source_label,
+             risk_label,
+             action);
+
+    const cepDT* severity = (policy.access == CEP_BRANCH_POLICY_ACCESS_DECISION)
+                              ? dt_svo_sev_info()
+                              : dt_svo_sev_warn();
+
+    cepCeiRequest req = {
+        .severity = *severity,
+        .topic = resolved_topic,
+        .topic_len = 0u,
+        .topic_intern = false,
+        .note = note,
+        .note_len = 0u,
+        .origin_kind = "cell.ops",
+        .emit_signal = false,
+        .ttl_forever = true,
+    };
+    (void)cep_cei_emit(&req);
+
+    return policy.access != CEP_BRANCH_POLICY_ACCESS_DENY;
 }

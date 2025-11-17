@@ -28,5 +28,6 @@ bool cps_storage_verify_bundle_dir(const char *bundle_dir);
  * into staged_path/staged_path_len.
  */
 bool cps_storage_stage_bundle_dir(const char *bundle_dir, char *staged_path, size_t staged_path_len);
+void cps_storage_request_shutdown_flushes(void);
 
 #endif /* CPS_STORAGE_SERVICE_H */

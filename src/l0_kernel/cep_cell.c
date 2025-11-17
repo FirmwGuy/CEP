@@ -5610,7 +5610,6 @@ void cep_cell_finalize_hard(cepCell* cell) {
    mechanics. Behaviour constraints described in
    docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md.
 */
-static cepBranchController* cep_cell_lookup_branch_controller(const cepCell* cell);
 static bool cep_cell_is_under_data_branch(const cepCell* cell);
 
 static void
@@ -5627,7 +5626,7 @@ cep_store_mark_dirty(cepStore* store)
     }
     store->dirty = 1u;
     cepBranchController* controller =
-        cep_cell_lookup_branch_controller(store->owner);
+        cep_branch_controller_for_cell(store->owner);
     if (!controller) {
         return;
     }
@@ -5650,7 +5649,7 @@ cep_data_mark_dirty(cepCell* owner, cepData* data)
     }
     data->dirty = 1u;
     cepBranchController* controller =
-        cep_cell_lookup_branch_controller(owner);
+        cep_branch_controller_for_cell(owner);
     if (!controller) {
         return;
     }
@@ -5684,8 +5683,8 @@ cep_cell_maybe_register_data_branch(cepStore* parent_store, cepCell* inserted)
     }
 }
 
-static cepBranchController*
-cep_cell_lookup_branch_controller(const cepCell* cell)
+cepBranchController*
+cep_branch_controller_for_cell(const cepCell* cell)
 {
     if (!cell) {
         return NULL;

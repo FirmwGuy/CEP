@@ -126,8 +126,12 @@ CEP_DEFINE_STATIC_DT(dt_persist_schedule_bt_field, CEP_ACRO("CEP"), CEP_WORD("sc
 CEP_DEFINE_STATIC_DT(dt_persist_last_bt_field, CEP_ACRO("CEP"), CEP_WORD("last_bt"));
 CEP_DEFINE_STATIC_DT(dt_persist_pending_mut_field, CEP_ACRO("CEP"), CEP_WORD("pend_mut"));
 CEP_DEFINE_STATIC_DT(dt_persist_dirty_ents_field, CEP_ACRO("CEP"), CEP_WORD("dirty_ents"));
+CEP_DEFINE_STATIC_DT(dt_persist_dirty_bytes_field, CEP_ACRO("CEP"), CEP_WORD("dirty_bytes"));
+CEP_DEFINE_STATIC_DT(dt_persist_pin_count_field, CEP_ACRO("CEP"), CEP_WORD("pin_count"));
 CEP_DEFINE_STATIC_DT(dt_persist_last_frame_field, CEP_ACRO("CEP"), CEP_WORD("frame_last"));
 CEP_DEFINE_STATIC_DT(dt_persist_last_cause_field, CEP_ACRO("CEP"), CEP_WORD("cause_last"));
+CEP_DEFINE_STATIC_DT(dt_persist_flush_bytes_field, CEP_ACRO("CEP"), CEP_WORD("flush_bytes"));
+CEP_DEFINE_STATIC_DT(dt_persist_flush_pins_field, CEP_ACRO("CEP"), CEP_WORD("flush_pins"));
 
 #define CPS_STORAGE_COPY_CHUNK 65536u
 
@@ -360,12 +364,24 @@ cps_storage_publish_branch_metrics(cepBranchController* controller,
                               dt_persist_dirty_ents_field(),
                               controller->dirty_entry_count);
     ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_dirty_bytes_field(),
+                              controller->dirty_bytes);
+    ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_pin_count_field(),
+                              controller->pins);
+    ok &= cep_cell_put_uint64(status_cell,
                               dt_persist_last_frame_field(),
                               controller->last_frame_id);
     const char* cause = cps_storage_flush_cause_label(controller->last_flush_cause);
     ok &= cep_cell_put_text(status_cell,
                             dt_persist_last_cause_field(),
                             cause);
+    ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_flush_bytes_field(),
+                              controller->last_flush_bytes);
+    ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_flush_pins_field(),
+                              controller->last_flush_pins);
   }
 
   if (config_cell) {
@@ -2033,6 +2049,8 @@ cps_storage_commit_branch_requests(cpsBranchFrameRequest* requests,
     if (request->clear_schedule_request) {
       request->controller->flush_scheduled_bt = CEP_BEAT_INVALID;
     }
+    request->controller->last_flush_bytes = request->controller->dirty_bytes;
+    request->controller->last_flush_pins = request->controller->pins;
     cps_storage_clear_branch_dirty_flags(request->controller);
     cps_storage_publish_branch_state(request->controller, engine);
     cps_storage_emit_topic_cei(dt_cps_storage_sev_info(),
@@ -2237,6 +2255,30 @@ cps_storage_branch_should_flush(cepBranchController* controller,
   bool forced = controller->force_flush;
   const cepBranchPersistPolicy* policy = cep_branch_controller_policy(controller);
   cepBranchPersistMode mode = policy ? policy->mode : CEP_BRANCH_PERSIST_DURABLE;
+  uint32_t flush_every = policy ? policy->flush_every_beats : 0u;
+  bool periodic = false;
+  if (mode == CEP_BRANCH_PERSIST_SCHEDULED_SAVE &&
+      flush_every > 1u &&
+      current_beat != CEP_BEAT_INVALID) {
+    cepBeatNumber anchor = controller->last_persisted_bt;
+    if (anchor == CEP_BEAT_INVALID) {
+      if (controller->periodic_anchor_bt == CEP_BEAT_INVALID) {
+        controller->periodic_anchor_bt = current_beat;
+      }
+      anchor = controller->periodic_anchor_bt;
+    } else {
+      controller->periodic_anchor_bt = anchor;
+    }
+    if (anchor != CEP_BEAT_INVALID) {
+      uint64_t current64 = (uint64_t)current_beat;
+      uint64_t anchor64 = (uint64_t)anchor;
+      if (current64 >= anchor64) {
+        periodic = (current64 - anchor64) >= (uint64_t)flush_every;
+      }
+    }
+  } else if (mode == CEP_BRANCH_PERSIST_SCHEDULED_SAVE) {
+    controller->periodic_anchor_bt = controller->last_persisted_bt;
+  }
   bool should_flush = true;
   switch (mode) {
     case CEP_BRANCH_PERSIST_VOLATILE:
@@ -2244,7 +2286,7 @@ cps_storage_branch_should_flush(cepBranchController* controller,
       break;
     case CEP_BRANCH_PERSIST_ON_DEMAND:
     case CEP_BRANCH_PERSIST_SCHEDULED_SAVE:
-      should_flush = scheduled || forced;
+      should_flush = scheduled || forced || periodic;
       break;
     default:
       should_flush = true;
@@ -2260,9 +2302,10 @@ cps_storage_branch_should_flush(cepBranchController* controller,
     *clear_force_out = forced;
   }
   if (cause_out) {
+    bool periodic_trigger = periodic && !scheduled && !forced;
     if (forced) {
       *cause_out = CEP_BRANCH_FLUSH_CAUSE_MANUAL;
-    } else if (scheduled) {
+    } else if (scheduled || periodic_trigger) {
       *cause_out = CEP_BRANCH_FLUSH_CAUSE_SCHEDULED;
     } else {
       *cause_out = CEP_BRANCH_FLUSH_CAUSE_AUTOMATIC;
@@ -2469,6 +2512,30 @@ cps_storage_run_branch_flush_op(cepOID oid, const char* branch_name)
            branch_label ? branch_label : "<unknown>");
   cps_storage_complete_success(oid, "branch flush", summary);
   return true;
+}
+
+void
+cps_storage_request_shutdown_flushes(void)
+{
+  cepBranchControllerRegistry* registry = cep_runtime_branch_registry(NULL);
+  if (!registry) {
+    return;
+  }
+  size_t count = cep_branch_registry_count(registry);
+  for (size_t i = 0; i < count; ++i) {
+    cepBranchController* controller = cep_branch_registry_controller(registry, i);
+    if (!controller) {
+      continue;
+    }
+    const cepBranchPersistPolicy* policy = cep_branch_controller_policy(controller);
+    if (!policy || !policy->flush_on_shutdown) {
+      continue;
+    }
+    if (!controller->dirty_entry_count && !controller->pending_mutations) {
+      continue;
+    }
+    controller->force_flush = true;
+  }
 }
 
 static bool

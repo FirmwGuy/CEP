@@ -8,10 +8,12 @@
 #include "../l0_kernel/cep_cell.h"
 #include "../l0_kernel/cep_heartbeat.h"
 #include "../l0_kernel/cep_organ.h"
+#include "../l0_kernel/cep_branch_controller.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 
 typedef struct {
@@ -89,6 +91,8 @@ CEP_DEFINE_STATIC_DT(dt_enz_update, CEP_ACRO("CEP"), CEP_WORD("enz_upd"))
 CEP_DEFINE_STATIC_DT(dt_enz_delete, CEP_ACRO("CEP"), CEP_WORD("enz_del"))
 CEP_DEFINE_STATIC_DT(dt_enz_move, CEP_ACRO("CEP"), CEP_WORD("enz_mov"))
 CEP_DEFINE_STATIC_DT(dt_enz_clone, CEP_ACRO("CEP"), CEP_WORD("enz_cln"))
+
+static const char k_cell_ops_topic_cross_read[] = "cell.cross_read";
 
 
 static cepCell* cep_cell_enzyme_resolve(const cepPath* path) {
@@ -260,6 +264,14 @@ static int cep_cell_enzyme_add(const cepPath* signal, const cepPath* target) {
     bool deep = false;
     (void)cep_cell_enzyme_request_bool(request, dt_arg_deep(), &deep);
 
+    cepCellSvoContext ctx;
+    cep_cell_svo_context_init(&ctx, "cell.add");
+    cep_cell_svo_context_set_consumer(&ctx, parent);
+    cep_cell_svo_context_set_source(&ctx, blueprint);
+    if (!cep_cell_svo_context_guard(&ctx, blueprint, k_cell_ops_topic_cross_read)) {
+        return CEP_ENZYME_FATAL;
+    }
+
     cepCell* clone = NULL;
     if (!cep_cell_enzyme_prepare_clone(blueprint, deep, &clone)) {
         return CEP_ENZYME_FATAL;
@@ -314,6 +326,14 @@ static int cep_cell_enzyme_update(const cepPath* signal, const cepPath* target) 
         return CEP_ENZYME_FATAL;
     }
     if (!cep_cell_has_data(source)) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    cepCellSvoContext ctx;
+    cep_cell_svo_context_init(&ctx, "cell.update");
+    cep_cell_svo_context_set_consumer(&ctx, subject);
+    cep_cell_svo_context_set_source(&ctx, source);
+    if (!cep_cell_svo_context_guard(&ctx, source, k_cell_ops_topic_cross_read)) {
         return CEP_ENZYME_FATAL;
     }
 
@@ -423,6 +443,19 @@ static int cep_cell_enzyme_move(const cepPath* signal, const cepPath* target) {
         return CEP_ENZYME_FATAL;
     }
 
+    parent = cep_cell_enzyme_parent_store_owner(parent);
+    if (!parent) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    cepCellSvoContext move_ctx;
+    cep_cell_svo_context_init(&move_ctx, "cell.move");
+    cep_cell_svo_context_set_consumer(&move_ctx, parent);
+    cep_cell_svo_context_set_source(&move_ctx, subject);
+    if (!cep_cell_svo_context_guard(&move_ctx, subject, k_cell_ops_topic_cross_read)) {
+        return CEP_ENZYME_FATAL;
+    }
+
     bool deep = true;
     (void)cep_cell_enzyme_request_bool(request, dt_arg_deep(), &deep);
 
@@ -463,6 +496,19 @@ static int cep_cell_enzyme_clone(const cepPath* signal, const cepPath* target) {
 
     source = cep_cell_enzyme_resolve_link(source);
     if (!source) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    parent = cep_cell_enzyme_parent_store_owner(parent);
+    if (!parent) {
+        return CEP_ENZYME_FATAL;
+    }
+
+    cepCellSvoContext clone_ctx;
+    cep_cell_svo_context_init(&clone_ctx, "cell.clone");
+    cep_cell_svo_context_set_consumer(&clone_ctx, parent);
+    cep_cell_svo_context_set_source(&clone_ctx, source);
+    if (!cep_cell_svo_context_guard(&clone_ctx, source, k_cell_ops_topic_cross_read)) {
         return CEP_ENZYME_FATAL;
     }
 

@@ -69,10 +69,13 @@ typedef struct cepBranchController {
     cepBranchDirtyIndex    dirty_index;
     cepBeatNumber          last_persisted_bt;
     cepBeatNumber          flush_scheduled_bt;
+    cepBeatNumber          periodic_anchor_bt;
     uint64_t               dirty_entry_count;
     uint64_t               dirty_bytes;
     uint64_t               pending_mutations;
     uint64_t               pins;
+    uint64_t               last_flush_bytes;
+    uint64_t               last_flush_pins;
     uint64_t               version;
     cepOpCount             last_frame_id;
     cepBranchFlushCause    last_flush_cause;
@@ -85,6 +88,30 @@ typedef struct cepBranchControllerRegistry cepBranchControllerRegistry;
 
 #define CEP_BRANCH_DIRTY_FLAG_DATA  UINT32_C(0x01)
 #define CEP_BRANCH_DIRTY_FLAG_STORE UINT32_C(0x02)
+
+typedef enum {
+    CEP_BRANCH_POLICY_ACCESS_ALLOW = 0,
+    CEP_BRANCH_POLICY_ACCESS_DECISION,
+    CEP_BRANCH_POLICY_ACCESS_DENY,
+} cepBranchPolicyAccess;
+
+typedef enum {
+    CEP_BRANCH_POLICY_RISK_NONE = 0,
+    CEP_BRANCH_POLICY_RISK_DIRTY,
+    CEP_BRANCH_POLICY_RISK_VOLATILE,
+} cepBranchPolicyRisk;
+
+typedef struct {
+    cepBranchPolicyAccess access;
+    cepBranchPolicyRisk   risk;
+} cepBranchPolicyResult;
+
+typedef struct {
+    const cepBranchController* consumer;
+    const cepBranchController* source;
+    const char*                verb;
+    cepBranchPolicyResult      last_result;
+} cepCellSvoContext;
 
 cepBranchControllerRegistry* cep_branch_registry_create(void);
 void                          cep_branch_registry_destroy(cepBranchControllerRegistry* registry);
@@ -113,6 +140,19 @@ cepBranchController* cep_branch_registry_controller(const cepBranchControllerReg
 const cepBranchDirtyEntry* cep_branch_controller_dirty_entries(const cepBranchController* controller,
                                                                size_t* count);
 void cep_branch_controller_clear_dirty(cepBranchController* controller);
+cepBranchController* cep_branch_controller_for_cell(const cepCell* cell);
+cepBranchPolicyResult cep_branch_policy_check_read(const cepBranchController* consumer,
+                                                   const cepBranchController* source);
+const char* cep_branch_policy_risk_label(cepBranchPolicyRisk risk);
+void cep_branch_controller_format_label(const cepBranchController* controller,
+                                        char* buffer,
+                                        size_t capacity);
+void cep_cell_svo_context_init(cepCellSvoContext* ctx, const char* verb);
+void cep_cell_svo_context_set_consumer(cepCellSvoContext* ctx, const cepCell* consumer_cell);
+void cep_cell_svo_context_set_source(cepCellSvoContext* ctx, const cepCell* source_cell);
+bool cep_cell_svo_context_guard(cepCellSvoContext* ctx,
+                                const cepCell* fallback_source,
+                                const char* topic);
 
 #ifdef __cplusplus
 }

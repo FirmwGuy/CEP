@@ -3870,6 +3870,7 @@ static bool cep_boot_ops_progress_shutdown(void) {
                                        &CEP_LIFECYCLE_OPS_STATE.shdn_failed)) {
             return false;
         }
+        cps_storage_request_shutdown_flushes();
         CEP_LIFECYCLE_OPS_STATE.shdn_phase = CEP_SHDN_PHASE_FLUSH;
         CEP_LIFECYCLE_OPS_STATE.shdn_last_beat = cep_boot_ops_effective_beat();
         return true;
