@@ -7,6 +7,7 @@
 #include "test.h"
 
 #include "cep_cei.h"
+#include "cep_branch_controller.h"
 #include "cep_enzyme.h"
 #include "cep_heartbeat.h"
 #include "cep_l0.h"
@@ -227,7 +228,8 @@ static bool integration_env_flag(const char* name) {
         return false;
     if (strcmp(value, "0") == 0)
         return false;
-    if (strcasecmp(value, "false") == 0)
+    if ((value[0] == 'f' || value[0] == 'F') &&
+        strcasecmp(value, "false") == 0)
         return false;
     return true;
 }
@@ -397,6 +399,75 @@ typedef struct {
     FILE*    backing;
     bool     prepared;
 } IntegrationStreamContext;
+
+static void
+integration_exercise_cache_policies(void)
+{
+    cepCell* data_root = cep_heartbeat_data_root();
+    munit_assert_not_null(data_root);
+
+    /* Exercise lazy-load policy surface. */
+    cepDT lazy_dt = cep_ops_make_dt("int_cache_lazy");
+    cepCell* lazy_branch = cep_cell_ensure_dictionary_child(data_root,
+                                                            &lazy_dt,
+                                                            CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(lazy_branch);
+    lazy_branch = cep_cell_resolve(lazy_branch);
+    munit_assert_not_null(lazy_branch);
+    cepBranchController* lazy_ctrl = cep_branch_controller_for_cell(lazy_branch);
+    munit_assert_not_null(lazy_ctrl);
+    lazy_ctrl->policy.mode = CEP_BRANCH_PERSIST_LAZY_LOAD;
+    lazy_ctrl->policy.lazy_load_at_boot = true;
+    cep_branch_controller_apply_eviction(lazy_ctrl);
+    munit_assert_int(lazy_ctrl->policy.mode, ==, CEP_BRANCH_PERSIST_LAZY_LOAD);
+    munit_assert_true(lazy_ctrl->policy.lazy_load_at_boot);
+    cep_cell_remove_hard(lazy_branch, NULL);
+
+    /* Exercise eviction controls. */
+    cepDT evict_dt = cep_ops_make_dt("int_cache_evict");
+    cepCell* evict_branch = cep_cell_ensure_dictionary_child(data_root,
+                                                             &evict_dt,
+                                                             CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(evict_branch);
+    evict_branch = cep_cell_resolve(evict_branch);
+    munit_assert_not_null(evict_branch);
+    cepBranchController* evict_ctrl = cep_branch_controller_for_cell(evict_branch);
+    munit_assert_not_null(evict_ctrl);
+    evict_ctrl->policy.mode = CEP_BRANCH_PERSIST_DURABLE;
+    evict_ctrl->policy.history_ram_versions = 1u;
+    evict_ctrl->policy.history_ram_beats = 0u;
+    evict_ctrl->policy.ram_quota_bytes = 0u;
+    cepDT evict_field = cep_ops_make_dt("evict_field");
+    munit_assert_true(cep_cell_put_text(evict_branch, &evict_field, "v0"));
+    munit_assert_true(cep_cell_put_text(evict_branch, &evict_field, "v1"));
+    munit_assert_true(cep_cell_put_text(evict_branch, &evict_field, "v2"));
+    cep_branch_controller_apply_eviction(evict_ctrl);
+    cepCell* evict_cell = cep_cell_find_by_name(evict_branch, &evict_field);
+    munit_assert_not_null(evict_cell);
+    evict_cell = cep_cell_resolve(evict_cell);
+    munit_assert_not_null(evict_cell);
+    munit_assert_not_null(evict_cell->data);
+    munit_assert_not_null(evict_cell->data->past);
+    munit_assert_null(evict_cell->data->past->past);
+    cep_cell_remove_hard(evict_branch, NULL);
+
+    /* Exercise snapshot policy. */
+    cepDT snapshot_dt = cep_ops_make_dt("int_cache_snapshot");
+    cepCell* snapshot_branch = cep_cell_ensure_dictionary_child(data_root,
+                                                                &snapshot_dt,
+                                                                CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(snapshot_branch);
+    snapshot_branch = cep_cell_resolve(snapshot_branch);
+    munit_assert_not_null(snapshot_branch);
+    cepBranchController* snapshot_ctrl = cep_branch_controller_for_cell(snapshot_branch);
+    munit_assert_not_null(snapshot_ctrl);
+    munit_assert_true(cep_branch_controller_enable_snapshot_mode(snapshot_ctrl));
+    munit_assert_int(snapshot_ctrl->policy.mode, ==, CEP_BRANCH_PERSIST_RO_SNAPSHOT);
+    cepDT snapshot_field = cep_ops_make_dt("snapshot_field");
+    munit_assert_false(cep_cell_put_text(snapshot_branch, &snapshot_field, "blocked"));
+    cep_cell_remove_hard(snapshot_branch, NULL);
+}
+
 
 typedef struct {
     cepCell* stream;
@@ -4518,6 +4589,7 @@ static MunitResult test_l0_integration(const MunitParameter params[], void* user
     integration_build_tree(&fixture);
     integration_secdata_flow(&fixture);
     integration_execute_interleaved_timeline(&fixture);
+    integration_exercise_cache_policies();
     integration_teardown_tree(&fixture);
     integration_runtime_cleanup(&fixture);
     return MUNIT_OK;
@@ -4611,6 +4683,7 @@ static MunitResult test_l0_integration_focus(const MunitParameter params[],
     if (focus_random_plan) {
         integration_random_plan_cleanup(&random_plan_focus, &fixture);
     }
+    integration_exercise_cache_policies();
     integration_teardown_tree(&fixture);
     integration_runtime_cleanup(&fixture);
     return MUNIT_OK;

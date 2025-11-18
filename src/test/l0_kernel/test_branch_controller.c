@@ -9,6 +9,7 @@
 
 #include "cps_storage_service.h"
 #include "cep_branch_controller.h"
+#include "cep_cell.h"
 #include "cep_heartbeat.h"
 #include "cep_l0.h"
 #include "cep_ops.h"
@@ -170,6 +171,118 @@ test_branch_controller_flush_policy(const MunitParameter params[],
     munit_assert_true(controller->dirty_entry_count == 0u);
     munit_assert_true(controller->flush_scheduled_bt == CEP_BEAT_INVALID);
     munit_assert_true(controller->last_flush_cause == CEP_BRANCH_FLUSH_CAUSE_SCHEDULED);
+
+    test_branch_cleanup(branch);
+    test_runtime_disable_mock_cps();
+    return MUNIT_OK;
+}
+
+MunitResult
+test_branch_controller_history_eviction(const MunitParameter params[],
+                                        void* user_data_or_fixture)
+{
+    (void)user_data_or_fixture;
+    test_runtime_enable_mock_cps();
+    test_boot_cycle_prepare(params);
+    if (!cep_cell_system_initialized()) {
+        cep_cell_system_initiate();
+    }
+    munit_assert_true(cep_l0_bootstrap());
+
+    cepCell* data_root = cep_heartbeat_data_root();
+    munit_assert_not_null(data_root);
+
+    cepDT branch_name = cep_ops_make_dt("test_branch_eviction");
+    cepCell* existing = cep_cell_find_by_name(data_root, &branch_name);
+    if (existing) {
+        test_branch_cleanup(existing);
+    }
+
+    cepCell* branch = cep_cell_ensure_dictionary_child(data_root,
+                                                       &branch_name,
+                                                       CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(branch);
+    branch = cep_cell_resolve(branch);
+    munit_assert_not_null(branch);
+
+    cepBranchControllerRegistry* registry = cep_runtime_branch_registry(NULL);
+    munit_assert_not_null(registry);
+    cepBranchController* controller =
+        cep_branch_registry_find_by_dt(registry, &branch->metacell.dt);
+    munit_assert_not_null(controller);
+
+    cepDT field_dt = cep_ops_make_dt("evict_field");
+    munit_assert_true(cep_cell_put_text(branch, &field_dt, "v0"));
+    munit_assert_true(cep_cell_put_text(branch, &field_dt, "v1"));
+    munit_assert_true(cep_cell_put_text(branch, &field_dt, "v2"));
+
+    cepCell* field_cell = cep_cell_find_by_name(branch, &field_dt);
+    munit_assert_not_null(field_cell);
+    field_cell = cep_cell_resolve(field_cell);
+    munit_assert_not_null(field_cell);
+    munit_assert_not_null(field_cell->data);
+    munit_assert_not_null(field_cell->data->past);
+    munit_assert_not_null(field_cell->data->past->past);
+
+    controller->policy.mode = CEP_BRANCH_PERSIST_DURABLE;
+    controller->policy.history_ram_versions = 1u;
+    controller->policy.history_ram_beats = 0u;
+    controller->policy.ram_quota_bytes = 0u;
+
+    cep_branch_controller_apply_eviction(controller);
+
+    munit_assert_true(controller->cached_history_versions <= 1u);
+    cepDataNode* retained = field_cell->data->past;
+    munit_assert_not_null(retained);
+    munit_assert_null(retained->past);
+
+    test_branch_cleanup(branch);
+    test_runtime_disable_mock_cps();
+    return MUNIT_OK;
+}
+
+MunitResult
+test_branch_controller_snapshot_policy(const MunitParameter params[],
+                                       void* user_data_or_fixture)
+{
+    (void)user_data_or_fixture;
+    test_runtime_enable_mock_cps();
+    test_boot_cycle_prepare(params);
+    if (!cep_cell_system_initialized()) {
+        cep_cell_system_initiate();
+    }
+    munit_assert_true(cep_l0_bootstrap());
+
+    cepCell* data_root = cep_heartbeat_data_root();
+    munit_assert_not_null(data_root);
+
+    cepDT branch_name = cep_ops_make_dt("test_branch_snapshot");
+    cepCell* existing = cep_cell_find_by_name(data_root, &branch_name);
+    if (existing) {
+        test_branch_cleanup(existing);
+    }
+
+    cepCell* branch = cep_cell_ensure_dictionary_child(data_root,
+                                                       &branch_name,
+                                                       CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(branch);
+    branch = cep_cell_resolve(branch);
+    munit_assert_not_null(branch);
+
+    cepBranchControllerRegistry* registry = cep_runtime_branch_registry(NULL);
+    munit_assert_not_null(registry);
+    cepBranchController* controller =
+        cep_branch_registry_find_by_dt(registry, &branch->metacell.dt);
+    munit_assert_not_null(controller);
+
+    cepDT field_dt = cep_ops_make_dt("snapshot_field");
+    munit_assert_true(cep_cell_put_text(branch, &field_dt, "initial"));
+
+    munit_assert_true(cep_branch_controller_enable_snapshot_mode(controller));
+    munit_assert_true(controller->policy.mode == CEP_BRANCH_PERSIST_RO_SNAPSHOT);
+
+    bool write_ok = cep_cell_put_text(branch, &field_dt, "mutated");
+    munit_assert_false(write_ok);
 
     test_branch_cleanup(branch);
     test_runtime_disable_mock_cps();

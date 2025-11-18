@@ -22,6 +22,7 @@
 #include "../l0_kernel/cep_async.h"
 
 #include <ctype.h>
+#include <strings.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -46,6 +47,7 @@ static const char k_cps_topic_branch_flush_begin[] = "persist.flush.begin";
 static const char k_cps_topic_branch_flush_done[] = "persist.flush.done";
 static const char k_cps_topic_branch_flush_fail[] = "persist.flush.fail";
 static const char k_cps_topic_branch_defer[] = "persist.defer";
+static const char k_cps_topic_branch_snapshot[] = "persist.snapshot";
 
 #define CPS_STORAGE_ASYNC_COMMIT_TIMEOUT_MS 500u
 #define CPS_STORAGE_ASYNC_WAIT_POLL_NS 1000000L
@@ -78,6 +80,13 @@ static void cps_storage_async_mark_failed(cpsStorageAsyncCommitCtx* ctx,
                                           int error_code,
                                           const char* detail);
 static bool cps_storage_async_wait_for_commit(cpsStorageAsyncCommitCtx* ctx);
+static bool cps_storage_run_branch_snapshot_op(cepOID oid,
+                                               const char* branch_name,
+                                               bool enable);
+static bool cps_storage_read_bool_field(cepCell* envelope,
+                                        const cepDT* field,
+                                        bool default_value,
+                                        bool* out);
 
 CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_warn, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
 CEP_DEFINE_STATIC_DT(dt_cps_storage_sev_info, CEP_ACRO("CEP"), CEP_WORD("sev:info"));
@@ -97,6 +106,7 @@ CEP_DEFINE_STATIC_DT(dt_op_import_dt, CEP_ACRO("CEP"), CEP_WORD("op/import"));
 CEP_DEFINE_STATIC_DT(dt_op_branch_flush_dt, CEP_ACRO("CEP"), CEP_WORD("op/br_flush"));
 CEP_DEFINE_STATIC_DT(dt_op_branch_schedule_dt, CEP_ACRO("CEP"), CEP_WORD("op/br_sched"));
 CEP_DEFINE_STATIC_DT(dt_op_branch_defer_dt, CEP_ACRO("CEP"), CEP_WORD("op/br_defer"));
+CEP_DEFINE_STATIC_DT(dt_op_branch_snapshot_dt, CEP_ACRO("CEP"), CEP_WORD("op/br_snap"));
 CEP_DEFINE_STATIC_DT(dt_ist_run_dt, CEP_ACRO("CEP"), CEP_WORD("ist:run"));
 CEP_DEFINE_STATIC_DT(dt_ist_exec_dt, CEP_ACRO("CEP"), CEP_WORD("ist:exec"));
 CEP_DEFINE_STATIC_DT(dt_ist_ok_dt, CEP_ACRO("CEP"), CEP_WORD("ist:ok"));
@@ -132,6 +142,14 @@ CEP_DEFINE_STATIC_DT(dt_persist_last_frame_field, CEP_ACRO("CEP"), CEP_WORD("fra
 CEP_DEFINE_STATIC_DT(dt_persist_last_cause_field, CEP_ACRO("CEP"), CEP_WORD("cause_last"));
 CEP_DEFINE_STATIC_DT(dt_persist_flush_bytes_field, CEP_ACRO("CEP"), CEP_WORD("flush_bytes"));
 CEP_DEFINE_STATIC_DT(dt_persist_flush_pins_field, CEP_ACRO("CEP"), CEP_WORD("flush_pins"));
+CEP_DEFINE_STATIC_DT(dt_persist_snapshot_field, CEP_ACRO("CEP"), CEP_WORD("snapshot_ro"));
+CEP_DEFINE_STATIC_DT(dt_branch_snapshot_enable_field, CEP_ACRO("CEP"), CEP_WORD("snapshot"));
+CEP_DEFINE_STATIC_DT(dt_persist_hist_ram_beats_field, CEP_ACRO("CEP"), CEP_WORD("hist_ram_bt"));
+CEP_DEFINE_STATIC_DT(dt_persist_hist_ram_versions_field, CEP_ACRO("CEP"), CEP_WORD("hist_ram_v"));
+CEP_DEFINE_STATIC_DT(dt_persist_ram_quota_field, CEP_ACRO("CEP"), CEP_WORD("ram_quota"));
+CEP_DEFINE_STATIC_DT(dt_persist_cached_beats_field, CEP_ACRO("CEP"), CEP_WORD("cache_bt"));
+CEP_DEFINE_STATIC_DT(dt_persist_cached_versions_field, CEP_ACRO("CEP"), CEP_WORD("cache_ver"));
+CEP_DEFINE_STATIC_DT(dt_persist_cached_bytes_field, CEP_ACRO("CEP"), CEP_WORD("cache_bytes"));
 
 #define CPS_STORAGE_COPY_CHUNK 65536u
 
@@ -382,6 +400,15 @@ cps_storage_publish_branch_metrics(cepBranchController* controller,
     ok &= cep_cell_put_uint64(status_cell,
                               dt_persist_flush_pins_field(),
                               controller->last_flush_pins);
+    ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_cached_beats_field(),
+                              controller->cached_history_beats);
+    ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_cached_versions_field(),
+                              controller->cached_history_versions);
+    ok &= cep_cell_put_uint64(status_cell,
+                              dt_persist_cached_bytes_field(),
+                              controller->cached_history_bytes);
   }
 
   if (config_cell) {
@@ -399,6 +426,18 @@ cps_storage_publish_branch_metrics(cepBranchController* controller,
       ok &= cep_cell_put_uint64(config_cell,
                                 dt_persist_allow_volatile_field(),
                                 policy->allow_volatile_reads ? 1u : 0u);
+      ok &= cep_cell_put_uint64(config_cell,
+                                dt_persist_snapshot_field(),
+                                policy->mode == CEP_BRANCH_PERSIST_RO_SNAPSHOT ? 1u : 0u);
+      ok &= cep_cell_put_uint64(config_cell,
+                                dt_persist_hist_ram_beats_field(),
+                                policy->history_ram_beats);
+      ok &= cep_cell_put_uint64(config_cell,
+                                dt_persist_hist_ram_versions_field(),
+                                policy->history_ram_versions);
+      ok &= cep_cell_put_uint64(config_cell,
+                                dt_persist_ram_quota_field(),
+                                policy->ram_quota_bytes);
     }
     uint64_t schedule_bt = (controller->flush_scheduled_bt == CEP_BEAT_INVALID)
                              ? 0u
@@ -440,6 +479,9 @@ cps_storage_policy_mode_label(cepBranchPersistMode mode)
     case CEP_BRANCH_PERSIST_VOLATILE:
       return "volatile";
     case CEP_BRANCH_PERSIST_COMMIT_ONCE:
+      /* TODO(cpcl-commit-once): Reserve the label now but defer implementing the
+       * commit-once semantics until lazy-load + eviction + snapshot policies
+       * are in place so RAM usage remains bounded. */
       return "commit_once";
     case CEP_BRANCH_PERSIST_LAZY_LOAD:
       return "lazy_load";
@@ -449,6 +491,8 @@ cps_storage_policy_mode_label(cepBranchPersistMode mode)
       return "scheduled";
     case CEP_BRANCH_PERSIST_ON_DEMAND:
       return "on_demand";
+    case CEP_BRANCH_PERSIST_RO_SNAPSHOT:
+      return "ro_snapshot";
     case CEP_BRANCH_PERSIST_DURABLE:
     default:
       return "durable";
@@ -2284,6 +2328,9 @@ cps_storage_branch_should_flush(cepBranchController* controller,
     case CEP_BRANCH_PERSIST_VOLATILE:
       should_flush = false;
       break;
+    case CEP_BRANCH_PERSIST_RO_SNAPSHOT:
+      should_flush = false;
+      break;
     case CEP_BRANCH_PERSIST_ON_DEMAND:
     case CEP_BRANCH_PERSIST_SCHEDULED_SAVE:
       should_flush = scheduled || forced || periodic;
@@ -2312,6 +2359,42 @@ cps_storage_branch_should_flush(cepBranchController* controller,
     }
   }
   return true;
+}
+
+static bool
+cps_storage_read_bool_field(cepCell* envelope,
+                            const cepDT* field,
+                            bool default_value,
+                            bool* out)
+{
+  if (!out) {
+    return false;
+  }
+  const char* text = cps_storage_read_text_field(envelope, field);
+  if (!text || text[0] == '\0') {
+    *out = default_value;
+    return true;
+  }
+  if (strcasecmp(text, "true") == 0 ||
+      strcasecmp(text, "on") == 0 ||
+      strcasecmp(text, "enable") == 0) {
+    *out = true;
+    return true;
+  }
+  if (strcasecmp(text, "false") == 0 ||
+      strcasecmp(text, "off") == 0 ||
+      strcasecmp(text, "disable") == 0) {
+    *out = false;
+    return true;
+  }
+  errno = 0;
+  char* endptr = NULL;
+  unsigned long long parsed = strtoull(text, &endptr, 10);
+  if (errno == 0 && endptr && *endptr == '\0') {
+    *out = parsed != 0u;
+    return true;
+  }
+  return false;
 }
 
 static const cepDT *cps_storage_severity_for_status(int rc) {
@@ -2597,6 +2680,44 @@ cps_storage_run_branch_defer_op(cepOID oid, const char* branch_name)
   return true;
 }
 
+static bool
+cps_storage_run_branch_snapshot_op(cepOID oid,
+                                   const char* branch_name,
+                                   bool enable)
+{
+  cepBranchController* controller = cps_storage_find_controller_by_name(branch_name);
+  if (!controller) {
+    cps_storage_fail_operation(oid, "branch snapshot", branch_name, CPS_ERR_INVALID_ARGUMENT, "branch missing");
+    return false;
+  }
+  if (!enable) {
+    cps_storage_fail_operation(oid, "branch snapshot", branch_name, CPS_ERR_INVALID_ARGUMENT, "disable unsupported");
+    return false;
+  }
+  if (controller->dirty_entry_count || controller->pending_mutations) {
+    cps_storage_fail_operation(oid, "branch snapshot", branch_name, CPS_ERR_INVALID_ARGUMENT, "branch dirty");
+    return false;
+  }
+  if (!cep_branch_controller_enable_snapshot_mode(controller)) {
+    cps_storage_fail_operation(oid, "branch snapshot", branch_name, CPS_ERR_IO, "snapshot seal failed");
+    return false;
+  }
+  cps_storage_publish_branch_state(controller, cps_runtime_engine());
+
+  char label[64];
+  const char* branch_label = cps_storage_branch_label(controller, label, sizeof label);
+  char summary[192];
+  snprintf(summary,
+           sizeof summary,
+           "branch=%s ro_snapshot=enabled",
+           branch_label ? branch_label : "<unknown>");
+  cps_storage_emit_topic_cei(dt_cps_storage_sev_info(),
+                             k_cps_topic_branch_snapshot,
+                             summary);
+  cps_storage_complete_success(oid, "branch snapshot", summary);
+  return true;
+}
+
 static bool cps_storage_state_allows_execution(cepCell *op) {
   cepDT state = {0};
   if (!cps_storage_read_dt_field(op, dt_state_field_cps(), &state)) {
@@ -2647,8 +2768,10 @@ static void cps_storage_handle_op(cepCell *op) {
   bool is_branch_flush = (cep_dt_compare(&verb, dt_op_branch_flush_dt()) == 0);
   bool is_branch_schedule = (cep_dt_compare(&verb, dt_op_branch_schedule_dt()) == 0);
   bool is_branch_defer = (cep_dt_compare(&verb, dt_op_branch_defer_dt()) == 0);
+  bool is_branch_snapshot = (cep_dt_compare(&verb, dt_op_branch_snapshot_dt()) == 0);
   if (!is_checkpoint && !is_compact && !is_sync && !is_import &&
-      !is_branch_flush && !is_branch_schedule && !is_branch_defer) {
+      !is_branch_flush && !is_branch_schedule && !is_branch_defer &&
+      !is_branch_snapshot) {
     return;
   }
 
@@ -2696,6 +2819,18 @@ static void cps_storage_handle_op(cepCell *op) {
   } else if (cep_dt_compare(&verb, dt_op_branch_defer_dt()) == 0) {
     if (cps_storage_mark_state(oid, dt_ist_exec_dt(), "processing", 0)) {
       (void)cps_storage_run_branch_defer_op(oid, branch_buf);
+    }
+  } else if (cep_dt_compare(&verb, dt_op_branch_snapshot_dt()) == 0) {
+    bool enable_snapshot = true;
+    if (!cps_storage_read_bool_field(envelope,
+                                     dt_branch_snapshot_enable_field(),
+                                     true,
+                                     &enable_snapshot)) {
+      cps_storage_fail_operation(oid, "branch snapshot", branch_buf, CPS_ERR_INVALID_ARGUMENT, "snapshot flag invalid");
+      return;
+    }
+    if (cps_storage_mark_state(oid, dt_ist_exec_dt(), "processing", 0)) {
+      (void)cps_storage_run_branch_snapshot_op(oid, branch_buf, enable_snapshot);
     }
   }
 }
@@ -2791,6 +2926,7 @@ bool cps_storage_commit_current_beat(void) {
     if (!controller || !controller->branch_root) {
       continue;
     }
+    cep_branch_controller_apply_eviction(controller);
     cepBranchFlushCause reason = CEP_BRANCH_FLUSH_CAUSE_UNKNOWN;
     bool clear_schedule = false;
     bool clear_force = false;

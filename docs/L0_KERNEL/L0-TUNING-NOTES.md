@@ -193,6 +193,24 @@ When a child’s tag is `CEP_AUTOID`, insertion assigns a monotonically increasi
 
 ---
 
+## 10b) CPS cache policies & RAM windows
+
+Lazy-load, eviction, and read-only snapshot policies let you shrink RAM pressure without giving up observability; the knobs live under `/data/persist/<branch>/config`.
+
+**Guidelines**
+
+* `hist_ram_bt` limits how many beats worth of state stay cached while `hist_ram_v` caps the number of historical versions per cell. Set them to the minimum window you can tolerate, then validate with `/data/persist/<branch>/branch_stat/cache_bt|cache_ver` and the `test_branch_controller_history_eviction` suite.
+* `ram_quota` is the coarse byte ceiling (0 = unlimited). Once `cep_branch_controller_apply_eviction()` sees `cache_bytes` exceed the quota it clears cached history, updates `/branch_stat/cache_bytes`, and emits `persist.evict`. Size it with headroom for dirty payloads and remember that volatile branches ignore the quota.
+* Pick `policy_mode="lazy_load"` for branches that rarely need RAM at startup. Bootstrap skips controller instantiation, and the first caller of `cep_runtime_track_data_branch` hydrates from CPS on demand. Monitor `/config/policy_mode` plus `/branch_stat/cache_*` to prove hydration happened.
+* Use `op/br_snapshot` to seal imported data. The controller flips `policy_mode="ro_snapshot"`, writes `snapshot_ro=1`, and raises `persist.snapshot` so watchdogs know the branch is immutable. These branches still honour `hist_ram_*`/`ram_quota` and rehydrate lazily when eviction drops beats.
+
+**Q&A**
+
+* *How do I confirm eviction isn’t too aggressive?* Compare `/config/hist_ram_*` to `/branch_stat/cache_*` after a workload. If the cache counters never reach the target horizon (but `persist.evict` keeps firing), raise the windows or quota.
+* *When should I avoid lazy load?* Skip it on branches that must answer reads immediately at boot—lazy load defers controller creation until a consumer touches the branch, so cold-start latency includes CPS hydration.
+
+---
+
 ## 11) Recipes & Rules‑of‑Thumb
 
 * **Hot append log**: `ARRAY + INDEX_BY_INSERTION`, pre‑size capacity to expected burst. Use `VALUE` for fixed small entries; `DATA + swap=true` for bulk entries. Avoid reindexing; query by position if needed .

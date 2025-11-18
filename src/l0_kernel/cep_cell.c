@@ -708,6 +708,69 @@ void cep_data_history_clear(cepData* data) {
     data->past = NULL;
 }
 
+void
+cep_data_history_apply_policy(cepData* data,
+                              cepOpCount floor_stamp,
+                              uint32_t keep_versions,
+                              uint32_t* kept_versions_out,
+                              uint64_t* kept_bytes_out,
+                              cepOpCount* oldest_kept_out,
+                              uint32_t* evicted_versions_out,
+                              uint64_t* evicted_bytes_out)
+{
+    if (!data) {
+        return;
+    }
+
+    uint32_t kept_count = 0u;
+    uint64_t kept_bytes = 0u;
+    uint32_t evicted_versions = 0u;
+    uint64_t evicted_bytes = 0u;
+    cepOpCount oldest_kept = 0u;
+
+    cepDataNode** link = &data->past;
+    while (link && *link) {
+        cepDataNode* node = *link;
+        bool drop = false;
+        if (floor_stamp && node->modified && node->modified < floor_stamp) {
+            drop = true;
+        }
+        if (!drop && keep_versions && kept_count >= keep_versions) {
+            drop = true;
+        }
+        if (drop) {
+            *link = node->past;
+            evicted_bytes += node->size;
+            evicted_versions += 1u;
+            cep_data_history_node_release(node, data->datatype);
+            continue;
+        }
+        kept_count += 1u;
+        kept_bytes += node->size;
+        if (node->modified && (!oldest_kept || node->modified < oldest_kept)) {
+            oldest_kept = node->modified;
+        }
+        link = &node->past;
+    }
+
+    if (kept_versions_out) {
+        *kept_versions_out += kept_count;
+    }
+    if (kept_bytes_out) {
+        *kept_bytes_out += kept_bytes;
+    }
+    if (oldest_kept_out && oldest_kept &&
+        (!*oldest_kept_out || oldest_kept < *oldest_kept_out)) {
+        *oldest_kept_out = oldest_kept;
+    }
+    if (evicted_versions_out) {
+        *evicted_versions_out += evicted_versions;
+    }
+    if (evicted_bytes_out) {
+        *evicted_bytes_out += evicted_bytes;
+    }
+}
+
 
 /*
     Include child storage techs
@@ -1572,6 +1635,88 @@ static void cep_store_history_clear(cepStore* store)
     }
 
     store->past = NULL;
+}
+
+void
+cep_store_history_apply_policy(cepStore* store,
+                               cepOpCount floor_stamp,
+                               uint32_t keep_versions,
+                               uint32_t* kept_versions_out,
+                               uint64_t* kept_bytes_out,
+                               cepOpCount* oldest_kept_out,
+                               uint32_t* evicted_versions_out,
+                               uint64_t* evicted_bytes_out)
+{
+    if (!store) {
+        return;
+    }
+
+    cepStoreHistory** link = (cepStoreHistory**)&store->past;
+    uint32_t kept_count = 0u;
+    uint32_t evicted_count = 0u;
+    uint64_t kept_bytes = 0u;
+    uint64_t evicted_bytes = 0u;
+    cepOpCount oldest_kept = 0u;
+
+    while (link && *link) {
+        cepStoreHistory* history = *link;
+        bool drop = false;
+        cepOpCount modified = history->node.modified;
+        if (!modified && history->entries && history->entryCount > 0u) {
+            modified = history->entries[0].modified;
+        }
+        if (floor_stamp && modified && modified < floor_stamp) {
+            drop = true;
+        }
+        if (!drop && keep_versions && kept_count >= keep_versions) {
+            drop = true;
+        }
+        if (drop) {
+            *link = (cepStoreHistory*)history->node.past;
+            size_t history_bytes = sizeof *history;
+            if (history->entryCount && history->entries) {
+                history_bytes += history->entryCount * sizeof history->entries[0];
+            }
+            evicted_bytes += history_bytes;
+            evicted_count += 1u;
+            cep_store_history_free(history);
+            continue;
+        }
+
+        kept_count += 1u;
+        size_t history_bytes = sizeof *history;
+        if (history->entryCount && history->entries) {
+            history_bytes += history->entryCount * sizeof history->entries[0];
+        }
+        kept_bytes += history_bytes;
+        if (modified && (!oldest_kept || modified < oldest_kept)) {
+            oldest_kept = modified;
+        }
+        link = (cepStoreHistory**)&history->node.past;
+    }
+
+    if (kept_versions_out) {
+        *kept_versions_out += kept_count;
+    }
+    if (kept_bytes_out) {
+        *kept_bytes_out += kept_bytes;
+    }
+    if (oldest_kept_out && oldest_kept &&
+        (!*oldest_kept_out || oldest_kept < *oldest_kept_out)) {
+        *oldest_kept_out = oldest_kept;
+    }
+    if (evicted_versions_out) {
+        *evicted_versions_out += evicted_count;
+    }
+    if (evicted_bytes_out) {
+        *evicted_bytes_out += evicted_bytes;
+    }
+}
+
+void
+cep_store_history_clear_all(cepStore* store)
+{
+    cep_store_history_clear(store);
 }
 
 
@@ -5673,7 +5818,8 @@ cep_cell_maybe_register_data_branch(cepStore* parent_store, cepCell* inserted)
     if (!inserted->store || inserted->store->indexing != CEP_INDEX_BY_NAME) {
         return;
     }
-    if (cep_runtime_track_data_branch(inserted)) {
+    cepBranchController* controller = cep_runtime_track_data_branch(inserted);
+    if (controller) {
         if (inserted->data) {
             cep_data_mark_dirty(inserted, inserted->data);
         }
@@ -5713,7 +5859,12 @@ cep_branch_controller_for_cell(const cepCell* cell)
     if (!registry) {
         return NULL;
     }
-    return cep_branch_registry_find_by_dt(registry, &branch->metacell.dt);
+    cepBranchController* controller =
+        cep_branch_registry_find_by_dt(registry, &branch->metacell.dt);
+    if (controller) {
+        return controller;
+    }
+    return cep_runtime_track_data_branch((cepCell*)branch);
 }
 
 static bool

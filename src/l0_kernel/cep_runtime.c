@@ -326,20 +326,32 @@ cep_runtime_branch_registry(cepRuntime* runtime)
     return target->branch_registry;
 }
 
-bool
+cepBranchController*
 cep_runtime_track_data_branch(cepCell* branch_root)
 {
     if (!branch_root) {
-        return false;
+        return NULL;
     }
     cepRuntime* runtime = cep_runtime_default();
     cepBranchControllerRegistry* registry = cep_runtime_branch_registry(runtime);
     if (!registry) {
-        return false;
+        return NULL;
     }
     const cepDT* branch_name =
         cep_dt_is_valid(&branch_root->metacell.dt) ? &branch_root->metacell.dt : NULL;
-    return cep_branch_registry_register(registry, branch_root, branch_name) != NULL;
+    cepBranchController* controller =
+        cep_branch_registry_register(registry, branch_root, branch_name);
+    if (!controller) {
+        return NULL;
+    }
+    if (cep_branch_lazy_boot_claim(&controller->branch_dt)) {
+        controller->policy.mode = CEP_BRANCH_PERSIST_LAZY_LOAD;
+        controller->policy.lazy_load_at_boot = true;
+    }
+    if (cep_branch_snapshot_policy_requested(&controller->branch_dt)) {
+        (void)cep_branch_controller_enable_snapshot_mode(controller);
+    }
+    return controller;
 }
 
 bool

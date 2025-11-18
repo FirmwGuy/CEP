@@ -43,6 +43,8 @@ MunitResult test_identifier(const MunitParameter params[], void* user_data_or_fi
 MunitResult test_ops(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_branch_controller_dirty_tracking(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_branch_controller_flush_policy(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_branch_controller_history_eviction(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_branch_controller_snapshot_policy(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_enzyme_setup(const MunitParameter params[], void* user_data);

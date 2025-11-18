@@ -19,8 +19,8 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/topics/LINKS-AND-SHADOWING.md` — Link lifecycle and backlink invariants that moves/clones/deletes rely on.
   - `docs/CEP-TAG-LEXICON.md` — Canonical tag catalog; extend here before introducing new identifiers.
   - `docs/L0_KERNEL/design/L0-DESIGN-CPS.md` — CPS storage architecture, CAS caching, metrics, fixtures, and operational guidance.
-  - `CPCL.md` — Shipping CPCL behavior, telemetry surfaces under `/data/persist`, and the policy knobs (`flush_every`, `flush_on_shutdown`, `allow_volatile_reads`) that branch controllers interpret today.
-  - `CPCL_FUTURE_FEATURES.md` — Backlog for upcoming CPCL modes (commit-once, lazy-load, cross-branch gating) so you can tell which promises are aspirational vs. implemented.
+  - `CPCL.md` — Shipping CPCL behavior, telemetry surfaces under `/data/persist`, and the policy knobs (`flush_every`, `flush_on_shutdown`, `allow_volatile_reads`, `snapshot_ro`, `history_ram_*`, `ram_quota`) that branch controllers interpret today.
+  - `CPCL_FUTURE_FEATURES.md` — Backlog for upcoming CPCL modes (commit-once, lazy-save, advanced RAM controls) so you can tell which promises are aspirational vs. implemented.
 
 - **Runtime & Lifecycle**
   - `docs/LAYER-BOOTSTRAP-POLICY.md` — Kernel vs. pack responsibilities during bootstrap.

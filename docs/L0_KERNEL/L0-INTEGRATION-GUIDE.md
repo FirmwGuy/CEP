@@ -53,12 +53,12 @@ Following these steps guarantees that helpers such as `cep_heartbeat_data_root()
 ## 0) Reading map
 
 * **Signals → Enzymes → Work**: register, bind, match, and order enzyme callbacks; how impulses get resolved and executed  .
-* **Serialization & Streams**: emit/ingest flat-frame cell streams; transactions; manifest & payload; proxy snapshots .
+* **Serialization & Streams**: emit/ingest flat-frame cell streams; transactions; manifest & payload; proxy snapshots; branch policy metadata flowing through `/data/persist/<branch>/config`.
 * **Diagnostics / CEI**: the Common Error Interface (`cep_cei_emit`) publishes structured Error Facts into the diagnostics mailbox (`/data/mailbox/diag`) and can emit `sig_cei/*` impulses; re-read the CEI topic before customising severity handling or routing.
 * **Federation transport manager**: negotiates mount/provider capabilities, seeds `/net/mounts` & `/net/transports`, and enforces `upd_latest` semantics so federation enzymes stay deterministic.
 * **Proxies & Libraries**: represent external resources/streams inside cells  .
 * **Naming & Namepool**: compact Domain/Tag IDs, intern/lookup text names  .
-* **Locking, History & “soft” vs “hard”**: data/store locks, append‑only timelines, snapshot traversals  .
+* **Locking, History & “soft” vs “hard”**: data/store locks, append-only timelines, snapshot traversals, read-only snapshot policy (`op/br_snapshot`) and cache eviction windows .
 * **Episodic Enzyme Engine (E³)**: promote/demote episodic work between threaded RO and cooperative RW slices without breaking replay invariants.
 * **Pause / Rollback / Resume (PRR)**: gate the heartbeat agenda, rewind the visible horizon, and drain postponed impulses deterministically.
 
@@ -348,6 +348,21 @@ Flat serializer fixtures live under `fixtures/cps/{frames,cas}` and back both `/
 3. Execute `/CEP/cps/replay/*` (or the full `meson test -C build cep_unit_tests`) to prove both CAS cache hydration and runtime lookups succeed with the refreshed fixtures.
 
 The generator fails fast with explicit log messages whenever a fixture is missing, mismatched in size, or byte-different, and the CPS replay harness now bootstraps its own runtime scope so `/data/persist/<branch>/metrics/{cas_hits,cas_miss,cas_lat_ns}` can be asserted reliably.
+
+### 2.6 Branch cache policies & telemetry surfaces
+
+Branch caches now answer “what’s resident?” without attaching a debugger. Everything surfaces through `/data/persist/<branch>` so orchestration, observability, and tests read the same evidence.
+
+**Technical details**
+- `/config` advertises the current `policy_mode` (`durable`, `scheduled`, `on_demand`, `lazy_load`, `ro_snapshot`, etc.), the flush knobs (`flush_every`, `flush_shdn`, `allow_vol`, `schedule_bt`), and the eviction inputs (`hist_ram_bt`, `hist_ram_v`, `ram_quota`, `snapshot_ro`). The controller emits the same strings as `cps_storage_policy_mode_label()`, so probes can treat the field as the durable source of truth rather than inspecting the controller struct.
+- Lazy-load controllers are driven entirely by that metadata: if `/config/policy_mode` equals `lazy_load`, `cep_branch_registry_bind_existing_children()` parks the branch DT in a lazy catalog and skips hydration at bootstrap. The first call to `cep_runtime_track_data_branch()` claims the entry, instantiates a controller, marks `policy.mode = CEP_BRANCH_PERSIST_LAZY_LOAD`, and CPS continues publishing the `hist_ram_*`/`ram_quota` knobs so tooling can confirm the branch has not hydrated yet.
+- `/branch_stat` mirrors the live horizon: `cache_bt`, `cache_ver`, and `cache_bytes` describe how many beats, timeline versions, and bytes are cached, while the usual dirty/pending counters cover flush readiness. `cep_branch_controller_apply_eviction()` recomputes those values whenever `history_ram_beats`, `history_ram_versions`, or `ram_quota_bytes` force history trimming and fires a `persist.evict` CEI fact so automation can alert on shrinking caches.
+- Snapshot policy wiring hinges on `op/br_snapshot`. The verb calls `cep_branch_controller_enable_snapshot_mode()`, which seals the branch (`cep_branch_seal_immutable`), flips `policy_mode="ro_snapshot"`, sets `/config/snapshot_ro=1`, and raises `persist.snapshot`. Those branches stop scheduling flushes but still rely on lazy hydration plus eviction metadata to stay observable, which the integration tests (`test_branch_controller_snapshot_policy` and the `integration_exercise_cache_policies` POC) assert by watching `/config`/`/branch_stat`.
+- Existing runtime verbs (`op/br_sched`, `op/br_defer`, `op/br_flush`) still work the same way; they simply leave richer telemetry behind. Tests such as `test_branch_controller_history_eviction` exercise the eviction knobs directly, and logs archived from the replay suites now include the cache CEI topics (`persist.evict`, `persist.snapshot`) so regressions are obvious.
+
+**Q&A**
+- *How do I tell whether a branch finished lazy hydration?* Once claimed, the branch disappears from the lazy catalog and `/branch_stat/cache_*` begins increasing; until then those counters stay zero even though `/config/policy_mode` reads `lazy_load`.
+- *What alerts should I wire up?* Subscribe to `persist.evict` for eviction pressure and `persist.snapshot` whenever `op/br_snapshot` seals or re-imports a branch, then read `/config/hist_ram_*` + `/branch_stat/cache_*` to decide whether the cache horizon matches policy.
 
 ---
 

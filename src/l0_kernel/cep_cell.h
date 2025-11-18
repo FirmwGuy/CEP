@@ -823,6 +823,14 @@ void*    cep_data(const cepData* data);
 #define  cep_data_new_value(dt, value, z)              ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, _z, _z);})
 void     cep_data_history_push(cepData* data);
 void     cep_data_history_clear(cepData* data);
+void     cep_data_history_apply_policy(cepData* data,
+                                       cepOpCount floor_stamp,
+                                       uint32_t keep_versions,
+                                       uint32_t* kept_versions_out,
+                                       uint64_t* kept_bytes_out,
+                                       cepOpCount* oldest_kept_out,
+                                       uint32_t* evicted_versions_out,
+                                       uint64_t* evicted_bytes_out);
 
 void  cep_library_initialize(cepCell* library, cepDT* name, const cepLibraryOps* ops, void* context);
 const cepLibraryBinding* cep_library_binding(const cepCell* library);
@@ -995,6 +1003,15 @@ enum _cepCellIndexing {
 cepStore* cep_store_new(cepDT* dt, unsigned storage, unsigned indexing, ...);
 void      cep_store_del(cepStore* store);
 void      cep_store_delete_children_hard(cepStore* store);
+void      cep_store_history_apply_policy(cepStore* store,
+                                         cepOpCount floor_stamp,
+                                         uint32_t keep_versions,
+                                         uint32_t* kept_versions_out,
+                                         uint64_t* kept_bytes_out,
+                                         cepOpCount* oldest_kept_out,
+                                         uint32_t* evicted_versions_out,
+                                         uint64_t* evicted_bytes_out);
+void      cep_store_history_clear_all(cepStore* store);
 #define   cep_store_valid(s)      ((s) && cep_dt_is_valid(&(s)->dt))
 
 static inline bool cep_store_is_insertable(cepStore* store)   {assert(cep_store_valid(store));  return (store->indexing == CEP_INDEX_BY_INSERTION);}

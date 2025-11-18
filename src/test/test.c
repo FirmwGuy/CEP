@@ -377,6 +377,22 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/branch/history_eviction",
+        test_branch_controller_history_eviction,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
+        "/branch/snapshot_policy",
+        test_branch_controller_snapshot_policy,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
         "/heartbeat/single",
         test_heartbeat_single,
         NULL,

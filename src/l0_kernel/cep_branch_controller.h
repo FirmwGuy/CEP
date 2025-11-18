@@ -31,6 +31,7 @@ typedef enum {
     CEP_BRANCH_PERSIST_LAZY_SAVE,
     CEP_BRANCH_PERSIST_SCHEDULED_SAVE,
     CEP_BRANCH_PERSIST_ON_DEMAND,
+    CEP_BRANCH_PERSIST_RO_SNAPSHOT,
     CEP_BRANCH_PERSIST_MODE_COUNT,
 } cepBranchPersistMode;
 
@@ -40,6 +41,9 @@ typedef struct {
     bool                 flush_on_shutdown;
     bool                 lazy_load_at_boot;
     bool                 allow_volatile_reads;
+    uint32_t             history_ram_beats;
+    uint32_t             history_ram_versions;
+    uint64_t             ram_quota_bytes;
 } cepBranchPersistPolicy;
 
 typedef enum {
@@ -70,6 +74,7 @@ typedef struct cepBranchController {
     cepBeatNumber          last_persisted_bt;
     cepBeatNumber          flush_scheduled_bt;
     cepBeatNumber          periodic_anchor_bt;
+    cepBeatNumber          last_eviction_bt;
     uint64_t               dirty_entry_count;
     uint64_t               dirty_bytes;
     uint64_t               pending_mutations;
@@ -82,6 +87,9 @@ typedef struct cepBranchController {
     bool                   registered;
     bool                   pinned;
     bool                   force_flush;
+    uint32_t               cached_history_beats;
+    uint32_t               cached_history_versions;
+    uint64_t               cached_history_bytes;
 } cepBranchController;
 
 typedef struct cepBranchControllerRegistry cepBranchControllerRegistry;
@@ -106,11 +114,18 @@ typedef struct {
     cepBranchPolicyRisk   risk;
 } cepBranchPolicyResult;
 
+/**
+ * Tracks context for source/verb operations so branch policy guards can attach
+ * Decision Cell evidence to risky cross-branch reads before allowing them to
+ * proceed.
+ */
 typedef struct {
     const cepBranchController* consumer;
     const cepBranchController* source;
     const char*                verb;
     cepBranchPolicyResult      last_result;
+    bool                       decision_required;
+    bool                       decision_recorded;
 } cepCellSvoContext;
 
 cepBranchControllerRegistry* cep_branch_registry_create(void);
@@ -128,6 +143,7 @@ cepBranchController* cep_branch_registry_find_by_dt(const cepBranchControllerReg
 
 bool cep_branch_registry_bind_existing_children(cepBranchControllerRegistry* registry,
                                                 cepCell* data_root);
+bool cep_branch_snapshot_policy_requested(const cepDT* branch_dt);
 
 const cepBranchPersistPolicy* cep_branch_controller_policy(const cepBranchController* controller);
 void                          cep_branch_controller_set_policy(cepBranchController* controller,
@@ -140,6 +156,8 @@ cepBranchController* cep_branch_registry_controller(const cepBranchControllerReg
 const cepBranchDirtyEntry* cep_branch_controller_dirty_entries(const cepBranchController* controller,
                                                                size_t* count);
 void cep_branch_controller_clear_dirty(cepBranchController* controller);
+bool cep_branch_controller_enable_snapshot_mode(cepBranchController* controller);
+void cep_branch_controller_apply_eviction(cepBranchController* controller);
 cepBranchController* cep_branch_controller_for_cell(const cepCell* cell);
 cepBranchPolicyResult cep_branch_policy_check_read(const cepBranchController* consumer,
                                                    const cepBranchController* source);
@@ -153,6 +171,15 @@ void cep_cell_svo_context_set_source(cepCellSvoContext* ctx, const cepCell* sour
 bool cep_cell_svo_context_guard(cepCellSvoContext* ctx,
                                 const cepCell* fallback_source,
                                 const char* topic);
+bool cep_decision_cell_record_cross_branch(const cepBranchController* consumer,
+                                           const cepBranchController* source,
+                                           const char* verb,
+                                           cepBranchPolicyRisk risk);
+bool cep_decision_cell_replay_begin(void);
+void cep_decision_cell_replay_end(void);
+bool cep_branch_lazy_boot_register(const cepDT* branch_dt);
+bool cep_branch_lazy_boot_claim(const cepDT* branch_dt);
+void cep_branch_lazy_boot_reset(void);
 
 #ifdef __cplusplus
 }

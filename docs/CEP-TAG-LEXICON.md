@@ -41,6 +41,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `beat` | Runtime platform | dictionary grouping heartbeat evidence for a specific beat. |
 | `cas` | Runtime platform | content-addressable storage subtree. |
 | `data` | Runtime platform | durable dataset root promoted at the end of a beat. |
+| `decisions` | Runtime platform | `/journal/decisions` ledger containing Decision Cell entries for risky cross-branch reads. |
 | `persist` | Runtime platform | `/data/persist` subtree publishing CPS readiness evidence and per-branch stats. |
 | `metrics` | Runtime platform | dictionary under `/data/persist/<branch>/metrics` containing per-branch counters. |
 | `kv_eng` | Runtime platform | `val/text` field on `/data/persist/<branch>` identifying the active CPS backend (e.g. `flatfile`). |
@@ -67,8 +68,12 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `flush_every` | Runtime platform | `config` field reporting the `flush_every_beats` policy value. |
 | `flush_shdn` | Runtime platform | `config` field flagging whether the branch flushes when shutdown runs. |
 | `allow_vol` | Runtime platform | `config` field signalling whether volatile reads are permitted for the branch. |
+| `snapshot_ro` | Runtime platform | `config` field set to `1` when the branch runs under the read-only snapshot policy. |
 | `schedule_bt` | Runtime platform | `config` field recording the beat the next scheduled flush should run (0 when unscheduled). |
 | `bundle` | Runtime platform | envelope field used by `op/import` to specify the filesystem path to an exported CPS bundle. |
+| `consumer` | Runtime platform | dictionary field storing the consumer branch DT inside `/journal/decisions/<entry>`. |
+| `source` | Runtime platform | dictionary field storing the source branch DT inside `/journal/decisions/<entry>`. |
+| `risk` | Runtime platform | text field recording the branch policy risk (`dirty` or `volatile`) for a recorded decision. |
 | `persist.commit` | Runtime platform | CEI topic emitted when CPS finishes persisting a beat (`cps_storage_commit_current_beat`). |
 | `persist.frame.io` | Runtime platform | CEI topic emitted when frame staging, fsync, or copy operations fail on the CPS backend. |
 | `persist.checkpoint` | Runtime platform | CEI topic emitted when CPS writes checkpoint TOCs or reports errors during `op/checkpt`. |
@@ -77,6 +82,8 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `persist.flush.begin` | Runtime platform | CEI topic emitted when a branch flush request begins emitting a frame. |
 | `persist.flush.done` | Runtime platform | CEI topic emitted when a branch flush request completes successfully. |
 | `persist.flush.fail` | Runtime platform | CEI topic emitted when a branch flush request fails to serialize or apply. |
+| `persist.evict` | Runtime platform | CEI topic emitted when CPCL trims branch cache history because RAM windows or quotas require eviction. |
+| `persist.snapshot` | Runtime platform | CEI topic emitted when an operator enables the read-only snapshot policy for a branch. |
 | `persist.defer` | Runtime platform | CEI topic emitted when a branch is placed into deferred/on-demand flush mode. |
 | `chn:serial` | Async I/O fabric | OPS/telemetry channel name reserved for the flat serializer sink. |
 | `prov:serial` | Async I/O fabric | Async provider identifier recorded alongside serializer sink requests. |
