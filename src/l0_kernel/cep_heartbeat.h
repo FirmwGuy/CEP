@@ -48,6 +48,7 @@ typedef enum {
 typedef struct {
     cepCell* root;
     cepCell* sys;
+    cepCell* security;
     cepCell* rt;
     cepCell* journal;
     cepCell* env;
@@ -228,6 +229,7 @@ bool  cep_heartbeat_process_impulses(void);
 
 
 cepCell*  cep_heartbeat_sys_root(void);
+cepCell*  cep_heartbeat_security_root(void);
 cepCell*  cep_heartbeat_rt_root(void);
 cepCell*  cep_heartbeat_journal_root(void);
 cepCell*  cep_heartbeat_env_root(void);

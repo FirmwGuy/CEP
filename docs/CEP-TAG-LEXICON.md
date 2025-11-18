@@ -41,6 +41,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `beat` | Runtime platform | dictionary grouping heartbeat evidence for a specific beat. |
 | `cas` | Runtime platform | content-addressable storage subtree. |
 | `data` | Runtime platform | durable dataset root promoted at the end of a beat. |
+| `policy` | Runtime platform | pack-owned subtree under `/data/<pack>/policy` for publishing security pipeline specs or other pack policies. |
 | `decisions` | Runtime platform | `/journal/decisions` ledger containing Decision Cell entries for risky cross-branch reads. |
 | `persist` | Runtime platform | `/data/persist` subtree publishing CPS readiness evidence and per-branch stats. |
 | `metrics` | Runtime platform | dictionary under `/data/persist/<branch>/metrics` containing per-branch counters. |
@@ -111,7 +112,43 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `dictionary` | Runtime platform | canonical store tag for dictionary nodes. |
 | `dtor` | Runtime platform | spec field storing the optional organ destructor enzyme name. |
 | `ctor` | Runtime platform | spec field storing the optional organ constructor enzyme name. |
-| `env` | Runtime platform | runtime environment subtree for external handles. |
+| `env` | Runtime platform | runtime environment subtree for external handles and the `security/env` overlay that stores environment-specific AEC policies. |
+| `security` | Runtime platform | `/sys/security` subtree that collects Access & Execution Control policies. |
+| `enclaves` | Runtime platform | dictionary under `/sys/security` describing enclave IDs and trust tiers. |
+| `edges` | Runtime platform | dictionary under `/sys/security` storing cross-enclave edge policies. |
+| `gateways` | Runtime platform | dictionary under `/sys/security` enumerating gateway enzymes surfaced to other enclaves. |
+| `branches` | Runtime platform | dictionary under `/sys/security` specifying crown-jewel branch rules. |
+| `defaults` | Runtime platform | dictionary under `/sys/security` capturing fallback budgets, TTLs, and rate ceilings. |
+| `pipelines` | Runtime platform | `/data/<pack>/policy/security/pipelines` subtree containing pack-owned pipeline specs awaiting approval. |
+| `pipeline_id` | Runtime platform | `val/text` field storing the `<pack>/<name>` identifier for a pipeline spec. |
+| `stages` | Runtime platform | ordered dictionary listing the stages for a given pipeline spec. |
+| `ceilings` | Runtime platform | optional dictionary inside a pipeline spec supplying requested aggregate ceilings. |
+| `stage_id` | Runtime platform | per-stage identifier stored in each pipeline stage definition. |
+| `stg_encl` | Runtime platform | `val/text` field assigning an enclave label to a pipeline stage. |
+| `stg_enz` | Runtime platform | `val/text` field naming the gateway enzyme executed at a pipeline stage. |
+| `approval` | Runtime platform | dictionary under each pipeline spec that records approval state, notes, and metadata. |
+| `pol_ver` | Runtime platform | `val/u64` field inside a pipeline approval noting the security snapshot version used for validation. |
+| `appr_bt` | Runtime platform | `val/u64` beat counter recorded when a pipeline spec was approved. |
+| `tot_cpu_ns` | Runtime platform | pipeline ceiling field storing allowable cumulative CPU time per DAG. |
+| `total_io_by` | Runtime platform | pipeline ceiling field storing allowable cumulative IO bytes per DAG. |
+| `max_hops` | Runtime platform | pipeline ceiling field recording the maximum allowable edge count. |
+| `max_wall_ms` | Runtime platform | pipeline ceiling field storing the maximum wall clock duration (milliseconds). |
+| `max_beats` | Runtime platform | default budget field storing allowable beats per hop. |
+| `mbox_max_bt` | Runtime platform | TTL default storing maximum heartbeat span for mailbox enforcement. |
+| `ep_max_bt` | Runtime platform | TTL default storing maximum heartbeat span for episode-level enforcement. |
+| `rsub_qps` | Runtime platform | rate ceiling field storing QPS caps per subject. |
+| `renz_qps` | Runtime platform | rate ceiling field storing QPS caps per gateway enzyme. |
+| `redge_qps` | Runtime platform | rate ceiling field storing QPS caps per edge (enclave→enclave). |
+| `prod` | Runtime platform | leaf dictionary under `/sys/security/env` for production overlays. |
+| `staging` | Runtime platform | leaf dictionary under `/sys/security/env` for staging overlays. |
+| `dev` | Runtime platform | leaf dictionary under `/sys/security/env` for development overlays. |
+| `sec.edge.deny` | Runtime platform | CEI topic emitted when an enclave edge policy denies a gateway invocation. |
+| `sec.limit.hit` | Runtime platform | CEI topic emitted when a security budget or rate ceiling blocks a send. |
+| `sig_sec/pipeline_preflight` | Signals | Signal routed to the pipeline preflight enzyme responsible for validating pipeline specs. |
+| `sec_sends` | Runtime platform | telemetry counter tracking sends consumed under a security budget. |
+| `sec_bytes` | Runtime platform | telemetry counter tracking bytes consumed under a security budget. |
+| `sec_hits` | Runtime platform | telemetry counter tracking how many times a security limit fired. |
+| `sec_rate` | Runtime platform | telemetry counter recording the current beat’s rate usage under a security ceiling. |
 | `envelope` | Runtime platform | sealed message metadata dictionary under a mailbox message. |
 | `err` | Runtime platform | root dictionary encapsulating a structured Common Error Interface fact. |
 | `enzymes` | Runtime platform | registry dictionary exposing registered enzymes. |

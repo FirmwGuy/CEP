@@ -13,6 +13,7 @@
 #include "cep_namepool.h"
 #include "cep_ops.h"
 #include "secdata/cep_secdata.h"
+#include "cep_enclave_policy.h"
 
 #include <stdarg.h>
 #include <dlfcn.h>
@@ -20,6 +21,20 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+
+#ifdef CEP_ENABLE_DEBUG
+#include <execinfo.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static void cep_cell_debug_inline_swap_trace(const char* stage,
+                                             const cepCell* cell,
+                                             const cepData* data,
+                                             size_t size,
+                                             size_t capacity,
+                                             bool capture_stack);
+#endif
 
 static void cep_store_mark_dirty(cepStore* store);
 static void cep_data_mark_dirty(cepCell* owner, cepData* data);
@@ -648,26 +663,89 @@ void cep_proxy_initialize_stream(cepCell* cell, cepDT* name, cepCell* stream, ce
 }
 
 
-void cep_data_history_push(cepData* data) {
+bool cep_data_history_push(cepData* data) {
     assert(data);
 
     cep_secdata_runtime_scrub(data);
     if (!data->modified)
-        return;
+        return false;
 
     cepDataNode* past = cep_malloc(sizeof *past);
-    memcpy(past, (const cepDataNode*) &data->modified, sizeof *past);
+    if (!past)
+        return false;
+
+    memcpy(past, (const cepDataNode*)&data->modified, sizeof *past);
+
+    bool needs_payload_copy =
+        (data->datatype == CEP_DATATYPE_DATA) && past->data;
+    if (needs_payload_copy) {
+        size_t copy_capacity = past->capacity ? past->capacity : past->size;
+        if (!copy_capacity)
+            copy_capacity = past->size ? past->size : 1u;
+        void* copy = cep_malloc(copy_capacity);
+        if (!copy) {
+            cep_free(past);
+            return false;
+        }
+        if (past->size)
+            memcpy(copy, past->data, past->size);
+        past->data = copy;
+        past->capacity = copy_capacity;
+        past->destructor = cep_free;
+    }
+
+    past->stored_datatype = data->datatype;
     past->past = data->past;
     past->bindings = NULL;
     past->binding = NULL;
     data->past = past;
+    return true;
 }
 
-static void cep_data_history_node_release(cepDataNode* node, unsigned datatype) {
+static cepDataNode*
+cep_data_history_clone_head(const cepData* data)
+{
+    if (!data || !data->modified) {
+        return NULL;
+    }
+
+    cepDataNode* clone = cep_malloc0(sizeof *clone);
+    if (!clone) {
+        return NULL;
+    }
+
+    memcpy(clone, (const cepDataNode*)&data->modified, sizeof *clone);
+    clone->past = NULL;
+    bool needs_payload_copy =
+        (data->datatype == CEP_DATATYPE_DATA) && clone->data;
+    if (needs_payload_copy) {
+        size_t copy_capacity = clone->capacity ? clone->capacity : clone->size;
+        if (!copy_capacity) {
+            copy_capacity = clone->size ? clone->size : 1u;
+        }
+        void* copy = cep_malloc(copy_capacity);
+        if (!copy) {
+            cep_free(clone);
+            return NULL;
+        }
+        if (clone->size) {
+            memcpy(copy, clone->data, clone->size);
+        }
+        clone->data = copy;
+        clone->capacity = copy_capacity;
+        clone->destructor = cep_free;
+    }
+    clone->stored_datatype = data->datatype;
+    clone->bindings = NULL;
+    clone->binding = NULL;
+    return clone;
+}
+
+static void cep_data_history_node_release(cepDataNode* node) {
     if (!node)
         return;
 
-    switch (datatype) {
+    switch (node->stored_datatype) {
       case CEP_DATATYPE_DATA: {
         if (node->destructor && node->data)
             node->destructor(node->data);
@@ -701,7 +779,7 @@ void cep_data_history_clear(cepData* data) {
 
     for (cepDataNode* node = data->past; node; ) {
         cepDataNode* previous = node->past;
-        cep_data_history_node_release(node, data->datatype);
+        cep_data_history_node_release(node);
         node = previous;
     }
 
@@ -722,6 +800,11 @@ cep_data_history_apply_policy(cepData* data,
         return;
     }
 
+    uint32_t remaining = 0u;
+    for (cepDataNode* iter = data->past; iter; iter = iter->past) {
+        ++remaining;
+    }
+
     uint32_t kept_count = 0u;
     uint64_t kept_bytes = 0u;
     uint32_t evicted_versions = 0u;
@@ -732,17 +815,24 @@ cep_data_history_apply_policy(cepData* data,
     while (link && *link) {
         cepDataNode* node = *link;
         bool drop = false;
+        bool version_guard = keep_versions && (remaining <= keep_versions);
         if (floor_stamp && node->modified && node->modified < floor_stamp) {
             drop = true;
         }
         if (!drop && keep_versions && kept_count >= keep_versions) {
             drop = true;
         }
+        if (drop && version_guard) {
+            drop = false;
+        }
         if (drop) {
             *link = node->past;
             evicted_bytes += node->size;
             evicted_versions += 1u;
-            cep_data_history_node_release(node, data->datatype);
+            cep_data_history_node_release(node);
+            if (remaining > 0u) {
+                --remaining;
+            }
             continue;
         }
         kept_count += 1u;
@@ -751,6 +841,9 @@ cep_data_history_apply_policy(cepData* data,
             oldest_kept = node->modified;
         }
         link = &node->past;
+        if (remaining > 0u) {
+            --remaining;
+        }
     }
 
     if (kept_versions_out) {
@@ -1038,6 +1131,7 @@ cepData* cep_data_new(  cepDT* type, unsigned datatype, bool writable,
     data->tag       = type->tag;
     data->glob      = type->glob;
     data->datatype  = datatype;
+    data->stored_datatype = datatype;
     data->writable  = writable;
     data->lock      = 0u;
     data->lockOwner = NULL;
@@ -1477,7 +1571,19 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
 
     switch (data->datatype) {
       case CEP_DATATYPE_VALUE: {
-        cep_data_history_push(data);
+        bool snapshot_created = cep_data_history_push(data);
+        if (swap) {
+            if (!value)
+                break;
+            data->datatype = CEP_DATATYPE_DATA;
+            data->stored_datatype = CEP_DATATYPE_DATA;
+            data->data = value;
+            data->destructor = cep_free;
+            data->capacity = capacity;
+            data->size = size;
+            result = data->data;
+            break;
+        }
         assert(data->capacity >= capacity);
         memcpy(data->value, value, size);
         data->size = size;
@@ -1486,10 +1592,10 @@ static inline void* cep_data_update(cepData* data, size_t size, size_t capacity,
       }
 
       case CEP_DATATYPE_DATA: {
-        cep_data_history_push(data);
+        bool snapshot_created = cep_data_history_push(data);
         assert(value);
         if (swap) {
-            if (data->destructor)
+            if (data->destructor && !snapshot_created)
                 data->destructor(data->data);
             data->data     = value;
             data->capacity = capacity;
@@ -1652,6 +1758,10 @@ cep_store_history_apply_policy(cepStore* store,
     }
 
     cepStoreHistory** link = (cepStoreHistory**)&store->past;
+    uint32_t remaining = 0u;
+    for (cepStoreHistory* iter = (cepStoreHistory*)store->past; iter; iter = (cepStoreHistory*)iter->node.past) {
+        ++remaining;
+    }
     uint32_t kept_count = 0u;
     uint32_t evicted_count = 0u;
     uint64_t kept_bytes = 0u;
@@ -1665,11 +1775,15 @@ cep_store_history_apply_policy(cepStore* store,
         if (!modified && history->entries && history->entryCount > 0u) {
             modified = history->entries[0].modified;
         }
+        bool version_guard = keep_versions && (remaining <= keep_versions);
         if (floor_stamp && modified && modified < floor_stamp) {
             drop = true;
         }
         if (!drop && keep_versions && kept_count >= keep_versions) {
             drop = true;
+        }
+        if (drop && version_guard) {
+            drop = false;
         }
         if (drop) {
             *link = (cepStoreHistory*)history->node.past;
@@ -1680,6 +1794,9 @@ cep_store_history_apply_policy(cepStore* store,
             evicted_bytes += history_bytes;
             evicted_count += 1u;
             cep_store_history_free(history);
+            if (remaining > 0u) {
+                --remaining;
+            }
             continue;
         }
 
@@ -1693,6 +1810,9 @@ cep_store_history_apply_policy(cepStore* store,
             oldest_kept = modified;
         }
         link = (cepStoreHistory**)&history->node.past;
+        if (remaining > 0u) {
+            --remaining;
+        }
     }
 
     if (kept_versions_out) {
@@ -2527,26 +2647,102 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
         restore_writable = true;
     }
 
-    bool success = false;
-    cepDT lookup = cep_dt_clean(field);
-    cepCell* existing = cep_cell_find_by_name(owner, &lookup);
-    if (existing) {
-        CEP_DEBUG_PRINTF("[cep_cell_put_text] removing existing field=%016llx/%016llx\n",
-                         (unsigned long long)cep_id(lookup.domain),
-                         (unsigned long long)cep_id(lookup.tag));
-        cep_cell_remove_hard(existing, NULL);
-    }
-
     size_t len = strlen(text) + 1u;
     const cepDT* payload_ref = CEP_DTAW("CEP", "text");
     cepDT payload_type = *payload_ref;
-
     cepCell* node = NULL;
 
-    if (len <= sizeof(((cepData*)0)->value)) {
+    bool success = false;
+    cepDataNode* replacement_history = NULL;
+    cepDT lookup = cep_dt_clean(field);
+    cepCell* existing = cep_cell_find_by_name(owner, &lookup);
+    static cepDT debug_evict_field_dt = {0};
+    if (!cep_dt_is_valid(&debug_evict_field_dt)) {
+        debug_evict_field_dt = cep_ops_make_dt("evict_field");
+    }
+    bool debug_evict_field = (cep_dt_compare(&lookup, &debug_evict_field_dt) == 0);
+    if (debug_evict_field) {
+        fprintf(stderr,
+                "[put_text][evict_field] existing=%p data=%p\n",
+                (void*)existing,
+                existing ? (void*)existing->data : NULL);
+    }
+
+    if (existing) {
+        CEP_DEBUG_PRINTF("[cep_cell_put_text] updating existing field=%016llx/%016llx\n",
+                         (unsigned long long)cep_id(lookup.domain),
+                         (unsigned long long)cep_id(lookup.tag));
+        cepCell* resolved_existing = cep_cell_resolve(existing);
+        if (resolved_existing && cep_cell_is_normal(resolved_existing) &&
+            cep_cell_has_data(resolved_existing)) {
+            if (resolved_existing->data) {
+                cep_data_history_push(resolved_existing->data);
+            }
+            if (debug_evict_field) {
+                fprintf(stderr,
+                        "[put_text][evict_field] resolved data=%p past=%p modified=%" PRIu64 "\n",
+                        (void*)resolved_existing->data,
+                        resolved_existing->data ? (void*)resolved_existing->data->past : NULL,
+                        resolved_existing->data ? (uint64_t)resolved_existing->data->modified : 0u);
+            }
+            size_t len = strlen(text) + 1u;
+            bool updated = false;
+            cepData* payload = resolved_existing->data;
+            bool is_inline_value = payload && payload->datatype == CEP_DATATYPE_VALUE;
+            size_t inplace_capacity = payload ? payload->capacity : 0u;
+            if (payload && payload->datatype == CEP_DATATYPE_VALUE &&
+                inplace_capacity < len) {
+                inplace_capacity = sizeof payload->value;
+            }
+            if (payload && inplace_capacity >= len) {
+                updated = (cep_cell_update(resolved_existing, len, inplace_capacity, (void*)text, false) != NULL);
+            } else if (payload && !is_inline_value) {
+#ifdef CEP_ENABLE_DEBUG
+                cep_cell_debug_inline_swap_trace("put_text.swap-plan",
+                                                 resolved_existing,
+                                                 payload,
+                                                 len,
+                                                 len,
+                                                 payload->datatype == CEP_DATATYPE_VALUE);
+#endif
+                char* copy = cep_malloc(len);
+                if (copy) {
+                    memcpy(copy, text, len);
+                    updated = (cep_cell_update(resolved_existing, len, len, copy, true) != NULL);
+                    if (!updated) {
+                        cep_free(copy);
+                    }
+                }
+            }
+            if (updated) {
+                node = resolved_existing;
+                success = true;
+                if (debug_evict_field && resolved_existing && resolved_existing->data) {
+                    fprintf(stderr,
+                            "[put_text][evict_field][post] text=%s past=%p modified=%" PRIu64 "\n",
+                            text,
+                            (void*)resolved_existing->data->past,
+                            (uint64_t)resolved_existing->data->modified);
+                }
+            }
+        }
+        if (!success && resolved_existing && resolved_existing->data) {
+            replacement_history = cep_data_history_clone_head(resolved_existing->data);
+        }
+        if (!success) {
+            cep_cell_remove_hard(existing, NULL);
+        }
+    }
+
+    if (!success && len <= sizeof(((cepData*)0)->value)) {
         node = cep_dict_add_value(owner, &lookup, &payload_type, (void*)text, len, len);
         success = (node != NULL);
-    } else {
+        if (success && node && node->data && replacement_history) {
+            replacement_history->past = node->data->past;
+            node->data->past = replacement_history;
+            replacement_history = NULL;
+        }
+    } else if (!success) {
         char* copy = cep_malloc(len);
         if (copy) {
             memcpy(copy, text, len);
@@ -2555,8 +2751,18 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
                 cep_free(copy);
             } else {
                 success = true;
+                if (node->data && replacement_history) {
+                    replacement_history->past = node->data->past;
+                    node->data->past = replacement_history;
+                    replacement_history = NULL;
+                }
             }
         }
+    }
+
+    if (!success && replacement_history) {
+        cep_data_history_node_release(replacement_history);
+        replacement_history = NULL;
     }
 
     if (node) {
@@ -2749,8 +2955,9 @@ static bool cep_branch_seal_immutable_impl(cepCell* node) {
         return true;
 
     cepSealImmutableCtx ctx = {.ok = true};
-    if (!cep_cell_deep_traverse_all(node, cep_branch_seal_descendant, NULL, &ctx, NULL))
+    if (!cep_cell_deep_traverse_all(node, cep_branch_seal_descendant, NULL, &ctx, NULL)) {
         ctx.ok = false;
+    }
 
     return ctx.ok;
 }
@@ -5756,6 +5963,8 @@ void cep_cell_finalize_hard(cepCell* cell) {
    docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md.
 */
 static bool cep_cell_is_under_data_branch(const cepCell* cell);
+bool cep_cell_is_under_security_branch(const cepCell* cell);
+cepBranchController* cep_branch_controller_for_security_cell(const cepCell* cell);
 
 static void
 cep_store_mark_dirty(cepStore* store)
@@ -5763,7 +5972,13 @@ cep_store_mark_dirty(cepStore* store)
     if (!store) {
         return;
     }
-    if (!cep_cell_is_under_data_branch(store->owner)) {
+    cepCell* owner = store->owner;
+    bool under_data = cep_cell_is_under_data_branch(owner);
+    bool under_security = cep_cell_is_under_security_branch(owner);
+    if (under_security) {
+        cep_enclave_policy_mark_dirty();
+    }
+    if (!under_data) {
         return;
     }
     if (store->dirty) {
@@ -5771,7 +5986,7 @@ cep_store_mark_dirty(cepStore* store)
     }
     store->dirty = 1u;
     cepBranchController* controller =
-        cep_branch_controller_for_cell(store->owner);
+        cep_branch_controller_for_cell(owner);
     if (!controller) {
         return;
     }
@@ -5786,7 +6001,12 @@ cep_data_mark_dirty(cepCell* owner, cepData* data)
     if (!owner || !data) {
         return;
     }
-    if (!cep_cell_is_under_data_branch(owner)) {
+    bool under_data = cep_cell_is_under_data_branch(owner);
+    bool under_security = cep_cell_is_under_security_branch(owner);
+    if (under_security) {
+        cep_enclave_policy_mark_dirty();
+    }
+    if (!under_data) {
         return;
     }
     if (data->dirty) {
@@ -5885,6 +6105,58 @@ cep_cell_is_under_data_branch(const cepCell* cell)
         cursor = cep_cell_parent(cursor);
     }
     return false;
+}
+
+bool
+cep_cell_is_under_security_branch(const cepCell* cell)
+{
+    if (!cell || !cep_cell_system_initialized()) {
+        return false;
+    }
+    cepCell* security_root = cep_heartbeat_security_root();
+    if (!security_root) {
+        return false;
+    }
+    const cepCell* cursor = cell;
+    while (cursor) {
+        if (cursor == security_root) {
+            return true;
+        }
+        cursor = cep_cell_parent(cursor);
+    }
+    return false;
+}
+
+cepBranchController*
+cep_branch_controller_for_security_cell(const cepCell* cell)
+{
+    if (!cell || !cep_cell_system_initialized()) {
+        return NULL;
+    }
+    cepCell* security_root = cep_heartbeat_security_root();
+    if (!security_root) {
+        return NULL;
+    }
+    const cepCell* cursor = cell;
+    const cepCell* branch = NULL;
+    while (cursor) {
+        const cepCell* parent = cep_cell_parent(cursor);
+        if (parent == security_root) {
+            branch = cursor;
+            break;
+        }
+        cursor = parent;
+    }
+    if (!branch) {
+        return NULL;
+    }
+    cepBranchControllerRegistry* registry = cep_runtime_branch_registry(NULL);
+    if (!registry) {
+        return NULL;
+    }
+    cepBranchController* controller =
+        cep_branch_registry_find_by_dt(registry, &branch->metacell.dt);
+    return controller;
 }
 
 cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
@@ -6184,6 +6456,156 @@ void* cep_cell_data_find_by_name_past(const cepCell* cell, cepDT* name, cepOpCou
 }
 
 
+#ifdef CEP_ENABLE_DEBUG
+#define CEP_INLINE_SWAP_TRACE_DIR  "/tmp/cep_trace"
+#define CEP_INLINE_SWAP_TRACE_FILE CEP_INLINE_SWAP_TRACE_DIR "/inline_swap.log"
+
+static FILE* cep_cell_debug_inline_swap_open_file(void) {
+    static bool dir_ready = false;
+    if (!dir_ready) {
+        if (mkdir(CEP_INLINE_SWAP_TRACE_DIR, 0777) != 0 && errno != EEXIST) {
+            return NULL;
+        }
+        dir_ready = true;
+    }
+    return fopen(CEP_INLINE_SWAP_TRACE_FILE, "a");
+}
+
+static const char* cep_cell_debug_inline_swap_type_name(const cepData* data) {
+    if (!data)
+        return "unknown";
+    switch (data->datatype) {
+      case CEP_DATATYPE_VALUE:
+        return "VALUE";
+      case CEP_DATATYPE_DATA:
+        return "DATA";
+      case CEP_DATATYPE_HANDLE:
+        return "HANDLE";
+      case CEP_DATATYPE_STREAM:
+        return "STREAM";
+      default:
+        return "invalid";
+    }
+}
+
+static void cep_cell_debug_inline_swap_format_path(const cepCell* cell, char* buffer, size_t capacity) {
+    if (!buffer || !capacity) {
+        return;
+    }
+    buffer[0] = '\0';
+    if (!cell) {
+        return;
+    }
+    char segments[32][64];
+    unsigned segment_count = 0u;
+    const cepCell* cursor = cell;
+    while (cursor && !cep_cell_is_root((cepCell*)cursor) && segment_count < cep_lengthof(segments)) {
+        const cepDT* cursor_name = cep_cell_get_name(cursor);
+        char dom_buf[64];
+        char tag_buf[64];
+        const char* dom = cep_debug_id_desc(cursor_name ? cursor_name->domain : 0u,
+                                            dom_buf,
+                                            sizeof dom_buf);
+        const char* tag = cep_debug_id_desc(cursor_name ? cursor_name->tag : 0u,
+                                            tag_buf,
+                                            sizeof tag_buf);
+        snprintf(segments[segment_count], sizeof segments[segment_count], "%s/%s", dom, tag);
+        ++segment_count;
+        cursor = cep_cell_parent(cursor);
+    }
+
+    if (!segment_count) {
+        snprintf(buffer, capacity, "/");
+        return;
+    }
+
+    size_t used = 0u;
+    for (unsigned idx = segment_count; idx-- > 0u;) {
+        int written = snprintf(buffer + used,
+                               (used < capacity) ? capacity - used : 0u,
+                               "/%s",
+                               segments[idx]);
+        if (written < 0)
+            return;
+        if ((size_t)written >= ((used < capacity) ? (capacity - used) : 0u)) {
+            if (capacity)
+                buffer[capacity - 1u] = '\0';
+            return;
+        }
+        used += (size_t)written;
+    }
+}
+
+static void cep_cell_debug_inline_swap_dump_stack(FILE* stream) {
+    if (!stream)
+        return;
+    void* frames[16];
+    int captured = backtrace(frames, (int)cep_lengthof(frames));
+    if (captured <= 0)
+        return;
+    char** symbols = backtrace_symbols(frames, captured);
+    for (int i = 0; i < captured; ++i) {
+        if (symbols) {
+            fprintf(stream, "    #%02d %s\n", i, symbols[i]);
+        } else {
+            fprintf(stream, "    #%02d %p\n", i, frames[i]);
+        }
+    }
+    if (symbols)
+        free(symbols);
+}
+
+static void cep_cell_debug_inline_swap_trace(const char* stage,
+                                             const cepCell* cell,
+                                             const cepData* data,
+                                             size_t size,
+                                             size_t capacity,
+                                             bool capture_stack) {
+    if (!stage || !cell || !data)
+        return;
+    FILE* log = cep_cell_debug_inline_swap_open_file();
+    if (!log)
+        return;
+
+    char path_buf[512];
+    cep_cell_debug_inline_swap_format_path(cell, path_buf, sizeof path_buf);
+
+    char dom_buf[64];
+    char tag_buf[64];
+    const cepDT* cell_name = cep_cell_get_name(cell);
+    const char* dom = cep_debug_id_desc(cell_name ? cell_name->domain : 0u,
+                                        dom_buf,
+                                        sizeof dom_buf);
+    const char* tag = cep_debug_id_desc(cell_name ? cell_name->tag : 0u,
+                                        tag_buf,
+                                        sizeof tag_buf);
+
+    const char* type_name = cep_cell_debug_inline_swap_type_name(data);
+    fprintf(log,
+            "[inline-swap:%s] swap=1 cell=%p name=%s/%s path=%s datatype=%s inline=%u size=%zu new_cap=%zu data_cap=%zu writable=%u modified=%" PRIu64 "\n",
+            stage,
+            (void*)cell,
+            dom,
+            tag,
+            path_buf,
+            type_name,
+            (data->datatype == CEP_DATATYPE_VALUE) ? 1u : 0u,
+            size,
+            capacity,
+            data->capacity,
+            data->writable ? 1u : 0u,
+            (uint64_t)data->modified);
+
+    if (capture_stack && data->datatype == CEP_DATATYPE_VALUE) {
+        fputs("    stack:\n", log);
+        cep_cell_debug_inline_swap_dump_stack(log);
+    }
+
+    fclose(log);
+}
+#endif
+
+
 /*
    Updates the data of a cell while preserving historical payload snapshots.
 */
@@ -6198,6 +6620,12 @@ void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, 
     cepData* data = cell->data;
     if CEP_NOT_ASSERT(data)
         return NULL;
+
+#ifdef CEP_ENABLE_DEBUG
+    if (swap) {
+        cep_cell_debug_inline_swap_trace("cell.update", cell, data, size, capacity, data->datatype == CEP_DATATYPE_VALUE);
+    }
+#endif
 
     if (cep_data_hierarchy_locked(cell))
         return NULL;
@@ -6223,17 +6651,18 @@ void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, 
 
     bool snapshotOwnsCopy = false;
 
-    if (data->datatype == CEP_DATATYPE_DATA && snapshot->data && snapshot->size) {
-        if (!swap) {
-            size_t allocSize = snapshot->capacity ? snapshot->capacity : snapshot->size;
-            void* copy = cep_malloc(allocSize);
-            memcpy(copy, snapshot->data, snapshot->size);
-            snapshot->data = copy;
-            snapshot->destructor = cep_free;
-            snapshotOwnsCopy = true;
-        }
-        // For swap=true we keep the original pointer so history owns it via the copied descriptor.
+    if (data->datatype == CEP_DATATYPE_DATA && snapshot->data) {
+        size_t allocSize = snapshot->capacity ? snapshot->capacity : snapshot->size;
+        if (!allocSize)
+            allocSize = snapshot->size ? snapshot->size : 1u;
+        void* copy = cep_malloc(allocSize);
+        memcpy(copy, snapshot->data, snapshot->size);
+        snapshot->data = copy;
+        snapshot->capacity = allocSize;
+        snapshot->destructor = cep_free;
+        snapshotOwnsCopy = true;
     }
+    snapshot->stored_datatype = data->datatype;
 
     data->past = snapshot;
 
@@ -6241,6 +6670,18 @@ void* cep_cell_update(cepCell* cell, size_t size, size_t capacity, void* value, 
 
     switch (data->datatype) {
       case CEP_DATATYPE_VALUE: {
+        if (swap) {
+            if (!value)
+                break;
+            data->datatype = CEP_DATATYPE_DATA;
+            data->stored_datatype = CEP_DATATYPE_DATA;
+            data->data = value;
+            data->destructor = cep_free;
+            data->capacity = capacity;
+            data->size = size;
+            result = data->data;
+            break;
+        }
         assert(data->capacity >= capacity);
         memcpy(data->value, value, size);
         data->size = size;

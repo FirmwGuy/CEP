@@ -584,6 +584,8 @@ typedef struct cepLibraryBinding cepLibraryBinding;
     cepSecmeta          secmeta;    /**< Snapshot security metadata. */    \
     uint8_t             sec_nonce[CEP_SECDATA_NONCE_MAX]; /**< Snapshot nonce bytes. */ \
     uint8_t             sec_aad_hash[CEP_SECDATA_AAD_BYTES]; /**< Snapshot AAD hash. */ \
+    uint8_t             stored_datatype; /**< Payload datatype recorded for this revision. */ \
+    uint8_t             stored_pad[7];   /**< Reserved datatype padding. */ \
     union {                                                               \
         struct {                                                          \
             void*       data;       /**< Heap buffer backing DATA type. */ \
@@ -821,7 +823,7 @@ void     cep_data_del(cepData* data);
 void*    cep_data(const cepData* data);
 #define  cep_data_valid(d)                             ((d) && (d)->capacity && cep_dt_is_valid(&(d)->dt))
 #define  cep_data_new_value(dt, value, z)              ({size_t _z = z;  cep_data_new(dt, CEP_DATATYPE_VALUE, true, NULL, value, _z, _z);})
-void     cep_data_history_push(cepData* data);
+bool     cep_data_history_push(cepData* data);
 void     cep_data_history_clear(cepData* data);
 void     cep_data_history_apply_policy(cepData* data,
                                        cepOpCount floor_stamp,

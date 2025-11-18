@@ -22,6 +22,8 @@
 #include "cep_ops.h"
 #include "cep_organ.h"
 #include "stream/cep_stream_internal.h"
+#include "cep_security_tags.h"
+#include "cep_enclave_policy.h"
 
 #include <string.h>
 #include <stdint.h>
@@ -4221,6 +4223,51 @@ bool cep_heartbeat_bootstrap(void) {
         CEP_RUNTIME.topology.sys = sys;
     }
 
+    cepCell* security = cep_cell_ensure_dictionary_child(sys,
+                                                         dt_security_root_name(),
+                                                         CEP_STORAGE_RED_BLACK_T);
+    if (!security) {
+        CEP_BOOT_FAIL("security dictionary");
+    }
+    CEP_DEFAULT_TOPOLOGY.security = security;
+    if (!CEP_RUNTIME.topology.security) {
+        CEP_RUNTIME.topology.security = security;
+    }
+
+    if (!cep_cell_ensure_dictionary_child(security, dt_sec_enclaves_name(), CEP_STORAGE_RED_BLACK_T)) {
+        CEP_BOOT_FAIL("security/enclaves dictionary");
+    }
+    if (!cep_cell_ensure_dictionary_child(security, dt_sec_edges_name(), CEP_STORAGE_RED_BLACK_T)) {
+        CEP_BOOT_FAIL("security/edges dictionary");
+    }
+    if (!cep_cell_ensure_dictionary_child(security, dt_sec_gateways_name(), CEP_STORAGE_RED_BLACK_T)) {
+        CEP_BOOT_FAIL("security/gateways dictionary");
+    }
+    if (!cep_cell_ensure_dictionary_child(security, dt_sec_branches_name(), CEP_STORAGE_RED_BLACK_T)) {
+        CEP_BOOT_FAIL("security/branches dictionary");
+    }
+    if (!cep_cell_ensure_dictionary_child(security, dt_sec_defaults_name(), CEP_STORAGE_RED_BLACK_T)) {
+        CEP_BOOT_FAIL("security/defaults dictionary");
+    }
+    cepCell* sec_env = cep_cell_ensure_dictionary_child(security,
+                                                        dt_sec_env_name(),
+                                                        CEP_STORAGE_RED_BLACK_T);
+    if (!sec_env) {
+        CEP_BOOT_FAIL("security/env dictionary");
+    }
+    if (!cep_cell_ensure_dictionary_child(sec_env, dt_sec_env_prod_name(), CEP_STORAGE_RED_BLACK_T)) {
+        CEP_BOOT_FAIL("security/env/prod dictionary");
+    }
+    if (!cep_cell_ensure_dictionary_child(sec_env, dt_sec_env_staging_name(), CEP_STORAGE_RED_BLACK_T)) {
+        CEP_BOOT_FAIL("security/env/staging dictionary");
+    }
+    if (!cep_cell_ensure_dictionary_child(sec_env, dt_sec_env_dev_name(), CEP_STORAGE_RED_BLACK_T)) {
+        CEP_BOOT_FAIL("security/env/dev dictionary");
+    }
+    if (!cep_enclave_policy_init(security)) {
+        CEP_BOOT_FAIL("security policy init");
+    }
+
     cepCell* state_root = cep_lifecycle_get_dictionary(sys, dt_state_root(), true);
     if (!state_root) {
         CEP_DEBUG_PRINTF("[bootstrap] state_root revive failed\n");
@@ -4420,6 +4467,7 @@ bool cep_heartbeat_configure(const cepHeartbeatTopology* topology, const cepHear
     if (topology) {
         if (topology->root)     merged.root     = topology->root;
         if (topology->sys)      merged.sys      = topology->sys;
+        if (topology->security) merged.security = topology->security;
         if (topology->rt)       merged.rt       = topology->rt;
         if (topology->journal)  merged.journal  = topology->journal;
         if (topology->env)      merged.env      = topology->env;
@@ -4710,6 +4758,7 @@ void cep_beat_begin_capture(void) {
     CEP_RUNTIME.deferred_activations = 0u;
     CEP_CONTROL_STATE.agenda_noted = false;
     cep_async_runtime_on_phase(CEP_ASYNC_STATE, CEP_BEAT_CAPTURE);
+    cep_enclave_policy_on_capture();
 }
 
 
@@ -5584,6 +5633,11 @@ int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse)
     topology. */
 cepCell* cep_heartbeat_sys_root(void) {
     return CEP_RUNTIME.topology.sys;
+}
+
+/** Return the root cell of the security policy subtree seeded in `/sys`. */
+cepCell* cep_heartbeat_security_root(void) {
+    return CEP_RUNTIME.topology.security;
 }
 
 

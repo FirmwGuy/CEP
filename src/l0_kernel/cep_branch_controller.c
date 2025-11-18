@@ -5,6 +5,7 @@
  */
 
 #include "cep_branch_controller.h"
+#include "cep_enclave_policy.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -16,6 +17,7 @@
 #include "cep_flat_stream.h"
 #include "cep_cei.h"
 #include "cep_runtime.h"
+#include "cep_namepool.h"
 
 CEP_DEFINE_STATIC_DT(dt_svo_sev_warn, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
 CEP_DEFINE_STATIC_DT(dt_svo_sev_info, CEP_ACRO("CEP"), CEP_WORD("sev:info"));
@@ -30,8 +32,28 @@ CEP_DEFINE_STATIC_DT(dt_lazy_persist_config_name, CEP_ACRO("CEP"), CEP_WORD("con
 CEP_DEFINE_STATIC_DT(dt_lazy_policy_mode_field, CEP_ACRO("CEP"), CEP_WORD("policy_mode"));
 CEP_DEFINE_STATIC_DT(dt_persist_snapshot_field, CEP_ACRO("CEP"), CEP_WORD("snapshot_ro"));
 
+#define CEP_BRANCH_PATH_TEXT_MAX 512u
+
 static const char k_branch_policy_topic[] = "cell.cross_read";
 static const char k_branch_evict_topic[] = "persist.evict";
+static const char k_branch_deny_topic[] = "sec.branch.deny";
+
+static void
+cep_branch_controller_set_veil_recursive(cepCell* node, bool veiled)
+{
+    if (!node || !cep_cell_is_normal(node)) {
+        return;
+    }
+    node->metacell.veiled = veiled ? 1u : 0u;
+    if (!node->store) {
+        return;
+    }
+    for (cepCell* child = cep_cell_first(node);
+         child;
+         child = cep_cell_next(node, child)) {
+        cep_branch_controller_set_veil_recursive(child, veiled);
+    }
+}
 
 typedef struct {
     bool     active;
@@ -292,7 +314,18 @@ cep_branch_controller_enable_snapshot_mode(cepBranchController* controller)
         return true;
     }
     cepSealOptions opt = {.recursive = true};
-    if (!cep_branch_seal_immutable(controller->branch_root, opt)) {
+    cepCell* branch_root = controller->branch_root;
+    bool forced_veil = false;
+    if (!cep_cell_is_floating(branch_root) &&
+        !cep_cell_is_veiled(branch_root)) {
+        cep_branch_controller_set_veil_recursive(branch_root, true);
+        forced_veil = true;
+    }
+    bool sealed = cep_branch_seal_immutable(branch_root, opt);
+    if (forced_veil && !sealed) {
+        cep_branch_controller_set_veil_recursive(branch_root, false);
+    }
+    if (!sealed) {
         return false;
     }
     controller->policy.mode = CEP_BRANCH_PERSIST_RO_SNAPSHOT;
@@ -317,8 +350,8 @@ cep_branch_controller_apply_history_policy_to_cell(cepCell* cell,
                                       &ctx->kept_versions,
                                       &ctx->kept_bytes,
                                       &ctx->oldest_kept,
-                                      &ctx->evicted_versions,
-                                      &ctx->evicted_bytes);
+                                       &ctx->evicted_versions,
+                                       &ctx->evicted_bytes);
     }
 
     if (cell->store) {
@@ -1156,6 +1189,112 @@ cep_decision_cell_append_entry(const cepBranchController* consumer,
 }
 
 static bool
+cep_decision_cell_append_security_entry(const cepDT* branch_dt,
+                                        const char* verb,
+                                        const char* subject,
+                                        const char* path,
+                                        const char* rule_id,
+                                        bool allowed,
+                                        const char* reason)
+{
+    if (!branch_dt || !verb) {
+        return false;
+    }
+
+    cepCell* root = cep_decision_cells_root_resolved();
+    if (!root) {
+        return false;
+    }
+
+    cepCell* sec_root = cep_cell_ensure_dictionary_child(root,
+                                                         CEP_DTAW("CEP", "sec"),
+                                                         CEP_STORAGE_RED_BLACK_T);
+    if (!sec_root) {
+        return false;
+    }
+    sec_root = cep_cell_resolve(sec_root);
+    if (!sec_root || !cep_cell_require_dictionary_store(&sec_root)) {
+        return false;
+    }
+
+    cepDT entry_name = cep_decision_auto_name();
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepCell* entry = cep_cell_append_dictionary(sec_root, &entry_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    if (!entry) {
+        return false;
+    }
+    if (!cep_cell_require_dictionary_store(&entry)) {
+        return false;
+    }
+
+    const char* status = allowed ? "allow" : "deny";
+
+    bool ok = true;
+    ok &= cep_cell_put_uint64(entry, dt_decision_beat_field(), (uint64_t)cep_beat_index());
+    ok &= cep_cell_put_text(entry, dt_decision_verb_field(), verb);
+    ok &= cep_cell_put_text(entry, CEP_DTAW("CEP", "status"), status);
+    if (subject) {
+        ok &= cep_cell_put_text(entry, CEP_DTAW("CEP", "subject"), subject);
+    }
+    if (path) {
+        ok &= cep_cell_put_text(entry, CEP_DTAW("CEP", "path"), path);
+    }
+    if (rule_id) {
+        ok &= cep_cell_put_text(entry, CEP_DTAW("CEP", "rule"), rule_id);
+    }
+    if (reason) {
+        ok &= cep_cell_put_text(entry, CEP_DTAW("CEP", "note"), reason);
+    }
+    ok &= cep_cell_put_dt(entry, CEP_DTAW("CEP", "branch"), branch_dt);
+    return ok;
+}
+
+void
+cep_enclave_policy_record_branch_decision(const cepDT* branch_dt,
+                                          const char* verb,
+                                          const char* subject_id,
+                                          const char* path_text,
+                                          const cepEnclaveBranchDecision* decision,
+                                          bool allowed,
+                                          const char* reason)
+{
+    const char* subject = subject_id ? subject_id : "pack:<unknown>";
+    const char* rule_id = (decision && decision->rule_id) ? decision->rule_id : NULL;
+    const char* path = (path_text && *path_text) ? path_text : NULL;
+
+    (void)cep_decision_cell_append_security_entry(branch_dt,
+                                                  verb ? verb : "cellop",
+                                                  subject,
+                                                  path,
+                                                  rule_id,
+                                                  allowed,
+                                                  reason);
+
+    if (!allowed) {
+        char note[256];
+        snprintf(note,
+                 sizeof note,
+                 "verb=%s subject=%s path=%s rule=%s reason=%s",
+                 verb ? verb : "cellop",
+                 subject,
+                 path ? path : "<unknown>",
+                 rule_id ? rule_id : "<default>",
+                 reason ? reason : "denied");
+
+        cepCeiRequest req = {
+            .severity = *dt_svo_sev_warn(),
+            .topic = k_branch_deny_topic,
+            .topic_intern = true,
+            .note = note,
+            .note_len = 0u,
+            .emit_signal = true,
+            .ttl_forever = true,
+        };
+        (void)cep_cei_emit(&req);
+    }
+}
+
+static bool
 cep_decision_cell_read_u64(const cepCell* parent, const cepDT* field, uint64_t* out)
 {
     if (!parent || !field || !out) {
@@ -1332,6 +1471,108 @@ cep_decision_cell_replay_end(void)
     g_decision_replay_state.cursor = NULL;
 }
 
+static const char*
+cep_branch_controller_subject_label(const cepBranchController* controller,
+                                    char* buffer,
+                                    size_t capacity)
+{
+    if (!buffer || capacity == 0u) {
+        return NULL;
+    }
+    if (!controller) {
+        (void)snprintf(buffer, capacity, "pack:<unknown>");
+        return buffer;
+    }
+    const cepDT* dt = &controller->branch_dt;
+    const char* tag_text = dt ? cep_namepool_lookup(dt->tag, NULL) : NULL;
+    if (tag_text && tag_text[0]) {
+        (void)snprintf(buffer, capacity, "pack:%s", tag_text);
+        return buffer;
+    }
+    (void)snprintf(buffer,
+                   capacity,
+                   "pack:%016llx",
+                   (unsigned long long)cep_id(dt ? dt->tag : 0u));
+    return buffer;
+}
+
+static bool
+cep_branch_controller_path_to_string(const cepPath* path,
+                                     char* buffer,
+                                     size_t capacity)
+{
+    if (!path || !buffer || capacity == 0u) {
+        return false;
+    }
+    size_t used = 0u;
+    buffer[used++] = '/';
+    for (unsigned i = 1u; i < path->length; ++i) {
+        const cepPast* segment = &path->past[i];
+        const cepDT* dt = &segment->dt;
+        const char* tag_text = dt ? cep_namepool_lookup(dt->tag, NULL) : NULL;
+        char fallback[32];
+        if (!tag_text || !tag_text[0]) {
+            (void)snprintf(fallback,
+                           sizeof fallback,
+                           "%016llx",
+                           (unsigned long long)cep_id(dt ? dt->tag : 0u));
+            tag_text = fallback;
+        }
+        size_t len = strlen(tag_text);
+        if (used + len >= capacity) {
+            return false;
+        }
+        memcpy(&buffer[used], tag_text, len);
+        used += len;
+        if (i + 1u < path->length) {
+            if (used + 1u >= capacity) {
+                return false;
+            }
+            buffer[used++] = '/';
+        }
+    }
+    if (used >= capacity) {
+        return false;
+    }
+    buffer[used] = '\0';
+    return true;
+}
+
+static bool
+cep_branch_controller_format_cell_path(const cepCell* cell,
+                                       char* buffer,
+                                       size_t capacity)
+{
+    if (!cell || !buffer || capacity == 0u) {
+        return false;
+    }
+    cepPath* path = NULL;
+    if (!cep_cell_path(cell, &path)) {
+        return false;
+    }
+    bool ok = cep_branch_controller_path_to_string(path, buffer, capacity);
+    cep_free(path);
+    return ok;
+}
+
+static uint32_t
+cep_branch_controller_resolve_svo_verb(const char* verb)
+{
+    if (!verb) {
+        return CEP_ENCLAVE_VERB_READ;
+    }
+    if (strstr(verb, "delete")) {
+        return CEP_ENCLAVE_VERB_DELETE;
+    }
+    if (strstr(verb, "move")) {
+        return CEP_ENCLAVE_VERB_LINK;
+    }
+    if (strstr(verb, "update") || strstr(verb, "write")) {
+        return CEP_ENCLAVE_VERB_WRITE;
+    }
+    return CEP_ENCLAVE_VERB_READ;
+}
+
 void
 cep_cell_svo_context_init(cepCellSvoContext* ctx, const char* verb)
 {
@@ -1347,6 +1588,9 @@ cep_cell_svo_context_init(cepCellSvoContext* ctx, const char* verb)
     };
     ctx->decision_required = false;
     ctx->decision_recorded = false;
+    ctx->security_branch = NULL;
+    ctx->subject_id = NULL;
+    ctx->subject_label[0] = '\0';
 }
 
 void
@@ -1381,6 +1625,63 @@ cep_cell_svo_context_guard(cepCellSvoContext* ctx,
     if (!source_controller && fallback_source) {
         source_controller = cep_branch_controller_for_cell(fallback_source);
     }
+    const cepDT* security_branch_dt = ctx ? ctx->security_branch : NULL;
+    const char* subject_id = ctx ? ctx->subject_id : NULL;
+    if (ctx && !subject_id) {
+        const char* label = cep_branch_controller_subject_label(consumer_controller,
+                                                                ctx->subject_label,
+                                                                sizeof ctx->subject_label);
+        if (label && label[0]) {
+            ctx->subject_id = label;
+            subject_id = ctx->subject_id;
+        }
+    }
+    if (!subject_id) {
+        subject_id = "pack:<unknown>";
+    }
+    char branch_path[CEP_BRANCH_PATH_TEXT_MAX];
+    branch_path[0] = '\0';
+    bool source_under_security = fallback_source &&
+                                 cep_cell_is_under_security_branch(fallback_source);
+    bool has_branch_path = source_under_security &&
+                           cep_branch_controller_format_cell_path(fallback_source,
+                                                                  branch_path,
+                                                                  sizeof branch_path);
+    cepEnclaveBranchDecision branch_decision = {0};
+    char branch_reason[128];
+    branch_reason[0] = '\0';
+    cepEnclaveBranchResult branch_result = CEP_ENCLAVE_BRANCH_RESULT_SKIP;
+    const cepBranchController* policy_branch = source_controller;
+
+    cepBranchController* security_controller = NULL;
+    if (!source_controller && source_under_security) {
+        security_controller = cep_branch_controller_for_security_cell(fallback_source);
+        if (!policy_branch) {
+            policy_branch = security_controller;
+        }
+    }
+    if (has_branch_path) {
+        cepID subject_pack = policy_branch ? policy_branch->branch_dt.tag : 0u;
+        uint32_t branch_verb = cep_branch_controller_resolve_svo_verb(ctx ? ctx->verb : NULL);
+        branch_result = cep_enclave_policy_check_branch(branch_path,
+                                                        subject_pack,
+                                                        branch_verb,
+                                                        &branch_decision,
+                                                        branch_reason,
+                                                        sizeof branch_reason);
+        if (branch_result == CEP_ENCLAVE_BRANCH_RESULT_DENY ||
+            branch_result == CEP_ENCLAVE_BRANCH_RESULT_ERROR) {
+            const char* reason = branch_reason[0] ? branch_reason : "branch policy denied access";
+            cep_enclave_policy_record_branch_decision(policy_branch ? &policy_branch->branch_dt : NULL,
+                                                      ctx && ctx->verb ? ctx->verb : "cellop",
+                                                      subject_id,
+                                                      branch_path,
+                                                      &branch_decision,
+                                                      false,
+                                                      reason);
+            return false;
+        }
+    }
 
     cepBranchPolicyResult policy =
         cep_branch_policy_check_read(consumer_controller, source_controller);
@@ -1392,6 +1693,24 @@ cep_cell_svo_context_guard(cepCellSvoContext* ctx,
 
     if (policy.access == CEP_BRANCH_POLICY_ACCESS_ALLOW ||
         policy.risk == CEP_BRANCH_POLICY_RISK_NONE) {
+        if (branch_result == CEP_ENCLAVE_BRANCH_RESULT_ALLOW && has_branch_path) {
+            cep_enclave_policy_record_branch_decision(policy_branch ? &policy_branch->branch_dt : NULL,
+                                                      ctx && ctx->verb ? ctx->verb : "cellop",
+                                                      subject_id,
+                                                      branch_path,
+                                                      &branch_decision,
+                                                      true,
+                                                      NULL);
+        }
+        if (security_branch_dt && consumer_controller) {
+            cep_decision_cell_append_security_entry(security_branch_dt,
+                                                    ctx && ctx->verb ? ctx->verb : "cellop",
+                                                    subject_id,
+                                                    NULL,
+                                                    NULL,
+                                                    true,
+                                                    NULL);
+        }
         return true;
     }
 
@@ -1405,6 +1724,26 @@ cep_cell_svo_context_guard(cepCellSvoContext* ctx,
                                                                   policy.risk);
         if (ctx) {
             ctx->decision_recorded = decision_recorded;
+        }
+        if (decision_recorded &&
+            branch_result == CEP_ENCLAVE_BRANCH_RESULT_ALLOW &&
+            has_branch_path) {
+            cep_enclave_policy_record_branch_decision(policy_branch ? &policy_branch->branch_dt : NULL,
+                                                      verb,
+                                                      subject_id,
+                                                      branch_path,
+                                                      &branch_decision,
+                                                      true,
+                                                      NULL);
+        }
+        if (security_branch_dt && consumer_controller) {
+            cep_decision_cell_append_security_entry(security_branch_dt,
+                                                    verb,
+                                                    subject_id,
+                                                    NULL,
+                                                    NULL,
+                                                    decision_recorded,
+                                                    decision_recorded ? "vol_read" : "deny");
         }
     }
 

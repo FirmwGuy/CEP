@@ -29,6 +29,12 @@
 #include <stdlib.h>
 #include <limits.h>
 
+#ifdef CEP_ENABLE_DEBUG
+#include <errno.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 typedef struct {
     unsigned ready_events;
     unsigned backpressure_events;
@@ -78,6 +84,17 @@ static const char* const FED_DUAL_NODE_A = "node-a";
 static const char* const FED_DUAL_NODE_B = "node-b";
 static const char* const FED_DUAL_LINK_MOUNT = "link-ab";
 static const char* const FED_DUAL_MIRROR_MOUNT = "mir-ab";
+
+#ifdef CEP_ENABLE_DEBUG
+#define FED_INLINE_SWAP_TRACE_DIR  "/tmp/cep_trace"
+#define FED_INLINE_SWAP_TRACE_FILE FED_INLINE_SWAP_TRACE_DIR "/inline_swap.log"
+static void fed_link_inline_swap_reset(void) {
+    if (mkdir(FED_INLINE_SWAP_TRACE_DIR, 0777) != 0 && errno != EEXIST) {
+        return;
+    }
+    unlink(FED_INLINE_SWAP_TRACE_FILE);
+}
+#endif
 static const char* const FED_TEST_AEAD_KEY = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
 static char* fed_test_env_push(const char* name, const char* value) {
@@ -804,6 +821,10 @@ static void fed_dual_runtime_prepare_pair(FedDualRuntimePair* pair,
     munit_assert_not_null(ctx_b);
     munit_assert_not_null(mounts_a);
     munit_assert_not_null(mounts_b);
+
+#ifdef CEP_ENABLE_DEBUG
+    fed_link_inline_swap_reset();
+#endif
 
     fed_test_bootstrap_runtime();
 

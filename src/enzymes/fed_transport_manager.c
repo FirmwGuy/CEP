@@ -15,6 +15,9 @@
 #include "../l0_kernel/cep_molecule.h"
 #include "../l0_kernel/cep_namepool.h"
 #include "../l0_kernel/cep_ops.h"
+#include "../l0_kernel/cep_enclave_policy.h"
+#include "../l0_kernel/cep_security_tags.h"
+#include "../l0_kernel/cep_heartbeat.h"
 #include "../l0_kernel/cep_async.h"
 
 #include <stdio.h>
@@ -60,6 +63,7 @@ struct cepFedTransportManagerMount {
     bool                           flat_warn_compression_emitted;
     bool                           flat_warn_aead_emitted;
     uint32_t                       flat_comparator_max_version;
+    cepEnclavePolicyLimits         security_limits;
     cepDT                          async_channel_dt;
     bool                           async_channel_registered;
     uint64_t                       async_req_counter;
@@ -75,6 +79,12 @@ struct cepFedTransportManagerMount {
     uint64_t                       async_shim_jobs;
     uint64_t                       async_native_jobs;
     bool                           async_warn_emitted;
+    bool                           security_limits_valid;
+    uint64_t                       security_bytes_used;
+    uint64_t                       security_send_count;
+    uint64_t                       security_limit_hits;
+    cepBeatNumber                  security_rate_beat;
+    uint32_t                       security_rate_count;
 };
 
 struct cepFedTransportAsyncHandle {
@@ -149,6 +159,298 @@ CEP_DEFINE_STATIC_DT(dt_analytics_root_name, CEP_ACRO("CEP"), CEP_WORD("analytic
 CEP_DEFINE_STATIC_DT(dt_async_root_name, CEP_ACRO("CEP"), CEP_WORD("async"));
 CEP_DEFINE_STATIC_DT(dt_shim_branch_name, CEP_ACRO("CEP"), CEP_WORD("shim"));
 CEP_DEFINE_STATIC_DT(dt_native_branch_name, CEP_ACRO("CEP"), CEP_WORD("native"));
+CEP_DEFINE_STATIC_DT(dt_sec_analytics_root_name_fed, CEP_ACRO("CEP"), CEP_WORD("security"));
+CEP_DEFINE_STATIC_DT(dt_sec_analytics_beats_name_fed, CEP_ACRO("CEP"), CEP_WORD("beats"));
+CEP_DEFINE_STATIC_DT(dt_sec_allow_field_fed, CEP_ACRO("CEP"), CEP_WORD("allow"));
+CEP_DEFINE_STATIC_DT(dt_sec_deny_field_fed, CEP_ACRO("CEP"), CEP_WORD("deny"));
+CEP_DEFINE_STATIC_DT(dt_sec_limits_field_fed, CEP_ACRO("CEP"), CEP_WORD("limits"));
+CEP_DEFINE_STATIC_DT(dt_sec_label_field_fed, CEP_ACRO("CEP"), CEP_WORD("label"));
+
+static cepCell*
+cep_fed_transport_security_ensure_branch(cepCell* parent, const cepDT* name)
+{
+    if (!parent || !name) {
+        return NULL;
+    }
+    cepCell* child = cep_cell_ensure_dictionary_child(parent, name, CEP_STORAGE_RED_BLACK_T);
+    if (!child) {
+        return NULL;
+    }
+    child = cep_cell_resolve(child);
+    if (!child || !cep_cell_require_dictionary_store(&child)) {
+        return NULL;
+    }
+    return child;
+}
+
+static cepCell*
+cep_fed_transport_security_analytics_root(void)
+{
+    cepCell* root = cep_root();
+    if (!root) {
+        return NULL;
+    }
+    cepCell* rt = cep_cell_ensure_dictionary_child(root, dt_rt_root_name_fed(), CEP_STORAGE_RED_BLACK_T);
+    if (!rt) {
+        return NULL;
+    }
+    rt = cep_cell_resolve(rt);
+    if (!rt || !cep_cell_require_dictionary_store(&rt)) {
+        return NULL;
+    }
+    cepCell* analytics = cep_cell_ensure_dictionary_child(rt,
+                                                          dt_analytics_root_name(),
+                                                          CEP_STORAGE_RED_BLACK_T);
+    if (!analytics) {
+        return NULL;
+    }
+    analytics = cep_cell_resolve(analytics);
+    if (!analytics || !cep_cell_require_dictionary_store(&analytics)) {
+        return NULL;
+    }
+    return cep_fed_transport_security_ensure_branch(analytics, dt_sec_analytics_root_name_fed());
+}
+
+static bool
+cep_fed_transport_security_increment_counter(cepCell* parent, const cepDT* field, uint64_t delta)
+{
+    if (!parent || !field) {
+        return false;
+    }
+    uint64_t next = delta;
+    cepCell* existing = cep_cell_find_by_name(parent, field);
+    if (existing) {
+        existing = cep_cell_resolve(existing);
+        if (existing && existing->data) {
+            cepData* data = existing->data;
+            if (data->size == sizeof(uint64_t)) {
+                const uint64_t* payload = (const uint64_t*)cep_data_payload(data);
+                if (payload) {
+                    next += *payload;
+                }
+            }
+        }
+    }
+    return cep_cell_put_uint64(parent, field, next);
+}
+
+static bool
+cep_fed_transport_manager_read_text(cepCell* parent,
+                                    const cepDT* field,
+                                    char* buffer,
+                                    size_t capacity)
+{
+    if (!parent || !field || !buffer || capacity == 0u) {
+        return false;
+    }
+    cepCell* node = cep_cell_find_by_name(parent, field);
+    if (!node) {
+        return false;
+    }
+    node = cep_cell_resolve(node);
+    if (!node || !node->data) {
+        return false;
+    }
+    const char* payload = (const char*)cep_data_payload(node->data);
+    if (!payload || node->data->size == 0u) {
+        return false;
+    }
+    size_t length = node->data->size;
+    if (length >= capacity) {
+        length = capacity - 1u;
+    }
+    memcpy(buffer, payload, length);
+    buffer[length] = '\0';
+    return true;
+}
+
+static cepDT
+cep_fed_transport_security_hash_name(const char* name, uint32_t salt)
+{
+    cepDT dt = {0};
+    if (!name) {
+        return dt;
+    }
+    uint32_t hash = cep_crc32c((const uint8_t*)name, strlen(name), 0u);
+    hash ^= salt * 0x9e3779b9u;
+    cepID numeric = (cepID)((hash % CEP_NAME_MAXVAL) + 1u);
+    dt.domain = CEP_ACRO("CEP");
+    dt.tag = cep_id_to_numeric(numeric);
+    dt.glob = 0u;
+    return dt;
+}
+
+static cepCell*
+cep_fed_transport_security_named_child(cepCell* parent, const char* name)
+{
+    if (!parent || !name || !*name) {
+        return NULL;
+    }
+    for (uint32_t salt = 0u; salt < 1024u; ++salt) {
+        cepDT dt = cep_fed_transport_security_hash_name(name, salt);
+        cepCell* child = cep_cell_ensure_dictionary_child(parent, &dt, CEP_STORAGE_RED_BLACK_T);
+        if (!child) {
+            return NULL;
+        }
+        child = cep_cell_resolve(child);
+        if (!child || !cep_cell_require_dictionary_store(&child)) {
+            return NULL;
+        }
+        char existing[128] = {0};
+        if (!cep_fed_transport_manager_read_text(child, dt_sec_label_field_fed(), existing, sizeof existing)) {
+            (void)cep_cell_put_text(child, dt_sec_label_field_fed(), name);
+            return child;
+        }
+        if (strcmp(existing, name) == 0) {
+            return child;
+        }
+    }
+    return NULL;
+}
+
+static bool
+cep_fed_transport_security_make_beat_name(cepDT* out_name, cepBeatNumber beat)
+{
+    if (!out_name) {
+        return false;
+    }
+    cepBeatNumber effective = (beat == CEP_BEAT_INVALID) ? 0u : beat;
+    cepID numeric = (cepID)((effective % CEP_AUTOID_MAXVAL) + 1u);
+    out_name->domain = CEP_ACRO("CEP");
+    out_name->tag = cep_id_to_numeric(numeric);
+    out_name->glob = 0u;
+    return true;
+}
+
+static void
+cep_fed_transport_security_record_beat(uint64_t allow_delta,
+                                       uint64_t deny_delta,
+                                       uint64_t limit_delta)
+{
+    if (allow_delta == 0u && deny_delta == 0u && limit_delta == 0u) {
+        return;
+    }
+    cepCell* analytics = cep_fed_transport_security_analytics_root();
+    if (!analytics) {
+        return;
+    }
+    cepCell* beats = cep_fed_transport_security_ensure_branch(analytics,
+                                                              dt_sec_analytics_beats_name_fed());
+    if (!beats) {
+        return;
+    }
+    cepBeatNumber beat = cep_beat_index();
+    if (beat == CEP_BEAT_INVALID) {
+        beat = cep_heartbeat_current();
+    }
+    if (beat == CEP_BEAT_INVALID) {
+        beat = 0u;
+    }
+    cepDT beat_name = {0};
+    if (!cep_fed_transport_security_make_beat_name(&beat_name, beat)) {
+        return;
+    }
+    cepCell* entry = cep_fed_transport_security_ensure_branch(beats, &beat_name);
+    if (!entry) {
+        return;
+    }
+    if (allow_delta) {
+        (void)cep_fed_transport_security_increment_counter(entry,
+                                                           dt_sec_allow_field_fed(),
+                                                           allow_delta);
+    }
+    if (deny_delta) {
+        (void)cep_fed_transport_security_increment_counter(entry,
+                                                           dt_sec_deny_field_fed(),
+                                                           deny_delta);
+    }
+    if (limit_delta) {
+        (void)cep_fed_transport_security_increment_counter(entry,
+                                                           dt_sec_limits_field_fed(),
+                                                           limit_delta);
+    }
+}
+
+static const char*
+cep_fed_transport_label(const char* text, const char* fallback)
+{
+    return (text && *text) ? text : fallback;
+}
+
+static void
+cep_fed_transport_security_record_edge_event(const cepFedTransportManagerMount* mount,
+                                             bool allowed)
+{
+    if (!mount) {
+        return;
+    }
+    cepCell* analytics = cep_fed_transport_security_analytics_root();
+    if (!analytics) {
+        return;
+    }
+    const char* from_label = cep_fed_transport_label(mount->peer_id, "enclave:<unknown>");
+    const char* to_label = cep_fed_transport_label(mount->local_node_id, "enclave:<unknown>");
+    const char* gateway_label = cep_fed_transport_label(mount->mount_id, "gateway:<unknown>");
+
+    cepCell* edges = cep_fed_transport_security_ensure_branch(analytics, dt_sec_edges_name());
+    if (edges) {
+        cepCell* from_cell = cep_fed_transport_security_named_child(edges, from_label);
+        if (from_cell) {
+            cepCell* to_cell = cep_fed_transport_security_named_child(from_cell, to_label);
+            if (to_cell) {
+                (void)cep_fed_transport_security_increment_counter(to_cell,
+                                                                   allowed ? dt_sec_allow_field_fed()
+                                                                           : dt_sec_deny_field_fed(),
+                                                                   1u);
+            }
+        }
+    }
+
+    cepCell* gateways = cep_fed_transport_security_ensure_branch(analytics, dt_sec_gateways_name());
+    if (gateways) {
+        cepCell* gateway_cell = cep_fed_transport_security_named_child(gateways, gateway_label);
+        if (gateway_cell) {
+            (void)cep_fed_transport_security_increment_counter(gateway_cell,
+                                                               allowed ? dt_sec_allow_field_fed()
+                                                                       : dt_sec_deny_field_fed(),
+                                                               1u);
+        }
+    }
+
+    cep_fed_transport_security_record_beat(allowed ? 1u : 0u,
+                                           allowed ? 0u : 1u,
+                                           0u);
+}
+
+static void
+cep_fed_transport_security_record_limit_counter(const cepFedTransportManagerMount* mount)
+{
+    if (!mount) {
+        return;
+    }
+    cepCell* analytics = cep_fed_transport_security_analytics_root();
+    if (!analytics) {
+        return;
+    }
+    const char* gateway_label = cep_fed_transport_label(mount->mount_id, "gateway:<unknown>");
+    cepCell* gateways = cep_fed_transport_security_ensure_branch(analytics, dt_sec_gateways_name());
+    if (gateways) {
+        cepCell* gateway_cell = cep_fed_transport_security_named_child(gateways, gateway_label);
+        if (gateway_cell) {
+            (void)cep_fed_transport_security_increment_counter(gateway_cell,
+                                                               dt_sec_limits_field_fed(),
+                                                               1u);
+        }
+    }
+    cep_fed_transport_security_record_beat(0u, 0u, 1u);
+}
+
+static void
+cep_fed_transport_security_record_limit_hit(const cepFedTransportManagerMount* mount)
+{
+    cep_fed_transport_security_record_edge_event(mount, false);
+    cep_fed_transport_security_record_limit_counter(mount);
+}
 CEP_DEFINE_STATIC_DT(dt_jobs_total_name, CEP_ACRO("CEP"), CEP_WORD("jobs_total"));
 CEP_DEFINE_STATIC_DT(dt_upd_latest_name, CEP_ACRO("CEP"), CEP_WORD("upd_latest"));
 CEP_DEFINE_STATIC_DT(dt_cap_reliable_name, CEP_ACRO("CEP"), CEP_WORD("reliable"));
@@ -210,6 +512,10 @@ CEP_DEFINE_STATIC_DT(dt_ser_warn_down_name, CEP_ACRO("CEP"), CEP_WORD("warn_down
 CEP_DEFINE_STATIC_DT(dt_ser_cmpmax_name, CEP_ACRO("CEP"), CEP_WORD("cmp_max_ver"));
 CEP_DEFINE_STATIC_DT(dt_ser_pay_hist_name, CEP_ACRO("CEP"), CEP_WORD("pay_hist_bt"));
 CEP_DEFINE_STATIC_DT(dt_ser_man_hist_name, CEP_ACRO("CEP"), CEP_WORD("man_hist_bt"));
+CEP_DEFINE_STATIC_DT(dt_sec_send_count_name, CEP_ACRO("CEP"), CEP_WORD("sec_sends"));
+CEP_DEFINE_STATIC_DT(dt_sec_bytes_name, CEP_ACRO("CEP"), CEP_WORD("sec_bytes"));
+CEP_DEFINE_STATIC_DT(dt_sec_hits_name, CEP_ACRO("CEP"), CEP_WORD("sec_hits"));
+CEP_DEFINE_STATIC_DT(dt_sec_rate_counter_name, CEP_ACRO("CEP"), CEP_WORD("sec_rate"));
 
 typedef const cepDT* (*cepFedTransportDtGetter)(void);
 
@@ -292,6 +598,13 @@ static void cep_fed_transport_mount_async_complete_request(cepFedTransportManage
                                                            bool success,
                                                            size_t bytes_done,
                                                            int error_code);
+static bool cep_fed_transport_manager_security_allow(cepFedTransportManagerMount* mount,
+                                                     size_t payload_len);
+static void cep_fed_transport_manager_security_record_send(cepFedTransportManagerMount* mount,
+                                                           size_t payload_len);
+static void cep_fed_transport_manager_emit_limit_hit(cepFedTransportManagerMount* mount,
+                                                     const char* limit_label,
+                                                     const char* detail);
 
 static void cep_fed_transport_manager_mount_reset_pending(cepFedTransportManagerMount* mount) {
     if (!mount) {
@@ -328,6 +641,124 @@ static void cep_fed_transport_manager_emit_diag(cepFedTransportManager* manager,
     if (mount && topic) {
         cep_fed_transport_manager_update_health(manager, mount, severity, note, topic);
     }
+}
+
+static void
+cep_fed_transport_manager_emit_limit_hit(cepFedTransportManagerMount* mount,
+                                         const char* limit_label,
+                                         const char* detail)
+{
+    if (!mount) {
+        return;
+    }
+    ++mount->security_limit_hits;
+
+    const char* peer = mount->peer_id ? mount->peer_id : "<none>";
+    const char* local = mount->local_node_id ? mount->local_node_id : "<none>";
+    const char* mount_id = mount->mount_id ? mount->mount_id : "<none>";
+    const char* limit = limit_label ? limit_label : "<unknown>";
+    const char* info = detail ? detail : "";
+
+    char note[256];
+    snprintf(note,
+             sizeof note,
+             "peer=%s node=%s mount=%s limit=%s detail=%s",
+             peer,
+             local,
+             mount_id,
+             limit,
+             info);
+
+    cepCell* subject = mount->mount_cell ? cep_cell_resolve(mount->mount_cell) : NULL;
+    cepCeiRequest req = {
+        .severity = *dt_sev_warn_name(),
+        .topic = "sec.limit.hit",
+        .topic_intern = true,
+        .note = note,
+        .subject = subject,
+        .mailbox_root = mount->manager ? mount->manager->diagnostics_mailbox : NULL,
+        .emit_signal = true,
+        .attach_to_op = false,
+        .ttl_forever = true,
+    };
+    (void)cep_cei_emit(&req);
+
+    if (mount->manager) {
+        (void)cep_fed_transport_manager_refresh_telemetry(mount->manager,
+                                                          mount,
+                                                          "sec.limit.hit");
+    }
+    cep_fed_transport_security_record_limit_hit(mount);
+}
+
+static bool
+cep_fed_transport_manager_security_allow(cepFedTransportManagerMount* mount,
+                                         size_t payload_len)
+{
+    if (!mount || !mount->security_limits_valid) {
+        return true;
+    }
+    const cepEnclavePolicyLimits* limits = &mount->security_limits;
+    cepBeatNumber beat = cep_heartbeat_current();
+    if (beat == CEP_BEAT_INVALID) {
+        beat = 0u;
+    }
+
+    if (limits->max_beats && mount->security_send_count >= limits->max_beats) {
+        char detail[64];
+        snprintf(detail, sizeof detail, "limit=%u", limits->max_beats);
+        cep_fed_transport_manager_emit_limit_hit(mount, "max_beats", detail);
+        return false;
+    }
+
+    if (limits->bud_io_bytes &&
+        mount->security_bytes_used + payload_len > limits->bud_io_bytes) {
+        char detail[64];
+        snprintf(detail, sizeof detail, "limit=%" PRIu64, limits->bud_io_bytes);
+        cep_fed_transport_manager_emit_limit_hit(mount, "bud_io_by", detail);
+        return false;
+    }
+
+    if (limits->rate_per_edge_qps) {
+        if (mount->security_rate_beat == CEP_BEAT_INVALID ||
+            mount->security_rate_beat != beat) {
+            mount->security_rate_beat = beat;
+            mount->security_rate_count = 0u;
+        }
+        if (mount->security_rate_count >= limits->rate_per_edge_qps) {
+            char detail[64];
+            snprintf(detail, sizeof detail, "limit=%u", limits->rate_per_edge_qps);
+            cep_fed_transport_manager_emit_limit_hit(mount, "per_edge_qps", detail);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void
+cep_fed_transport_manager_security_record_send(cepFedTransportManagerMount* mount,
+                                               size_t payload_len)
+{
+    if (!mount || !mount->security_limits_valid) {
+        return;
+    }
+    mount->security_send_count += 1u;
+    mount->security_bytes_used += payload_len;
+    if (mount->security_limits.rate_per_edge_qps) {
+        cepBeatNumber beat = cep_heartbeat_current();
+        if (beat == CEP_BEAT_INVALID) {
+            beat = 0u;
+        }
+        if (mount->security_rate_beat == CEP_BEAT_INVALID ||
+            mount->security_rate_beat != beat) {
+            mount->security_rate_beat = beat;
+            mount->security_rate_count = 0u;
+        }
+        if (mount->security_rate_count < UINT32_MAX) {
+            ++mount->security_rate_count;
+        }
+    }
+    cep_fed_transport_security_record_edge_event(mount, true);
 }
 
 static cepCell* cep_fed_transport_manager_ensure_mount_cell(cepFedTransportManager* manager,
@@ -874,6 +1305,12 @@ static bool cep_fed_transport_manager_refresh_telemetry(cepFedTransportManager* 
     ok = cep_fed_transport_manager_write_u64(mount_cell, dt_async_pending_field_name(), "async_pending", mount->async_pending_requests) && ok;
     ok = cep_fed_transport_manager_write_u64(mount_cell, dt_async_shim_field_name(), "async_shim", mount->async_shim_jobs) && ok;
     ok = cep_fed_transport_manager_write_u64(mount_cell, dt_async_native_field_name(), "async_native", mount->async_native_jobs) && ok;
+    if (mount->security_limits_valid) {
+        ok = cep_fed_transport_manager_write_u64(mount_cell, dt_sec_send_count_name(), "sec_sends", mount->security_send_count) && ok;
+        ok = cep_fed_transport_manager_write_u64(mount_cell, dt_sec_bytes_name(), "sec_bytes", mount->security_bytes_used) && ok;
+        ok = cep_fed_transport_manager_write_u64(mount_cell, dt_sec_hits_name(), "sec_hits", mount->security_limit_hits) && ok;
+        ok = cep_fed_transport_manager_write_u64(mount_cell, dt_sec_rate_counter_name(), "sec_rate", mount->security_rate_count) && ok;
+    }
     ok = cep_fed_transport_manager_refresh_async_analytics(manager, mount) && ok;
     return ok;
 }
@@ -1449,6 +1886,17 @@ bool cep_fed_transport_manager_configure_mount(cepFedTransportManager* manager,
     mount->async_pending_bytes = 0u;
     mount->async_receive_pending = false;
     mount->async_receive_request = (cepDT){0};
+    mount->security_limits_valid = config->security_limits_valid;
+    if (config->security_limits_valid) {
+        mount->security_limits = config->security_limits;
+    } else {
+        memset(&mount->security_limits, 0, sizeof mount->security_limits);
+    }
+    mount->security_bytes_used = 0u;
+    mount->security_send_count = 0u;
+    mount->security_limit_hits = 0u;
+    mount->security_rate_beat = CEP_BEAT_INVALID;
+    mount->security_rate_count = 0u;
     (void)cep_fed_transport_mount_prepare_async_target(mount);
 
     const char* provider_id = NULL;
@@ -1592,6 +2040,12 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
         return false;
     }
 
+    if (!cep_fed_transport_manager_security_allow(mount, payload_len)) {
+        return false;
+    }
+
+    bool security_recorded = false;
+
     if (mode == CEP_FED_FRAME_MODE_UPD_LATEST && !mount->allow_upd_latest) {
         cep_fed_transport_manager_emit_diag(manager,
                                             mount,
@@ -1631,6 +2085,10 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
                                                 mode,
                                                 deadline_beat,
                                                 async_handle)) {
+            if (!security_recorded) {
+                cep_fed_transport_manager_security_record_send(mount, payload_len);
+                security_recorded = true;
+            }
             return true;
         }
         async_handle->shim = true;
@@ -1667,6 +2125,10 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
                                                                    mount,
                                                                    "backpressure");
             }
+            if (!security_recorded) {
+                cep_fed_transport_manager_security_record_send(mount, payload_len);
+                security_recorded = true;
+            }
             return true;
         }
         immediate_sent = mount->provider->vtable->send(mount->provider_ctx,
@@ -1701,6 +2163,10 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
                 (void)cep_fed_transport_manager_refresh_telemetry(owning_manager,
                                                                    mount,
                                                                    "backpressure");
+            }
+            if (!security_recorded) {
+                cep_fed_transport_manager_security_record_send(mount, payload_len);
+                security_recorded = true;
             }
             return true;
         }
@@ -1747,10 +2213,14 @@ bool cep_fed_transport_manager_send(cepFedTransportManager* manager,
         }
     }
 
+    if (!security_recorded) {
+        cep_fed_transport_manager_security_record_send(mount, payload_len);
+        security_recorded = true;
+    }
     return true;
 }
 
-/* cep_fed_transport_manager_request_receive/* cep_fed_transport_manager_request_receive bridges the provider's receive hook so
+/* cep_fed_transport_manager_request_receive bridges the provider's receive hook so
    mounts can ask for more input frames without touching the provider vtable directly. */
 bool cep_fed_transport_manager_request_receive(cepFedTransportManager* manager,
                                                cepFedTransportManagerMount* mount) {

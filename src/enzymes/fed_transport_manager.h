@@ -12,6 +12,7 @@
 #include "../l0_kernel/cep_ops.h"
 #include "../l0_kernel/cep_cei.h"
 #include "../l0_kernel/cep_flat_stream.h"
+#include "../l0_kernel/cep_enclave_policy.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,6 +30,8 @@ typedef struct {
     cepFedTransportCaps preferred_caps;
     bool allow_upd_latest;
     uint64_t deadline_beat;
+    bool security_limits_valid;
+    cepEnclavePolicyLimits security_limits;
 } cepFedTransportMountConfig;
 
 typedef struct {

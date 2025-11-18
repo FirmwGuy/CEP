@@ -11,6 +11,7 @@
 #include "cep_runtime.h"
 #include "../cps/cps_runtime.h"
 #include "../enzymes/fed_pack.h"
+#include "../enzymes/sec_pipeline.h"
 
 bool cep_l0_bootstrap(void) {
     cepRuntime* runtime = cep_runtime_default();
@@ -30,6 +31,11 @@ bool cep_l0_bootstrap(void) {
     }
 
     if (!cep_fed_pack_bootstrap()) {
+        cep_runtime_restore_active(previous_scope);
+        return false;
+    }
+
+    if (!cep_sec_pipeline_bootstrap()) {
         cep_runtime_restore_active(previous_scope);
         return false;
     }

@@ -114,6 +114,8 @@ typedef struct {
     cepBranchPolicyRisk   risk;
 } cepBranchPolicyResult;
 
+#define CEP_CELL_SVO_SUBJECT_MAX 96u
+
 /**
  * Tracks context for source/verb operations so branch policy guards can attach
  * Decision Cell evidence to risky cross-branch reads before allowing them to
@@ -126,6 +128,9 @@ typedef struct {
     cepBranchPolicyResult      last_result;
     bool                       decision_required;
     bool                       decision_recorded;
+    const cepDT*               security_branch;
+    const char*                subject_id;
+    char                       subject_label[CEP_CELL_SVO_SUBJECT_MAX];
 } cepCellSvoContext;
 
 cepBranchControllerRegistry* cep_branch_registry_create(void);
@@ -159,6 +164,8 @@ void cep_branch_controller_clear_dirty(cepBranchController* controller);
 bool cep_branch_controller_enable_snapshot_mode(cepBranchController* controller);
 void cep_branch_controller_apply_eviction(cepBranchController* controller);
 cepBranchController* cep_branch_controller_for_cell(const cepCell* cell);
+bool cep_cell_is_under_security_branch(const cepCell* cell);
+cepBranchController* cep_branch_controller_for_security_cell(const cepCell* cell);
 cepBranchPolicyResult cep_branch_policy_check_read(const cepBranchController* consumer,
                                                    const cepBranchController* source);
 const char* cep_branch_policy_risk_label(cepBranchPolicyRisk risk);

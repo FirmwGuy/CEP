@@ -8,6 +8,7 @@
 
 #include "cep_cell.h"
 #include "cep_io_reactor.h"
+#include "cep_ops.h"
 #include "cep_runtime.h"
 
 #include <string.h>
@@ -40,7 +41,11 @@ static cepOID
 cep_async_lazy_ops_oid(void)
 {
     if (cep_oid_is_valid(g_async_ops_oid)) {
-        return g_async_ops_oid;
+        char scratch[8];
+        if (cep_op_get(g_async_ops_oid, scratch, sizeof scratch)) {
+            return g_async_ops_oid;
+        }
+        g_async_ops_oid = (cepOID){0};
     }
     cepDT verb = cep_ops_make_dt("op/io");
     cepDT mode = cep_ops_make_dt("opm:states");

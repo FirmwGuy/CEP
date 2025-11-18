@@ -10,8 +10,11 @@
 
 #include "../l0_kernel/cep_cei.h"
 #include "../l0_kernel/cep_ops.h"
+#include "../l0_kernel/cep_enclave_policy.h"
+#include "../l0_kernel/cep_security_tags.h"
 #include "../l0_kernel/cep_heartbeat.h"
 #include "../l0_kernel/cep_namepool.h"
+#include "sec_pipeline.h"
 
 #include <inttypes.h>
 #include <limits.h>
@@ -71,8 +74,13 @@ typedef struct cepFedInvokeRequest {
     bool                           has_deadline;
     uint64_t                       deadline;
     cepFedTransportFlatPolicy      flat_policy;
+    bool                           security_limits_valid;
+    cepEnclavePolicyLimits         security_limits;
     uint32_t                       payload_history_beats;
     uint32_t                       manifest_history_beats;
+    bool                           pipeline_required;
+    bool                           pipeline_approved;
+    char                           pipeline_id[128];
 } cepFedInvokeRequest;
 
 typedef struct cepFedInvokePending {
@@ -1180,6 +1188,32 @@ cep_fed_invoke_validator(const cepPath* signal_path,
         return CEP_ENZYME_FATAL;
     }
 
+    char pipeline_id[128] = {0};
+    bool pipeline_present = cep_fed_invoke_read_text(request_cell,
+                                                     dt_sec_pipeline_id_field(),
+                                                     false,
+                                                     pipeline_id,
+                                                     sizeof pipeline_id);
+    bool pipeline_required = (strcmp(peer, local_node) != 0);
+    bool pipeline_valid = false;
+    char pipeline_note[128] = {0};
+    if (pipeline_required || pipeline_present) {
+        if (!pipeline_present) {
+            cep_fed_invoke_emit_issue(NULL,
+                                      CEP_FED_INVOKE_TOPIC_REJECT,
+                                      "pipeline_id required for cross-enclave invoke");
+            cep_fed_invoke_publish_state(request_cell, "error", "pipeline_id required", NULL);
+            return CEP_ENZYME_FATAL;
+        }
+        if (!cep_sec_pipeline_approved(pipeline_id, NULL, pipeline_note, sizeof pipeline_note)) {
+            const char* note_text = pipeline_note[0] ? pipeline_note : "pipeline approval missing";
+            cep_fed_invoke_emit_issue(NULL, CEP_FED_INVOKE_TOPIC_REJECT, note_text);
+            cep_fed_invoke_publish_state(request_cell, "error", note_text, NULL);
+            return CEP_ENZYME_FATAL;
+        }
+        pipeline_valid = true;
+    }
+
     (void)cep_fed_invoke_read_text(request_cell,
                                    dt_pref_provider_name(),
                                    false,
@@ -1195,6 +1229,8 @@ cep_fed_invoke_validator(const cepPath* signal_path,
     cepFedTransportCaps required_caps = CEP_FED_TRANSPORT_CAP_RELIABLE |
                                         CEP_FED_TRANSPORT_CAP_ORDERED;
     cepFedTransportCaps preferred_caps = 0u;
+    cepEnclavePolicyLimits policy_limits = {0};
+    char policy_reason[128] = {0};
 
     cepCell* caps = cep_cell_find_by_name(request_cell, dt_caps_name());
     if (caps) {
@@ -1314,8 +1350,33 @@ cep_fed_invoke_validator(const cepPath* signal_path,
     ctx->deadline = deadline;
     ctx->has_deadline = deadline_present;
     ctx->flat_policy = flat_policy;
+    ctx->security_limits_valid = false;
+    if (!cep_enclave_policy_check_edge(peer,
+                                       ctx->local_node,
+                                       ctx->mount_id,
+                                       &policy_limits,
+                                       policy_reason,
+                                       sizeof policy_reason)) {
+        const char* note = policy_reason[0] ? policy_reason : "enclave policy rejected invoke request";
+        cep_enclave_policy_record_edge_denial(peer,
+                                              ctx->local_node,
+                                              ctx->mount_id,
+                                              peer,
+                                              note);
+        cep_fed_invoke_emit_issue(ctx, CEP_FED_INVOKE_TOPIC_REJECT, note);
+        cep_fed_invoke_publish_state(request_cell, "error", note, NULL);
+        cep_fed_invoke_remove_ctx(ctx);
+        return CEP_ENZYME_FATAL;
+    }
+    ctx->security_limits_valid = true;
+    ctx->security_limits = policy_limits;
     ctx->payload_history_beats = payload_history_beats;
     ctx->manifest_history_beats = manifest_history_beats;
+    ctx->pipeline_required = pipeline_required;
+    ctx->pipeline_approved = pipeline_valid;
+    if (pipeline_present) {
+        snprintf(ctx->pipeline_id, sizeof ctx->pipeline_id, "%s", pipeline_id);
+    }
 
     if (!cep_fed_invoke_copy_request_path(ctx)) {
             cep_fed_invoke_emit_issue(ctx, CEP_FED_INVOKE_TOPIC_REJECT, "unable to capture invoke request path");
@@ -1342,6 +1403,8 @@ cep_fed_invoke_validator(const cepPath* signal_path,
         .preferred_caps = ctx->preferred_caps,
         .allow_upd_latest = false,
         .deadline_beat = ctx->deadline,
+        .security_limits_valid = ctx->security_limits_valid,
+        .security_limits = ctx->security_limits,
     };
 
     cepFedTransportMountCallbacks callbacks = {0};

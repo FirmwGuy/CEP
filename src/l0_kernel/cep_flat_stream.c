@@ -5417,7 +5417,7 @@ static void cep_serialization_debug_dump_stage(const cepSerializationStage* stag
     }
 }
 
-#ifdef CEP_ENABLE_DEBUG
+#ifndef CEP_ENABLE_DEBUG
 static inline void cep_serialization_debug_dump_stage(const cepSerializationStage* stage, const char* label) {
     (void)stage;
     (void)label;

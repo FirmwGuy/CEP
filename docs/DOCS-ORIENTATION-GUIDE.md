@@ -7,6 +7,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - **Core Architecture**
   - `docs/CEP.md` — Big-picture mission and vocabulary; skim first to align terminology.
   - `docs/CEP-Implementation-Reference.md` — Deterministic contract digest covering cells, stores, transports, episodes, and higher-layer invariants relevant to kernel changes.
+  - `ENCLAVE.md` — Enclave enforcement plan, CEI surfaces, `/sys/state/security` readiness flow, and `/rt/analytics/security` counters for edges/gateways/beats.
   - `docs/L0_KERNEL/L0-OVERVIEW.md` — Layer‑0 capabilities, storage choices, and lifecycle behaviors that every kernel edit touches.
   - `docs/L0_KERNEL/L0-ALGORITHMS.md` — Cross-cutting invariants (history chains, shadow bookkeeping, traversal) to re-confirm before changing shared helpers.
   - `docs/L0_KERNEL/L0-INTEGRATION-GUIDE.md` — Enzyme dispatch, serialization flows, and proxy wiring that keep integrations deterministic.
