@@ -166,8 +166,16 @@ typedef void (*cepDel)(void*);
 /* Debug prints compile out unless CEP_ENABLE_DEBUG is defined. */
 #ifdef CEP_ENABLE_DEBUG
   #include <stdio.h>
+  static inline bool cep_debug_print_enabled(void) {
+      static int g_debug_print_enabled = -1;
+      if (g_debug_print_enabled < 0) {
+          const char* env = getenv("CEP_DEBUG_LOG");
+          g_debug_print_enabled = (env && *env && env[0] != '0') ? 1 : 0;
+      }
+      return g_debug_print_enabled != 0;
+  }
   #define CEP_DEBUG_PRINTF_STREAM(stream, ...)                                    \
-      do { fprintf((stream), __VA_ARGS__); fflush(stream); } while (0)
+      do { if (cep_debug_print_enabled()) { fprintf((stream), __VA_ARGS__); fflush(stream); } } while (0)
   #define CEP_DEBUG_PRINTF(...)                                                   \
       CEP_DEBUG_PRINTF_STREAM(stderr, __VA_ARGS__)
   #define CEP_DEBUG_PRINTF_STDOUT(...)                                            \

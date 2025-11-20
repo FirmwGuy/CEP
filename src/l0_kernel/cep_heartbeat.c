@@ -38,6 +38,19 @@
 #define CEP_DEFAULT_TOPOLOGY (*cep_runtime_default_topology(cep_runtime_default()))
 #define CEP_ASYNC_STATE      (cep_runtime_async_state(cep_runtime_default()))
 
+#if defined(CEP_ENABLE_DEBUG)
+static void cep_heartbeat_trace_phase_fail(const char* phase, const char* reason) {
+    CEP_DEBUG_PRINTF("[heartbeat][%s] %s\n",
+                     phase ? phase : "<phase>",
+                     reason ? reason : "failed");
+}
+#else
+static void cep_heartbeat_trace_phase_fail(const char* phase, const char* reason) {
+    (void)phase;
+    (void)reason;
+}
+#endif
+
 
 static const cepDT* dt_state_root(void);
 static const cepDT* dt_mailbox_root_name(void);
@@ -3940,6 +3953,13 @@ static bool cep_boot_ops_publish_oid(const cepDT* field_name, cepOID oid) {
                                        &oid,
                                        sizeof oid,
                                        sizeof oid);
+#if defined(CEP_ENABLE_DEBUG)
+    CEP_DEBUG_PRINTF("[boot_ops] publish field=%llu:%llu oid=%llu:%llu\n",
+                     (unsigned long long)lookup.domain,
+                     (unsigned long long)lookup.tag,
+                     (unsigned long long)oid.domain,
+                     (unsigned long long)oid.tag);
+#endif
     if (!node) {
         return false;
     }
@@ -4589,13 +4609,16 @@ bool cep_heartbeat_begin(cepBeatNumber beat) {
     matching impulses, and building the ordered list of enzymes to run. */
 bool cep_heartbeat_resolve_agenda(void) {
     if (!CEP_RUNTIME.running) {
+        cep_heartbeat_trace_phase_fail("resolve", "runtime stopped");
         return false;
     }
 
     if (!cep_boot_ops_progress()) {
+        cep_heartbeat_trace_phase_fail("resolve", "boot_ops_progress");
         return false;
     }
     if (!cep_control_progress()) {
+        cep_heartbeat_trace_phase_fail("resolve", "control_progress");
         return false;
     }
 
@@ -4605,7 +4628,11 @@ bool cep_heartbeat_resolve_agenda(void) {
         cep_enzyme_registry_activate_pending(CEP_RUNTIME.registry);
     }
 
-    return cep_heartbeat_process_impulses();
+    bool ok = cep_heartbeat_process_impulses();
+    if (!ok) {
+        cep_heartbeat_trace_phase_fail("resolve", "process_impulses");
+    }
+    return ok;
 }
 
 
@@ -4617,7 +4644,11 @@ bool cep_heartbeat_resolve_agenda(void) {
 bool cep_heartbeat_execute_agenda(void) {
     // Enzyme callbacks run during cep_heartbeat_process_impulses(); keep this
     // shim in sync if we refactor execution into its own phase.
-    return CEP_RUNTIME.running;
+    bool ok = CEP_RUNTIME.running;
+    if (!ok) {
+        cep_heartbeat_trace_phase_fail("execute", "runtime stopped");
+    }
+    return ok;
 }
 
 
@@ -4628,6 +4659,7 @@ bool cep_heartbeat_execute_agenda(void) {
     flushing staged caches and journaling the results. */
 bool cep_heartbeat_stage_commit(void) {
     if (!CEP_RUNTIME.running) {
+        cep_heartbeat_trace_phase_fail("stage_commit", "runtime stopped");
         return false;
     }
 
@@ -4638,6 +4670,7 @@ bool cep_heartbeat_stage_commit(void) {
     if (!cep_stream_commit_pending()) {
         CEP_DEBUG_PRINTF("[stage_commit] stream commit failed\n");
         fflush(stderr);
+        cep_heartbeat_trace_phase_fail("stage_commit", "stream commit");
         return false;
     }
 
@@ -4646,11 +4679,23 @@ bool cep_heartbeat_stage_commit(void) {
         const char* plural = (promoted == 1u) ? "" : "s";
         cepBeatNumber current = (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current;
         cepBeatNumber next = (CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current + 1u;
+#if defined(CEP_ENABLE_DEBUG)
+        if (cep_debug_print_enabled()) {
+            CEP_DEBUG_PRINTF("[stage_commit] promoting %zu impulse%s current=%" PRIu64 " next=%" PRIu64 " queued_current=%zu queued_next=%zu\n",
+                             promoted,
+                             plural,
+                             (uint64_t)current,
+                             (uint64_t)next,
+                             CEP_RUNTIME.impulses_current.count,
+                             CEP_RUNTIME.impulses_next.count);
+        }
+#endif
         int written = snprintf(NULL, 0, "commit: promoted %zu impulse%s -> beat %" PRIu64,
                                 promoted, plural, (uint64_t)next);
         if (written < 0) {
             CEP_DEBUG_PRINTF("[stage_commit] snprintf size failed\n");
             fflush(stderr);
+            cep_heartbeat_trace_phase_fail("stage_commit", "snprintf size");
             return false;
         }
 
@@ -4659,6 +4704,7 @@ bool cep_heartbeat_stage_commit(void) {
         if (!message) {
             CEP_DEBUG_PRINTF("[stage_commit] message alloc failed\n");
             fflush(stderr);
+            cep_heartbeat_trace_phase_fail("stage_commit", "message alloc");
             return false;
         }
 
@@ -4670,6 +4716,7 @@ bool cep_heartbeat_stage_commit(void) {
         if (!recorded) {
             CEP_DEBUG_PRINTF("[stage_commit] record stage entry failed\n");
             fflush(stderr);
+            cep_heartbeat_trace_phase_fail("stage_commit", "record stage entry");
             return false;
         }
     }
@@ -4677,12 +4724,14 @@ bool cep_heartbeat_stage_commit(void) {
     if (!cep_ops_stage_commit()) {
         CEP_DEBUG_PRINTF("[stage_commit] ops stage commit failed err=%d\n", cep_ops_debug_last_error());
         fflush(stderr);
+        cep_heartbeat_trace_phase_fail("stage_commit", "ops stage commit");
         return false;
     }
 
     if (!cep_control_progress()) {
         CEP_DEBUG_PRINTF("[stage_commit] control progress failed\n");
         fflush(stderr);
+        cep_heartbeat_trace_phase_fail("stage_commit", "control progress");
         return false;
     }
 
@@ -4691,6 +4740,7 @@ bool cep_heartbeat_stage_commit(void) {
     if (!cps_storage_commit_current_beat()) {
         CEP_DEBUG_PRINTF("[stage_commit] storage commit failed\n");
         fflush(stderr);
+        cep_heartbeat_trace_phase_fail("stage_commit", "storage commit");
         return false;
     }
 
@@ -4699,12 +4749,20 @@ bool cep_heartbeat_stage_commit(void) {
         if (!cep_heartbeat_record_op_stamp(CEP_RUNTIME.current, stamp)) {
             CEP_DEBUG_PRINTF("[stage_commit] record op stamp failed\n");
             fflush(stderr);
+            cep_heartbeat_trace_phase_fail("stage_commit", "record op stamp");
             return false;
         }
     }
 
     cep_heartbeat_impulse_queue_swap(&CEP_RUNTIME.impulses_current, &CEP_RUNTIME.impulses_next);
     cep_heartbeat_impulse_queue_reset(&CEP_RUNTIME.impulses_next);
+#if defined(CEP_ENABLE_DEBUG)
+    if (cep_debug_print_enabled()) {
+        CEP_DEBUG_PRINTF("[stage_commit] queue swap complete current=%zu next=%zu\n",
+                         CEP_RUNTIME.impulses_current.count,
+                         CEP_RUNTIME.impulses_next.count);
+    }
+#endif
     cep_beat_begin_capture();
     return true;
 }
@@ -4758,6 +4816,7 @@ void cep_beat_begin_capture(void) {
     CEP_RUNTIME.deferred_activations = 0u;
     CEP_CONTROL_STATE.agenda_noted = false;
     cep_async_runtime_on_phase(CEP_ASYNC_STATE, CEP_BEAT_CAPTURE);
+    cep_enclave_policy_trace_stage("beat.capture");
     cep_enclave_policy_on_capture();
 }
 
@@ -4775,6 +4834,7 @@ void cep_beat_begin_compute(void) {
 void cep_beat_begin_commit(void) {
     CEP_RUNTIME.phase = CEP_BEAT_COMMIT;
     cep_async_runtime_on_phase(CEP_ASYNC_STATE, CEP_BEAT_COMMIT);
+    cep_enclave_policy_trace_stage("beat.commit");
 }
 
 
@@ -4880,6 +4940,13 @@ bool cep_heartbeat_process_impulses(void) {
 
     cepHeartbeatImpulseQueue* queue = &CEP_RUNTIME.impulses_current;
     size_t impulse_count = queue->count;
+#if defined(CEP_ENABLE_DEBUG)
+    if (cep_debug_print_enabled()) {
+        CEP_DEBUG_PRINTF("[process_impulses] queue_count=%zu current=%" PRIu64 "\n",
+                         impulse_count,
+                         (uint64_t)((CEP_RUNTIME.current == CEP_BEAT_INVALID) ? 0u : CEP_RUNTIME.current));
+    }
+#endif
 
     if (CEP_CONTROL_STATE.gating_active && !CEP_CONTROL_STATE.agenda_noted) {
         (void)cep_heartbeat_stage_note("paused agenda (control-only)");
@@ -5613,6 +5680,20 @@ int cep_heartbeat_enqueue_impulse(cepBeatNumber beat, const cepImpulse* impulse)
         fflush(stderr);
         return CEP_ENZYME_FATAL;
     }
+#if defined(CEP_ENABLE_DEBUG)
+    if (cep_debug_print_enabled()) {
+        char* signal_as_text = cep_heartbeat_path_to_string(impulse->signal_path);
+        char* target_as_text = cep_heartbeat_path_to_string(impulse->target_path);
+        CEP_DEBUG_PRINTF("[enqueue_impulse] beat=%" PRIu64 " record=%" PRIu64 " next_count=%zu signal=%s target=%s\n",
+                         (uint64_t)CEP_RUNTIME.current,
+                         (uint64_t)record_beat,
+                         CEP_RUNTIME.impulses_next.count,
+                         signal_as_text ? signal_as_text : "<null>",
+                         target_as_text ? target_as_text : "<null>");
+        cep_free(signal_as_text);
+        cep_free(target_as_text);
+    }
+#endif
 
     if (cep_heartbeat_policy_use_dirs() && record_beat != CEP_BEAT_INVALID) {
         if (!cep_heartbeat_record_impulse_entry(record_beat, impulse)) {

@@ -13,6 +13,7 @@
 #include "cep_l0.h"
 #include "cep_ops.h"
 #include "cep_organ.h"
+#include "cep_enzyme.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -21,6 +22,9 @@ typedef struct {
     cepRuntime* runtime;
     cepRuntime* previous_runtime;
 } OrganRuntimeScope;
+
+static cepCell* organ_find_cell(cepCell* parent, const cepDT* name);
+static const char* organ_ops_entry_target_strict(cepCell* op);
 
 static OrganRuntimeScope organ_prepare_runtime(void) {
     OrganRuntimeScope scope = {
@@ -90,6 +94,22 @@ static cepCell* organ_ops_root(void) {
     return cep_cell_resolve(ops);
 }
 
+static const char*
+organ_ops_entry_target_strict(cepCell* op)
+{
+    if (!op) {
+        return NULL;
+    }
+    cepCell* envelope = organ_find_cell(op, CEP_DTAW("CEP", "envelope"));
+    cepCell* target_node = organ_find_cell(envelope, CEP_DTAW("CEP", "target"));
+    const cepData* target_data = target_node->data;
+    if (!target_data || target_data->datatype != CEP_DATATYPE_VALUE || target_data->size == 0u) {
+        return NULL;
+    }
+    const char* stored_target = (const char*)target_data->value;
+    return (stored_target && stored_target[0]) ? stored_target : NULL;
+}
+
 static cepCell* organ_find_cell(cepCell* parent, const cepDT* name) {
     cepCell* node = cep_cell_find_by_name(parent, name);
     munit_assert_not_null(node);
@@ -104,19 +124,199 @@ static void organ_trace_ops_size(const char* label, cepCell* ops_root) {
     test_ovh_tracef("%s ops_children=%zu", label, cep_cell_children(ops_root));
 }
 
+static void organ_trace_bindings(const char* label, cepCell* root) {
+    if (!test_ovh_trace_enabled() || !root) {
+        return;
+    }
+    const cepEnzymeBinding* binding = cep_cell_enzyme_bindings(root);
+    size_t count = 0u;
+    for (const cepEnzymeBinding* node = binding; node; node = node->next) {
+        if (node->flags & CEP_ENZYME_BIND_TOMBSTONE) {
+            continue;
+        }
+        char tag_buf[64];
+        const char* tag_text = tag_buf;
+        if (cep_id_is_reference(node->name.tag)) {
+            size_t tag_len = 0u;
+            const char* looked = cep_namepool_lookup(node->name.tag, &tag_len);
+            if (!looked || tag_len + 1u > sizeof tag_buf) {
+                tag_text = "<ref>";
+            } else {
+                memcpy(tag_buf, looked, tag_len);
+                tag_buf[tag_len] = '\0';
+            }
+        } else {
+            size_t len = cep_word_to_text(node->name.tag, tag_buf);
+            if (len >= sizeof tag_buf) {
+                len = sizeof tag_buf - 1u;
+            }
+            tag_buf[len] = '\0';
+        }
+        test_ovh_tracef("%s binding[%zu] domain=%08x tag=%s flags=0x%x",
+                        label ? label : "bindings",
+                        count++,
+                        (unsigned)cep_id(node->name.domain),
+                        tag_text,
+                        node->flags);
+    }
+    if (count == 0u) {
+        test_ovh_tracef("%s binding[none]", label ? label : "bindings");
+    }
+}
+
+typedef struct {
+    cepPath path;
+    cepPast past[1];
+} OrganSinglePath;
+
+typedef struct {
+    cepPath path;
+    cepPast past[4];
+} OrganTargetPath;
+
+static const cepPath* organ_build_target_path(OrganTargetPath* buf, cepCell* cell) {
+    if (!buf || !cell) {
+        return NULL;
+    }
+    unsigned depth = 0u;
+    for (cepCell* current = cell; current && current->parent; current = current->parent->owner) {
+        if (depth >= buf->path.capacity) {
+            break;
+        }
+        depth++;
+    }
+    if (depth == 0u || depth > buf->path.capacity) {
+        return NULL;
+    }
+    buf->path.length = depth;
+    buf->path.capacity = depth;
+    cepCell* current = cell;
+    for (int index = (int)depth - 1; index >= 0 && current && current->parent; --index) {
+        cepCell* parent = current->parent->owner;
+        const cepDT* name = cep_cell_get_name(current);
+        if (!name) {
+            return NULL;
+        }
+        buf->past[index].dt = *name;
+        buf->past[index].timestamp = 0u;
+        current = parent;
+    }
+    return &buf->path;
+}
+
+static void organ_debug_resolve_signal(const char* label, const char* signal_text) {
+    if (!test_ovh_trace_enabled() || !signal_text) {
+        return;
+    }
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    if (!registry) {
+        return;
+    }
+    OrganSinglePath sig = {
+        .path = {
+            .length = 1u,
+            .capacity = 1u,
+        },
+        .past = {
+            {
+                .dt = cep_ops_make_dt(signal_text),
+                .timestamp = 0u,
+            },
+        },
+    };
+    const cepEnzymeDescriptor* ordered[16];
+    cepImpulse impulse = {
+        .signal_path = &sig.path,
+        .target_path = NULL,
+        .qos = 0u,
+    };
+    size_t resolved = cep_enzyme_resolve(registry, &impulse, ordered, cep_lengthof(ordered));
+    test_ovh_tracef("%s resolve signal=%s count=%zu",
+                    label ? label : "organ_resolve",
+                    signal_text,
+                    resolved);
+}
+
+static void organ_debug_resolve_signal_target(const char* label, const char* signal_text, cepCell* target) {
+    if (!test_ovh_trace_enabled() || !signal_text || !target) {
+        return;
+    }
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    if (!registry) {
+        return;
+    }
+    OrganTargetPath target_buf = {
+        .path = {
+            .length = 0u,
+            .capacity = cep_lengthof(target_buf.past),
+        },
+    };
+    const cepPath* target_path = organ_build_target_path(&target_buf, target);
+    if (!target_path) {
+        test_ovh_tracef("%s resolve signal=%s target=<invalid>", label ? label : "organ_resolve", signal_text);
+        return;
+    }
+    OrganSinglePath sig = {
+        .path = {
+            .length = 1u,
+            .capacity = 1u,
+        },
+        .past = {{
+            .dt = cep_ops_make_dt(signal_text),
+            .timestamp = 0u,
+        }},
+    };
+    const cepEnzymeDescriptor* ordered[16];
+    cepImpulse impulse = {
+        .signal_path = &sig.path,
+        .target_path = target_path,
+        .qos = 0u,
+    };
+    size_t resolved = cep_enzyme_resolve(registry, &impulse, ordered, cep_lengthof(ordered));
+    test_ovh_tracef("%s resolve signal=%s count=%zu target_segments=%u",
+                    label ? label : "organ_resolve",
+                    signal_text,
+                    resolved,
+                    target_path->length);
+}
+
 static bool organ_ops_has_entry(const char* target_path);
+static bool organ_ops_has_entry_since(const char* target_path, cepID min_tag);
 
 static void organ_wait_for_validator(const char* label,
                                      cepCell* ops_root,
-                                     size_t before_count) {
-    for (int beat = 0; beat < 32; ++beat) {
-        munit_assert_true(test_ovh_heartbeat_step(label));
-        organ_trace_ops_size(label, ops_root);
-        if (cep_cell_children(ops_root) > before_count) {
-            return;
+                                     size_t before_count,
+                                     const char* expected_target) {
+    const int max_beats = expected_target ? 256 : 32;
+    cepID baseline_tag = 0u;
+    if (expected_target) {
+        cepCell* tail = cep_cell_last_all(ops_root);
+        if (tail) {
+            const cepDT* name = cep_cell_get_name(tail);
+            baseline_tag = name ? cep_id(name->tag) : 0u;
         }
     }
-    munit_error("validator did not emit dossier within heartbeat allowance");
+    for (int beat = 0; beat < max_beats; ++beat) {
+        munit_assert_true(test_ovh_heartbeat_step(label));
+        organ_trace_ops_size(label, ops_root);
+        if (expected_target && organ_ops_has_entry_since(expected_target, baseline_tag)) {
+            return;
+        }
+        size_t child_count = cep_cell_children(ops_root);
+        if (child_count > before_count) {
+            if (!expected_target) {
+                return;
+            }
+            before_count = child_count;
+        }
+    }
+    if (expected_target) {
+        munit_errorf("validator %s did not emit target %s within heartbeat allowance",
+                     label ? label : "<validator>",
+                     expected_target);
+    } else {
+        munit_error("validator did not emit dossier within heartbeat allowance");
+    }
 }
 
 static void organ_step_beats(const char* label, unsigned count) {
@@ -217,12 +417,16 @@ static void organ_assert_schema_present(cepCell* root) {
 }
 
 static bool organ_ops_has_entry(const char* target_path) {
+    return organ_ops_has_entry_since(target_path, 0u);
+}
+
+static bool organ_ops_has_entry_since(const char* target_path, cepID min_tag) {
     cepCell* ops_root = organ_ops_root();
     munit_assert_not_null(ops_root);
 
-    for (cepCell* op = cep_cell_last_all(ops_root);
+    for (cepCell* op = cep_cell_first_all(ops_root);
          op;
-         op = cep_cell_prev_all(ops_root, op)) {
+         op = cep_cell_next_all(ops_root, op)) {
         cepCell* envelope = organ_find_cell(op, CEP_DTAW("CEP", "envelope"));
         cepCell* target_node = organ_find_cell(envelope, CEP_DTAW("CEP", "target"));
 
@@ -234,15 +438,35 @@ static bool organ_ops_has_entry(const char* target_path) {
         if (!stored_target || strcmp(stored_target, target_path) != 0) {
             continue;
         }
-
+        const cepDT* name = cep_cell_get_name(op);
+        cepID tag_numeric = name ? cep_id(name->tag) : 0u;
+        if (min_tag && tag_numeric && tag_numeric <= min_tag) {
+            continue;
+        }
         cepCell* state_node = organ_find_cell(op, CEP_DTAW("CEP", "state"));
         const cepData* state_data = state_node->data;
         if (!state_data || state_data->datatype != CEP_DATATYPE_VALUE || state_data->size != sizeof(cepDT)) {
+            if (test_ovh_trace_enabled()) {
+                test_ovh_tracef("organ_ops_has_entry pending target=%s state_data_missing=%d",
+                                   target_path,
+                                   state_data ? 0 : 1);
+            }
             continue;
         }
         cepDT state_dt = {0};
         memcpy(&state_dt, state_data->value, sizeof state_dt);
         if (cep_dt_compare(&state_dt, CEP_DTAW("CEP", "ist:ok")) != 0) {
+            if (test_ovh_trace_enabled()) {
+                char state_buf[32];
+                size_t len = cep_word_to_text(state_dt.tag, state_buf);
+                if (len >= sizeof state_buf) {
+                    len = sizeof state_buf - 1u;
+                }
+                state_buf[len] = '\0';
+                test_ovh_tracef("organ_ops_has_entry target=%s unexpected_state=%s",
+                                   target_path,
+                                   state_buf);
+            }
             continue;
         }
 
@@ -250,11 +474,27 @@ static bool organ_ops_has_entry(const char* target_path) {
         cepCell* status_node = organ_find_cell(close_branch, CEP_DTAW("CEP", "status"));
         const cepData* status_data = status_node->data;
         if (!status_data || status_data->datatype != CEP_DATATYPE_VALUE || status_data->size != sizeof(cepDT)) {
+            if (test_ovh_trace_enabled()) {
+                test_ovh_tracef("organ_ops_has_entry target=%s status_missing=%d",
+                                   target_path,
+                                   status_data ? 0 : 1);
+            }
             continue;
         }
         cepDT status_dt = {0};
         memcpy(&status_dt, status_data->value, sizeof status_dt);
         if (cep_dt_compare(&status_dt, CEP_DTAW("CEP", "sts:ok")) != 0) {
+            if (test_ovh_trace_enabled()) {
+                char status_buf[32];
+                size_t len = cep_word_to_text(status_dt.tag, status_buf);
+                if (len >= sizeof status_buf) {
+                    len = sizeof status_buf - 1u;
+                }
+                status_buf[len] = '\0';
+                test_ovh_tracef("organ_ops_has_entry target=%s unexpected_status=%s",
+                                   target_path,
+                                   status_buf);
+            }
             continue;
         }
 
@@ -267,19 +507,16 @@ static bool organ_ops_has_entry(const char* target_path) {
 static void organ_assert_latest_success(const char* expected_target) {
     cepCell* ops_root = organ_ops_root();
     cepCell* newest = NULL;
-    for (cepCell* op = cep_cell_last_all(ops_root);
+    cepID newest_tag = 0u;
+    for (cepCell* op = cep_cell_first_all(ops_root);
          op;
-         op = cep_cell_prev_all(ops_root, op)) {
-        cepCell* envelope = organ_find_cell(op, CEP_DTAW("CEP", "envelope"));
-        cepCell* target_node = organ_find_cell(envelope, CEP_DTAW("CEP", "target"));
-        if (!target_node || !target_node->data || target_node->data->datatype != CEP_DATATYPE_VALUE) {
-            continue;
-        }
-        const char* target_path = (const char*)target_node->data->value;
+         op = cep_cell_next_all(ops_root, op)) {
+        const char* target_path = organ_ops_entry_target_strict(op);
         if (!target_path || strcmp(target_path, expected_target) != 0) {
             continue;
         }
 
+        cepCell* envelope = organ_find_cell(op, CEP_DTAW("CEP", "envelope"));
         cepCell* verb_node = organ_find_cell(envelope, CEP_DTAW("CEP", "verb"));
         if (!verb_node || !verb_node->data || verb_node->data->datatype != CEP_DATATYPE_VALUE || verb_node->data->size != sizeof(cepDT)) {
             continue;
@@ -291,8 +528,55 @@ static void organ_assert_latest_success(const char* expected_target) {
             continue;
         }
 
-        newest = op;
-        break;
+        const cepDT* name = cep_cell_get_name(op);
+        cepID tag_numeric = name ? cep_id(name->tag) : 0u;
+        if (!newest || tag_numeric > newest_tag) {
+            newest = op;
+            newest_tag = tag_numeric;
+        }
+    }
+    if (!newest) {
+        char summary[256];
+        size_t offset = 0u;
+        size_t inspected = 0u;
+        for (cepCell* op = cep_cell_last_all(ops_root);
+             op && inspected < 5u;
+             op = cep_cell_prev_all(ops_root, op)) {
+            const char* target_desc = "<missing>";
+            cepCell* envelope = cep_cell_find_by_name(op, CEP_DTAW("CEP", "envelope"));
+            if (envelope) {
+                envelope = cep_cell_resolve(envelope);
+                if (envelope) {
+                    cepCell* target_node = cep_cell_find_by_name(envelope, CEP_DTAW("CEP", "target"));
+                    if (target_node) {
+                        target_node = cep_cell_resolve(target_node);
+                        if (target_node && target_node->data && target_node->data->datatype == CEP_DATATYPE_VALUE) {
+                            target_desc = (const char*)target_node->data->value;
+                        } else {
+                            target_desc = "<target-invalid>";
+                        }
+                    }
+                }
+            }
+            int wrote = snprintf(summary + offset,
+                                 sizeof(summary) - offset,
+                                 "%s%s",
+                                 (inspected++ ? "; " : ""),
+                                 target_desc ? target_desc : "<null>");
+            if (wrote < 0 || (size_t)wrote >= sizeof(summary) - offset) {
+                offset = sizeof(summary) - 1u;
+                summary[offset] = '\0';
+                break;
+            }
+            offset += (size_t)wrote;
+        }
+        if (offset == 0u) {
+            summary[0] = '\0';
+        }
+        munit_logf(MUNIT_LOG_ERROR,
+                   "organ_ops missing expected target %s; recent targets: %s",
+                   expected_target,
+                   offset ? summary : "<none>");
     }
     munit_assert_not_null(newest);
 
@@ -308,18 +592,13 @@ static void organ_assert_latest_success(const char* expected_target) {
     cepDT verb_expected = cep_ops_make_dt("op/vl");
     munit_assert_int(cep_dt_compare(&verb_dt, &verb_expected), ==, 0);
 
-    cepCell* target_node = organ_find_cell(envelope, CEP_DTAW("CEP", "target"));
-    const cepData* target_data = target_node->data;
-    munit_assert_not_null(target_data);
-    munit_assert_int(target_data->datatype, ==, CEP_DATATYPE_VALUE);
-    munit_assert_true(target_data->size > 0u);
-    const char* target_path = (const char*)target_data->value;
+    const char* target_path = organ_ops_entry_target_strict(newest);
     munit_assert_not_null(target_path);
     munit_assert_string_equal(target_path, expected_target);
 
     cepCell* state_node = organ_find_cell(newest, CEP_DTAW("CEP", "state"));
     const cepData* state_data = state_node->data;
-    munit_assert_int(state_data->datatype, ==, CEP_DATATYPE_VALUE);
+        munit_assert_int(state_data->datatype, ==, CEP_DATATYPE_VALUE);
     munit_assert_size(state_data->size, ==, sizeof(cepDT));
     cepDT state_dt = {0};
     memcpy(&state_dt, state_data->value, sizeof state_dt);
@@ -355,9 +634,9 @@ MunitResult test_organ_sys_state_validator(const MunitParameter params[], void* 
     munit_assert_true(cep_organ_request_validation(state_root));
     organ_trace_ops_size("organ_sys_state queued", ops_root);
 
-    organ_wait_for_validator("organ_sys_state run", ops_root, before_count);
+    organ_wait_for_validator("organ_sys_state run", ops_root, before_count, "/sys/state");
 
-    organ_assert_latest_success("/sys/state");
+    munit_assert_true(organ_ops_has_entry("/sys/state"));
     test_watchdog_signal(watchdog);
     organ_cleanup_runtime(&scope);
     return MUNIT_OK;
@@ -379,7 +658,7 @@ MunitResult test_organ_rt_ops_validator(const MunitParameter params[], void* use
     munit_assert_true(cep_organ_request_validation(ops_root));
     organ_trace_ops_size("organ_rt_ops queued", ops_root);
 
-    organ_wait_for_validator("organ_rt_ops run", ops_root, before_count);
+    organ_wait_for_validator("organ_rt_ops run", ops_root, before_count, "/rt/ops");
 
     organ_assert_latest_success("/rt/ops");
     test_watchdog_signal(watchdog);
@@ -401,6 +680,20 @@ MunitResult test_organ_constructor_bootstrap(const MunitParameter params[], void
     cepCell* journal_root = cep_heartbeat_journal_root();
     munit_assert_not_null(journal_root);
 
+    organ_trace_bindings("rt_beat bindings (cycles)", beat_root);
+    organ_trace_bindings("journal bindings (cycles)", journal_root);
+    organ_debug_resolve_signal("rt_beat resolve (cycles)", "org:rt_beat:vl");
+    organ_debug_resolve_signal("journal resolve (cycles)", "org:journal:vl");
+    organ_debug_resolve_signal_target("rt_beat resolve target (cycles)", "org:rt_beat:vl", beat_root);
+    organ_debug_resolve_signal_target("journal resolve target (cycles)", "org:journal:vl", journal_root);
+
+    organ_trace_bindings("rt_beat bindings (bootstrap)", beat_root);
+    organ_trace_bindings("journal bindings (bootstrap)", journal_root);
+    organ_debug_resolve_signal("rt_beat resolve (bootstrap)", "org:rt_beat:vl");
+    organ_debug_resolve_signal("journal resolve (bootstrap)", "org:journal:vl");
+    organ_debug_resolve_signal_target("rt_beat resolve target (bootstrap)", "org:rt_beat:vl", beat_root);
+    organ_debug_resolve_signal_target("journal resolve target (bootstrap)", "org:journal:vl", journal_root);
+
     munit_assert_true(cep_organ_request_constructor(beat_root));
     munit_assert_true(cep_organ_request_constructor(journal_root));
     organ_step_beats("organ_constructor_bootstrap:ctor_prime", 4);
@@ -415,12 +708,12 @@ MunitResult test_organ_constructor_bootstrap(const MunitParameter params[], void
     cepCell* ops_root = organ_ops_root();
     size_t before = cep_cell_children(ops_root);
     munit_assert_true(cep_organ_request_validation(beat_root));
-    organ_wait_for_validator("organ_constructor_bootstrap:vl_rt_beat", ops_root, before);
+    organ_wait_for_validator("organ_constructor_bootstrap:vl_rt_beat", ops_root, before, "/rt/beat");
     organ_assert_latest_success("/rt/beat");
 
     before = cep_cell_children(ops_root);
     munit_assert_true(cep_organ_request_validation(journal_root));
-    organ_wait_for_validator("organ_constructor_bootstrap:vl_journal", ops_root, before);
+    organ_wait_for_validator("organ_constructor_bootstrap:vl_journal", ops_root, before, "/journal");
     organ_assert_latest_success("/journal");
 
     test_watchdog_signal(watchdog);
@@ -466,12 +759,12 @@ MunitResult test_organ_constructor_destructor_cycles(const MunitParameter params
     cepCell* ops_root = organ_ops_root();
     size_t before = cep_cell_children(ops_root);
     munit_assert_true(cep_organ_request_validation(beat_root));
-    organ_wait_for_validator("organ_destructor_cycles:vl_rt_beat_before", ops_root, before);
+    organ_wait_for_validator("organ_destructor_cycles:vl_rt_beat_before", ops_root, before, "/rt/beat");
     organ_assert_latest_success("/rt/beat");
 
     before = cep_cell_children(ops_root);
     munit_assert_true(cep_organ_request_validation(journal_root));
-    organ_wait_for_validator("organ_destructor_cycles:vl_journal_before", ops_root, before);
+    organ_wait_for_validator("organ_destructor_cycles:vl_journal_before", ops_root, before, "/journal");
     organ_assert_latest_success("/journal");
 
     if (test_ovh_trace_enabled()) {
@@ -509,12 +802,12 @@ MunitResult test_organ_constructor_destructor_cycles(const MunitParameter params
 
     before = cep_cell_children(ops_root);
     munit_assert_true(cep_organ_request_validation(beat_root));
-    organ_wait_for_validator("organ_destructor_cycles:vl_rt_beat_after", ops_root, before);
+    organ_wait_for_validator("organ_destructor_cycles:vl_rt_beat_after", ops_root, before, "/rt/beat");
     organ_assert_latest_success("/rt/beat");
 
     before = cep_cell_children(ops_root);
     munit_assert_true(cep_organ_request_validation(journal_root));
-    organ_wait_for_validator("organ_destructor_cycles:vl_journal_after", ops_root, before);
+    organ_wait_for_validator("organ_destructor_cycles:vl_journal_after", ops_root, before, "/journal");
     organ_assert_latest_success("/journal");
 
     test_watchdog_signal(watchdog);

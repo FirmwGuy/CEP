@@ -11,6 +11,15 @@
 #include <stdio.h>
 #include <strings.h>
 #include <ctype.h>
+#include <inttypes.h>
+
+#ifdef CEP_ENABLE_DEBUG
+#include <execinfo.h>
+#include <dlfcn.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #define CEP_ENCLAVE_POLICY_TIER_MAX  (sizeof(((cepEnclaveDescriptor*)0)->trust_tier))
 #define CEP_ENCLAVE_BRANCH_PATH_MAX 512u
@@ -61,9 +70,240 @@ typedef struct {
     cepCell*                 security_root;
     bool                     dirty;
     bool                     ready;
+    uint32_t                 freeze_count;
+    bool                     pending_dirty;
 } cepEnclavePolicyRuntime;
 
 static cepEnclavePolicyRuntime g_enclave_policy = {0};
+
+#ifdef CEP_ENABLE_DEBUG
+#define CEP_ENCLAVE_POLICY_TRACE_DIR  "/tmp/cep_trace"
+#define CEP_ENCLAVE_POLICY_TRACE_FILE CEP_ENCLAVE_POLICY_TRACE_DIR "/enclave_policy_trace.log"
+
+static FILE*
+cep_enclave_policy_trace_open(void)
+{
+    static bool dir_ready = false;
+    if (!dir_ready) {
+        if (mkdir(CEP_ENCLAVE_POLICY_TRACE_DIR, 0777) != 0 && errno != EEXIST) {
+            return NULL;
+        }
+        dir_ready = true;
+    }
+    return fopen(CEP_ENCLAVE_POLICY_TRACE_FILE, "a");
+}
+
+static void
+cep_enclave_policy_trace_dump_stack(FILE* stream)
+{
+    if (!stream) {
+        return;
+    }
+    void* frames[16] = {0};
+    int captured = backtrace(frames, (int)(sizeof(frames) / sizeof(frames[0])));
+    if (captured <= 0) {
+        return;
+    }
+    for (int i = 0; i < captured; ++i) {
+        Dl_info info = {0};
+        const void* addr = frames[i];
+        if (dladdr(addr, &info) != 0 && info.dli_sname) {
+            ptrdiff_t offset = (const char*)addr - (const char*)info.dli_saddr;
+            fprintf(stream,
+                    "        #%02d %p %s+0x%tx\n",
+                    i,
+                    addr,
+                    info.dli_sname,
+                    offset);
+        } else {
+            fprintf(stream, "        #%02d %p\n", i, addr);
+        }
+    }
+}
+#endif
+
+static void
+cep_enclave_policy_trace_log(const char* event,
+                             const char* detail,
+                             bool capture_stack)
+{
+#if defined(CEP_ENABLE_DEBUG)
+    if (!event) {
+        return;
+    }
+    FILE* log = cep_enclave_policy_trace_open();
+    if (!log) {
+        return;
+    }
+    cepBeatNumber beat = cep_beat_index();
+    uint64_t beat_number = (beat == CEP_BEAT_INVALID) ? 0u : (uint64_t)beat;
+    uint64_t version = g_enclave_policy.snapshot.version;
+    fprintf(log,
+            "[policy-trace:%s] beat=%" PRIu64 " version=%" PRIu64 " dirty=%u ready=%u\n",
+            event,
+            beat_number,
+            version,
+            g_enclave_policy.dirty ? 1u : 0u,
+            g_enclave_policy.ready ? 1u : 0u);
+    if (detail && *detail) {
+        fprintf(log, "    %s\n", detail);
+    }
+    if (capture_stack) {
+        fputs("    stack:\n", log);
+        cep_enclave_policy_trace_dump_stack(log);
+    }
+    fclose(log);
+#else
+    (void)event;
+    (void)detail;
+    (void)capture_stack;
+#endif
+}
+
+void
+cep_enclave_policy_trace_stage(const char* stage)
+{
+    if (!stage) {
+        return;
+    }
+    cep_enclave_policy_trace_log(stage, NULL, false);
+}
+
+#if defined(CEP_ENABLE_DEBUG)
+static const char*
+cep_enclave_policy_trace_id_desc(cepID id, char* buf, size_t cap)
+{
+    if (!buf || !cap) {
+        return "<buf>";
+    }
+    if (!id) {
+        snprintf(buf, cap, "0");
+        return buf;
+    }
+    if (cep_id_is_reference(id)) {
+        const char* text = cep_namepool_lookup(id, NULL);
+        if (text) {
+            snprintf(buf, cap, "%s", text);
+            return buf;
+        }
+    } else if (cep_id_is_word(id)) {
+        size_t len = cep_word_to_text(id, buf);
+        if (len >= cap) {
+            len = cap - 1u;
+        }
+        buf[len] = '\0';
+        return buf;
+    } else if (cep_id_is_acronym(id)) {
+        size_t len = cep_acronym_to_text(id, buf);
+        if (len >= cap) {
+            len = cap - 1u;
+        }
+        buf[len] = '\0';
+        while (len && buf[len - 1] == ' ') {
+            buf[--len] = '\0';
+        }
+        return buf;
+    } else if (cep_id_is_numeric(id)) {
+        snprintf(buf, cap, "#%llu", (unsigned long long)cep_id_to_numeric(id));
+        return buf;
+    }
+    snprintf(buf, cap, "0x%016" PRIX64, (uint64_t)id);
+    return buf;
+}
+#endif
+
+void
+cep_enclave_policy_freeze_enter(const char* reason)
+{
+    g_enclave_policy.freeze_count += 1u;
+    if (g_enclave_policy.freeze_count == 1u && g_enclave_policy.dirty) {
+        g_enclave_policy.pending_dirty = true;
+        g_enclave_policy.dirty = false;
+    }
+    cep_enclave_policy_trace_log("freeze_enter", reason, false);
+}
+
+void
+cep_enclave_policy_freeze_leave(void)
+{
+    if (!g_enclave_policy.freeze_count) {
+        return;
+    }
+    g_enclave_policy.freeze_count -= 1u;
+    cep_enclave_policy_trace_log("freeze_exit", NULL, false);
+    if (!g_enclave_policy.freeze_count && g_enclave_policy.pending_dirty) {
+        g_enclave_policy.dirty = true;
+        g_enclave_policy.pending_dirty = false;
+        cep_enclave_policy_trace_log("freeze_pending_dirty", NULL, false);
+    }
+}
+
+bool
+cep_enclave_policy_is_frozen(void)
+{
+    return g_enclave_policy.freeze_count != 0u;
+}
+
+static void
+cep_enclave_policy_trace_format_path(const cepCell* cell,
+                                     char* buffer,
+                                     size_t capacity)
+{
+#if defined(CEP_ENABLE_DEBUG)
+    if (!buffer || !capacity) {
+        return;
+    }
+    buffer[0] = '\0';
+    if (!cell) {
+        return;
+    }
+    char segments[32][64];
+    unsigned segment_count = 0u;
+    const cepCell* cursor = cell;
+    const unsigned max_segments = (unsigned)(sizeof segments / sizeof segments[0]);
+    while (cursor && !cep_cell_is_root((cepCell*)cursor) && segment_count < max_segments) {
+        const cepDT* cursor_name = cep_cell_get_name(cursor);
+        if (cursor_name) {
+            char dom_buf[64];
+            char tag_buf[64];
+            const char* dom = cep_enclave_policy_trace_id_desc(cursor_name->domain, dom_buf, sizeof dom_buf);
+            const char* tag = cep_enclave_policy_trace_id_desc(cursor_name->tag, tag_buf, sizeof tag_buf);
+            snprintf(segments[segment_count], sizeof segments[segment_count], "%s/%s", dom, tag);
+        } else {
+            snprintf(segments[segment_count], sizeof segments[segment_count], "<anon>");
+        }
+        ++segment_count;
+        cursor = cep_cell_parent(cursor);
+    }
+    if (!segment_count) {
+        snprintf(buffer, capacity, "/");
+        return;
+    }
+    size_t used = 0u;
+    for (unsigned idx = segment_count; idx-- > 0u;) {
+        int written = snprintf(buffer + used,
+                               (used < capacity) ? capacity - used : 0u,
+                               "/%s",
+                               segments[idx]);
+        if (written < 0) {
+            buffer[0] = '\0';
+            return;
+        }
+        if ((size_t)written >= ((used < capacity) ? (capacity - used) : 0u)) {
+            if (capacity) {
+                buffer[capacity - 1u] = '\0';
+            }
+            return;
+        }
+        used += (size_t)written;
+    }
+#else
+    (void)cell;
+    if (buffer && capacity) {
+        buffer[0] = '\0';
+    }
+#endif
+}
 
 static cepCell*
 cep_enclave_policy_state_cell(void)
@@ -1327,6 +1567,39 @@ cep_enclave_policy_pipeline(void)
 void
 cep_enclave_policy_mark_dirty(void)
 {
+    cep_enclave_policy_mark_dirty_reason(NULL, NULL);
+}
+
+void
+cep_enclave_policy_mark_dirty_reason(const char* reason, const cepCell* source_cell)
+{
+    char detail[256];
+    const char* source = reason ? reason : "<unspecified>";
+    char path_buf[512];
+    path_buf[0] = '\0';
+    if (source_cell) {
+        cep_enclave_policy_trace_format_path(source_cell, path_buf, sizeof path_buf);
+    }
+    if (path_buf[0] != '\0') {
+        snprintf(detail,
+                 sizeof detail,
+                 "dirty_before=%u source=%s path=%s",
+                 g_enclave_policy.dirty ? 1u : 0u,
+                 source,
+                 path_buf);
+    } else {
+        snprintf(detail,
+                 sizeof detail,
+                 "dirty_before=%u source=%s",
+                 g_enclave_policy.dirty ? 1u : 0u,
+                 source);
+    }
+    if (cep_enclave_policy_is_frozen()) {
+        g_enclave_policy.pending_dirty = true;
+        cep_enclave_policy_trace_log("mark_dirty_pending", detail, true);
+        return;
+    }
+    cep_enclave_policy_trace_log("mark_dirty", detail, true);
     g_enclave_policy.dirty = true;
 }
 
@@ -1334,13 +1607,23 @@ void
 cep_enclave_policy_on_capture(void)
 {
     if (!g_enclave_policy.security_root) {
+        cep_enclave_policy_trace_log("capture_skip_no_root", NULL, false);
         return;
     }
     if (!g_enclave_policy.dirty) {
+        cep_enclave_policy_trace_log("capture_skip_clean", NULL, false);
         return;
     }
+    if (cep_enclave_policy_is_frozen()) {
+        cep_enclave_policy_trace_log("capture_skip_frozen", NULL, false);
+        return;
+    }
+    cep_enclave_policy_trace_log("reload_begin", NULL, false);
     if (!cep_enclave_policy_reload(g_enclave_policy.security_root)) {
         g_enclave_policy.ready = false;
+        cep_enclave_policy_trace_log("reload_fail", NULL, false);
+    } else {
+        cep_enclave_policy_trace_log("reload_complete", NULL, false);
     }
     g_enclave_policy.dirty = false;
 }

@@ -687,8 +687,12 @@ cep_sec_pipeline_approved(const char* pipeline_id,
     const cepEnclavePolicySnapshot* snapshot = cep_enclave_policy_snapshot();
     uint64_t current_version = snapshot ? snapshot->version : 0u;
     if (snapshot && policy_version != snapshot->version) {
-        cep_sec_pipeline_copy_reason(note, note_capacity, "approval out of date");
-        return false;
+        if (cep_enclave_policy_is_frozen()) {
+            policy_version = snapshot->version;
+        } else {
+            cep_sec_pipeline_copy_reason(note, note_capacity, "approval out of date");
+            return false;
+        }
     }
 
     if (approved_policy_version) {

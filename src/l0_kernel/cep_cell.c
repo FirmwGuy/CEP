@@ -815,7 +815,11 @@ cep_data_history_apply_policy(cepData* data,
     while (link && *link) {
         cepDataNode* node = *link;
         bool drop = false;
-        bool version_guard = keep_versions && (remaining <= keep_versions);
+        uint32_t needed_versions = 0u;
+        if (keep_versions && kept_count < keep_versions) {
+            needed_versions = keep_versions - kept_count;
+        }
+        bool version_guard = needed_versions && (remaining <= needed_versions);
         if (floor_stamp && node->modified && node->modified < floor_stamp) {
             drop = true;
         }
@@ -5976,7 +5980,7 @@ cep_store_mark_dirty(cepStore* store)
     bool under_data = cep_cell_is_under_data_branch(owner);
     bool under_security = cep_cell_is_under_security_branch(owner);
     if (under_security) {
-        cep_enclave_policy_mark_dirty();
+        cep_enclave_policy_mark_dirty_reason("store", owner);
     }
     if (!under_data) {
         return;
@@ -6004,7 +6008,7 @@ cep_data_mark_dirty(cepCell* owner, cepData* data)
     bool under_data = cep_cell_is_under_data_branch(owner);
     bool under_security = cep_cell_is_under_security_branch(owner);
     if (under_security) {
-        cep_enclave_policy_mark_dirty();
+        cep_enclave_policy_mark_dirty_reason("data", owner);
     }
     if (!under_data) {
         return;

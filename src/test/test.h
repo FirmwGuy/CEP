@@ -15,6 +15,7 @@
 
 #include "cep_cell.h"
 #include "cep_heartbeat.h"
+#include "cep_enclave_policy.h"
 #include "cep_runtime.h"
 #include "cep_l0.h"
 #include "stream/cep_stream_internal.h"

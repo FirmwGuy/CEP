@@ -520,6 +520,49 @@ static bool cep_namepool_store_entry(cepNamePoolEntry* entry, const char* text, 
     return entry->bytes != NULL;
 }
 
+static cepCell*
+cep_namepool_locate_slot_cell(uint64_t page_index, uint32_t slot_index)
+{
+    if (!namepool_root) {
+        return NULL;
+    }
+
+    cepCell* root = cep_cell_resolve(namepool_root);
+    if (!root) {
+        return NULL;
+    }
+    cepCell* resolved_root = root;
+    if (!cep_cell_require_dictionary_store(&resolved_root)) {
+        return NULL;
+    }
+
+    cepDT page_name = {
+        .domain = CEP_ACRO("NP"),
+        .tag = cep_id_to_numeric((cepID)(page_index + 1u)),
+    };
+    cepCell* page_cell = cep_cell_find_by_name(resolved_root, &page_name);
+    if (!page_cell) {
+        return NULL;
+    }
+    page_cell = cep_cell_resolve(page_cell);
+    if (!page_cell) {
+        return NULL;
+    }
+    if (!cep_cell_require_dictionary_store(&page_cell)) {
+        return NULL;
+    }
+
+    cepDT slot_name = {
+        .domain = CEP_ACRO("NP"),
+        .tag = cep_id_to_numeric((cepID)(slot_index + 1u)),
+    };
+    cepCell* slot_cell = cep_cell_find_by_name(page_cell, &slot_name);
+    if (!slot_cell) {
+        return NULL;
+    }
+    return cep_cell_resolve(slot_cell);
+}
+
 static cepNamePoolEntry* cep_namepool_new_entry(uint64_t hash, const char* text, size_t length, bool is_static, bool glob) {
     size_t page_index = 0u;
     uint32_t slot_index = 0u;
@@ -812,15 +855,17 @@ bool cep_namepool_release(cepID id) {
         return true;
     }
 
-    if (entry->cell) {
-        cep_cell_remove_hard(entry->cell, NULL);
-    }
-
     uint64_t page = 0u;
     uint32_t slot = 0u;
     if (!cep_namepool_decode(id, &page, &slot)) {
         return false;
     }
+
+    cepCell* slot_cell = cep_namepool_locate_slot_cell(page, slot);
+    if (slot_cell) {
+        cep_cell_remove_hard(slot_cell, NULL);
+    }
+    entry->cell = NULL;
 
     if (name_buckets && name_bucket_cap) {
         size_t mask = name_bucket_cap - 1u;

@@ -105,6 +105,22 @@ typedef struct {
     cepPast     past[1];
 } cepPathConst1;
 
+#if defined(CEP_ENABLE_DEBUG)
+static void cep_l0_validation_trace(const char* phase, const cepL0OrganValidationRun* run) {
+    const char* label = (run && run->def && run->def->kind) ? run->def->kind : "<unknown>";
+    const char* issue = (run && run->first_issue[0]) ? run->first_issue : "<none>";
+    CEP_DEBUG_PRINTF("[organ validation][%s] kind=%s issue=%s\n",
+                     phase ? phase : "phase",
+                     label,
+                     issue);
+}
+#else
+static void cep_l0_validation_trace(const char* phase, const cepL0OrganValidationRun* run) {
+    (void)phase;
+    (void)run;
+}
+#endif
+
 static int cep_l0_organ_vl_sys_state(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l0_organ_vl_sys_organs(const cepPath* signal_path, const cepPath* target_path);
 static int cep_l0_organ_vl_rt_ops(const cepPath* signal_path, const cepPath* target_path);
@@ -888,13 +904,13 @@ static bool cep_l0_validation_prepare(const cepPath* target_path,
 
     if (!target_cell) {
         cep_l0_validation_issue(run, "target path unresolved");
-        return false;
+        goto fail_prepare;
     }
 
     cepOrganRoot organ = {0};
     if (!cep_organ_root_for_cell(target_cell, &organ) || !organ.root || !organ.descriptor) {
         cep_l0_validation_issue(run, "organ metadata unavailable");
-        return false;
+        goto fail_prepare;
     }
 
     if (strcmp(organ.descriptor->kind, def->kind) != 0) {
@@ -902,13 +918,13 @@ static bool cep_l0_validation_prepare(const cepPath* target_path,
                                 "kind mismatch expected=%s actual=%s",
                                 def->kind,
                                 organ.descriptor->kind ? organ.descriptor->kind : "<null>");
-        return false;
+        goto fail_prepare;
     }
 
     cepCell* root = cep_cell_resolve(organ.root);
     if (!root) {
         cep_l0_validation_issue(run, "organ root unresolved");
-        return false;
+        goto fail_prepare;
     }
 
     cepDT verb = cep_ops_make_dt("op/vl");
@@ -916,7 +932,7 @@ static bool cep_l0_validation_prepare(const cepPath* target_path,
     run->oid = cep_op_start(verb, def->path_text, mode, NULL, 0u, 0u);
     if (!cep_oid_is_valid(run->oid)) {
         cep_l0_validation_issue(run, "failed to start validator dossier");
-        return false;
+        goto fail_prepare;
     }
 
     (void)cep_op_state_set(run->oid, cep_ops_make_dt("ist:scan"), 0, NULL);
@@ -925,6 +941,10 @@ static bool cep_l0_validation_prepare(const cepPath* target_path,
         *out_root = root;
     }
     return true;
+
+fail_prepare:
+    cep_l0_validation_trace("prepare", run);
+    return false;
 }
 
 static int cep_l0_validation_finish(cepL0OrganValidationRun* run) {
@@ -938,10 +958,16 @@ static int cep_l0_validation_finish(cepL0OrganValidationRun* run) {
 
     if (cep_oid_is_valid(run->oid)) {
         cepDT state = cep_ops_make_dt(success ? "ist:ok" : "ist:fail");
-        (void)cep_op_state_set(run->oid, state, 0, summary);
+        bool state_ok = cep_op_state_set(run->oid, state, 0, summary);
+        if (!state_ok) {
+            cep_l0_validation_trace("finish-state", run);
+        }
 
         cepDT status = cep_ops_make_dt(success ? "sts:ok" : "sts:fail");
-        (void)cep_op_close(run->oid, status, summary, summary_len);
+        bool close_ok = cep_op_close(run->oid, status, summary, summary_len);
+        if (!close_ok) {
+            cep_l0_validation_trace("finish-close", run);
+        }
     }
 
     char stage[256];
@@ -1042,6 +1068,11 @@ static bool cep_l0_check_schema_field_string(cepCell* schema, cepL0OrganValidati
 
 static bool cep_l0_check_sys_state(cepCell* root, cepL0OrganValidationRun* run) {
     bool ok = true;
+    bool boot_oid_valid = false;
+    bool shdn_oid_valid = false;
+    const cepDT* boot_name = CEP_DTAW("CEP", "boot_oid");
+    const cepDT* shdn_name = CEP_DTAW("CEP", "shdn_oid");
+
     for (cepCell* child = cep_cell_first_all(root); child; child = cep_cell_next_all(root, child)) {
         run->checked_nodes += 1u;
         cepCell* resolved = cep_cell_resolve(child);
@@ -1051,11 +1082,36 @@ static bool cep_l0_check_sys_state(cepCell* root, cepL0OrganValidationRun* run) 
             continue;
         }
 
+#if defined(CEP_ENABLE_DEBUG)
+        const char* child_domain = cep_namepool_lookup(resolved->metacell.dt.domain, NULL);
+        const char* child_tag = cep_namepool_lookup(resolved->metacell.dt.tag, NULL);
+        CEP_DEBUG_PRINTF("[organ validation][sys_state-child] domain=%s tag=%s dom_id=0x%llx tag_id=0x%llx has_data=%d\n",
+                         child_domain ? child_domain : "(unknown)",
+                         child_tag ? child_tag : "(unknown)",
+                         (unsigned long long)resolved->metacell.dt.domain,
+                         (unsigned long long)resolved->metacell.dt.tag,
+                         cep_cell_has_data(resolved) ? 1 : 0);
+#endif
+
+        bool is_boot = (cep_dt_compare(&resolved->metacell.dt, boot_name) == 0);
+        bool is_shdn = (cep_dt_compare(&resolved->metacell.dt, shdn_name) == 0);
+
+        if (!is_boot && !is_shdn) {
+            continue;
+        }
+
         if (!cep_cell_has_data(resolved)) {
             cep_l0_validation_issue(run,
                                     "state entry domain=0x%llx tag=0x%llx lacks payload",
                                     (unsigned long long)resolved->metacell.dt.domain,
                                     (unsigned long long)resolved->metacell.dt.tag);
+#if defined(CEP_ENABLE_DEBUG)
+            const char* domain_label = cep_namepool_lookup(resolved->metacell.dt.domain, NULL);
+            const char* tag_label = cep_namepool_lookup(resolved->metacell.dt.tag, NULL);
+            CEP_DEBUG_PRINTF("[organ validation][sys_state-missing] domain=%s tag=%s\n",
+                             domain_label ? domain_label : "(unknown)",
+                             tag_label ? tag_label : "(unknown)");
+#endif
             ok = false;
             continue;
         }
@@ -1091,7 +1147,26 @@ static bool cep_l0_check_sys_state(cepCell* root, cepL0OrganValidationRun* run) 
                                     (unsigned long long)resolved->metacell.dt.domain,
                                     (unsigned long long)resolved->metacell.dt.tag);
             ok = false;
+            continue;
         }
+
+        if (is_boot) {
+            boot_oid_valid = true;
+        } else if (is_shdn) {
+            shdn_oid_valid = true;
+        }
+    }
+
+    if (!boot_oid_valid) {
+        cep_l0_validation_issue(run, "boot_oid missing or invalid");
+        ok = false;
+    }
+    if (!shdn_oid_valid) {
+        CEP_DEBUG_PRINTF("[organ validation][sys_state] shdn_oid absent (ok pre-shutdown)\n");
+    }
+
+    if (!ok) {
+        cep_l0_validation_trace("sys_state", run);
     }
     return ok;
 }

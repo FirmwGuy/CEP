@@ -14,6 +14,7 @@
 #include "cep_heartbeat.h"
 #include "cep_namepool.h"
 #include "cep_organ.h"
+#include "cep_runtime.h"
 
 #define CEP_OPS_DEBUG(...) ((void)0)
 
@@ -148,12 +149,62 @@ static cepOID cep_ops_oid_from_cell(const cepCell* cell) {
     return oid;
 }
 
+static void cep_ops_publish_rt_root(cepCell* rt_root) {
+    if (!rt_root) {
+        return;
+    }
+    cepRuntime* runtime = cep_runtime_default();
+    cepHeartbeatRuntime* hb = cep_runtime_heartbeat(runtime);
+    if (hb && !hb->topology.rt) {
+        hb->topology.rt = rt_root;
+    }
+    cepHeartbeatTopology* topo = cep_runtime_default_topology(runtime);
+    if (topo && !topo->rt) {
+        topo->rt = rt_root;
+    }
+}
+
+static cepCell* cep_ops_resolve_rt_root(bool create) {
+    cepCell* rt_root = cep_heartbeat_rt_root();
+    if (rt_root) {
+        return rt_root;
+    }
+
+    cepCell* root = cep_root();
+    if (!root) {
+        return NULL;
+    }
+
+    const cepDT* rt_name = CEP_DTAW("CEP", "rt");
+    cepCell* candidate = cep_cell_find_by_name(root, rt_name);
+    if (!candidate) {
+        candidate = cep_cell_find_by_name_all(root, rt_name);
+    }
+    if (!candidate && create) {
+        candidate = cep_cell_ensure_dictionary_child(root, rt_name, CEP_STORAGE_RED_BLACK_T);
+    }
+    if (!candidate) {
+        return NULL;
+    }
+
+    cepCell* resolved = cep_cell_resolve(candidate);
+    if (!resolved) {
+        return NULL;
+    }
+    if (!cep_cell_require_dictionary_store(&resolved)) {
+        return NULL;
+    }
+
+    cep_ops_publish_rt_root(resolved);
+    return resolved;
+}
+
 static cepCell* cep_ops_root(bool create) {
     if (!cep_heartbeat_bootstrap()) {
         CEP_DEBUG_PRINTF_STDOUT("[ops root] bootstrap failed\n");
         return NULL;
     }
-    cepCell* rt = cep_heartbeat_rt_root();
+    cepCell* rt = cep_ops_resolve_rt_root(create);
     if (!rt) {
         CEP_DEBUG_PRINTF_STDOUT("[ops root] rt_root missing\n");
         return NULL;
@@ -1106,7 +1157,6 @@ cepOID cep_op_start(cepDT verb,
         cep_ops_debug_last_error_code = 2;
         return oid;
     }
-
     cepTxn txn = {0};
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
     cepDT op_name = cep_ops_auto_name(CEP_ACRO("OPS"));

@@ -5370,6 +5370,7 @@ typedef struct {
     size_t                       delta_seen;
 } cepSerializationStage;
 
+#ifdef CEP_ENABLE_DEBUG
 static void cep_serialization_debug_dump_stage(const cepSerializationStage* stage, const char* label) {
     if (!stage)
         return;
@@ -5416,8 +5417,7 @@ static void cep_serialization_debug_dump_stage(const cepSerializationStage* stag
         }
     }
 }
-
-#ifndef CEP_ENABLE_DEBUG
+#else
 static inline void cep_serialization_debug_dump_stage(const cepSerializationStage* stage, const char* label) {
     (void)stage;
     (void)label;

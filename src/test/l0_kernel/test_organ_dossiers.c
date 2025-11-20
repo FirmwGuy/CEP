@@ -91,23 +91,104 @@ static cepCell* organ_dossier_find_cell(cepCell* parent, const cepDT* name) {
     return node;
 }
 
+static const char* organ_dossier_dt_desc(const cepDT* dt, char* buffer, size_t capacity) {
+    if (!dt || !buffer || capacity == 0u) {
+        return "<invalid>";
+    }
+    const char* domain = cep_namepool_lookup(dt->domain, NULL);
+    const char* tag = cep_namepool_lookup(dt->tag, NULL);
+    if (!domain) {
+        domain = "?";
+    }
+    if (!tag) {
+        tag = "?";
+    }
+    snprintf(buffer, capacity, "%s:%s", domain, tag);
+    return buffer;
+}
+
+
 static void organ_dossier_trace_ops_size(const char* label, cepCell* ops_root) {
     if (!test_ovh_trace_enabled() || !ops_root)
         return;
     test_ovh_tracef("%s ops_children=%zu", label, cep_cell_children(ops_root));
 }
 
+static void organ_dossier_trace_recent_ops(const char* label, cepCell* ops_root, unsigned limit) {
+    if (!test_ovh_trace_enabled() || !ops_root || limit == 0u)
+        return;
+    unsigned emitted = 0u;
+    for (cepCell* entry = cep_cell_last_all(ops_root);
+         entry && emitted < limit;
+         entry = cep_cell_prev_all(ops_root, entry)) {
+        const char* target_desc = "<missing>";
+        const char* verb_desc = "<missing>";
+        const char* state_desc = "<missing>";
+        char verb_buf[64];
+        char state_buf[64];
+        cepCell* envelope = cep_cell_find_by_name(entry, CEP_DTAW("CEP", "envelope"));
+        if (envelope) {
+            envelope = cep_cell_resolve(envelope);
+        }
+        if (envelope) {
+            cepCell* target_node = cep_cell_find_by_name(envelope, CEP_DTAW("CEP", "target"));
+            target_node = target_node ? cep_cell_resolve(target_node) : NULL;
+            cepCell* verb_node = cep_cell_find_by_name(envelope, CEP_DTAW("CEP", "verb"));
+            verb_node = verb_node ? cep_cell_resolve(verb_node) : NULL;
+            if (target_node && target_node->data && target_node->data->datatype == CEP_DATATYPE_VALUE) {
+                target_desc = (const char*)target_node->data->value;
+            }
+            if (verb_node && verb_node->data && verb_node->data->datatype == CEP_DATATYPE_VALUE &&
+                verb_node->data->size == sizeof(cepDT)) {
+                cepDT verb_dt = {0};
+                memcpy(&verb_dt, verb_node->data->value, sizeof verb_dt);
+                verb_desc = organ_dossier_dt_desc(&verb_dt, verb_buf, sizeof verb_buf);
+            }
+        }
+        cepCell* state_node = cep_cell_find_by_name(entry, CEP_DTAW("CEP", "state"));
+        state_node = state_node ? cep_cell_resolve(state_node) : NULL;
+        if (state_node && state_node->data && state_node->data->datatype == CEP_DATATYPE_VALUE &&
+            state_node->data->size == sizeof(cepDT)) {
+            cepDT state_dt = {0};
+            memcpy(&state_dt, state_node->data->value, sizeof state_dt);
+            state_desc = organ_dossier_dt_desc(&state_dt, state_buf, sizeof state_buf);
+        }
+        test_ovh_tracef("%s recent[%u] target=%s verb=%s state=%s",
+                        label ? label : "ops_recent",
+                        emitted,
+                        target_desc ? target_desc : "<null>",
+                        verb_desc ? verb_desc : "<null>",
+                        state_desc ? state_desc : "<null>");
+        ++emitted;
+    }
+}
+
+static cepCell* organ_dossier_find_matching(cepCell* ops_root,
+                                            const char* expected_target,
+                                            const char* expected_verb);
+
 static void organ_dossier_wait_for_operation(const char* label,
                                              cepCell* ops_root,
-                                             size_t before_count) {
-    for (int beat = 0; beat < 12; ++beat) {
+                                             size_t before_count,
+                                             const char* expected_target,
+                                             const char* expected_verb) {
+    const int max_beats = expected_target ? 48 : 12;
+    for (int beat = 0; beat < max_beats; ++beat) {
         munit_assert_true(test_ovh_heartbeat_step(label));
         organ_dossier_trace_ops_size(label, ops_root);
-        if (cep_cell_children(ops_root) > before_count) {
+        if (expected_target && expected_verb) {
+            cepCell* hit = organ_dossier_find_matching(ops_root, expected_target, expected_verb);
+            if (hit) {
+                return;
+            }
+        } else if (cep_cell_children(ops_root) > before_count) {
             return;
         }
     }
-    munit_error("organ dossier did not surface within heartbeat allowance");
+    if (expected_target && expected_verb) {
+        munit_errorf("organ dossier did not surface: target=%s verb=%s", expected_target, expected_verb);
+    }
+    munit_error("organ dossier did not increase ops count within heartbeat allowance");
 }
 
 static cepCell* organ_dossier_find_matching(cepCell* ops_root,
@@ -124,11 +205,10 @@ static cepCell* organ_dossier_find_matching(cepCell* ops_root,
         }
         cepDT verb_dt = {0};
         memcpy(&verb_dt, verb_data->value, sizeof verb_dt);
+        cepCell* target_node = organ_dossier_find_cell(envelope, CEP_DTAW("CEP", "target"));
         if (cep_dt_compare(&verb_dt, &verb_expected) != 0) {
             continue;
         }
-
-        cepCell* target_node = organ_dossier_find_cell(envelope, CEP_DTAW("CEP", "target"));
         const cepData* target_data = target_node->data;
         if (!target_data || target_data->datatype != CEP_DATATYPE_VALUE || target_data->size == 0u) {
             continue;
@@ -149,6 +229,7 @@ static void organ_dossier_assert_latest(const char* expected_target,
     cepCell* ops_root = organ_dossier_ops_root();
     cepCell* newest = organ_dossier_find_matching(ops_root, expected_target, expected_verb);
     if (!newest) {
+        organ_dossier_trace_recent_ops("organ_dossier_assert_latest", ops_root, 5u);
         munit_error("matching organ dossier not found");
     }
 
@@ -330,6 +411,14 @@ static bool organ_fixture_emit_dossier(const cepPath* target, const char* verb_t
 
 static int organ_fixture_validator_enzyme(const cepPath* signal, const cepPath* target) {
     (void)signal;
+    if (test_ovh_trace_enabled()) {
+        char path_buffer[128];
+        if (organ_fixture_path_text(target, path_buffer, sizeof path_buffer)) {
+            test_ovh_tracef("fixture_validator signal=%p target=%s", (const void*)signal, path_buffer);
+        } else {
+            test_ovh_tracef("fixture_validator signal=%p target=<decode-failed>", (const void*)signal);
+        }
+    }
     if (!organ_fixture_emit_dossier(target, "op/vl", "fixture_vl")) {
         return CEP_ENZYME_FATAL;
     }
@@ -338,6 +427,14 @@ static int organ_fixture_validator_enzyme(const cepPath* signal, const cepPath* 
 
 static int organ_fixture_dtor_enzyme(const cepPath* signal, const cepPath* target) {
     (void)signal;
+    if (test_ovh_trace_enabled()) {
+        char path_buffer[128];
+        if (organ_fixture_path_text(target, path_buffer, sizeof path_buffer)) {
+            test_ovh_tracef("fixture_dtor signal=%p target=%s", (const void*)signal, path_buffer);
+        } else {
+            test_ovh_tracef("fixture_dtor signal=%p target=<decode-failed>", (const void*)signal);
+        }
+    }
     if (!organ_fixture_emit_dossier(target, "op/dt", "fixture_dtor")) {
         return CEP_ENZYME_FATAL;
     }
@@ -346,6 +443,14 @@ static int organ_fixture_dtor_enzyme(const cepPath* signal, const cepPath* targe
 
 static int organ_fixture_ctor_enzyme(const cepPath* signal, const cepPath* target) {
     (void)signal;
+    if (test_ovh_trace_enabled()) {
+        char path_buffer[128];
+        if (organ_fixture_path_text(target, path_buffer, sizeof path_buffer)) {
+            test_ovh_tracef("fixture_ctor signal=%p target=%s", (const void*)signal, path_buffer);
+        } else {
+            test_ovh_tracef("fixture_ctor signal=%p target=<decode-failed>", (const void*)signal);
+        }
+    }
     if (!organ_fixture_emit_dossier(target, "op/ct", "fixture_ctor")) {
         return CEP_ENZYME_FATAL;
     }
@@ -377,6 +482,12 @@ static void organ_fixture_register_descriptor(void) {
         .destructor = ORGAN_FIXTURE_DESTRUCTOR_DT,
     };
     munit_assert_true(cep_organ_register(&descriptor));
+}
+
+static void organ_fixture_assert_descriptor_registered(void) {
+    organ_fixture_init_dts();
+    const cepOrganDescriptor* descriptor = cep_organ_descriptor(&ORGAN_FIXTURE_STORE_DT);
+    munit_assert_not_null(descriptor);
 }
 
 static void organ_fixture_register_enzymes(void) {
@@ -485,15 +596,19 @@ MunitResult test_organ_constructor_dossier(const MunitParameter params[], void* 
     OrganDossierRuntimeScope scope = organ_dossier_prepare_runtime();
     organ_fixture_register_descriptor();
     organ_fixture_register_enzymes();
+    organ_fixture_assert_descriptor_registered();
     cepCell* fixture_root = organ_fixture_root();
     organ_fixture_bindings(fixture_root);
+    cepOrganRoot info = {0};
+    munit_assert_true(cep_organ_root_for_cell(fixture_root, &info));
+    munit_assert_not_null(info.descriptor);
 
     cepCell* ops_root = organ_dossier_ops_root();
     size_t before_count = cep_cell_children(ops_root);
 
     munit_assert_true(cep_organ_request_constructor(fixture_root));
     organ_dossier_trace_ops_size("organ_ctor queued", ops_root);
-    organ_dossier_wait_for_operation("organ_ctor run", ops_root, before_count);
+    organ_dossier_wait_for_operation("organ_ctor run", ops_root, before_count, ORGAN_FIXTURE_TARGET, "op/ct");
     organ_dossier_assert_latest(ORGAN_FIXTURE_TARGET, "op/ct");
 
     test_watchdog_signal(watchdog);
@@ -517,7 +632,7 @@ MunitResult test_organ_destructor_dossier(const MunitParameter params[], void* f
 
     munit_assert_true(cep_organ_request_destructor(fixture_root));
     organ_dossier_trace_ops_size("organ_dtor queued", ops_root);
-    organ_dossier_wait_for_operation("organ_dtor run", ops_root, before_count);
+    organ_dossier_wait_for_operation("organ_dtor run", ops_root, before_count, ORGAN_FIXTURE_TARGET, "op/dt");
     organ_dossier_assert_latest(ORGAN_FIXTURE_TARGET, "op/dt");
 
     test_watchdog_signal(watchdog);
@@ -525,9 +640,9 @@ MunitResult test_organ_destructor_dossier(const MunitParameter params[], void* f
     return MUNIT_OK;
 }
 
-static void organ_dossier_assert_count_grew(cepCell* ops_root, size_t before_count, const char* verb) {
-    organ_dossier_wait_for_operation("organ_dossier sequence", ops_root, before_count);
-    organ_dossier_assert_latest(ORGAN_FIXTURE_TARGET, verb);
+static void organ_dossier_assert_count_grew(cepCell* ops_root, size_t before_count, const char* target, const char* verb) {
+    organ_dossier_wait_for_operation("organ_dossier sequence", ops_root, before_count, target, verb);
+    organ_dossier_assert_latest(target, verb);
 }
 
 MunitResult test_organ_dossier_sequence(const MunitParameter params[], void* fixture) {
@@ -546,17 +661,17 @@ MunitResult test_organ_dossier_sequence(const MunitParameter params[], void* fix
     size_t before_validation = cep_cell_children(ops_root);
     munit_assert_true(cep_organ_request_validation(fixture_root));
     organ_dossier_trace_ops_size("organ_seq validation queued", ops_root);
-    organ_dossier_assert_count_grew(ops_root, before_validation, "op/vl");
+    organ_dossier_assert_count_grew(ops_root, before_validation, ORGAN_FIXTURE_TARGET, "op/vl");
 
     size_t before_constructor = cep_cell_children(ops_root);
     munit_assert_true(cep_organ_request_constructor(fixture_root));
     organ_dossier_trace_ops_size("organ_seq constructor queued", ops_root);
-    organ_dossier_assert_count_grew(ops_root, before_constructor, "op/ct");
+    organ_dossier_assert_count_grew(ops_root, before_constructor, ORGAN_FIXTURE_TARGET, "op/ct");
 
     size_t before_destructor = cep_cell_children(ops_root);
     munit_assert_true(cep_organ_request_destructor(fixture_root));
     organ_dossier_trace_ops_size("organ_seq destructor queued", ops_root);
-    organ_dossier_assert_count_grew(ops_root, before_destructor, "op/dt");
+    organ_dossier_assert_count_grew(ops_root, before_destructor, ORGAN_FIXTURE_TARGET, "op/dt");
 
     test_watchdog_signal(watchdog);
     organ_dossier_cleanup_runtime(&scope);

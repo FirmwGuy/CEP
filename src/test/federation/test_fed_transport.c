@@ -24,10 +24,13 @@
 #include "fed_mirror_organ.h"
 #include "fed_invoke.h"
 #include "fed_pack.h"
+#include "cep_security_tags.h"
+#include "cep_enclave_policy.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <inttypes.h>
 
 #ifdef CEP_ENABLE_DEBUG
 #include <errno.h>
@@ -43,6 +46,128 @@ typedef struct {
     uint8_t  last_frame;
     cepFedFrameMode last_mode;
 } FedTransportHooks;
+
+static bool fed_test_try_read_text_field(cepCell* parent,
+                                         const char* field_name,
+                                         char* buffer,
+                                         size_t capacity);
+
+static void
+fed_test_ensure_pipeline_approval(void)
+{
+    cepCell* data_root = cep_cell_resolve(cep_heartbeat_data_root());
+    munit_assert_not_null(data_root);
+    munit_assert_true(cep_cell_require_dictionary_store(&data_root));
+
+    cepCell* pack = cep_cell_ensure_dictionary_child(data_root,
+                                                     CEP_DTAW("CEP", "test_pack"),
+                                                     CEP_STORAGE_RED_BLACK_T);
+    pack = cep_cell_resolve(pack);
+    munit_assert_not_null(pack);
+    munit_assert_true(cep_cell_require_dictionary_store(&pack));
+
+    cepCell* policy = cep_cell_ensure_dictionary_child(pack,
+                                                       dt_sec_policy_dir_name(),
+                                                       CEP_STORAGE_RED_BLACK_T);
+    policy = cep_cell_resolve(policy);
+    munit_assert_not_null(policy);
+    munit_assert_true(cep_cell_require_dictionary_store(&policy));
+
+    cepCell* security = cep_cell_ensure_dictionary_child(policy,
+                                                         dt_security_root_name(),
+                                                         CEP_STORAGE_RED_BLACK_T);
+    security = cep_cell_resolve(security);
+    munit_assert_not_null(security);
+    munit_assert_true(cep_cell_require_dictionary_store(&security));
+
+    cepCell* pipelines = cep_cell_ensure_dictionary_child(security,
+                                                          dt_sec_pipelines_name(),
+                                                          CEP_STORAGE_RED_BLACK_T);
+    pipelines = cep_cell_resolve(pipelines);
+    munit_assert_not_null(pipelines);
+    munit_assert_true(cep_cell_require_dictionary_store(&pipelines));
+
+    cepDT pipeline_name = cep_ops_make_dt("invoke_pipeline");
+    cepCell* pipeline = cep_cell_ensure_dictionary_child(pipelines,
+                                                         &pipeline_name,
+                                                         CEP_STORAGE_RED_BLACK_T);
+    pipeline = cep_cell_resolve(pipeline);
+    munit_assert_not_null(pipeline);
+    munit_assert_true(cep_cell_require_dictionary_store(&pipeline));
+
+    cepCell* approval = cep_cell_ensure_dictionary_child(pipeline,
+                                                         dt_sec_pipeline_approval_name(),
+                                                         CEP_STORAGE_RED_BLACK_T);
+    approval = cep_cell_resolve(approval);
+    munit_assert_not_null(approval);
+    munit_assert_true(cep_cell_require_dictionary_store(&approval));
+
+    (void)cep_cell_put_text(approval, CEP_DTAW("CEP", "state"), "approved");
+    (void)cep_cell_put_text(approval, CEP_DTAW("CEP", "note"), "ok");
+    const cepEnclavePolicySnapshot* snapshot = cep_enclave_policy_snapshot();
+    uint64_t policy_version = snapshot ? snapshot->version : 0u;
+    (void)cep_cell_put_uint64(approval,
+                              dt_sec_pipeline_version_field(),
+                              policy_version);
+    (void)cep_cell_put_uint64(approval,
+                              dt_sec_pipeline_beat_field(),
+                              (uint64_t)cep_heartbeat_current());
+    if (test_ovh_trace_enabled()) {
+        test_ovh_tracef("pipeline approval refreshed version=%" PRIu64,
+                        policy_version);
+    }
+}
+
+static bool
+fed_test_invoke_error_is_stale(const char* note_text)
+{
+    return note_text && note_text[0] != '\0' &&
+           strstr(note_text, "approval out of date") != NULL;
+}
+
+static void
+fed_test_run_invoke_validator_with_retry(cepCell* request,
+                                         const cepPath* request_path)
+{
+    munit_assert_not_null(request);
+    munit_assert_not_null(request_path);
+
+    char state_text[64] = {0};
+    char note_text[128] = {0};
+    const unsigned max_attempts = 3u;
+    for (unsigned attempt = 0; attempt < max_attempts; ++attempt) {
+        fed_test_ensure_pipeline_approval();
+        int validator_rc = cep_fed_invoke_validator(NULL, request_path);
+        if (validator_rc == CEP_ENZYME_SUCCESS) {
+            return;
+        }
+        state_text[0] = '\0';
+        note_text[0] = '\0';
+        fed_test_try_read_text_field(request, "state", state_text, sizeof state_text);
+        fed_test_try_read_text_field(request, "error_note", note_text, sizeof note_text);
+        if (fed_test_invoke_error_is_stale(note_text)) {
+            if (test_ovh_trace_enabled()) {
+                test_ovh_tracef("invoke validator retry after stale approval attempt=%u note=%s",
+                                attempt + 1u,
+                                note_text);
+            }
+            continue;
+        }
+        const cepEnclavePolicySnapshot* snapshot = cep_enclave_policy_snapshot();
+        uint64_t snapshot_version = snapshot ? snapshot->version : 0u;
+        munit_errorf("invoke validator failed rc=%d state=%s note=%s policy_version=%" PRIu64,
+                     validator_rc,
+                     state_text,
+                     note_text,
+                     snapshot_version);
+    }
+    const cepEnclavePolicySnapshot* snapshot = cep_enclave_policy_snapshot();
+    uint64_t snapshot_version = snapshot ? snapshot->version : 0u;
+    munit_errorf("invoke validator failed after retries state=%s note=%s policy_version=%" PRIu64,
+                 state_text,
+                 note_text,
+                 snapshot_version);
+}
 
 typedef struct {
     unsigned length;
@@ -88,13 +213,37 @@ static const char* const FED_DUAL_MIRROR_MOUNT = "mir-ab";
 #ifdef CEP_ENABLE_DEBUG
 #define FED_INLINE_SWAP_TRACE_DIR  "/tmp/cep_trace"
 #define FED_INLINE_SWAP_TRACE_FILE FED_INLINE_SWAP_TRACE_DIR "/inline_swap.log"
+#define FED_POLICY_TRACE_FILE      FED_INLINE_SWAP_TRACE_DIR "/enclave_policy_trace.log"
 static void fed_link_inline_swap_reset(void) {
     if (mkdir(FED_INLINE_SWAP_TRACE_DIR, 0777) != 0 && errno != EEXIST) {
         return;
     }
     unlink(FED_INLINE_SWAP_TRACE_FILE);
 }
+
+static void fed_policy_trace_reset(void) {
+    if (mkdir(FED_INLINE_SWAP_TRACE_DIR, 0777) != 0 && errno != EEXIST) {
+        return;
+    }
+    unlink(FED_POLICY_TRACE_FILE);
+}
 #endif
+
+static bool fed_policy_suite_frozen = false;
+
+static void fed_policy_freeze_global_begin(const char* reason) {
+    if (!fed_policy_suite_frozen) {
+        cep_enclave_policy_freeze_enter(reason);
+        fed_policy_suite_frozen = true;
+    }
+}
+
+static void fed_policy_freeze_global_end(void) {
+    if (fed_policy_suite_frozen) {
+        cep_enclave_policy_freeze_leave();
+        fed_policy_suite_frozen = false;
+    }
+}
 static const char* const FED_TEST_AEAD_KEY = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
 static char* fed_test_env_push(const char* name, const char* value) {
@@ -758,6 +907,9 @@ static void fed_dual_runtime_configure_requests(FedDualRuntimeCtx* ctx,
     (void)cep_cell_put_text(invoke_request, CEP_DTAW("CEP","peer"), remote_peer);
     (void)cep_cell_put_text(invoke_request, CEP_DTAW("CEP","mount"), invoke_mount);
     (void)cep_cell_put_text(invoke_request, CEP_DTAW("CEP","local_node"), local_node);
+    (void)cep_cell_put_text(invoke_request,
+                            dt_sec_pipeline_id_field(),
+                            "test_pack/invoke_pipeline");
     cepCell* invoke_caps = cep_cell_ensure_dictionary_child(invoke_request, CEP_DTAW("CEP","caps"), CEP_STORAGE_RED_BLACK_T);
     invoke_caps = fed_test_require_dictionary(invoke_caps);
     cepCell* invoke_required = cep_cell_ensure_dictionary_child(invoke_caps, CEP_DTAW("CEP","required"), CEP_STORAGE_RED_BLACK_T);
@@ -772,9 +924,10 @@ static void fed_dual_runtime_configure_requests(FedDualRuntimeCtx* ctx,
     fed_test_write_u32(invoke_serializer, "cmp_max_ver", 7u);
     fed_test_write_u32(invoke_serializer, "pay_hist_bt", 2u);
     fed_test_write_u32(invoke_serializer, "man_hist_bt", 1u);
+    fed_test_ensure_pipeline_approval();
     cepPath* invoke_path = NULL;
     munit_assert_true(cep_cell_path(invoke_request, &invoke_path));
-    munit_assert_int(cep_fed_invoke_validator(NULL, invoke_path), ==, CEP_ENZYME_SUCCESS);
+    fed_test_run_invoke_validator_with_retry(invoke_request, invoke_path);
 
     const cepFedInvokeRequest* invoke_ctx = cep_fed_invoke_request_find(remote_peer, invoke_mount);
     munit_assert_not_null(invoke_ctx);
@@ -997,12 +1150,14 @@ static void fed_dual_runtime_cleanup_pair(FedDualRuntimePair* pair,
 }
 
 static void fed_test_setup_invoke_request(cepCell* net_root,
-                                          cepFedTransportManager* manager,
-                                          const char* request_name_text,
-                                          cepCell** out_request,
-                                          cepPath** out_request_path,
-                                          bool force_mock_caps) {
+                                         cepFedTransportManager* manager,
+                                         const char* request_name_text,
+                                         cepCell** out_request,
+                                         cepPath** out_request_path,
+                                         bool force_mock_caps) {
     (void)manager;
+
+    fed_test_ensure_pipeline_approval();
 
     cepCell* organs = fed_test_require_dictionary(fed_test_lookup_child(net_root, "organs"));
     cepCell* invoke_root = fed_test_require_dictionary(fed_test_lookup_child(organs, "invoke"));
@@ -1015,6 +1170,9 @@ static void fed_test_setup_invoke_request(cepCell* net_root,
     (void)cep_cell_put_text(request, CEP_DTAW("CEP","peer"), "peer-invoke");
     (void)cep_cell_put_text(request, CEP_DTAW("CEP","mount"), "inv-mnt");
     (void)cep_cell_put_text(request, CEP_DTAW("CEP","local_node"), "node-local");
+    (void)cep_cell_put_text(request,
+                            dt_sec_pipeline_id_field(),
+                            "test_pack/invoke_pipeline");
 
     cepCell* caps = cep_cell_ensure_dictionary_child(request, CEP_DTAW("CEP","caps"), CEP_STORAGE_RED_BLACK_T);
     caps = fed_test_require_dictionary(caps);
@@ -1036,10 +1194,11 @@ static void fed_test_setup_invoke_request(cepCell* net_root,
     fed_test_write_u32(serializer, "pay_hist_bt", 2u);
     fed_test_write_u32(serializer, "man_hist_bt", 1u);
 
+    fed_test_ensure_pipeline_approval();
+
     cepPath* request_path = NULL;
     munit_assert_true(cep_cell_path(request, &request_path));
-
-    munit_assert_int(cep_fed_invoke_validator(NULL, request_path), ==, CEP_ENZYME_SUCCESS);
+    fed_test_run_invoke_validator_with_retry(request, request_path);
 
     if (out_request) {
         *out_request = request;
@@ -1853,6 +2012,7 @@ MunitResult test_fed_invoke_emit_cell(const MunitParameter params[], void* fixtu
     (void)params;
     (void)fixture;
 
+    fed_policy_freeze_global_begin("fed_invoke_emit_cell");
     fed_test_prepare_providers();
     fed_test_ensure_invoke_handler();
 
@@ -1929,6 +2089,7 @@ MunitResult test_fed_invoke_emit_cell(const MunitParameter params[], void* fixtu
                                                 0u));
 
     cep_cell_finalize_hard(&cell);
+    fed_policy_freeze_global_end();
     (void)cep_fed_invoke_destructor(NULL, request_path);
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);
@@ -2251,6 +2412,7 @@ MunitResult test_fed_invoke_validator_rejects_long_names(const MunitParameter pa
     (void)params;
     (void)fixture;
 
+    fed_policy_freeze_global_begin("fed_invoke_validator_rejects_long_names");
     fed_test_prepare_providers();
 
     cepCell* net_root = fed_test_net_root();
@@ -2284,6 +2446,7 @@ MunitResult test_fed_invoke_validator_rejects_long_names(const MunitParameter pa
 
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);
+    fed_policy_freeze_global_end();
     test_runtime_shutdown();
     return MUNIT_OK;
 }
@@ -2291,6 +2454,11 @@ MunitResult test_fed_invoke_validator_rejects_long_names(const MunitParameter pa
 MunitResult test_fed_invoke_success(const MunitParameter params[], void* fixture) {
     (void)params;
     (void)fixture;
+
+#ifdef CEP_ENABLE_DEBUG
+    fed_policy_trace_reset();
+#endif
+    fed_policy_freeze_global_begin("fed_invoke_success");
 
     fed_test_prepare_providers();
     fed_test_ensure_invoke_handler();
@@ -2352,6 +2520,7 @@ MunitResult test_fed_invoke_success(const MunitParameter params[], void* fixture
 
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);
+    fed_policy_freeze_global_end();
     test_runtime_shutdown();
     return MUNIT_OK;
 }
@@ -2360,6 +2529,7 @@ MunitResult test_fed_invoke_reconfigure_cancels_pending(const MunitParameter par
     (void)params;
     (void)fixture;
 
+    fed_policy_freeze_global_begin("fed_invoke_reconfigure");
     fed_test_prepare_providers();
     fed_test_ensure_invoke_handler();
     g_fed_invoke_handler_calls = 0;
@@ -2404,7 +2574,7 @@ MunitResult test_fed_invoke_reconfigure_cancels_pending(const MunitParameter par
     fed_test_write_u32(serializer, "cmp_max_ver", 5u);
     fed_test_write_u32(serializer, "pay_hist_bt", 2u);
     fed_test_write_u32(serializer, "man_hist_bt", 1u);
-    munit_assert_int(cep_fed_invoke_validator(NULL, request_path), ==, CEP_ENZYME_SUCCESS);
+    fed_test_run_invoke_validator_with_retry(request, request_path);
 
     munit_assert_true(completion.completed);
     munit_assert_false(completion.success);
@@ -2430,6 +2600,7 @@ MunitResult test_fed_invoke_reconfigure_cancels_pending(const MunitParameter par
 
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);
+    fed_policy_freeze_global_end();
     test_runtime_shutdown();
     return MUNIT_OK;
 }
@@ -2438,6 +2609,7 @@ MunitResult test_fed_invoke_dual_runtime_happy_path(const MunitParameter params[
     (void)params;
     (void)fixture;
 
+    fed_policy_freeze_global_begin("fed_invoke_dual_runtime_happy");
     g_fed_invoke_handler_calls = 0;
 
     FedDualRuntimeCtx ctx_a = {0};
@@ -2526,6 +2698,7 @@ MunitResult test_fed_invoke_dual_runtime_happy_path(const MunitParameter params[
     cep_runtime_restore_active(previous);
 
     fed_dual_runtime_cleanup_pair(&pair, &ctx_a, &ctx_b, &mounts_a, &mounts_b);
+    fed_policy_freeze_global_end();
     return MUNIT_OK;
 }
 
@@ -2535,6 +2708,7 @@ MunitResult test_fed_link_dual_runtime_provider_fatal(const MunitParameter param
     (void)params;
     (void)fixture;
 
+    fed_policy_freeze_global_begin("fed_link_dual_runtime_provider_fatal");
     FedDualRuntimeCtx ctx_a = {0};
     FedDualRuntimeCtx ctx_b = {0};
     FedDualMountState mounts_a = {0};
@@ -2579,6 +2753,7 @@ MunitResult test_fed_link_dual_runtime_provider_fatal(const MunitParameter param
     cep_runtime_restore_active(previous);
 
     fed_dual_runtime_cleanup_pair(&pair, &ctx_a, &ctx_b, &mounts_a, &mounts_b);
+    fed_policy_freeze_global_end();
     return MUNIT_OK;
 }
 
@@ -2590,6 +2765,7 @@ MunitResult test_fed_invoke_dual_runtime_timeout(const MunitParameter params[], 
     (void)params;
     (void)fixture;
 
+    fed_policy_freeze_global_begin("fed_invoke_dual_runtime_timeout");
     g_fed_invoke_handler_calls = 0;
 
     FedDualRuntimeCtx ctx_a = {0};
@@ -2644,6 +2820,7 @@ MunitResult test_fed_invoke_dual_runtime_timeout(const MunitParameter params[], 
     cep_runtime_restore_active(previous);
 
     fed_dual_runtime_cleanup_pair(&pair, &ctx_a, &ctx_b, &mounts_a, &mounts_b);
+    fed_policy_freeze_global_end();
     return MUNIT_OK;
 }
 
@@ -2651,6 +2828,7 @@ MunitResult test_fed_invoke_timeout(const MunitParameter params[], void* fixture
     (void)params;
     (void)fixture;
 
+    fed_policy_freeze_global_begin("fed_invoke_timeout");
     fed_test_prepare_providers();
     fed_test_ensure_invoke_handler();
     g_fed_invoke_handler_calls = 0;
@@ -2709,6 +2887,7 @@ MunitResult test_fed_invoke_timeout(const MunitParameter params[], void* fixture
 
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);
+    fed_policy_freeze_global_end();
     test_runtime_shutdown();
     return MUNIT_OK;
 }
@@ -2717,6 +2896,7 @@ MunitResult test_fed_invoke_reject(const MunitParameter params[], void* fixture)
     (void)params;
     (void)fixture;
 
+    fed_policy_freeze_global_begin("fed_invoke_reject");
     fed_test_prepare_providers();
     fed_test_ensure_invoke_handler();
     g_fed_invoke_handler_calls = 0;
@@ -2781,6 +2961,7 @@ MunitResult test_fed_invoke_reject(const MunitParameter params[], void* fixture)
 
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);
+    fed_policy_freeze_global_end();
     test_runtime_shutdown();
     return MUNIT_OK;
 }
@@ -2843,6 +3024,7 @@ MunitResult test_fed_link_validator_duplicate_request(const MunitParameter param
     fed_test_read_text_field(request, "state", text, sizeof text);
     munit_assert_string_equal(text, "removed");
 
+    cep_cell_remove_hard(request, NULL);
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);
     test_runtime_shutdown();

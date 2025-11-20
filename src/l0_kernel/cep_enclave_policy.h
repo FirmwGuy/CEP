@@ -69,7 +69,12 @@ enum {
 bool  cep_enclave_policy_init(cepCell* security_root);
 bool  cep_enclave_policy_reload(cepCell* security_root);
 void  cep_enclave_policy_mark_dirty(void);
+void  cep_enclave_policy_mark_dirty_reason(const char* reason, const cepCell* source_cell);
 void  cep_enclave_policy_on_capture(void);
+void  cep_enclave_policy_trace_stage(const char* stage);
+void  cep_enclave_policy_freeze_enter(const char* reason);
+void  cep_enclave_policy_freeze_leave(void);
+bool  cep_enclave_policy_is_frozen(void);
 bool  cep_enclave_policy_ready(void);
 const cepEnclavePolicySnapshot* cep_enclave_policy_snapshot(void);
 bool  cep_enclave_policy_lookup_enclave(const cepDT* name, cepEnclaveDescriptor* out);
