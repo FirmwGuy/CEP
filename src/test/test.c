@@ -393,6 +393,14 @@ MunitTest tests[] = {
         boot_cycle_params
     },
     {
+        "/branch/security_guard",
+        test_branch_controller_security_guard,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        boot_cycle_params
+    },
+    {
         "/heartbeat/single",
         test_heartbeat_single,
         NULL,
@@ -668,6 +676,14 @@ MunitTest tests[] = {
         NULL
     },
     {
+        "/fed_invoke/decision_ledger",
+        test_fed_invoke_decision_ledger,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/fed_transport/inbound",
         test_fed_transport_inbound,
         NULL,
@@ -678,6 +694,22 @@ MunitTest tests[] = {
     {
         "/fed_transport/close_events",
         test_fed_transport_close_events,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_security/analytics_limit",
+        test_fed_security_analytics_limit,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/fed_security/pipeline_enforcement",
+        test_fed_security_pipeline_enforcement,
         NULL,
         NULL,
         MUNIT_TEST_OPTION_NONE,

@@ -485,8 +485,8 @@ CEP_DEFINE_DYNAMIC_DT(dt_cap_crc32c_name, "cap_crc32c");
 CEP_DEFINE_STATIC_DT(dt_cap_deflate_name, CEP_ACRO("CEP"), CEP_WORD("cap_deflate"));
 CEP_DEFINE_STATIC_DT(dt_cap_aead_name, CEP_ACRO("CEP"), CEP_WORD("cap_aead"));
 CEP_DEFINE_STATIC_DT(dt_cap_cmpver_name, CEP_ACRO("CEP"), CEP_WORD("cap_cmpver"));
-CEP_DEFINE_STATIC_DT(dt_sev_error_name, CEP_ACRO("sev"), CEP_WORD("error"));
-CEP_DEFINE_STATIC_DT(dt_sev_warn_name, CEP_ACRO("sev"), CEP_WORD("warn"));
+CEP_DEFINE_STATIC_DT(dt_sev_error_name, CEP_ACRO("CEP"), CEP_WORD("sev:error"));
+CEP_DEFINE_STATIC_DT(dt_sev_warn_name, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
 CEP_DEFINE_STATIC_DT(dt_services_name, CEP_ACRO("CEP"), CEP_WORD("services"));
 CEP_DEFINE_STATIC_DT(dt_peer_field_name, CEP_ACRO("CEP"), CEP_WORD("peer"));
 CEP_DEFINE_STATIC_DT(dt_mode_field_name, CEP_ACRO("CEP"), CEP_WORD("mode"));
@@ -632,7 +632,7 @@ static void cep_fed_transport_manager_emit_diag(cepFedTransportManager* manager,
     req.note = note;
     req.topic = topic;
     req.topic_intern = (topic != NULL);
-    req.subject = mount ? mount->mount_cell : NULL;
+    req.subject = NULL;
     req.mailbox_root = manager->diagnostics_mailbox;
     req.emit_signal = true;
     req.attach_to_op = false;
@@ -669,13 +669,12 @@ cep_fed_transport_manager_emit_limit_hit(cepFedTransportManagerMount* mount,
              limit,
              info);
 
-    cepCell* subject = mount->mount_cell ? cep_cell_resolve(mount->mount_cell) : NULL;
     cepCeiRequest req = {
         .severity = *dt_sev_warn_name(),
         .topic = "sec.limit.hit",
         .topic_intern = true,
         .note = note,
-        .subject = subject,
+        .subject = NULL,
         .mailbox_root = mount->manager ? mount->manager->diagnostics_mailbox : NULL,
         .emit_signal = true,
         .attach_to_op = false,
@@ -761,11 +760,36 @@ cep_fed_transport_manager_security_record_send(cepFedTransportManagerMount* moun
     cep_fed_transport_security_record_edge_event(mount, true);
 }
 
+static bool cep_fed_transport_manager_make_mount_dt(const char* name, cepDT* out) {
+    if (!name || !out) {
+        return false;
+    }
+    cepDT dt = {0};
+    dt.domain = cep_namepool_intern_cstr("CEP");
+    if (!dt.domain) {
+        return false;
+    }
+    cepID word = cep_text_to_word(name);
+    if (word) {
+        dt.tag = word;
+    } else {
+        dt.tag = cep_namepool_intern_cstr(name);
+    }
+    if (!dt.tag) {
+        return false;
+    }
+    *out = dt;
+    return true;
+}
+
 static cepCell* cep_fed_transport_manager_ensure_mount_cell(cepFedTransportManager* manager,
                                                             const char* peer_id,
                                                             const char* mode,
                                                             const char* mount_id) {
     if (!manager || !manager->mounts_root || !peer_id || !mode || !mount_id) {
+        return NULL;
+    }
+    if (!cep_namepool_bootstrap()) {
         return NULL;
     }
 
@@ -774,20 +798,12 @@ static cepCell* cep_fed_transport_manager_ensure_mount_cell(cepFedTransportManag
         return NULL;
     }
 
-    cepDT peer_dt = {
-        .domain = cep_namepool_intern_cstr("CEP"),
-        .tag = cep_text_to_word(peer_id),
-    };
-    cepDT mode_dt = {
-        .domain = cep_namepool_intern_cstr("CEP"),
-        .tag = cep_text_to_word(mode),
-    };
-    cepDT mount_dt = {
-        .domain = cep_namepool_intern_cstr("CEP"),
-        .tag = cep_text_to_word(mount_id),
-    };
-
-    if (peer_dt.tag == 0u || mode_dt.tag == 0u || mount_dt.tag == 0u) {
+    cepDT peer_dt = {0};
+    cepDT mode_dt = {0};
+    cepDT mount_dt = {0};
+    if (!cep_fed_transport_manager_make_mount_dt(peer_id, &peer_dt) ||
+        !cep_fed_transport_manager_make_mount_dt(mode, &mode_dt) ||
+        !cep_fed_transport_manager_make_mount_dt(mount_id, &mount_dt)) {
         return NULL;
     }
 
@@ -884,11 +900,8 @@ static cepCell* cep_fed_transport_manager_ensure_word_child(cepCell* parent, con
     if (!parent || !word || !*word) {
         return NULL;
     }
-    cepDT name = {
-        .domain = cep_namepool_intern_cstr("CEP"),
-        .tag = cep_text_to_word(word),
-    };
-    if (!name.tag) {
+    cepDT name = {0};
+    if (!cep_fed_transport_manager_make_mount_dt(word, &name)) {
         return NULL;
     }
     cepCell* child = cep_cell_ensure_dictionary_child(parent, &name, CEP_STORAGE_RED_BLACK_T);

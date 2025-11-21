@@ -16,6 +16,7 @@ This L0 Kernel API gives you a **hierarchical, time‑aware data kernel** (“ce
 * A **reactive “enzyme” layer** for deterministic, dependency‑aware work dispatch driven by paths and heartbeats.   
 * A **beat-recorded Operations timeline** (`op/*`) with watcher support so long-running work, boot, and shutdown stay observable and awaitable.
 * A **Common Error Interface (CEI)** that centralises diagnostics, routes structured Error Facts through mailboxes, and enforces severity-driven OPS/shutdown policy.
+* **Deterministic Enclave enforcement** that snapshots `/sys/security/**`, validates cross-enclave pipelines, enforces per-edge budgets, and publishes evidence via `/sys/state/security`, `/rt/analytics/security`, and `sec.*` CEI topics (see `docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md`).
 * A **pluggable federation transport manager** that negotiates capabilities, coalesces `upd_latest` gauges deterministically, and keeps `/net/mounts` plus `/net/transports` in sync with provider selections.
 * A compact **flat-frame serialization** format with staged reading/commit and optional payload chunking for large blobs. 
 * An optional **namepool** to intern strings when you need textual names bound to IDs. 
@@ -44,6 +45,9 @@ Standard organ and cell operations surface as reusable enzymes. This chapter doc
 
 ### Developer Handbook
 The handbook is the pragmatic orientation for contributors working inside `cep_cell.*` and its storage backends. It maps repository layout, highlights coding conventions, and lists the tests and fixtures that prove new work. Consult it whenever you are preparing a kernel patch or onboarding a teammate.
+
+### Enclave Enforcement
+`docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md` details how policy snapshots, gateway/edge rules, and branch guards cooperate. Pair it with `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md` when editing `/sys/security/**`, running `sig_sec/pipeline_preflight`, or harvesting diagnostics from `/rt/analytics/security`.
 
 ### Persistence & Replay Fixtures
 Layer 0’s persistence service (CPS) now expects deterministic flat serializer frames and CAS blobs. The fixture workflow lives under `fixtures/cps/` and is exercised by `/CEP/serialization/flat_payload_ref_fixtures` plus `/CEP/cps/replay/*`. Regenerate fixtures by running those tests with `CEP_UPDATE_PAYLOAD_REF_FIXTURES=1`; commits must include both the refreshed frames and blobs so replay harnesses stay hermetic. Metrics such as `cas_hits`, `cas_miss`, `cas_lat_ns`, and the new cache policy fields (`hist_ram_bt`, `hist_ram_v`, `ram_quota`, `snapshot_ro`) are republished after every lookup, ensuring `/data/persist/<branch>` reflects cache behaviour even on read-heavy beats. Refer to `docs/L0_KERNEL/design/L0-DESIGN-CPS.md` (Fixture & Replay Workflow) for the rationale and to `docs/L0_KERNEL/L0-INTEGRATION-GUIDE.md` (§2.5) for the exact regeneration steps.

@@ -68,7 +68,7 @@ CEP_DEFINE_STATIC_DT(dt_beat_field_name,  CEP_ACRO("CEP"), CEP_WORD("beat"));
 CEP_DEFINE_STATIC_DT(dt_val_text,         CEP_ACRO("CEP"), CEP_WORD("val/text"));
 CEP_DEFINE_STATIC_DT(dt_val_bool,         CEP_ACRO("CEP"), CEP_WORD("val/bool"));
 CEP_DEFINE_DYNAMIC_DT(dt_val_u64, "val/u64");
-CEP_DEFINE_STATIC_DT(dt_sev_error_name,   CEP_ACRO("sev"), CEP_WORD("error"));
+CEP_DEFINE_STATIC_DT(dt_sev_error_name,   CEP_ACRO("CEP"), CEP_WORD("sev:error"));
 
 static const char* const CEP_FED_TOPIC_SCHEMA         = "tp_schema";
 

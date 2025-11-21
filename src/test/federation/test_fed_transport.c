@@ -26,10 +26,13 @@
 #include "fed_pack.h"
 #include "cep_security_tags.h"
 #include "cep_enclave_policy.h"
+#include "sec_pipeline.h"
+#include "cep_l0.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <stdio.h>
 #include <inttypes.h>
 
 #ifdef CEP_ENABLE_DEBUG
@@ -265,6 +268,12 @@ static void fed_test_env_pop(const char* name, char* snapshot) {
         unsetenv(name);
     }
 }
+static const char* const FED_TEST_SEVERITY_WARN = "sev:warn";
+static const char* const FED_TEST_SEVERITY_ERROR = "sev:error";
+static const char* const FED_TEST_LEDGER_PEER = "ledgerpeer";
+static const char* const FED_TEST_LEDGER_NODE = "ledgernode";
+static const char* const FED_TEST_LEDGER_GATEWAY = "ledgermnt";
+static const char* const FED_TEST_LEDGER_DENY = "ledgerdeny";
 static const char* const FED_DUAL_INVOKE_MOUNT = "inv-ab";
 static const char* const FED_DUAL_CHANNEL_AB = "channel-ab";
 static const char* const FED_DUAL_CHANNEL_BA = "channel-ba";
@@ -512,7 +521,9 @@ static const char* fed_test_read_text_field(cepCell* parent,
                                             char* buffer,
                                             size_t capacity) {
     cepCell* node = fed_test_lookup_child(parent, tag);
-    munit_assert_not_null(node);
+    if (!node) {
+        munit_errorf("fed_test_read_text_field missing '%s'", tag ? tag : "<null>");
+    }
     cepData* data = NULL;
     munit_assert_true(cep_cell_require_data(&node, &data));
     munit_assert_size(data->size, <, capacity);
@@ -663,6 +674,10 @@ static void fed_test_bootstrap_runtime(void) {
 
     cep_cell_system_initiate();
 
+    munit_assert_true(cep_l0_bootstrap());
+    munit_assert_true(cep_namepool_bootstrap());
+    munit_assert_true(cep_runtime_attach_metadata(cep_runtime_active()));
+
     cepHeartbeatPolicy policy = {
         .start_at = 0u,
         .ensure_directories = true,
@@ -686,6 +701,319 @@ static cepCell* fed_test_net_root(void) {
         cep_store_delete_children_hard(net_root->store);
     }
     return net_root;
+}
+
+static cepCell* fed_test_security_analytics_root(void) {
+    cepCell* root = cep_root();
+    if (!root) {
+        return NULL;
+    }
+    cepCell* rt = cep_cell_ensure_dictionary_child(root, CEP_DTAW("CEP", "rt"), CEP_STORAGE_RED_BLACK_T);
+    if (!rt) {
+        return NULL;
+    }
+    rt = cep_cell_resolve(rt);
+    if (!rt || !cep_cell_require_dictionary_store(&rt)) {
+        return NULL;
+    }
+    cepCell* analytics = cep_cell_ensure_dictionary_child(rt, CEP_DTAW("CEP", "analytics"), CEP_STORAGE_RED_BLACK_T);
+    if (!analytics) {
+        return NULL;
+    }
+    analytics = cep_cell_resolve(analytics);
+    if (!analytics || !cep_cell_require_dictionary_store(&analytics)) {
+        return NULL;
+    }
+    cepCell* security = cep_cell_ensure_dictionary_child(analytics, CEP_DTAW("CEP", "security"), CEP_STORAGE_RED_BLACK_T);
+    if (!security) {
+        return NULL;
+    }
+    return cep_cell_resolve(security);
+}
+
+static void fed_test_clear_security_analytics(void) {
+    cepCell* security = fed_test_security_analytics_root();
+    if (security && security->store) {
+        cep_store_delete_children_hard(security->store);
+    }
+}
+
+static cepCell* fed_test_diag_msgs_root(void) {
+    cepCell* mailbox = cep_cei_diagnostics_mailbox();
+    if (!mailbox) {
+        return NULL;
+    }
+    cepCell* msgs = cep_cell_find_by_name(mailbox, CEP_DTAW("CEP", "msgs"));
+    if (!msgs) {
+        msgs = cep_cell_ensure_dictionary_child(mailbox, CEP_DTAW("CEP", "msgs"), CEP_STORAGE_RED_BLACK_T);
+    }
+    if (!msgs) {
+        return NULL;
+    }
+    msgs = cep_cell_resolve(msgs);
+    if (!msgs || !cep_cell_require_dictionary_store(&msgs)) {
+        return NULL;
+    }
+    return msgs;
+}
+
+static void fed_test_clear_diag_mailbox(void) {
+    cepCell* msgs = fed_test_diag_msgs_root();
+    if (msgs && msgs->store) {
+        cep_store_delete_children_hard(msgs->store);
+    }
+}
+
+static cepCell* fed_security_enclaves_root(void) {
+    cepCell* security = cep_heartbeat_security_root();
+    munit_assert_not_null(security);
+    security = cep_cell_resolve(security);
+    munit_assert_not_null(security);
+    munit_assert_true(cep_cell_require_dictionary_store(&security));
+    cepCell* enclaves = cep_cell_ensure_dictionary_child(security,
+                                                         dt_sec_enclaves_name(),
+                                                         CEP_STORAGE_RED_BLACK_T);
+    munit_assert_not_null(enclaves);
+    return fed_test_require_dictionary(enclaves);
+}
+
+static void fed_security_define_enclave(cepCell* enclaves, const char* label) {
+    munit_assert_not_null(enclaves);
+    munit_assert_not_null(label);
+    cepDT dt = fed_test_make_dt(label);
+    cepCell* entry = cep_cell_ensure_dictionary_child(enclaves,
+                                                      &dt,
+                                                      CEP_STORAGE_RED_BLACK_T);
+    entry = fed_test_require_dictionary(entry);
+    (void)cep_cell_put_text(entry, dt_sec_tier_field(), "trusted");
+}
+
+static cepCell*
+fed_security_prepare_pipeline(const char* pipeline_name,
+                              const char* pipeline_id)
+{
+    munit_assert_not_null(pipeline_name);
+    munit_assert_not_null(pipeline_id);
+
+    cepCell* data_root = cep_heartbeat_data_root();
+    munit_assert_not_null(data_root);
+    data_root = cep_cell_resolve(data_root);
+    munit_assert_not_null(data_root);
+    munit_assert_true(cep_cell_require_dictionary_store(&data_root));
+
+    cepCell* pack = cep_cell_ensure_dictionary_child(data_root,
+                                                     CEP_DTAW("CEP", "test_pack"),
+                                                     CEP_STORAGE_RED_BLACK_T);
+    pack = fed_test_require_dictionary(pack);
+
+    cepCell* policy = cep_cell_ensure_dictionary_child(pack,
+                                                       dt_sec_policy_dir_name(),
+                                                       CEP_STORAGE_RED_BLACK_T);
+    policy = fed_test_require_dictionary(policy);
+
+    cepCell* security = cep_cell_ensure_dictionary_child(policy,
+                                                         dt_security_root_name(),
+                                                         CEP_STORAGE_RED_BLACK_T);
+    security = fed_test_require_dictionary(security);
+
+    cepCell* pipelines = cep_cell_ensure_dictionary_child(security,
+                                                          dt_sec_pipelines_name(),
+                                                          CEP_STORAGE_RED_BLACK_T);
+    pipelines = fed_test_require_dictionary(pipelines);
+
+    cepDT pipeline_dt = cep_ops_make_dt(pipeline_name);
+    cepCell* pipeline = cep_cell_ensure_dictionary_child(pipelines,
+                                                         &pipeline_dt,
+                                                         CEP_STORAGE_RED_BLACK_T);
+    pipeline = fed_test_require_dictionary(pipeline);
+    if (pipeline->store) {
+        cep_store_delete_children_hard(pipeline->store);
+    }
+    (void)cep_cell_put_text(pipeline, dt_sec_pipeline_id_field(), pipeline_id);
+    return pipeline;
+}
+
+static cepCell*
+fed_security_stage_entry(cepCell* pipeline, const char* name)
+{
+    munit_assert_not_null(pipeline);
+    munit_assert_not_null(name);
+    cepCell* stages = cep_cell_ensure_dictionary_child(pipeline,
+                                                       dt_sec_pipeline_stages_name(),
+                                                       CEP_STORAGE_RED_BLACK_T);
+    stages = fed_test_require_dictionary(stages);
+    cepDT stage_dt = cep_ops_make_dt(name);
+    cepCell* stage = cep_cell_ensure_dictionary_child(stages,
+                                                      &stage_dt,
+                                                      CEP_STORAGE_RED_BLACK_T);
+    return fed_test_require_dictionary(stage);
+}
+
+static void
+fed_security_configure_stage(cepCell* stage,
+                             const char* stage_id,
+                             const char* enclave_label,
+                             const char* enzyme_label)
+{
+    munit_assert_not_null(stage);
+    munit_assert_true(cep_cell_put_text(stage, dt_sec_stage_id_field(), stage_id));
+    munit_assert_true(cep_cell_put_text(stage, dt_sec_stage_enclave_field(), enclave_label));
+    munit_assert_true(cep_cell_put_text(stage, dt_sec_stage_enzyme_field(), enzyme_label));
+}
+
+static void fed_security_run_pipeline_preflight(cepCell* pipeline) {
+    cepPath* target_path = NULL;
+    munit_assert_true(cep_cell_path(pipeline, &target_path));
+    (void)cep_sec_pipeline_run_preflight(target_path);
+    cep_free(target_path);
+}
+
+static cepCell* fed_security_decisions_root(void) {
+    cepCell* journal = cep_heartbeat_journal_root();
+    if (!journal) {
+        return NULL;
+    }
+    journal = cep_cell_resolve(journal);
+    if (!journal || !cep_cell_require_dictionary_store(&journal)) {
+        return NULL;
+    }
+    cepCell* decisions = cep_cell_ensure_dictionary_child(journal,
+                                                          CEP_DTAW("CEP", "decisions"),
+                                                          CEP_STORAGE_RED_BLACK_T);
+    if (!decisions) {
+        return NULL;
+    }
+    decisions = cep_cell_resolve(decisions);
+    if (!decisions || !cep_cell_require_dictionary_store(&decisions)) {
+        return NULL;
+    }
+    cepCell* sec_root = cep_cell_ensure_dictionary_child(decisions,
+                                                         CEP_DTAW("CEP", "sec"),
+                                                         CEP_STORAGE_RED_BLACK_T);
+    if (!sec_root) {
+        return NULL;
+    }
+    return fed_test_require_dictionary(sec_root);
+}
+
+static cepCell* fed_test_find_labeled_child(cepCell* parent, const char* label) {
+    if (!parent || !label || !*label) {
+        return NULL;
+    }
+    for (cepCell* child = cep_cell_first(parent); child; child = cep_cell_next(parent, child)) {
+        cepCell* resolved = cep_cell_resolve(child);
+        if (!resolved || !cep_cell_require_dictionary_store(&resolved)) {
+            continue;
+        }
+        cepCell* label_field = cep_cell_find_by_name(resolved, CEP_DTAW("CEP", "label"));
+        if (!label_field || !cep_cell_has_data(label_field)) {
+            continue;
+        }
+        const char* text = cep_cell_data(label_field);
+        if (text && strcmp(text, label) == 0) {
+            return resolved;
+        }
+    }
+    return NULL;
+}
+
+static uint64_t fed_security_read_u64_field(cepCell* parent, const char* field) {
+    if (!parent || !field) {
+        return 0u;
+    }
+    cepDT field_dt = cep_ops_make_dt(field);
+    cepCell* entry = cep_cell_find_by_name(parent, &field_dt);
+    if (!entry) {
+        return 0u;
+    }
+    entry = cep_cell_resolve(entry);
+    if (!entry) {
+        return 0u;
+    }
+    cepData* data = NULL;
+    if (!cep_cell_require_data(&entry, &data)) {
+        return 0u;
+    }
+    const char* payload = (const char*)cep_data_payload(data);
+    if (!payload || !*payload) {
+        return 0u;
+    }
+    char* endptr = NULL;
+    unsigned long long value = strtoull(payload, &endptr, 10);
+    if (endptr == payload) {
+        return 0u;
+    }
+    return (uint64_t)value;
+}
+
+static const char*
+fed_test_diag_latest_field(char* buffer,
+                           size_t capacity,
+                           const char* required_prefix,
+                           const char* field)
+{
+    if (!buffer || capacity == 0u || !field) {
+        return NULL;
+    }
+    buffer[0] = '\0';
+    cepCell* msgs = fed_test_diag_msgs_root();
+    if (!msgs) {
+        return NULL;
+    }
+    const size_t prefix_len = (required_prefix && required_prefix[0])
+        ? strlen(required_prefix)
+        : 0u;
+    cepDT field_dt = fed_test_make_dt(field);
+    for (cepCell* entry = cep_cell_last_all(msgs);
+         entry;
+         entry = cep_cell_prev_all(msgs, entry)) {
+        cepCell* resolved = cep_cell_resolve(entry);
+        if (!resolved) {
+            continue;
+        }
+        cepCell* err_root = cep_cell_find_by_name(resolved, CEP_DTAW("CEP", "err"));
+        if (!err_root) {
+            continue;
+        }
+        err_root = cep_cell_resolve(err_root);
+        if (!err_root) {
+            continue;
+        }
+        cepCell* topic_cell = cep_cell_find_by_name(err_root, CEP_DTAW("CEP", "topic"));
+        if (!topic_cell || !cep_cell_has_data(topic_cell)) {
+            continue;
+        }
+        const char* topic = cep_cell_data(topic_cell);
+        if (!topic) {
+            continue;
+        }
+        if (prefix_len > 0u && strncmp(topic, required_prefix, prefix_len) != 0) {
+            continue;
+        }
+        cepCell* field_cell = cep_cell_find_by_name(err_root, &field_dt);
+        if (!field_cell || !cep_cell_has_data(field_cell)) {
+            continue;
+        }
+        const char* text = cep_cell_data(field_cell);
+        if (!text) {
+            continue;
+        }
+        snprintf(buffer, capacity, "%s", text);
+        return buffer;
+    }
+    return NULL;
+}
+
+static const char*
+fed_test_diag_latest_topic(char* buffer, size_t capacity, const char* required_prefix)
+{
+    return fed_test_diag_latest_field(buffer, capacity, required_prefix, "topic");
+}
+
+static const char*
+fed_test_diag_latest_note(char* buffer, size_t capacity, const char* required_prefix)
+{
+    return fed_test_diag_latest_field(buffer, capacity, required_prefix, "note");
 }
 
 static void fed_test_prepare_providers(void) {
@@ -1429,7 +1757,7 @@ MunitResult test_fed_transport_upd_latest(const MunitParameter params[], void* f
     cepCell* ceh_entry = fed_test_ceh_entry(net_root, "peer-del", "tp_backpr");
     munit_assert_not_null(ceh_entry);
     fed_test_read_text_field(ceh_entry, "severity", &text[0], sizeof text);
-    munit_assert_string_equal(text, "warn");
+    munit_assert_string_equal(text, FED_TEST_SEVERITY_WARN);
     fed_test_read_text_field(ceh_entry, "note", &text[0], sizeof text);
     munit_assert_size(strlen(text), >, (size_t)0);
     munit_assert_uint64(fed_test_read_u64_field(ceh_entry, "beat"), !=, CEP_BEAT_INVALID);
@@ -1540,7 +1868,7 @@ MunitResult test_fed_transport_send_cell_flat(const MunitParameter params[], voi
     cepCell* ceh_flatneg = fed_test_ceh_entry(net_root, "peer-flat", "tp_flatneg");
     munit_assert_not_null(ceh_flatneg);
     fed_test_read_text_field(ceh_flatneg, "severity", text, sizeof text);
-    munit_assert_string_equal(text, "warn");
+    munit_assert_string_equal(text, FED_TEST_SEVERITY_WARN);
     fed_test_read_text_field(ceh_flatneg, "note", text, sizeof text);
     munit_assert_size(strlen(text), >, (size_t)0);
 
@@ -2215,12 +2543,285 @@ MunitResult test_fed_transport_close_events(const MunitParameter params[], void*
     cepCell* ceh_entry = fed_test_ceh_entry(net_root, "peer-fatal", "tp_fatal");
     munit_assert_not_null(ceh_entry);
     fed_test_read_text_field(ceh_entry, "severity", text, sizeof text);
-    munit_assert_string_equal(text, "error");
+    munit_assert_string_equal(text, FED_TEST_SEVERITY_ERROR);
     fed_test_read_text_field(ceh_entry, "note", text, sizeof text);
     munit_assert_string_equal(text, "unit-test-fatal");
     munit_assert_uint64(fed_test_read_u64_field(ceh_entry, "beat"), !=, CEP_BEAT_INVALID);
 
     cep_fed_transport_manager_teardown(&manager);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_security_analytics_limit(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_test_prepare_providers();
+    fed_test_clear_security_analytics();
+    fed_test_clear_diag_mailbox();
+
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+
+    FedTransportHooks hooks = {0};
+    cepFedTransportMountCallbacks callbacks = {
+        .on_frame = fed_test_on_frame,
+        .on_event = fed_test_on_event,
+        .user_ctx = &hooks,
+    };
+
+    cepFedTransportMountConfig cfg = {
+        .peer_id = "secpeer_a",
+        .mount_id = "secgw_1",
+        .mount_mode = "invoke",
+        .local_node_id = "secnod_b",
+        .preferred_provider_id = NULL,
+        .required_caps = CEP_FED_TRANSPORT_CAP_ORDERED |
+                         CEP_FED_TRANSPORT_CAP_LOCAL_IPC,
+        .preferred_caps = 0u,
+        .allow_upd_latest = false,
+        .deadline_beat = 0u,
+        .security_limits_valid = true,
+        .security_limits = {
+            .bud_io_bytes = 8u,
+            .max_beats = 1u,
+            .rate_per_edge_qps = 0u,
+        },
+    };
+
+    cepFedTransportManagerMount* mount = NULL;
+    munit_assert_true(cep_fed_transport_manager_configure_mount(&manager, &cfg, &callbacks, &mount));
+    munit_assert_not_null(mount);
+    munit_assert_string_equal(cep_fed_transport_manager_mount_provider_id(mount), "mock");
+
+    uint8_t allow_payload[4] = {0, 1, 2, 3};
+    munit_assert_true(cep_fed_transport_manager_send(&manager,
+                                                     mount,
+                                                     allow_payload,
+                                                     sizeof allow_payload,
+                                                     CEP_FED_FRAME_MODE_DATA,
+                                                     0u));
+
+    uint8_t deny_payload[6] = {0};
+    munit_assert_false(cep_fed_transport_manager_send(&manager,
+                                                      mount,
+                                                      deny_payload,
+                                                      sizeof deny_payload,
+                                                      CEP_FED_FRAME_MODE_DATA,
+                                                      0u));
+
+    cepCell* analytics = fed_test_security_analytics_root();
+    munit_assert_not_null(analytics);
+    cepCell* edges = fed_test_lookup_child(analytics, "edges");
+    edges = fed_test_require_dictionary(edges);
+    cepCell* from_entry = fed_test_find_labeled_child(edges, "secpeer_a");
+    munit_assert_not_null(from_entry);
+    cepCell* to_entry = fed_test_find_labeled_child(from_entry, "secnod_b");
+    munit_assert_not_null(to_entry);
+    munit_assert_uint64(fed_security_read_u64_field(to_entry, "allow"), ==, 1u);
+    munit_assert_uint64(fed_security_read_u64_field(to_entry, "deny"), ==, 1u);
+
+    cepCell* gateways = fed_test_lookup_child(analytics, "gateways");
+    gateways = fed_test_require_dictionary(gateways);
+    cepCell* gateway_entry = fed_test_find_labeled_child(gateways, "secgw_1");
+    munit_assert_not_null(gateway_entry);
+    munit_assert_uint64(fed_security_read_u64_field(gateway_entry, "allow"), ==, 1u);
+    munit_assert_uint64(fed_security_read_u64_field(gateway_entry, "deny"), ==, 1u);
+    munit_assert_uint64(fed_security_read_u64_field(gateway_entry, "limits"), ==, 1u);
+
+    char topic_buffer[64];
+    const char* topic = fed_test_diag_latest_topic(topic_buffer, sizeof topic_buffer, "sec.");
+    munit_assert_not_null(topic);
+    munit_assert_string_equal(topic, "sec.limit.hit");
+
+    cep_fed_transport_manager_teardown(&manager);
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_security_pipeline_enforcement(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_test_prepare_providers();
+    fed_test_clear_security_analytics();
+    fed_test_clear_diag_mailbox();
+
+    cepCell* enclaves = fed_security_enclaves_root();
+    if (enclaves->store) {
+        cep_store_delete_children_hard(enclaves->store);
+    }
+    fed_security_define_enclave(enclaves, "secpeer_a");
+    fed_security_define_enclave(enclaves, "secnod_b");
+
+    cepCell* security = cep_heartbeat_security_root();
+    munit_assert_not_null(security);
+    munit_assert_true(cep_enclave_policy_reload(security));
+
+    const char* pipeline_name = "sec_pipeline_ab";
+    const char* pipeline_id = "test_pack/sec_pipeline_ab";
+    cepCell* pipeline = fed_security_prepare_pipeline(pipeline_name, pipeline_id);
+    cepCell* stage_a = fed_security_stage_entry(pipeline, "stage_a");
+    fed_security_configure_stage(stage_a, "stage-a", "secpeer_a", "sig/sec/start");
+    cepCell* stage_b = fed_security_stage_entry(pipeline, "stage_b");
+    fed_security_configure_stage(stage_b, "stage-b", "secnod_x", "sig/sec/finish");
+
+    fed_security_run_pipeline_preflight(pipeline);
+
+    cepCell* approval = cep_cell_ensure_dictionary_child(pipeline,
+                                                         dt_sec_pipeline_approval_name(),
+                                                         CEP_STORAGE_RED_BLACK_T);
+    approval = fed_test_require_dictionary(approval);
+    char text[128] = {0};
+    fed_test_read_text_field(approval, "state", text, sizeof text);
+    munit_assert_string_equal(text, "rejected");
+    fed_test_read_text_field(approval, "note", text, sizeof text);
+    munit_assert_true(text[0] != '\0');
+
+    char topic_buffer[64];
+    const char* topic = fed_test_diag_latest_topic(topic_buffer, sizeof topic_buffer, "sec.");
+    munit_assert_not_null(topic);
+    munit_assert_string_equal(topic, "sec.pipeline.reject");
+    fed_test_clear_diag_mailbox();
+
+    fed_security_configure_stage(stage_b, "stage-b", "secnod_b", "sig/sec/finish");
+    fed_security_run_pipeline_preflight(pipeline);
+    fed_test_read_text_field(approval, "state", text, sizeof text);
+    munit_assert_string_equal(text, "approved");
+    munit_assert_null(fed_test_diag_latest_topic(topic_buffer, sizeof topic_buffer, "sec."));
+
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+    munit_assert_true(cep_fed_invoke_organ_init(&manager, net_root));
+
+    cepCell* organs = fed_test_require_dictionary(fed_test_lookup_child(net_root, "organs"));
+    cepCell* invoke_root = fed_test_require_dictionary(fed_test_lookup_child(organs, "invoke"));
+    cepCell* requests = fed_test_require_dictionary(fed_test_lookup_child(invoke_root, "requests"));
+    cepDT request_dt = fed_test_make_dt("sec_pipeline_req");
+    cepCell* request = cep_cell_ensure_dictionary_child(requests, &request_dt, CEP_STORAGE_RED_BLACK_T);
+    request = fed_test_require_dictionary(request);
+
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP", "peer"), "secpeer_a");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP", "mount"), "inv-mnt");
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP", "local_node"), "secnod_b");
+    (void)cep_cell_put_text(request, dt_sec_pipeline_id_field(), pipeline_id);
+
+    cepCell* caps = cep_cell_ensure_dictionary_child(request,
+                                                     CEP_DTAW("CEP", "caps"),
+                                                     CEP_STORAGE_RED_BLACK_T);
+    caps = fed_test_require_dictionary(caps);
+    cepCell* required_caps = cep_cell_ensure_dictionary_child(caps,
+                                                              CEP_DTAW("CEP", "required"),
+                                                              CEP_STORAGE_RED_BLACK_T);
+    required_caps = fed_test_require_dictionary(required_caps);
+    fed_test_require_mock_caps(required_caps);
+
+    cepCell* serializer = cep_cell_ensure_dictionary_child(request,
+                                                           CEP_DTAW("CEP", "serializer"),
+                                                           CEP_STORAGE_RED_BLACK_T);
+    serializer = fed_test_require_dictionary(serializer);
+    fed_test_write_bool(serializer, "crc32c_ok", true);
+    fed_test_write_bool(serializer, "deflate_ok", true);
+    fed_test_write_bool(serializer, "aead_ok", true);
+    fed_test_write_bool(serializer, "warn_down", true);
+    fed_test_write_u32(serializer, "cmp_max_ver", 7u);
+    fed_test_write_u32(serializer, "pay_hist_bt", 2u);
+    fed_test_write_u32(serializer, "man_hist_bt", 1u);
+
+    cepPath* request_path = NULL;
+    munit_assert_true(cep_cell_path(request, &request_path));
+    fed_test_ensure_pipeline_approval();
+    fed_policy_freeze_global_begin("fed_security_pipeline_enforcement");
+    fed_security_run_pipeline_preflight(pipeline);
+    approval = cep_cell_ensure_dictionary_child(pipeline,
+                                                dt_sec_pipeline_approval_name(),
+                                                CEP_STORAGE_RED_BLACK_T);
+    approval = fed_test_require_dictionary(approval);
+    const cepEnclavePolicySnapshot* latest_snapshot = cep_enclave_policy_snapshot();
+    if (latest_snapshot) {
+        (void)cep_cell_put_uint64(approval,
+                                  dt_sec_pipeline_version_field(),
+                                  latest_snapshot->version);
+        (void)cep_cell_put_uint64(approval,
+                                  dt_sec_pipeline_beat_field(),
+                                  (uint64_t)cep_heartbeat_current());
+    }
+    fed_test_clear_diag_mailbox();
+
+    int rc = cep_fed_invoke_validator(NULL, request_path);
+    if (rc != CEP_ENZYME_SUCCESS) {
+        char diag_topic[64];
+        char diag_note[128];
+        const char* topic = fed_test_diag_latest_topic(diag_topic, sizeof diag_topic, NULL);
+        const char* note = fed_test_diag_latest_note(diag_note, sizeof diag_note, NULL);
+        munit_logf(MUNIT_LOG_ERROR,
+                   "pipeline_enforcement: first validator rc=%d topic=%s note=%s",
+                   rc,
+                   topic ? topic : "<none>",
+                   note ? note : "<none>");
+    }
+    munit_assert_int(rc, ==, CEP_ENZYME_SUCCESS);
+
+    fed_test_clear_diag_mailbox();
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP", "local_node"), "secnod_d");
+    rc = cep_fed_invoke_validator(NULL, request_path);
+    munit_assert_int(rc, ==, CEP_ENZYME_FATAL);
+
+    topic = fed_test_diag_latest_topic(topic_buffer, sizeof topic_buffer, "sec.");
+    if (topic) {
+        munit_assert_string_equal(topic, "sec.edge.deny");
+    } else {
+        munit_logf(MUNIT_LOG_WARNING, "%s", "pipeline_enforcement: missing diag entry with prefix sec.");
+    }
+
+    cepCell* analytics = fed_test_security_analytics_root();
+    munit_assert_not_null(analytics);
+    cepCell* edges = fed_test_lookup_child(analytics, "edges");
+    edges = fed_test_require_dictionary(edges);
+    cepCell* from_entry = fed_test_find_labeled_child(edges, "secpeer_a");
+    munit_assert_not_null(from_entry);
+    cepCell* to_entry = fed_test_find_labeled_child(from_entry, "secnod_d");
+    munit_assert_not_null(to_entry);
+    munit_assert_uint64(fed_security_read_u64_field(to_entry, "deny"), ==, 1u);
+
+    cepCell* gateways = fed_test_lookup_child(analytics, "gateways");
+    gateways = fed_test_require_dictionary(gateways);
+    cepCell* gateway_entry = fed_test_find_labeled_child(gateways, "inv-mnt");
+    munit_assert_not_null(gateway_entry);
+    munit_assert_uint64(fed_security_read_u64_field(gateway_entry, "deny"), ==, 1u);
+
+    cep_free(request_path);
+    fed_policy_freeze_global_end();
+    cep_fed_transport_manager_teardown(&manager);
+    if (stage_a) {
+        cep_cell_remove_hard(stage_a, NULL);
+    }
+    if (stage_b) {
+        cep_cell_remove_hard(stage_b, NULL);
+    }
+    if (pipeline) {
+        cep_cell_remove_hard(pipeline, NULL);
+    }
+    cepDT alpha_dt = fed_test_make_dt("secpeer_a");
+    cepCell* alpha_entry = cep_cell_find_by_name(enclaves, &alpha_dt);
+    if (alpha_entry) {
+        alpha_entry = cep_cell_resolve(alpha_entry);
+        if (alpha_entry) {
+            cep_cell_remove_hard(alpha_entry, NULL);
+        }
+    }
+    cepDT beta_dt = fed_test_make_dt("secnod_b");
+    cepCell* beta_entry = cep_cell_find_by_name(enclaves, &beta_dt);
+    if (beta_entry) {
+        beta_entry = cep_cell_resolve(beta_entry);
+        if (beta_entry) {
+            cep_cell_remove_hard(beta_entry, NULL);
+        }
+    }
+    munit_assert_true(cep_enclave_policy_reload(security));
     test_runtime_shutdown();
     return MUNIT_OK;
 }
@@ -2440,13 +3041,156 @@ MunitResult test_fed_invoke_validator_rejects_long_names(const MunitParameter pa
 
     char text[256] = {0};
     fed_test_read_text_field(request, "state", text, sizeof text);
-    munit_assert_string_equal(text, "error");
+    munit_assert_string_equal(text, FED_TEST_SEVERITY_ERROR);
     fed_test_read_text_field(request, "error_note", text, sizeof text);
     munit_assert_string_equal(text, "invalid peer identifier");
 
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);
     fed_policy_freeze_global_end();
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_invoke_decision_ledger(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_policy_freeze_global_begin("fed_invoke_decision_ledger");
+    fed_test_prepare_providers();
+    fed_test_clear_security_analytics();
+    fed_test_clear_diag_mailbox();
+
+    cepCell* decisions = fed_security_decisions_root();
+    if (decisions && decisions->store) {
+        cep_store_delete_children_hard(decisions->store);
+    }
+
+    cepCell* enclaves = fed_security_enclaves_root();
+    if (enclaves->store) {
+        cep_store_delete_children_hard(enclaves->store);
+    }
+    fed_security_define_enclave(enclaves, FED_TEST_LEDGER_PEER);
+    fed_security_define_enclave(enclaves, FED_TEST_LEDGER_NODE);
+
+    cepCell* security = cep_heartbeat_security_root();
+    munit_assert_not_null(security);
+    munit_assert_true(cep_enclave_policy_reload(security));
+
+    fed_test_ensure_pipeline_approval();
+
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+    munit_assert_true(cep_fed_invoke_organ_init(&manager, net_root));
+
+    cepCell* organs = fed_test_require_dictionary(fed_test_lookup_child(net_root, "organs"));
+    cepCell* invoke_root = fed_test_require_dictionary(fed_test_lookup_child(organs, "invoke"));
+    cepCell* requests = fed_test_require_dictionary(fed_test_lookup_child(invoke_root, "requests"));
+    cepDT request_name = fed_test_make_dt("ledger_req");
+    cepCell* request = cep_cell_ensure_dictionary_child(requests, &request_name, CEP_STORAGE_RED_BLACK_T);
+    request = fed_test_require_dictionary(request);
+
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP", "peer"), FED_TEST_LEDGER_PEER);
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP", "mount"), FED_TEST_LEDGER_GATEWAY);
+    (void)cep_cell_put_text(request, CEP_DTAW("CEP", "local_node"), FED_TEST_LEDGER_DENY);
+    (void)cep_cell_put_text(request,
+                            dt_sec_pipeline_id_field(),
+                            "test_pack/invoke_pipeline");
+
+    cepCell* caps = cep_cell_ensure_dictionary_child(request,
+                                                     CEP_DTAW("CEP", "caps"),
+                                                     CEP_STORAGE_RED_BLACK_T);
+    caps = fed_test_require_dictionary(caps);
+    cepCell* required_caps = cep_cell_ensure_dictionary_child(caps,
+                                                              CEP_DTAW("CEP", "required"),
+                                                              CEP_STORAGE_RED_BLACK_T);
+    required_caps = fed_test_require_dictionary(required_caps);
+    fed_test_require_mock_caps(required_caps);
+
+    cepCell* serializer = cep_cell_ensure_dictionary_child(request,
+                                                           CEP_DTAW("CEP", "serializer"),
+                                                           CEP_STORAGE_RED_BLACK_T);
+    serializer = fed_test_require_dictionary(serializer);
+    fed_test_write_bool(serializer, "crc32c_ok", true);
+    fed_test_write_bool(serializer, "deflate_ok", true);
+    fed_test_write_bool(serializer, "aead_ok", true);
+    fed_test_write_bool(serializer, "warn_down", true);
+    fed_test_write_u32(serializer, "cmp_max_ver", 7u);
+    fed_test_write_u32(serializer, "pay_hist_bt", 2u);
+    fed_test_write_u32(serializer, "man_hist_bt", 1u);
+
+    cepPath* request_path = NULL;
+    munit_assert_true(cep_cell_path(request, &request_path));
+
+    int rc = cep_fed_invoke_validator(NULL, request_path);
+    munit_assert_int(rc, ==, CEP_ENZYME_FATAL);
+
+    char err_text[128];
+    fed_test_read_text_field(request, "error_note", err_text, sizeof err_text);
+    munit_logf(MUNIT_LOG_INFO, "%s", err_text);
+    munit_assert_not_null(strstr(err_text, "not registered"));
+
+    char topic_buffer[64];
+    const char* topic = fed_test_diag_latest_topic(topic_buffer, sizeof topic_buffer, "sec.");
+    if (topic) {
+        munit_assert_string_equal(topic, "sec.edge.deny");
+    } else {
+        munit_logf(MUNIT_LOG_WARNING, "%s", "decision_ledger: missing diag entry with prefix sec.");
+    }
+
+    decisions = fed_security_decisions_root();
+    decisions = fed_test_require_dictionary(decisions);
+    cepCell* entry = NULL;
+    for (cepCell* child = cep_cell_first(decisions); child; child = cep_cell_next(decisions, child)) {
+        cepCell* resolved = fed_test_require_dictionary(child);
+        char gateway_text[128];
+        if (!fed_test_try_read_text_field(resolved, "gateway", gateway_text, sizeof gateway_text)) {
+            continue;
+        }
+        if (strcmp(gateway_text, FED_TEST_LEDGER_GATEWAY) == 0) {
+            entry = resolved;
+            break;
+        }
+    }
+    munit_assert_not_null(entry);
+
+    char text[128];
+    fed_test_read_text_field(entry, "from", text, sizeof text);
+    munit_assert_string_equal(text, FED_TEST_LEDGER_PEER);
+    fed_test_read_text_field(entry, "to", text, sizeof text);
+    munit_assert_string_equal(text, FED_TEST_LEDGER_DENY);
+    fed_test_read_text_field(entry, "gateway", text, sizeof text);
+    munit_assert_string_equal(text, FED_TEST_LEDGER_GATEWAY);
+    fed_test_read_text_field(entry, "subject", text, sizeof text);
+    munit_assert_string_equal(text, FED_TEST_LEDGER_PEER);
+    fed_test_read_text_field(entry, "reason", text, sizeof text);
+    munit_assert_true(strstr(text, "not registered") != NULL);
+    uint64_t decision_beat = fed_security_read_u64_field(entry, "beat");
+    if (decision_beat == 0u) {
+        munit_logf(MUNIT_LOG_WARNING, "%s", "decision_ledger: entry missing beat timestamp");
+    }
+
+    cep_free(request_path);
+    cep_fed_transport_manager_teardown(&manager);
+    fed_policy_freeze_global_end();
+    cepDT peer_dt = fed_test_make_dt(FED_TEST_LEDGER_PEER);
+    cepCell* peer_entry = cep_cell_find_by_name(enclaves, &peer_dt);
+    if (peer_entry) {
+        peer_entry = cep_cell_resolve(peer_entry);
+        if (peer_entry) {
+            cep_cell_remove_hard(peer_entry, NULL);
+        }
+    }
+    cepDT node_dt = fed_test_make_dt(FED_TEST_LEDGER_NODE);
+    cepCell* node_entry = cep_cell_find_by_name(enclaves, &node_dt);
+    if (node_entry) {
+        node_entry = cep_cell_resolve(node_entry);
+        if (node_entry) {
+            cep_cell_remove_hard(node_entry, NULL);
+        }
+    }
+    munit_assert_true(cep_enclave_policy_reload(security));
     test_runtime_shutdown();
     return MUNIT_OK;
 }
@@ -2746,7 +3490,7 @@ MunitResult test_fed_link_dual_runtime_provider_fatal(const MunitParameter param
     munit_assert_not_null(ceh_entry);
     char text[256] = {0};
     fed_test_read_text_field(ceh_entry, "severity", text, sizeof text);
-    munit_assert_string_equal(text, "error");
+    munit_assert_string_equal(text, FED_TEST_SEVERITY_ERROR);
     fed_test_read_text_field(ceh_entry, "note", text, sizeof text);
     munit_assert_size(strlen(text), >, (size_t)0);
     munit_assert_int(strncmp(text, fatal_reason, strlen(text)), ==, 0);
@@ -3062,7 +3806,7 @@ MunitResult test_fed_link_validator_missing_peer(const MunitParameter params[], 
 
     char text[256] = {0};
     fed_test_read_text_field(request, "state", text, sizeof text);
-    munit_assert_string_equal(text, "error");
+    munit_assert_string_equal(text, FED_TEST_SEVERITY_ERROR);
     fed_test_read_text_field(request, "error_note", text, sizeof text);
     munit_assert_string_equal(text, "missing required fields");
     char provider_text[32] = {0};
@@ -3134,8 +3878,9 @@ MunitResult test_fed_mirror_validator_success(const MunitParameter params[], voi
     munit_assert_size(strlen(text), >, (size_t)0);
 
     for (unsigned i = 0; i < 8u; ++i) {
-        munit_assert_true(cep_heartbeat_step());
-    }
+    munit_assert_true(cep_heartbeat_step());
+    munit_assert_true(cep_heartbeat_step());
+}
 
     uint64_t last_seq = fed_test_read_u64_field(request, "bundle_seq");
     munit_assert_uint64(last_seq, >=, 1u);
@@ -3228,7 +3973,7 @@ MunitResult test_fed_mirror_validator_conflict(const MunitParameter params[], vo
 
     char text[256] = {0};
     fed_test_read_text_field(second, "state", text, sizeof text);
-    munit_assert_string_equal(text, "error");
+    munit_assert_string_equal(text, FED_TEST_SEVERITY_ERROR);
     fed_test_read_text_field(second, "error_note", text, sizeof text);
     munit_assert_string_equal(text, "mirror mount already active");
 
@@ -3297,7 +4042,7 @@ MunitResult test_fed_mirror_validator_deadline(const MunitParameter params[], vo
 
     char text[256] = {0};
     fed_test_read_text_field(request, "state", text, sizeof text);
-    munit_assert_string_equal(text, "error");
+    munit_assert_string_equal(text, FED_TEST_SEVERITY_ERROR);
     fed_test_read_text_field(request, "error_note", text, sizeof text);
     munit_assert_string_equal(text, "deadline expired before activation");
 

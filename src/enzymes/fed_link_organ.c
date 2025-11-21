@@ -32,6 +32,7 @@ typedef struct cepFedLinkRequestCtx {
 static cepFedTransportManager* g_link_manager = NULL;
 static cepCell* g_link_net_root = NULL;
 static cepFedLinkRequestCtx* g_link_requests = NULL;
+static const char* const CEP_FED_STATE_ERROR = "sev:error";
 
 CEP_DEFINE_STATIC_DT(dt_organs_name,           CEP_ACRO("CEP"), CEP_WORD("organs"));
 CEP_DEFINE_STATIC_DT(dt_link_name,             CEP_ACRO("CEP"), CEP_WORD("link"));
@@ -319,6 +320,23 @@ static cepFedTransportCaps cep_fed_link_read_cap_flags(cepCell* caps_dict) {
     return caps;
 }
 
+static void cep_fed_link_clear_field_history(cepCell* request_cell, const cepDT* field) {
+    /* Status fields mutate frequently; trim their history so heap snapshots do
+       not linger when requests live across many validator cycles. */
+    if (!request_cell || !field) {
+        return;
+    }
+    cepCell* node = cep_cell_find_by_name(request_cell, field);
+    if (!node) {
+        return;
+    }
+    node = cep_cell_resolve(node);
+    if (!node || !node->data) {
+        return;
+    }
+    cep_data_history_clear(node->data);
+}
+
 static void cep_fed_link_publish_state(cepCell* request_cell,
                                        const char* state,
                                        const char* error_note,
@@ -326,16 +344,32 @@ static void cep_fed_link_publish_state(cepCell* request_cell,
     if (!request_cell || !cep_cell_require_dictionary_store(&request_cell)) {
         return;
     }
-    if (state) {
-        (void)cep_cell_put_text(request_cell, dt_state_name(), state);
+    if (state && cep_cell_put_text(request_cell, dt_state_name(), state)) {
+        cep_fed_link_clear_field_history(request_cell, dt_state_name());
     }
     if (error_note) {
-        (void)cep_cell_put_text(request_cell, dt_error_name(), error_note);
+        if (cep_cell_put_text(request_cell, dt_error_name(), error_note)) {
+            cep_fed_link_clear_field_history(request_cell, dt_error_name());
+        }
     } else {
-        (void)cep_cell_put_text(request_cell, dt_error_name(), "");
+        cepCell* node = cep_cell_find_by_name(request_cell, dt_error_name());
+        if (node) {
+            node = cep_cell_resolve(node);
+            if (node) {
+                cep_cell_remove_hard(node, NULL);
+            }
+        }
     }
-    if (provider) {
-        (void)cep_cell_put_text(request_cell, dt_provider_field_name(), provider);
+    if (provider && cep_cell_put_text(request_cell, dt_provider_field_name(), provider)) {
+        cep_fed_link_clear_field_history(request_cell, dt_provider_field_name());
+    } else if (!provider) {
+        cepCell* node = cep_cell_find_by_name(request_cell, dt_provider_field_name());
+        if (node) {
+            node = cep_cell_resolve(node);
+            if (node) {
+                cep_cell_remove_hard(node, NULL);
+            }
+        }
     }
 }
 
@@ -673,7 +707,7 @@ int cep_fed_link_validator(const cepPath* signal_path, const cepPath* target_pat
         return CEP_ENZYME_FATAL;
     }
     if (!cep_cell_require_dictionary_store(&request_cell)) {
-        cep_fed_link_publish_state(request_cell, "error", "link request is not a dictionary", NULL);
+        cep_fed_link_publish_state(request_cell, CEP_FED_STATE_ERROR, "link request is not a dictionary", NULL);
         return CEP_ENZYME_FATAL;
     }
 
@@ -697,7 +731,7 @@ int cep_fed_link_validator(const cepPath* signal_path, const cepPath* target_pat
         !cep_fed_link_read_text(request_cell, dt_mount_field_name(), true, mount, sizeof mount) ||
         !cep_fed_link_read_text(request_cell, dt_mode_field_name(), true, mode, sizeof mode) ||
         !cep_fed_link_read_text(request_cell, dt_local_node_field_name(), true, local_node, sizeof local_node)) {
-        cep_fed_link_publish_state(request_cell, "error", "missing required fields", NULL);
+        cep_fed_link_publish_state(request_cell, CEP_FED_STATE_ERROR, "missing required fields", NULL);
         return CEP_ENZYME_FATAL;
     }
 
@@ -728,7 +762,7 @@ int cep_fed_link_validator(const cepPath* signal_path, const cepPath* target_pat
     cepFedTransportCaps required_caps = 0u;
     cepFedTransportCaps preferred_caps = 0u;
     if (!cep_fed_link_parse_caps(request_cell, &required_caps, &preferred_caps)) {
-        cep_fed_link_publish_state(request_cell, "error", "invalid capability dictionary", NULL);
+        cep_fed_link_publish_state(request_cell, CEP_FED_STATE_ERROR, "invalid capability dictionary", NULL);
         return CEP_ENZYME_FATAL;
     }
 
@@ -774,7 +808,7 @@ int cep_fed_link_validator(const cepPath* signal_path, const cepPath* target_pat
 
     cepFedTransportManagerMount* new_mount = NULL;
     if (!cep_fed_link_mount_apply(&cfg, &callbacks, &new_mount)) {
-        cep_fed_link_publish_state(request_cell, "error", "transport manager rejected configuration", NULL);
+        cep_fed_link_publish_state(request_cell, CEP_FED_STATE_ERROR, "transport manager rejected configuration", NULL);
         if (ctx_new) {
             cep_free(ctx);
         }

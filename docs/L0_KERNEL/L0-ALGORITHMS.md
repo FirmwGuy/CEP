@@ -251,6 +251,20 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 
 **Where it lives.** `src/enzymes/fed_transport_manager.c` refreshes both the telemetry and analytics trees whenever mount state changes.
 
+## 18) Enclave policy resolution & security telemetry
+
+**Why it exists.** Enclave enforcement needs a deterministic resolver so every cross-enclave hop (pipelines, federation calls, security branches) observes the same policy snapshot, budgets, and diagnostics.
+
+**What it does.**
+
+* **Snapshot capture.** `cep_enclave_policy_capture()` walks `/sys/security/{enclaves,edges,gateways,branches,defaults,env/**}`, normalises the config, hashes it, and swaps the snapshot atomically. The loader records readiness/fault metadata in `/sys/state/security` (`state`, `note`, `fault`, `pol_ver`, `beat`). Watchers mark dirty sources; CEP_ENABLE_DEBUG builds log the stack into `build/logs/fed_invoke_policy_trace.log`.
+* **Freeze guards.** `cep_enclave_policy_freeze_enter/leave` pin the active snapshot during validator retries (e.g., fed invoke fixtures) so approvals whose `pol_ver` lags while frozen remain valid.
+* **Lookup APIs.** `cep_enclave_policy_check_edge()`, `cep_enclave_policy_check_branch()`, and `cep_enclave_policy_check_pipeline()` resolve allow/deny plus the most restrictive budgets/TTL/rates. `cep_cell_svo_context_guard()` formats `/sys/security` branch paths and calls the branch checker, logging `[svo_guard]` breadcrumbs under CEP_ENABLE_DEBUG.
+* **Ledger & CEI emissions.** When resolves deny, helpers emit `sec.edge.deny` or `sec.branch.deny`, append structured entries to `/journal/decisions/sec`, and raise `sec.pipeline.reject` for failed preflight. `cep_fed_transport_manager_send*()` decrement per-edge budgets and emit `sec.limit.hit` whenever counters reach zero.
+* **Telemetry.** `/rt/analytics/security/edges/<hash>` and `/rt/analytics/security/gateways/<hash>` store hashed labels plus allow/deny counters. `/rt/analytics/security/beats/<bt>` records per-beat digests (allow, deny, limit hits). These branches update during commit so replays can compare beat-by-beat enforcement.
+
+**Where it lives.** Loader and checkers: `src/l0_kernel/cep_enclave_policy.c`. Branch guard plumbing: `src/l0_kernel/cep_branch_controller.c`. Federation hooks: `src/enzymes/fed_transport_manager.c`, `src/enzymes/fed_invoke.c`. Pipeline preflight enzyme: `src/enzymes/sec_pipeline.c`. Tests: `/CEP/fed_security/*`, `/CEP/fed_invoke/decision_ledger`, `/CEP/branch/security_guard`.
+
 * **History & snapshots:** `cep_cell_update`, `cep_data_history_push`, `cep_store_history_push/clear` 
 * **Links & shadows:** `cep_link_set/pull`, `cep_cell_shadow_mark_target_dead`, `cep_shadow_*` helpers 
 * **Insertion & reindex:** `cep_store_add_child`, `cep_store_append_child`, `store_to_dictionary`, `store_sort` 

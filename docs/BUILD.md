@@ -147,6 +147,25 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
   ```
   The suppression file is intentionally minimal; keep it in sync with upstream toolchain updates and add entries only for false positives.
 
+## Enclave Validation Workflow
+
+Keep the Enclave resolver, telemetry, and diagnostics in sync by running this matrix whenever policy-sensitive code changes:
+
+1. **Lexicon sanity:** `python3 tools/check_unused_tags.py`
+2. **Targeted unit suites:**
+   ```bash
+   meson test -C build cep_unit_tests --test-args "--single /CEP/fed_security/analytics_limit"
+   meson test -C build cep_unit_tests --test-args "--single /CEP/fed_security/pipeline_enforcement"
+   meson test -C build cep_unit_tests --test-args "--single /CEP/branch/security_guard --no-fork --param timeout 120 --show-stderr"
+   meson test -C build cep_unit_tests --test-args "--single /CEP/fed_invoke/decision_ledger"
+   ```
+3. **Full sweeps:**  
+   `meson test -C build --timeout-multiplier 3 --no-rebuild`  
+   `meson test -C build-asan --timeout-multiplier 3 --no-rebuild`
+4. **Valgrind batches:** run federation suites in groups of ≤3 selectors (e.g., `/CEP/fed_security/*`, `/CEP/fed_link/*`, `/CEP/fed_mirror/*`, `/CEP/fed_invoke/*`) and archive results under `build/logs/valgrind_*.log`. Keep integration POC fixtures separate—they hold locks longer but should still be captured (`valgrind_integration_poc_{integration,focus}.log`).
+
+These commands are referenced throughout the Enclave design/topic docs; updating this section keeps the rest of the documentation stable.
+
 ## Debug Instrumentation
 
 - Wrap any ad-hoc diagnostics in the `CEP_DEBUG_*` macros (see `src/l0_kernel/cep_molecule.h`) so debug prints build only when `CEP_ENABLE_DEBUG` is defined.

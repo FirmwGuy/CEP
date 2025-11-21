@@ -7,7 +7,8 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - **Core Architecture**
   - `docs/CEP.md` — Big-picture mission and vocabulary; skim first to align terminology.
   - `docs/CEP-Implementation-Reference.md` — Deterministic contract digest covering cells, stores, transports, episodes, higher-layer invariants, and the shipping Enclave policy loader/enforcement workflow.
-  - `ENCLAVE.md` — End-to-end Enclave enforcement playbook: policy tree layout, runtime loaders, pipeline preflight enzyme, and the evidence surfaces (`/sys/state/security`, `/rt/analytics/security`, `sec.*` CEI topics) operators must watch.
+- `docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md` — Enclave architecture: policy loader, gateways/edges, pipeline approvals, diagnostics, and invariants behind `cep_enclave_policy`.
+- `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md` — Operator workflow for policy edits, pipeline preflight, diagnostics, and the regression test matrix.
   - `docs/L0_KERNEL/L0-OVERVIEW.md` — Layer‑0 capabilities, storage choices, and lifecycle behaviors that every kernel edit touches.
   - `docs/L0_KERNEL/L0-ALGORITHMS.md` — Cross-cutting invariants (history chains, shadow bookkeeping, traversal) to re-confirm before changing shared helpers.
   - `docs/L0_KERNEL/L0-INTEGRATION-GUIDE.md` — Enzyme dispatch, serialization flows, and proxy wiring that keep integrations deterministic.

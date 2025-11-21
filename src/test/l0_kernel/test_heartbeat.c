@@ -216,6 +216,27 @@ static void heartbeat_assert_state(cepOID oid, const char* expected_tag) {
     munit_assert_int(cmp, ==, 0);
 }
 
+static bool heartbeat_state_equals(cepOID oid, const char* expected_tag) {
+    cepDT expected = heartbeat_expected_dt(expected_tag);
+    cepCell* op = heartbeat_find_op_cell(oid);
+    cepDT state = heartbeat_read_dt_field(op, "state");
+    return cep_dt_compare(&state, &expected) == 0;
+}
+
+static void heartbeat_drive_until_state(cepOID oid,
+                                        const char* target_state,
+                                        const char* trace_label,
+                                        int max_steps) {
+    for (int i = 0; i < max_steps; ++i) {
+        if (heartbeat_state_equals(oid, target_state)) {
+            return;
+        }
+        const char* label = trace_label ? trace_label : "heartbeat_drive";
+        test_ovh_tracef("%s iteration=%d", label, i);
+        munit_assert_true(test_ovh_heartbeat_step(label));
+    }
+    heartbeat_assert_state(oid, target_state);
+}
 
 static cepOID heartbeat_read_oid(const char* field_name) {
     cepCell* sys_root = cep_heartbeat_sys_root();
@@ -775,11 +796,7 @@ static MunitResult test_heartbeat_binding_union_chain(void) {
     return MUNIT_OK;
 }
 static void heartbeat_drive_boot_completion(cepOID boot_oid) {
-    (void)boot_oid;
-    for (int i = 0; i < 6; ++i) {
-        test_ovh_tracef("boot_completion iteration=%d", i);
-        munit_assert_true(test_ovh_heartbeat_step("boot_completion"));
-    }
+    heartbeat_drive_until_state(boot_oid, "ist:ok", "boot_completion", 32);
 }
 
 static MunitResult test_heartbeat_boot_timeline(const MunitParameter params[], void* user_data_or_fixture) {
@@ -832,10 +849,7 @@ static MunitResult test_heartbeat_shutdown_timeline(const MunitParameter params[
     cepOID shdn_oid = heartbeat_read_oid("shdn_oid");
     munit_assert_true(cep_oid_is_valid(shdn_oid));
 
-    for (int i = 0; i < 6; ++i) {
-        test_ovh_tracef("shutdown_timeline iteration=%d", i);
-        munit_assert_true(test_ovh_heartbeat_step("shutdown_timeline"));
-    }
+    heartbeat_drive_until_state(shdn_oid, "ist:ok", "shutdown_timeline", 32);
 
     const char* expected_states[] = {
         "ist:run",

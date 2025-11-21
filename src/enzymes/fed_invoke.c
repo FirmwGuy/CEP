@@ -59,6 +59,7 @@ CEP_DEFINE_STATIC_DT(dt_cap_latency_name,      CEP_ACRO("CEP"), CEP_WORD("low_la
 CEP_DEFINE_STATIC_DT(dt_cap_local_ipc_name,    CEP_ACRO("CEP"), CEP_WORD("local_ipc"));
 CEP_DEFINE_STATIC_DT(dt_cap_remote_net_name,   CEP_ACRO("CEP"), CEP_WORD("remote_net"));
 CEP_DEFINE_STATIC_DT(dt_cap_unreliable_name,   CEP_ACRO("CEP"), CEP_WORD("unreliable"));
+static const char* const CEP_FED_STATE_ERROR = "sev:error";
 
 typedef struct cepFedInvokeRequest {
     cepCell*                       request_cell;
@@ -1168,23 +1169,23 @@ cep_fed_invoke_validator(const cepPath* signal_path,
         cep_fed_invoke_emit_issue(NULL,
                                   CEP_FED_INVOKE_TOPIC_REJECT,
                                   "invoke request missing required fields");
-        cep_fed_invoke_publish_state(request_cell, "error", "missing required fields", NULL);
+        cep_fed_invoke_publish_state(request_cell, CEP_FED_STATE_ERROR, "missing required fields", NULL);
         return CEP_ENZYME_FATAL;
     }
 
     if (!cep_fed_invoke_validate_word(peer)) {
         cep_fed_invoke_emit_issue(NULL, CEP_FED_INVOKE_TOPIC_REJECT, CEP_FED_INVOKE_INVALID_PEER_NOTE);
-        cep_fed_invoke_publish_state(request_cell, "error", "invalid peer identifier", NULL);
+        cep_fed_invoke_publish_state(request_cell, CEP_FED_STATE_ERROR, "invalid peer identifier", NULL);
         return CEP_ENZYME_FATAL;
     }
     if (!cep_fed_invoke_validate_word(mount)) {
         cep_fed_invoke_emit_issue(NULL, CEP_FED_INVOKE_TOPIC_REJECT, CEP_FED_INVOKE_INVALID_MOUNT_NOTE);
-        cep_fed_invoke_publish_state(request_cell, "error", "invalid mount identifier", NULL);
+        cep_fed_invoke_publish_state(request_cell, CEP_FED_STATE_ERROR, "invalid mount identifier", NULL);
         return CEP_ENZYME_FATAL;
     }
     if (!cep_fed_invoke_validate_word(local_node)) {
         cep_fed_invoke_emit_issue(NULL, CEP_FED_INVOKE_TOPIC_REJECT, CEP_FED_INVOKE_INVALID_NODE_NOTE);
-        cep_fed_invoke_publish_state(request_cell, "error", "invalid local_node identifier", NULL);
+        cep_fed_invoke_publish_state(request_cell, CEP_FED_STATE_ERROR, "invalid local_node identifier", NULL);
         return CEP_ENZYME_FATAL;
     }
 
@@ -1202,13 +1203,13 @@ cep_fed_invoke_validator(const cepPath* signal_path,
             cep_fed_invoke_emit_issue(NULL,
                                       CEP_FED_INVOKE_TOPIC_REJECT,
                                       "pipeline_id required for cross-enclave invoke");
-            cep_fed_invoke_publish_state(request_cell, "error", "pipeline_id required", NULL);
+            cep_fed_invoke_publish_state(request_cell, CEP_FED_STATE_ERROR, "pipeline_id required", NULL);
             return CEP_ENZYME_FATAL;
         }
         if (!cep_sec_pipeline_approved(pipeline_id, NULL, pipeline_note, sizeof pipeline_note)) {
             const char* note_text = pipeline_note[0] ? pipeline_note : "pipeline approval missing";
             cep_fed_invoke_emit_issue(NULL, CEP_FED_INVOKE_TOPIC_REJECT, note_text);
-            cep_fed_invoke_publish_state(request_cell, "error", note_text, NULL);
+            cep_fed_invoke_publish_state(request_cell, CEP_FED_STATE_ERROR, note_text, NULL);
             return CEP_ENZYME_FATAL;
         }
         pipeline_valid = true;
@@ -1236,14 +1237,14 @@ cep_fed_invoke_validator(const cepPath* signal_path,
     if (caps) {
         caps = cep_cell_resolve(caps);
         if (!caps || !cep_cell_require_dictionary_store(&caps)) {
-            cep_fed_invoke_publish_state(request_cell, "error", "invalid capability dictionary", NULL);
+            cep_fed_invoke_publish_state(request_cell, CEP_FED_STATE_ERROR, "invalid capability dictionary", NULL);
             return CEP_ENZYME_FATAL;
         }
         cepCell* required = cep_cell_find_by_name(caps, dt_required_caps_name());
         if (required) {
             required = cep_cell_resolve(required);
             if (!required || !cep_cell_require_dictionary_store(&required)) {
-                cep_fed_invoke_publish_state(request_cell, "error", "invalid capability dictionary", NULL);
+                cep_fed_invoke_publish_state(request_cell, CEP_FED_STATE_ERROR, "invalid capability dictionary", NULL);
                 return CEP_ENZYME_FATAL;
             }
             cepFedTransportCaps flags = 0u;
@@ -1275,7 +1276,7 @@ cep_fed_invoke_validator(const cepPath* signal_path,
         if (preferred) {
             preferred = cep_cell_resolve(preferred);
             if (!preferred || !cep_cell_require_dictionary_store(&preferred)) {
-                cep_fed_invoke_publish_state(request_cell, "error", "invalid capability dictionary", NULL);
+                cep_fed_invoke_publish_state(request_cell, CEP_FED_STATE_ERROR, "invalid capability dictionary", NULL);
                 return CEP_ENZYME_FATAL;
             }
             for (size_t i = 0; i < cep_lengthof(cep_fed_invoke_cap_table); ++i) {
@@ -1364,7 +1365,7 @@ cep_fed_invoke_validator(const cepPath* signal_path,
                                               peer,
                                               note);
         cep_fed_invoke_emit_issue(ctx, CEP_FED_INVOKE_TOPIC_REJECT, note);
-        cep_fed_invoke_publish_state(request_cell, "error", note, NULL);
+        cep_fed_invoke_publish_state(request_cell, CEP_FED_STATE_ERROR, note, NULL);
         cep_fed_invoke_remove_ctx(ctx);
         return CEP_ENZYME_FATAL;
     }

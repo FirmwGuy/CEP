@@ -673,6 +673,22 @@ Heartbeat init/shutdown operations now mirror production beats, so tooling and t
 - *How do I inspect negotiation failures?* Watch the default diagnostics mailbox for `transport/*` topics or read `/net/mounts/<peer>/<mode>/<mount>/`—the manager leaves the branch intact even when providers are missing.
 - *Can I swap providers on the fly?* Yes. Close the existing channel, tweak required/preferred caps or the preferred ID, and call `configure_mount()` again. The schema refreshes atomically.
 
+## 11) Enclave policy & gateway enforcement
+
+**Overview.** Cross-enclave requests run through the Enclave policy resolver; integrations must keep `/sys/security/**` healthy, refresh pipeline approvals, and surface evidence when denies occur.
+
+**Technical details**
+- `cep_enclave_policy` snapshots `/sys/security/{enclaves,edges,gateways,branches,defaults,env/**}` during capture, hashes the snapshot, and writes readiness/fault metadata into `/sys/state/security`. Federation harnesses should block until `state=ready pol_ver=<hash>`.
+- `sig_sec/pipeline_preflight` validates pipeline specs under `/data/<pack>/policy/security/pipelines/*`, writes approvals (`state`, `note`, `pol_ver`, `beat`), and is safe to run inside a policy freeze (`cep_enclave_policy_freeze_enter/leave`) when you need a stable snapshot across retries.
+- `cep_fed_invoke_validator()` and `cep_fed_transport_manager_send*()` consult the resolver on every hop. Denies emit `sec.edge.deny`, append ledger nodes to `/journal/decisions/sec`, and increment `/rt/analytics/security`.
+- `cep_cell_svo_context_guard()` detects crown-jewel branches under `/sys/security` and checks them via `cep_enclave_policy_check_branch()`. Denials emit `sec.branch.deny`; CEP_ENABLE_DEBUG builds log `[svo_guard]` breadcrumbs, and tests can set `TEST_BRANCH_DEBUG=1` to dump the diagnostics mailbox when assertions fail.
+
+**Operational checklist**
+- Edit `/sys/security/**`, re-run `sig_sec/pipeline_preflight`, and confirm `/sys/state/security` reports `state=ready pol_ver=<hash>`.
+- Exercise the validation workflow documented in `docs/BUILD.md` (Enclave Validation Workflow) so targeted unit suites, full default/ASAN sweeps, lexicon checks, and Valgrind batches all capture the latest resolver behaviour.
+
+See `docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md` for the architectural rationale and `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md` for the operator workflow (policy edits, pipeline preflight, diagnostics harvesting).
+
 ## Global Q&A
 - *How do I check that init ran during a test?* Inspect `/rt/ops/<boot_oid>` or verify that `cep_heartbeat_sys_root()` picked up the expected namespaces after the first beat—both advance as the boot operation progresses.
 - *How do I know a subsystem is ready for work?* Read `/sys/state/<scope>/status` (expect "ready"), or call `cep_lifecycle_scope_is_ready(scope)`. Awaiters can also subscribe to the boot/shutdown operations via `cep_op_await`.

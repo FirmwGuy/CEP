@@ -102,7 +102,6 @@ CEP_DEFINE_STATIC_DT(dt_manifest_hist_beats_name, CEP_ACRO("CEP"), CEP_WORD("man
 CEP_DEFINE_STATIC_DT(dt_pending_resume_name,     CEP_ACRO("CEP"), CEP_WORD("pend_resum"));
 CEP_DEFINE_STATIC_DT(dt_last_bundle_seq_name,    CEP_ACRO("CEP"), CEP_WORD("bundle_seq"));
 CEP_DEFINE_STATIC_DT(dt_last_commit_beat_name,   CEP_ACRO("CEP"), CEP_WORD("commit_beat"));
-CEP_DEFINE_STATIC_DT(dt_sev_error_name,          CEP_ACRO("sev"), CEP_WORD("error"));
 CEP_DEFINE_STATIC_DT(dt_serializer_name,         CEP_ACRO("CEP"), CEP_WORD("serializer"));
 static const cepDT* dt_ser_crc32c_ok_name(void) {
     static cepDT value = {0};
@@ -117,6 +116,8 @@ CEP_DEFINE_STATIC_DT(dt_ser_deflate_ok_name,     CEP_ACRO("CEP"), CEP_WORD("defl
 CEP_DEFINE_STATIC_DT(dt_ser_aead_ok_name,        CEP_ACRO("CEP"), CEP_WORD("aead_ok"));
 CEP_DEFINE_STATIC_DT(dt_ser_warn_down_name,      CEP_ACRO("CEP"), CEP_WORD("warn_down"));
 CEP_DEFINE_STATIC_DT(dt_ser_cmpmax_name,         CEP_ACRO("CEP"), CEP_WORD("cmp_max_ver"));
+CEP_DEFINE_STATIC_DT(dt_sev_error_name,          CEP_ACRO("CEP"), CEP_WORD("sev:error"));
+static const char* const CEP_FED_STATE_ERROR = "sev:error";
 
 CEP_DEFINE_STATIC_DT(dt_cap_reliable_name,       CEP_ACRO("CEP"), CEP_WORD("reliable"));
 CEP_DEFINE_STATIC_DT(dt_cap_ordered_name,        CEP_ACRO("CEP"), CEP_WORD("ordered"));
@@ -795,7 +796,7 @@ static void cep_fed_mirror_on_event(void* user_ctx,
     cep_fed_mirror_emit_issue(ctx->request_cell,
                               CEP_FED_MIRROR_TOPIC_SCHEMA,
                               detail ? detail : "mirror mount fatal event");
-    cep_fed_mirror_publish_state(ctx->request_cell, "error", detail, NULL);
+    cep_fed_mirror_publish_state(ctx->request_cell, CEP_FED_STATE_ERROR, detail, NULL);
 }
 
 static void cep_fed_mirror_episode_slice(cepEID eid, void* user_ctx) {
@@ -842,7 +843,7 @@ static void cep_fed_mirror_episode_slice(cepEID eid, void* user_ctx) {
         cep_fed_mirror_emit_issue(request,
                                   CEP_FED_MIRROR_TOPIC_TIMEOUT,
                                   "mirror request deadline expired");
-        cep_fed_mirror_publish_state(request, "error", "deadline expired", NULL);
+        cep_fed_mirror_publish_state(request, CEP_FED_STATE_ERROR, "deadline expired", NULL);
         cep_fed_mirror_release_mount(ctx, "mirror-deadline");
         cepDT fail = cep_ops_make_dt("sts:fail");
         (void)cep_ep_close(eid, fail, NULL, 0u);
@@ -977,7 +978,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
     }
     if (!cep_cell_require_dictionary_store(&request_cell)) {
         cep_fed_mirror_publish_state(request_cell,
-                                     "error",
+                                     CEP_FED_STATE_ERROR,
                                      "mirror request is not a dictionary",
                                      NULL);
         cep_fed_mirror_emit_issue(request_cell,
@@ -1009,7 +1010,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
         !cep_fed_mirror_read_text(request_cell, dt_source_peer_field_name(), true, source_peer, sizeof source_peer) ||
         !cep_fed_mirror_read_text(request_cell, dt_source_channel_field_name(), true, source_channel, sizeof source_channel)) {
         cep_fed_mirror_publish_state(request_cell,
-                                     "error",
+                                     CEP_FED_STATE_ERROR,
                                      "missing required fields",
                                      NULL);
         cep_fed_mirror_emit_issue(request_cell,
@@ -1051,7 +1052,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
     cepFedTransportCaps preferred_caps = 0u;
     if (!cep_fed_mirror_parse_caps(request_cell, &required_caps, &preferred_caps)) {
         cep_fed_mirror_publish_state(request_cell,
-                                     "error",
+                                     CEP_FED_STATE_ERROR,
                                      "invalid capability dictionary",
                                      NULL);
         cep_fed_mirror_emit_issue(request_cell,
@@ -1065,7 +1066,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
         bundle = cep_cell_resolve(bundle);
         if (!bundle || !cep_cell_require_dictionary_store(&bundle)) {
             cep_fed_mirror_publish_state(request_cell,
-                                         "error",
+                                         CEP_FED_STATE_ERROR,
                                          "bundle dictionary invalid",
                                          NULL);
             cep_fed_mirror_emit_issue(request_cell,
@@ -1095,7 +1096,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
         bool history_cap = false;
         if (!cep_fed_mirror_read_bool(bundle, dt_bundle_hist_cap_name(), "hist_cap", &history_cap) || !history_cap) {
             cep_fed_mirror_publish_state(request_cell,
-                                         "error",
+                                         CEP_FED_STATE_ERROR,
                                          "bundle missing hist_cap capability",
                                          NULL);
             cep_fed_mirror_emit_issue(request_cell,
@@ -1106,7 +1107,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
         bool deltas_cap = false;
         if (!cep_fed_mirror_read_bool(bundle, dt_bundle_delta_cap_name(), "delta_cap", &deltas_cap) || !deltas_cap) {
             cep_fed_mirror_publish_state(request_cell,
-                                         "error",
+                                         CEP_FED_STATE_ERROR,
                                          "bundle missing delta_cap capability",
                                          NULL);
             cep_fed_mirror_emit_issue(request_cell,
@@ -1126,7 +1127,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
                                       &manifest_history_beats);
         if (payload_history_beats == 0u || manifest_history_beats == 0u) {
             cep_fed_mirror_publish_state(request_cell,
-                                         "error",
+                                         CEP_FED_STATE_ERROR,
                                          "bundle must specify payload and manifest history beats",
                                          NULL);
             cep_fed_mirror_emit_issue(request_cell,
@@ -1153,7 +1154,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
             commit_mode = CEP_FED_MIRROR_COMMIT_MANUAL;
         } else {
             cep_fed_mirror_publish_state(request_cell,
-                                         "error",
+                                         CEP_FED_STATE_ERROR,
                                          "unsupported commit_mode",
                                          NULL);
             cep_fed_mirror_emit_issue(request_cell,
@@ -1219,7 +1220,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
     cepBeatNumber current_beat = cep_heartbeat_current();
     if (ctx->has_deadline && (ctx->deadline == 0u || ctx->deadline <= current_beat)) {
         cep_fed_mirror_publish_state(request_cell,
-                                     "error",
+                                     CEP_FED_STATE_ERROR,
                                      "deadline expired before activation",
                                      NULL);
         cep_fed_mirror_emit_issue(request_cell,
@@ -1231,7 +1232,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
 
     if (!cep_cell_path(request_cell, &ctx->request_path)) {
         cep_fed_mirror_publish_state(request_cell,
-                                     "error",
+                                     CEP_FED_STATE_ERROR,
                                      "failed to capture request path",
                                      NULL);
         cep_fed_mirror_emit_issue(request_cell,
@@ -1249,7 +1250,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
             strcmp(other->mount_id, ctx->mount_id) == 0 &&
             other->mount != NULL) {
             cep_fed_mirror_publish_state(request_cell,
-                                         "error",
+                                         CEP_FED_STATE_ERROR,
                                          "mirror mount already active",
                                          NULL);
             cep_fed_mirror_emit_issue(request_cell,
@@ -1283,7 +1284,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
                                                    &callbacks,
                                                    &mount_handle)) {
         cep_fed_mirror_publish_state(request_cell,
-                                     "error",
+                                     CEP_FED_STATE_ERROR,
                                      "transport manager rejected configuration",
                                      NULL);
         cep_fed_mirror_emit_issue(request_cell,
@@ -1323,7 +1324,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
     if (!effective_signal) {
         if (!cep_fed_mirror_make_signal_path(&synthetic_signal)) {
             cep_fed_mirror_publish_state(request_cell,
-                                         "error",
+                                         CEP_FED_STATE_ERROR,
                                          "failed to synthesise signal path",
                                          NULL);
             cep_fed_mirror_emit_issue(request_cell,
@@ -1350,7 +1351,7 @@ int cep_fed_mirror_validator(const cepPath* signal_path,
 
     if (!started) {
         cep_fed_mirror_publish_state(request_cell,
-                                     "error",
+                                     CEP_FED_STATE_ERROR,
                                      "failed to start mirror episode",
                                      ctx->provider_id);
         cep_fed_mirror_emit_issue(request_cell,

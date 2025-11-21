@@ -9,6 +9,8 @@
 
 bool cep_sec_pipeline_bootstrap(void);
 
+int  cep_sec_pipeline_run_preflight(const cepPath* target_path);
+
 bool cep_sec_pipeline_approved(const char* pipeline_id,
                                uint64_t* approved_policy_version,
                                char* note,

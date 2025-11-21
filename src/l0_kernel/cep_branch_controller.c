@@ -1647,6 +1647,13 @@ cep_cell_svo_context_guard(cepCellSvoContext* ctx,
                            cep_branch_controller_format_cell_path(fallback_source,
                                                                   branch_path,
                                                                   sizeof branch_path);
+    CEP_DEBUG_PRINTF("[svo_guard] fallback=%p under_security=%d has_path=%d topic=%s\n",
+                     (const void*)fallback_source,
+                     source_under_security ? 1 : 0,
+                     has_branch_path ? 1 : 0,
+                     topic ? topic : (source_under_security ? k_branch_deny_topic : k_branch_policy_topic));
+    const char* resolved_topic =
+        topic ? topic : (source_under_security ? k_branch_deny_topic : k_branch_policy_topic);
     cepEnclaveBranchDecision branch_decision = {0};
     char branch_reason[128];
     branch_reason[0] = '\0';
@@ -1669,6 +1676,12 @@ cep_cell_svo_context_guard(cepCellSvoContext* ctx,
                                                         &branch_decision,
                                                         branch_reason,
                                                         sizeof branch_reason);
+        CEP_DEBUG_PRINTF("[svo_guard] policy_check path=%s verb=%u subject=%016llx result=%d reason=%s\n",
+                         branch_path,
+                         (unsigned)branch_verb,
+                         (unsigned long long)subject_pack,
+                         (int)branch_result,
+                         branch_reason[0] ? branch_reason : "<none>");
         if (branch_result == CEP_ENCLAVE_BRANCH_RESULT_DENY ||
             branch_result == CEP_ENCLAVE_BRANCH_RESULT_ERROR) {
             const char* reason = branch_reason[0] ? branch_reason : "branch policy denied access";
@@ -1679,6 +1692,78 @@ cep_cell_svo_context_guard(cepCellSvoContext* ctx,
                                                       &branch_decision,
                                                       false,
                                                       reason);
+
+            char consumer_label[64];
+            char source_label[64];
+            cep_branch_controller_format_label(consumer_controller,
+                                               consumer_label,
+                                               sizeof consumer_label);
+            cep_branch_controller_format_label(source_controller ? source_controller : security_controller,
+                                               source_label,
+                                               sizeof source_label);
+            const char* verb = (ctx && ctx->verb) ? ctx->verb : "cellop";
+            char note[256];
+            enum { label_note_limit = 32, branch_note_limit = 48, reason_note_limit = 48 };
+            char consumer_snippet[label_note_limit + 1];
+            size_t consumer_len = strnlen(consumer_label, label_note_limit);
+            memcpy(consumer_snippet, consumer_label, consumer_len);
+            consumer_snippet[consumer_len] = '\0';
+            if (consumer_label[consumer_len] != '\0' && consumer_len >= 3u) {
+                consumer_snippet[consumer_len - 3u] = '.';
+                consumer_snippet[consumer_len - 2u] = '.';
+                consumer_snippet[consumer_len - 1u] = '.';
+            }
+            char source_snippet[label_note_limit + 1];
+            size_t source_len = strnlen(source_label, label_note_limit);
+            memcpy(source_snippet, source_label, source_len);
+            source_snippet[source_len] = '\0';
+            if (source_label[source_len] != '\0' && source_len >= 3u) {
+                source_snippet[source_len - 3u] = '.';
+                source_snippet[source_len - 2u] = '.';
+                source_snippet[source_len - 1u] = '.';
+            }
+            char branch_snippet[branch_note_limit + 1];
+            size_t branch_len = strnlen(branch_path, branch_note_limit);
+            memcpy(branch_snippet, branch_path, branch_len);
+            branch_snippet[branch_len] = '\0';
+            if (branch_path[branch_len] != '\0' && branch_len >= 3u) {
+                branch_snippet[branch_len - 3u] = '.';
+                branch_snippet[branch_len - 2u] = '.';
+                branch_snippet[branch_len - 1u] = '.';
+            }
+            char reason_snippet[reason_note_limit + 1];
+            size_t reason_len = strnlen(reason, reason_note_limit);
+            memcpy(reason_snippet, reason, reason_len);
+            reason_snippet[reason_len] = '\0';
+            if (reason[reason_len] != '\0' && reason_len >= 3u) {
+                reason_snippet[reason_len - 3u] = '.';
+                reason_snippet[reason_len - 2u] = '.';
+                reason_snippet[reason_len - 1u] = '.';
+            }
+            snprintf(note,
+                     sizeof note,
+                     "verb=%s consumer=%s source=%s branch=%s reason=%s action=deny",
+                     verb,
+                     consumer_snippet,
+                     source_snippet,
+                     branch_snippet,
+                     reason_snippet);
+
+            CEP_DEBUG_PRINTF("[svo_guard] branch_deny topic=%s note=%s\n",
+                             resolved_topic,
+                             note);
+            cepCeiRequest req = {
+                .severity = *dt_svo_sev_warn(),
+                .topic = resolved_topic,
+                .topic_len = 0u,
+                .topic_intern = false,
+                .note = note,
+                .note_len = 0u,
+                .origin_kind = "cell.ops",
+                .emit_signal = false,
+                .ttl_forever = true,
+            };
+            (void)cep_cei_emit(&req);
             return false;
         }
     }
@@ -1714,7 +1799,6 @@ cep_cell_svo_context_guard(cepCellSvoContext* ctx,
         return true;
     }
 
-    const char* resolved_topic = topic ? topic : k_branch_policy_topic;
     const char* verb = (ctx && ctx->verb) ? ctx->verb : "cellop";
     bool decision_recorded = true;
     if (policy.access == CEP_BRANCH_POLICY_ACCESS_DECISION) {
@@ -1783,6 +1867,12 @@ cep_cell_svo_context_guard(cepCellSvoContext* ctx,
         .emit_signal = false,
         .ttl_forever = true,
     };
+    CEP_DEBUG_PRINTF("[svo_guard] branch_policy emit topic=%s note=%s access=%d risk=%d decision=%d\n",
+                     resolved_topic,
+                     note,
+                     (int)policy.access,
+                     (int)policy.risk,
+                     decision_recorded ? 1 : 0);
     (void)cep_cei_emit(&req);
 
     return decision_recorded && (policy.access != CEP_BRANCH_POLICY_ACCESS_DENY);

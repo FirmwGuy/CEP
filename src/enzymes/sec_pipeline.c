@@ -641,6 +641,12 @@ cep_sec_pipeline_bootstrap(void)
     return true;
 }
 
+int
+cep_sec_pipeline_run_preflight(const cepPath* target_path)
+{
+    return cep_sec_pipeline_preflight_enzyme(NULL, target_path);
+}
+
 bool
 cep_sec_pipeline_approved(const char* pipeline_id,
                           uint64_t* approved_policy_version,

@@ -46,6 +46,7 @@ MunitResult test_branch_controller_dirty_tracking(const MunitParameter params[],
 MunitResult test_branch_controller_flush_policy(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_branch_controller_history_eviction(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_branch_controller_snapshot_policy(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_branch_controller_security_guard(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitResult test_enzyme(const MunitParameter params[], void* user_data_or_fixture);
 void*       test_enzyme_setup(const MunitParameter params[], void* user_data);
@@ -122,6 +123,7 @@ MunitResult test_fed_link_frame_contract(const MunitParameter params[], void* us
 MunitResult test_fed_invoke_frame_contract(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_transport_inbound(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_transport_close_events(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_security_analytics_limit(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_validator_success(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_validator_duplicate_request(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_validator_missing_peer(const MunitParameter params[], void* user_data_or_fixture);
@@ -129,12 +131,14 @@ MunitResult test_fed_mirror_validator_success(const MunitParameter params[], voi
 MunitResult test_fed_mirror_validator_conflict(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_mirror_validator_deadline(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_validator_rejects_long_names(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_invoke_decision_ledger(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_success(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_reconfigure_cancels_pending(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_dual_runtime_happy_path(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_dual_runtime_timeout(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_timeout(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_reject(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_security_pipeline_enforcement(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_dual_runtime_provider_fatal(const MunitParameter params[], void* user_data_or_fixture);
 
 extern MunitSuite lock_suites[];
