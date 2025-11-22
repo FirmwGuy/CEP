@@ -115,6 +115,9 @@ bool cep_op_async_record_channel(cepOID oid,
 bool cep_op_async_set_reactor_state(cepOID oid,
                                     const cepOpsAsyncReactorState* state);
 
+bool cep_op_set_pipeline_metadata(cepOID oid, const cepPipelineMetadata* metadata);
+bool cep_op_get_pipeline_metadata(cepOID oid, cepPipelineMetadata* metadata);
+
 #ifdef __cplusplus
 }
 #endif

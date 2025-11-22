@@ -131,6 +131,7 @@ MunitResult test_fed_mirror_validator_success(const MunitParameter params[], voi
 MunitResult test_fed_mirror_validator_conflict(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_mirror_validator_deadline(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_validator_rejects_long_names(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_fed_invoke_pipeline_metadata_roundtrip(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_decision_ledger(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_success(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_reconfigure_cancels_pending(const MunitParameter params[], void* user_data_or_fixture);

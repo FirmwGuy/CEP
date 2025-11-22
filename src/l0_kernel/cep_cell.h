@@ -28,6 +28,7 @@ typedef struct _cepCell       cepCell;
 typedef struct _cepProxy      cepProxy;
 typedef struct cepCompareInfo cepCompareInfo;
 typedef struct cepBranchController cepBranchController;
+typedef struct cepEnzymeContext cepEnzymeContext;
 
 cepCell*    cep_root(void);
 
@@ -146,6 +147,13 @@ static inline void cep_compare_info_set(cepCompareInfo* info,
     info->version = version;
     info->flags = flags;
 }
+
+typedef struct cepPipelineMetadata {
+    cepID               pipeline_id;
+    cepID               stage_id;
+    uint64_t            dag_run_id;
+    uint64_t            hop_index;
+} cepPipelineMetadata;
 
 
 /*
@@ -1050,6 +1058,54 @@ typedef struct {
     cepPast         past[];
 } cepPath;
 
+typedef enum {
+    CEP_HYDRATE_VIEW_LIVE = 0,
+    CEP_HYDRATE_VIEW_SNAPSHOT_RO,
+} cepHydrateView;
+
+typedef struct {
+    cepDT           branch_dt;
+    const cepCell*  cell;
+    const cepPath*  path;
+    bool            is_canonical;
+} cep_cell_ref_t;
+
+typedef struct cepEnzymeContext {
+    cepDT               branch_dt;     /**< Consumer branch DT (0 when unknown). */
+    uint8_t             qos;           /**< Mirrors cepImpulseQoS for the invocation. */
+    bool                has_pipeline;  /**< True when pipeline metadata is available. */
+    cepPipelineMetadata pipeline;      /**< Populated when has_pipeline is true. */
+} cepEnzymeContext;
+
+typedef struct {
+    cepHydrateView  view;
+    bool            allow_cross_branch;
+    bool            require_decision_cell;
+    uint32_t        max_depth;
+    uint64_t        max_meta_bytes;
+    uint64_t        max_payload_bytes;
+    bool            lock_ancestors_ro;
+    bool            hydrate_children;
+    bool            hydrate_payload;
+} cep_hydrate_opts_t;
+
+typedef struct {
+    cepCell*        cell;
+    bool            from_cps;
+    bool            from_cas;
+    uint64_t        hydrated_meta_bytes;
+    uint64_t        hydrated_payload_bytes;
+} cep_hydrate_result_t;
+
+typedef enum {
+    CEP_HYDRATE_STATUS_OK = 0,
+    CEP_HYDRATE_STATUS_INVALID_ARGUMENT = -1,
+    CEP_HYDRATE_STATUS_POLICY = -2,
+    CEP_HYDRATE_STATUS_NOT_FOUND = -3,
+    CEP_HYDRATE_STATUS_IO = -4,
+    CEP_HYDRATE_STATUS_UNSUPPORTED = -5,
+} cepHydrateStatus;
+
 
 struct _cepCell {
     cepMetacell     metacell;   /**< Meta about this cell entry (including name (DT), system bits, etc). */
@@ -1510,6 +1566,12 @@ cepCell* cep_cell_find_by_position_past(const cepCell* cell, size_t position, ce
 #define  cep_cell_find_by_position(cell, position)          cep_cell_find_by_position_past((cell), (position), 0)
 cepCell* cep_cell_find_by_path_past(const cepCell* start, const cepPath* path, cepOpCount snapshot);
 #define  cep_cell_find_by_path(start, path)                 cep_cell_find_by_path_past((start), (path), 0)
+
+cepHydrateStatus
+cep_cell_hydrate_for_enzyme(cep_cell_ref_t* ref,
+                            const cepEnzymeContext* enz_ctx,
+                            const cep_hydrate_opts_t* opts,
+                            cep_hydrate_result_t* out);
 
 bool cep_cell_indexof(const cepCell* parent, const cepCell* child, size_t* position);
 

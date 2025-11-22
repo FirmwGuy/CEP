@@ -8,6 +8,7 @@
 #include "../l0_kernel/cep_heartbeat.h"
 #include "../l0_kernel/cep_ops.h"
 #include "../l0_kernel/cep_cei.h"
+#include "../l0_kernel/cep_namepool.h"
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
 #include "../l0_kernel/cep_security_tags.h"
@@ -560,6 +561,13 @@ cep_sec_pipeline_emit_reject_cei(cepCell* pipeline_cell,
     char note[CEP_SEC_PIPELINE_NOTE_CAP];
     snprintf(note, sizeof note, "pipeline=%s reason=%s", id, detail);
 
+    cepPipelineMetadata pipeline_meta = {0};
+    bool has_pipeline = false;
+    if (pipeline_id && *pipeline_id) {
+        pipeline_meta.pipeline_id = cep_namepool_intern_cstr(pipeline_id);
+        has_pipeline = (pipeline_meta.pipeline_id != 0);
+    }
+
     cepCeiRequest req = {
         .severity = *dt_sec_pipeline_sev_warn(),
         .topic = "sec.pipeline.reject",
@@ -570,6 +578,10 @@ cep_sec_pipeline_emit_reject_cei(cepCell* pipeline_cell,
         .emit_signal = true,
         .ttl_forever = true,
     };
+    req.has_pipeline = has_pipeline;
+    if (has_pipeline) {
+        req.pipeline = pipeline_meta;
+    }
     (void)cep_cei_emit(&req);
 }
 

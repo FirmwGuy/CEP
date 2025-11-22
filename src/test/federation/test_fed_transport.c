@@ -301,6 +301,8 @@ typedef struct {
 } FedInvokeFrameHeader;
 
 static int g_fed_invoke_handler_calls = 0;
+static bool g_fed_invoke_last_pipeline_valid = false;
+static cepPipelineMetadata g_fed_invoke_last_pipeline = {0};
 static cepRuntime* g_fed_invoke_handler_runtimes[4];
 static size_t g_fed_invoke_handler_runtime_count = 0u;
 static cepRuntime* g_fed_invoke_timeout_runtimes[4];
@@ -340,6 +342,11 @@ fed_test_invoke_handler(const cepPath* signal, const cepPath* target)
     (void)signal;
     (void)target;
     g_fed_invoke_handler_calls++;
+    const cepEnzymeContext* ctx = cep_enzyme_context_current();
+    if (ctx && ctx->has_pipeline) {
+        g_fed_invoke_last_pipeline_valid = true;
+        g_fed_invoke_last_pipeline = ctx->pipeline;
+    }
     return CEP_ENZYME_SUCCESS;
 }
 
@@ -2595,6 +2602,11 @@ MunitResult test_fed_security_analytics_limit(const MunitParameter params[], voi
     munit_assert_true(cep_fed_transport_manager_configure_mount(&manager, &cfg, &callbacks, &mount));
     munit_assert_not_null(mount);
     munit_assert_string_equal(cep_fed_transport_manager_mount_provider_id(mount), "mock");
+    cep_fed_transport_manager_mount_set_pipeline_metadata(mount,
+                                                          "test_pack/limit_pipeline",
+                                                          "limit_stage",
+                                                          42u,
+                                                          7u);
 
     uint8_t allow_payload[4] = {0, 1, 2, 3};
     munit_assert_true(cep_fed_transport_manager_send(&manager,
@@ -2635,6 +2647,13 @@ MunitResult test_fed_security_analytics_limit(const MunitParameter params[], voi
     const char* topic = fed_test_diag_latest_topic(topic_buffer, sizeof topic_buffer, "sec.");
     munit_assert_not_null(topic);
     munit_assert_string_equal(topic, "sec.limit.hit");
+    char note_buffer[256];
+    const char* note = fed_test_diag_latest_note(note_buffer, sizeof note_buffer, "sec.");
+    munit_assert_not_null(note);
+    munit_assert_true(strstr(note, "pipeline=test_pack/limit_pipeline") != NULL);
+    munit_assert_true(strstr(note, "stage=limit_stage") != NULL);
+    munit_assert_true(strstr(note, "run=42") != NULL);
+    munit_assert_true(strstr(note, "hop=7") != NULL);
 
     cep_fed_transport_manager_teardown(&manager);
     test_runtime_shutdown();
@@ -2684,6 +2703,11 @@ MunitResult test_fed_security_pipeline_enforcement(const MunitParameter params[]
     const char* topic = fed_test_diag_latest_topic(topic_buffer, sizeof topic_buffer, "sec.");
     munit_assert_not_null(topic);
     munit_assert_string_equal(topic, "sec.pipeline.reject");
+    char note_buffer[128];
+    const char* note = fed_test_diag_latest_note(note_buffer, sizeof note_buffer, "sec.");
+    if (note) {
+        munit_assert_true(strstr(note, "pipeline=") != NULL);
+    }
     fed_test_clear_diag_mailbox();
 
     fed_security_configure_stage(stage_b, "stage-b", "secnod_b", "sig/sec/finish");
@@ -3044,6 +3068,95 @@ MunitResult test_fed_invoke_validator_rejects_long_names(const MunitParameter pa
     munit_assert_string_equal(text, FED_TEST_SEVERITY_ERROR);
     fed_test_read_text_field(request, "error_note", text, sizeof text);
     munit_assert_string_equal(text, "invalid peer identifier");
+
+    cep_free(request_path);
+    cep_fed_transport_manager_teardown(&manager);
+    fed_policy_freeze_global_end();
+    test_runtime_shutdown();
+    return MUNIT_OK;
+}
+
+MunitResult test_fed_invoke_pipeline_metadata_roundtrip(const MunitParameter params[], void* fixture) {
+    (void)params;
+    (void)fixture;
+
+    fed_policy_freeze_global_begin("fed_invoke_pipeline_meta");
+    fed_test_prepare_providers();
+    fed_test_ensure_invoke_handler();
+    g_fed_invoke_handler_calls = 0;
+    g_fed_invoke_last_pipeline_valid = false;
+    CEP_0(&g_fed_invoke_last_pipeline);
+
+    cepCell* net_root = fed_test_net_root();
+    cepFedTransportManager manager;
+    munit_assert_true(cep_fed_transport_manager_init(&manager, net_root));
+    munit_assert_true(cep_fed_invoke_organ_init(&manager, net_root));
+
+    cepCell* request = NULL;
+    cepPath* request_path = NULL;
+    fed_test_setup_invoke_request(net_root, &manager, "inv_pipe_meta", &request, &request_path, true);
+    (void)cep_cell_put_text(request, dt_sec_stage_id_field(), "invoke_stage_a");
+    (void)cep_cell_put_uint64(request, dt_pipeline_run_field(), 1234u);
+    (void)cep_cell_put_uint64(request, dt_pipeline_hop_field(), 9u);
+    cepCell* pipeline_branch = cep_cell_ensure_dictionary_child(request,
+                                                                dt_pipeline_envelope_field(),
+                                                                CEP_STORAGE_RED_BLACK_T);
+    pipeline_branch = fed_test_require_dictionary(pipeline_branch);
+    (void)cep_cell_put_text(pipeline_branch, dt_sec_stage_id_field(), "invoke_stage_a");
+    (void)cep_cell_put_uint64(pipeline_branch, dt_pipeline_run_field(), 1234u);
+    (void)cep_cell_put_uint64(pipeline_branch, dt_pipeline_hop_field(), 9u);
+
+    const cepFedInvokeRequest* ctx = cep_fed_invoke_request_find("peer-invoke", "inv-mnt");
+    munit_assert_not_null(ctx);
+
+    FedInvokePathBuf signal_buf = {0};
+    FedInvokePathBuf target_buf = {0};
+    const char* signal_segments[] = { "sig:test_invoke" };
+    const char* target_segments[] = { "rt:test_invoke" };
+    const cepPath* signal_path = fed_test_build_path(&signal_buf, signal_segments, cep_lengthof(signal_segments));
+    const cepPath* target_path = fed_test_build_path(&target_buf, target_segments, cep_lengthof(target_segments));
+
+    FedInvokeCompletion completion = {0};
+    cepFedInvokeSubmission submission = {
+        .signal_path = signal_path,
+        .target_path = target_path,
+        .timeout_beats = 4u,
+        .on_complete = fed_test_invoke_completion,
+        .user_ctx = &completion,
+    };
+
+    munit_assert_true(cep_fed_invoke_request_submit(ctx, &submission));
+
+    uint8_t request_buffer[256];
+    size_t request_len = 0u;
+    cepFedFrameMode request_mode = CEP_FED_FRAME_MODE_DATA;
+    munit_assert_true(cep_fed_transport_mock_pop_outbound("peer-invoke",
+                                                          "inv-mnt",
+                                                          request_buffer,
+                                                          sizeof request_buffer,
+                                                          &request_len,
+                                                          &request_mode));
+
+    cep_fed_invoke_process_frame((cepFedInvokeRequest*)ctx,
+                                 request_buffer,
+                                 request_len,
+                                 request_mode);
+
+    fed_test_pop_and_process_invoke_response(ctx);
+
+    (void)cep_heartbeat_step();
+    (void)cep_heartbeat_step();
+
+    munit_assert_int(g_fed_invoke_handler_calls, ==, 1);
+    munit_assert_true(g_fed_invoke_last_pipeline_valid);
+    const char* pipeline_id = cep_namepool_lookup(g_fed_invoke_last_pipeline.pipeline_id, NULL);
+    const char* stage_id = cep_namepool_lookup(g_fed_invoke_last_pipeline.stage_id, NULL);
+    munit_assert_not_null(pipeline_id);
+    munit_assert_not_null(stage_id);
+    munit_assert_string_equal(pipeline_id, "test_pack/invoke_pipeline");
+    munit_assert_string_equal(stage_id, "invoke_stage_a");
+    munit_assert_uint64(g_fed_invoke_last_pipeline.dag_run_id, ==, 1234u);
+    munit_assert_uint64(g_fed_invoke_last_pipeline.hop_index, ==, 9u);
 
     cep_free(request_path);
     cep_fed_transport_manager_teardown(&manager);

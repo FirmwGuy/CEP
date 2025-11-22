@@ -796,6 +796,14 @@ MunitTest tests[] = {
         NULL
     },
     {
+        "/fed_invoke/pipeline_metadata",
+        test_fed_invoke_pipeline_metadata_roundtrip,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/fed_invoke/success",
         test_fed_invoke_success,
         NULL,

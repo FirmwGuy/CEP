@@ -174,7 +174,7 @@ A capacity‑doubling array of `cepHeartbeatImpulseRecord` stores pointers to cl
 
 ---
 
-## 12) Episodic Enzyme Engine (E³) promotion/demotion
+## 12) Episodic Enzyme Engine (E3) promotion/demotion
 
 **Why it exists.** Hybrid episodes allow workloads to jump between threaded RO slices and cooperative RW slices without losing determinism. The promotion/demotion helpers coordinate queue state, leases, and TLS context so each switch occurs at a heartbeat boundary and the same slice cannot accidentally run in both modes.
 

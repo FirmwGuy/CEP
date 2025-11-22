@@ -15,6 +15,7 @@
 #include "cep_namepool.h"
 #include "cep_organ.h"
 #include "cep_runtime.h"
+#include "cep_security_tags.h"
 
 #define CEP_OPS_DEBUG(...) ((void)0)
 
@@ -452,6 +453,99 @@ static bool cep_ops_read_dt(const cepCell* parent, const cepDT* field, cepDT* ou
     return out && cep_ops_read_value(parent, field, out, sizeof *out);
 }
 
+static bool
+cep_ops_read_text(const cepCell* parent, const cepDT* field, char* buffer, size_t capacity)
+{
+    if (!parent || !field || !buffer || capacity == 0u) {
+        return false;
+    }
+    cepCell* node = cep_cell_find_by_name((cepCell*)parent, field);
+    if (!node) {
+        return false;
+    }
+    node = cep_cell_resolve(node);
+    if (!node) {
+        return false;
+    }
+    cepData* data = NULL;
+    if (!cep_cell_require_data(&node, &data)) {
+        return false;
+    }
+    const char* payload = (const char*)cep_data_payload(data);
+    if (!payload || data->size == 0u) {
+        return false;
+    }
+    size_t length = data->size;
+    if (length >= capacity) {
+        length = capacity - 1u;
+    }
+    memcpy(buffer, payload, length);
+    buffer[length] = '\0';
+    return true;
+}
+
+static bool
+cep_ops_id_to_string(cepID id, char* buffer, size_t capacity)
+{
+    if (!id || !buffer || capacity == 0u) {
+        return false;
+    }
+    size_t text_len = 0u;
+    const char* text = cep_namepool_lookup(id, &text_len);
+    if (text && text_len > 0u) {
+        size_t copy = text_len < capacity - 1u ? text_len : capacity - 1u;
+        memcpy(buffer, text, copy);
+        buffer[copy] = '\0';
+        return true;
+    }
+    if (cep_id_is_word(id)) {
+        size_t written = cep_word_to_text(id, buffer);
+        if (written >= capacity) {
+            return false;
+        }
+        buffer[written] = '\0';
+        return true;
+    }
+    if (cep_id_is_acronym(id)) {
+        size_t written = cep_acronym_to_text(id, buffer);
+        if (written >= capacity) {
+            return false;
+        }
+        buffer[written] = '\0';
+        return true;
+    }
+    return false;
+}
+
+static void
+cep_ops_pipeline_clear_field(cepCell* pipeline_cell, const cepDT* field)
+{
+    if (!pipeline_cell || !field) {
+        return;
+    }
+    cepCell* existing = cep_cell_find_by_name(pipeline_cell, field);
+    if (existing) {
+        cep_cell_delete(existing);
+    }
+}
+
+static bool
+cep_ops_write_id_text(cepCell* pipeline_cell, const cepDT* field, cepID id)
+{
+    if (!pipeline_cell || !field) {
+        return false;
+    }
+    if (!id) {
+        cep_ops_pipeline_clear_field(pipeline_cell, field);
+        return true;
+    }
+    char buffer[128];
+    if (!cep_ops_id_to_string(id, buffer, sizeof buffer)) {
+        return false;
+    }
+    return cep_cell_put_text(pipeline_cell, field, buffer) != NULL;
+}
+
 static cepCell* cep_ops_history_root(cepCell* op) {
     if (!op) {
         return NULL;
@@ -803,6 +897,129 @@ static cepPath* cep_ops_make_target_path(cepOID oid) {
     return path;
 }
 
+static cepCell*
+cep_ops_resolve_envelope(cepCell* op, bool create)
+{
+    if (!op) {
+        return NULL;
+    }
+    cepCell* envelope = cep_cell_find_by_name(op, dt_envelope_name());
+    if (!envelope) {
+        if (!create) {
+            return NULL;
+        }
+        envelope = cep_cell_ensure_dictionary_child(op, dt_envelope_name(), CEP_STORAGE_RED_BLACK_T);
+    }
+    if (!envelope) {
+        return NULL;
+    }
+    envelope = cep_cell_resolve(envelope);
+    if (!envelope || !cep_cell_require_dictionary_store(&envelope)) {
+        return NULL;
+    }
+    return envelope;
+}
+
+static cepCell*
+cep_ops_resolve_pipeline_cell(cepCell* op, bool create)
+{
+    cepCell* envelope = cep_ops_resolve_envelope(op, create);
+    if (!envelope) {
+        return NULL;
+    }
+    cepCell* pipeline = cep_cell_find_by_name(envelope, dt_pipeline_envelope_field());
+    if (!pipeline) {
+        if (!create) {
+            return NULL;
+        }
+        pipeline = cep_cell_ensure_dictionary_child(envelope,
+                                                    dt_pipeline_envelope_field(),
+                                                    CEP_STORAGE_RED_BLACK_T);
+    }
+    if (!pipeline) {
+        return NULL;
+    }
+    pipeline = cep_cell_resolve(pipeline);
+    if (!pipeline || !cep_cell_require_dictionary_store(&pipeline)) {
+        return NULL;
+    }
+    return pipeline;
+}
+
+static bool
+cep_ops_pipeline_store(cepCell* pipeline_cell,
+                       const cepPipelineMetadata* metadata,
+                       bool* wrote_any)
+{
+    if (!pipeline_cell || !metadata) {
+        return false;
+    }
+    bool any = false;
+    if (!cep_ops_write_id_text(pipeline_cell, dt_sec_pipeline_id_field(), metadata->pipeline_id)) {
+        cep_ops_pipeline_clear_field(pipeline_cell, dt_sec_pipeline_id_field());
+    } else if (metadata->pipeline_id) {
+        any = true;
+    }
+    if (!cep_ops_write_id_text(pipeline_cell, dt_sec_stage_id_field(), metadata->stage_id)) {
+        cep_ops_pipeline_clear_field(pipeline_cell, dt_sec_stage_id_field());
+    } else if (metadata->stage_id) {
+        any = true;
+    }
+    if (metadata->dag_run_id) {
+        if (cep_cell_put_uint64(pipeline_cell, dt_pipeline_run_field(), metadata->dag_run_id)) {
+            any = true;
+        }
+    } else {
+        cep_ops_pipeline_clear_field(pipeline_cell, dt_pipeline_run_field());
+    }
+    if (metadata->hop_index) {
+        if (cep_cell_put_uint64(pipeline_cell, dt_pipeline_hop_field(), metadata->hop_index)) {
+            any = true;
+        }
+    } else {
+        cep_ops_pipeline_clear_field(pipeline_cell, dt_pipeline_hop_field());
+    }
+    if (wrote_any) {
+        *wrote_any = any;
+    }
+    return true;
+}
+
+static bool
+cep_ops_pipeline_load(cepCell* pipeline_cell, cepPipelineMetadata* metadata)
+{
+    if (!pipeline_cell || !metadata) {
+        return false;
+    }
+    bool any = false;
+    char text[128];
+    if (cep_ops_read_text(pipeline_cell, dt_sec_pipeline_id_field(), text, sizeof text)) {
+        cepID id = cep_namepool_intern_cstr(text);
+        if (id) {
+            metadata->pipeline_id = id;
+            any = true;
+        }
+    }
+    if (cep_ops_read_text(pipeline_cell, dt_sec_stage_id_field(), text, sizeof text)) {
+        cepID id = cep_namepool_intern_cstr(text);
+        if (id) {
+            metadata->stage_id = id;
+            any = true;
+        }
+    }
+    uint64_t value = 0u;
+    if (cep_ops_read_u64(pipeline_cell, dt_pipeline_run_field(), &value)) {
+        metadata->dag_run_id = value;
+        any = true;
+    }
+    value = 0u;
+    if (cep_ops_read_u64(pipeline_cell, dt_pipeline_hop_field(), &value)) {
+        metadata->hop_index = value;
+        any = true;
+    }
+    return any;
+}
+
 static bool cep_ops_enqueue_signal(cepOID oid, const cepDT* signal_dt) {
     cepPath* signal_path = cep_ops_make_signal_path(signal_dt);
     if (!signal_path) {
@@ -819,6 +1036,11 @@ static bool cep_ops_enqueue_signal(cepOID oid, const cepDT* signal_dt) {
         .target_path = target_path,
         .qos = (CEP_IMPULSE_QOS_CONTROL | CEP_IMPULSE_QOS_RETAIN_ON_PAUSE),
     };
+    cepPipelineMetadata pipeline_meta = {0};
+    if (cep_op_get_pipeline_metadata(oid, &pipeline_meta)) {
+        impulse.has_pipeline = true;
+        impulse.pipeline = pipeline_meta;
+    }
 
     int rc = cep_heartbeat_enqueue_impulse(CEP_BEAT_INVALID, &impulse);
     cep_free(signal_path);
@@ -1656,6 +1878,51 @@ bool cep_op_async_set_reactor_state(cepOID oid,
         return false;
     }
     return true;
+}
+
+bool
+cep_op_set_pipeline_metadata(cepOID oid, const cepPipelineMetadata* metadata)
+{
+    if (!cep_oid_is_valid(oid) || !metadata) {
+        return false;
+    }
+    cepCell* op = cep_ops_find(oid);
+    if (!op) {
+        return false;
+    }
+    cepCell* pipeline_cell = cep_ops_resolve_pipeline_cell(op, true);
+    if (!pipeline_cell) {
+        return false;
+    }
+    bool wrote_any = false;
+    if (!cep_ops_pipeline_store(pipeline_cell, metadata, &wrote_any)) {
+        return false;
+    }
+    if (!wrote_any) {
+        cep_cell_delete(pipeline_cell);
+    }
+    return true;
+}
+
+bool
+cep_op_get_pipeline_metadata(cepOID oid, cepPipelineMetadata* metadata)
+{
+    if (!metadata) {
+        return false;
+    }
+    CEP_0(metadata);
+    if (!cep_oid_is_valid(oid)) {
+        return false;
+    }
+    cepCell* op = cep_ops_find(oid);
+    if (!op) {
+        return false;
+    }
+    cepCell* pipeline_cell = cep_ops_resolve_pipeline_cell(op, false);
+    if (!pipeline_cell) {
+        return false;
+    }
+    return cep_ops_pipeline_load(pipeline_cell, metadata);
 }
 
 bool cep_ops_stage_commit(void) {

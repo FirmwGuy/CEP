@@ -74,13 +74,13 @@ Layer-0 already ships with deterministic behaviour; tuning is about helping it s
 
 ---
 
-## 5. Heartbeats, enzymes, and E³ episodes
+## 5. Heartbeats, enzymes, and E3 episodes
 
 **What matters**
 
 - Registrations done mid-beat activate on the next beat. Plan ahead or queue an impulse if you need immediate work.
 - Keep enzyme descriptors tight: specify `before` / `after` dependencies and mark idempotent callbacks so the heartbeat can short-circuit repeated signals.
-- E³ episodes come in RO and RW profiles. RO slices can run on the threaded executor when available; RW slices always run on the heartbeat and require leases (`cep_ep_request_lease`).
+- E3 episodes come in RO and RW profiles. RO slices can run on the threaded executor when available; RW slices always run on the heartbeat and require leases (`cep_ep_request_lease`).
 - Budgets (`cpu_budget_ns`, `io_budget_bytes`) feed CEI events (`ep:bud/cpu`, `ep:bud/io`) and cancellations when exceeded.
 
 **Tuning tips**

@@ -6163,6 +6163,128 @@ cep_branch_controller_for_security_cell(const cepCell* cell)
     return controller;
 }
 
+static cepBranchController*
+cep_hydrate_controller_from_dt(const cepDT* branch_dt)
+{
+    if (!branch_dt || !cep_dt_is_valid(branch_dt)) {
+        return NULL;
+    }
+    cepBranchControllerRegistry* registry = cep_runtime_branch_registry(NULL);
+    if (!registry) {
+        return NULL;
+    }
+    return cep_branch_registry_find_by_dt(registry, branch_dt);
+}
+
+/* Hydrate a cell for an enzyme invocation: enforce cross-branch policy,
+ * resolve the target cell either directly or via a recorded path, and surface
+ * bookkeeping so callers can decide whether additional CPS/CAS work is still
+ * required. This initial implementation only handles in-RAM cells while the
+ * CPS/CAS plumbing lands, but it honours the policy guards so higher layers
+ * can already use it when staging cross-branch reads. */
+cepHydrateStatus
+cep_cell_hydrate_for_enzyme(cep_cell_ref_t* ref,
+                            const cepEnzymeContext* enz_ctx,
+                            const cep_hydrate_opts_t* opts,
+                            cep_hydrate_result_t* out)
+{
+    if (!ref || !out) {
+        return CEP_HYDRATE_STATUS_INVALID_ARGUMENT;
+    }
+    out->cell = NULL;
+    out->from_cps = false;
+    out->from_cas = false;
+    out->hydrated_meta_bytes = 0u;
+    out->hydrated_payload_bytes = 0u;
+
+    if (!ref->cell && !ref->path) {
+        return CEP_HYDRATE_STATUS_INVALID_ARGUMENT;
+    }
+    if (!cep_cell_system_initialized()) {
+        return CEP_HYDRATE_STATUS_INVALID_ARGUMENT;
+    }
+
+    cep_hydrate_opts_t effective = {
+        .view = CEP_HYDRATE_VIEW_LIVE,
+        .allow_cross_branch = false,
+        .require_decision_cell = true,
+        .max_depth = 0u,
+        .max_meta_bytes = 0u,
+        .max_payload_bytes = 0u,
+        .lock_ancestors_ro = false,
+        .hydrate_children = false,
+        .hydrate_payload = true,
+    };
+    if (opts) {
+        effective = *opts;
+    }
+
+    if (effective.max_depth || effective.max_meta_bytes || effective.max_payload_bytes ||
+        effective.lock_ancestors_ro || effective.hydrate_children) {
+        return CEP_HYDRATE_STATUS_UNSUPPORTED;
+    }
+
+    const cepBranchController* consumer_ctrl = NULL;
+    const cepBranchController* source_ctrl = NULL;
+    if (enz_ctx) {
+        cepDT cleaned = cep_dt_clean(&enz_ctx->branch_dt);
+        if (cep_dt_is_valid(&cleaned)) {
+            consumer_ctrl = cep_hydrate_controller_from_dt(&cleaned);
+        }
+    }
+    if (ref->cell) {
+        source_ctrl = cep_branch_controller_for_cell(ref->cell);
+    }
+    if (!source_ctrl && cep_dt_is_valid(&ref->branch_dt)) {
+        source_ctrl = cep_hydrate_controller_from_dt(&ref->branch_dt);
+    }
+    if (!consumer_ctrl) {
+        consumer_ctrl = source_ctrl;
+    }
+
+    bool cross_branch = consumer_ctrl && source_ctrl && consumer_ctrl != source_ctrl;
+    if (cross_branch && !effective.allow_cross_branch) {
+        return CEP_HYDRATE_STATUS_POLICY;
+    }
+
+    if (cross_branch && effective.require_decision_cell) {
+        cepBranchPolicyResult policy =
+            cep_branch_policy_check_read(consumer_ctrl, source_ctrl);
+        if (policy.access == CEP_BRANCH_POLICY_ACCESS_DENY) {
+            return CEP_HYDRATE_STATUS_POLICY;
+        }
+        if (policy.access == CEP_BRANCH_POLICY_ACCESS_DECISION) {
+            if (!cep_decision_cell_record_cross_branch(consumer_ctrl,
+                                                       source_ctrl,
+                                                       "cell.hydrate",
+                                                       policy.risk)) {
+                return CEP_HYDRATE_STATUS_POLICY;
+            }
+        }
+    }
+
+    cepCell* target = NULL;
+    if (ref->cell) {
+        target = cep_cell_resolve((cepCell*)ref->cell);
+    } else if (ref->path && source_ctrl && source_ctrl->branch_root) {
+        target = cep_cell_find_by_path_past(source_ctrl->branch_root, ref->path, 0);
+    }
+
+    if (!target) {
+        return CEP_HYDRATE_STATUS_NOT_FOUND;
+    }
+
+    if (!ref->cell) {
+        ref->cell = target;
+    }
+    if (!cep_dt_is_valid(&ref->branch_dt) && source_ctrl) {
+        ref->branch_dt = source_ctrl->branch_dt;
+    }
+
+    out->cell = target;
+    return CEP_HYDRATE_STATUS_OK;
+}
+
 cepCell* cep_cell_add(cepCell* cell, uintptr_t context, cepCell* child) {
     CELL_FOLLOW_LINK_TO_STORE(cell, store, NULL);
     if (!cep_ep_require_rw()) {

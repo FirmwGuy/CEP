@@ -2737,6 +2737,26 @@ static char* cep_heartbeat_path_to_string(const cepPath* path) {
     return text;
 }
 
+static bool
+cep_heartbeat_path_extract_branch_dt(const cepPath* path, cepDT* branch_dt)
+{
+    if (!path || !branch_dt || path->length < 2u) {
+        return false;
+    }
+    const cepDT* data_name = dt_data_root_name();
+    if (!data_name) {
+        return false;
+    }
+    for (unsigned i = 0u; i + 1u < path->length; ++i) {
+        if (cep_dt_compare(&path->past[i].dt, data_name) != 0) {
+            continue;
+        }
+        *branch_dt = cep_dt_clean(&path->past[i + 1u].dt);
+        return cep_dt_is_valid(branch_dt);
+    }
+    return false;
+}
+
 
 static bool cep_heartbeat_append_list_message(cepCell* list, const char* message) {
     if (!list || !message) {
@@ -4981,6 +5001,10 @@ bool cep_heartbeat_process_impulses(void) {
             .target_path = record->target_path,
             .qos = record->qos,
         };
+        if (record->has_pipeline) {
+            impulse.has_pipeline = true;
+            impulse.pipeline = record->pipeline;
+        }
 
         if (cep_control_should_gate(&impulse)) {
             if (!cep_control_backlog_store(&impulse)) {
@@ -5080,6 +5104,16 @@ bool cep_heartbeat_process_impulses(void) {
             }
         }
 
+        cepEnzymeContext base_ctx = {0};
+        base_ctx.qos = impulse.qos;
+        if (cep_heartbeat_path_extract_branch_dt(impulse.target_path, &base_ctx.branch_dt)) {
+            /* branch_dt already populated */
+        }
+        if (impulse.has_pipeline) {
+            base_ctx.has_pipeline = true;
+            base_ctx.pipeline = impulse.pipeline;
+        }
+
         if (entry->descriptor_count > 0u && entry->descriptors) {
             cepHeartbeatDescriptorMemo* memo_array = entry->memo;
             for (size_t j = 0; j < entry->descriptor_count && ok; ++j) {
@@ -5119,6 +5153,8 @@ bool cep_heartbeat_process_impulses(void) {
                 }
 
                 CEP_RUNTIME.current_descriptor = descriptor;
+                CEP_RUNTIME.current_ctx = base_ctx;
+                CEP_RUNTIME.current_ctx_valid = true;
                 size_t before_signals = CEP_RUNTIME.impulses_next.count;
                 cepEpExecutionContext* previous_ctx = cep_executor_context_get();
                 cepEpExecutionContext shim_ctx = {0};
@@ -5139,6 +5175,8 @@ bool cep_heartbeat_process_impulses(void) {
                     cep_runtime_restore_active(previous_runtime_scope);
                 }
                 CEP_RUNTIME.current_descriptor = NULL;
+                CEP_RUNTIME.current_ctx_valid = false;
+                CEP_0(&CEP_RUNTIME.current_ctx);
                 CEP_DEBUG_PRINTF("DEBUG heartbeat: descriptor %llu:%llu callback=%p rc=%d\n",
                         (unsigned long long)descriptor->name.domain,
                         (unsigned long long)descriptor->name.tag,
@@ -5956,6 +5994,18 @@ cepCell* cep_heartbeat_enzymes_root(void) {
 
 const cepEnzymeDescriptor* cep_enzyme_current(void) {
     return CEP_RUNTIME.current_descriptor;
+}
+
+const cepEnzymeContext*
+cep_enzyme_context_current(void)
+{
+    if (!cep_heartbeat_bootstrap()) {
+        return NULL;
+    }
+    if (!CEP_RUNTIME.current_ctx_valid) {
+        return NULL;
+    }
+    return &CEP_RUNTIME.current_ctx;
 }
 
 bool cep_lifecycle_scope_mark_ready(cepLifecycleScope scope) {

@@ -12,6 +12,7 @@
 #include "cep_heartbeat.h"
 #include "cep_mailbox.h"
 #include "cep_namepool.h"
+#include "cep_security_tags.h"
 #include "cep_runtime.h"
 
 #include <stdio.h>
@@ -194,11 +195,57 @@ static bool cep_cei_attach_subject(cepCell* err_root, cepCell* subject) {
     return cep_dict_add_link(err_root, &link_name, canonical) != NULL;
 }
 
-static bool cep_cei_populate_origin(cepCell* err_root, const cepCeiRequest* request) {
+static bool cep_cei_attach_pipeline(cepCell* origin, const cepPipelineMetadata* pipeline) {
+    if (!origin || !pipeline) {
+        return true;
+    }
+    bool has_any = pipeline->pipeline_id ||
+                   pipeline->stage_id ||
+                   pipeline->dag_run_id ||
+                   pipeline->hop_index;
+    if (!has_any) {
+        return true;
+    }
+
+    cepCell* pipeline_root = cep_cell_ensure_dictionary_child(origin,
+                                                              dt_pipeline_envelope_field(),
+                                                              CEP_STORAGE_RED_BLACK_T);
+    if (!pipeline_root) {
+        return false;
+    }
+    if (pipeline->pipeline_id) {
+        const char* text = cep_namepool_lookup(pipeline->pipeline_id, NULL);
+        if (text && *text) {
+            (void)cep_cell_put_text(pipeline_root, dt_sec_pipeline_id_field(), text);
+        }
+    }
+    if (pipeline->stage_id) {
+        const char* text = cep_namepool_lookup(pipeline->stage_id, NULL);
+        if (text && *text) {
+            (void)cep_cell_put_text(pipeline_root, dt_sec_stage_id_field(), text);
+        }
+    }
+    if (pipeline->dag_run_id) {
+        (void)cep_cell_put_uint64(pipeline_root, dt_pipeline_run_field(), pipeline->dag_run_id);
+    }
+    if (pipeline->hop_index) {
+        (void)cep_cell_put_uint64(pipeline_root, dt_pipeline_hop_field(), pipeline->hop_index);
+    }
+    return true;
+}
+
+static bool cep_cei_populate_origin(cepCell* err_root,
+                                    const cepCeiRequest* request,
+                                    const cepPipelineMetadata* pipeline) {
     if (!err_root || !request) {
         return false;
     }
-    if (!request->origin_name && !request->origin_kind) {
+    bool has_pipeline = pipeline &&
+                        (pipeline->pipeline_id ||
+                         pipeline->stage_id ||
+                         pipeline->dag_run_id ||
+                         pipeline->hop_index);
+    if (!request->origin_name && !request->origin_kind && !has_pipeline) {
         return true;
     }
     cepCell* origin = cep_cell_ensure_dictionary_child(err_root, dt_origin_field(), CEP_STORAGE_RED_BLACK_T);
@@ -215,6 +262,9 @@ static bool cep_cei_populate_origin(cepCell* err_root, const cepCeiRequest* requ
             return false;
         }
     }
+    if (has_pipeline && !cep_cei_attach_pipeline(origin, pipeline)) {
+        return false;
+    }
     return true;
 }
 
@@ -223,7 +273,8 @@ static bool cep_cei_populate_fact(cepCell* err_root,
                                   cepBeatNumber beat,
                                   bool has_unix,
                                   uint64_t unix_ns,
-                                  cepCell* subject) {
+                                  cepCell* subject,
+                                  const cepPipelineMetadata* pipeline) {
     if (!err_root || !request) {
         return false;
     }
@@ -263,7 +314,7 @@ static bool cep_cei_populate_fact(cepCell* err_root,
             return false;
         }
     }
-    if (!cep_cei_populate_origin(err_root, request)) {
+    if (!cep_cei_populate_origin(err_root, request, pipeline)) {
         return false;
     }
     if (!cep_cei_attach_subject(err_root, subject)) {
@@ -403,6 +454,13 @@ bool cep_cei_emit(const cepCeiRequest* request) {
         return false;
     }
 
+    const cepPipelineMetadata* pipeline = NULL;
+    cepPipelineMetadata pipeline_copy = {0};
+    if (request->has_pipeline) {
+        pipeline_copy = request->pipeline;
+        pipeline = &pipeline_copy;
+    }
+
     cepCell* mailbox_root = request->mailbox_root ? cep_cell_resolve(request->mailbox_root)
                                                   : cep_cei_diagnostics_mailbox();
     if (!mailbox_root) {
@@ -480,7 +538,7 @@ bool cep_cei_emit(const cepCeiRequest* request) {
         goto cleanup;
     }
 
-    if (!cep_cei_populate_fact(err_root, request, beat, has_unix, unix_ns, request->subject)) {
+    if (!cep_cei_populate_fact(err_root, request, beat, has_unix, unix_ns, request->subject, pipeline)) {
         if (settings) settings->cei_debug_last_error = 9;
         goto cleanup;
     }

@@ -1,7 +1,7 @@
-# L0 Design: CEP Persistent Storage (CPS)
+# L0 Design: Content Persistence Service (CPS)
 
 ## Introduction
-CEP Persistent Storage (CPS) is the Layer 0 service that mirrors the in-memory tree to durable media without violating the heartbeat contract. CPS ingests the flat serializer’s beat-scoped frames, validates them, and appends the results to branch files so readers always observe complete beats at `N+1`. At a glance, CPS gives operators beat-atomic commits, CAS caching, observable maintenance verbs, and portable branch bundles that higher layers can ship or replay elsewhere.
+CPS (Content Persistence Service) is the Layer 0 service that mirrors the in-memory tree to durable media without violating the heartbeat contract. CPS ingests the flat serializer’s beat-scoped frames, validates them, and appends the results to branch files so readers always observe complete beats at `N+1`. At a glance, CPS gives operators beat-atomic commits, CAS caching, observable maintenance verbs, and portable branch bundles that higher layers can ship or replay elsewhere.
 
 ## Decision Record
 
@@ -55,6 +55,14 @@ CEP Persistent Storage (CPS) is the Layer 0 service that mirrors the in-memory
 - **CEI integration.** CPS emits diagnostic notes for frame verification failures, fsync errors, checkpoint rollbacks, import/export verification mismatches, and CAS runtime failures, tying each fact to the branch path.
 - **Boot readiness.** Once CPS publishes metrics and marks `ist:store`, Layer 0’s boot operation (`op/boot`) can advance, ensuring storage readiness stays part of the deterministic startup timeline.
 
+## Configuration examples
+A concrete wiring helps spot whether CPS and the branch controller (CPCL) are configured as intended.
+
+- **Durable branch with periodic flush:** `/data/persist/app/config/` holds `policy_mode="scheduled_save"`, `flush_every=10`, `flush_shdn=true`, `history_ram_beats=8`, `history_ram_versions=2`, `allow_vol=false`, and `ram_quota_bytes=134217728`. The controller flushes every 10 beats and on shutdown while keeping two versions and eight beats of history warm within a 128 MiB cap.
+- **Volatile scratch branch:** `/data/persist/scratch/config/` uses `policy_mode="volatile"`, `allow_vol=true`, `flush_every=0`, `ram_quota_bytes=33554432`. Nothing hits disk; cross-branch reads require consumers to set `allow_volatile_reads` and will emit `cell.cross_read` decisions.
+- **Engine selection:** `/data/persist/<branch>/kv_eng="flatfile"` reflects the active engine. Switching engines (e.g., to RocksDB) happens at bootstrap/meson configuration; metrics and CEI stay in the same schema for dashboards.
+- **Ops triggers in practice:** `op/br_flush { branch=app }` forces an immediate flush; `op/checkpt { branch=app }` checkpoints; `op/sync { branch=app, dest=/tmp/app_export }` exports a bundle with CEI (`persist.checkpoint`/`persist.bootstrap`) capturing success/failure.
+
 ## Secured Payload Integration
 
 ### Introduction
@@ -71,4 +79,4 @@ Secured payloads let CEP keep VALUE/DATA bytes encrypted or compressed while the
 - **Where do policies see security metadata?** Call cep_data_secmeta during capture/compute. CPS already carries the metadata in the frame; no storage hook is needed.
 - **Does CPS need new serializer bits?** No. The existing payload_ref/AED/codec capabilities already describe the chunk.
 - **How are plaintext views protected?** Only the secdata unveil path touches plaintext, and the scratch buffer is zeroized immediately. CPS and the serializer never see unsealed payloads.
-
+- **How do I keep a scheduled branch from starving durable data?** Cap its RAM window (`ram_quota_bytes`) and `flush_every` so the controller emits flushes regularly; if RAM pressure rises anyway, CEI `persist.evict` and CPS metrics (`dirty_bytes`, `pin_count`, `flush_bytes`) show whether the branch is overrunning its budget.***

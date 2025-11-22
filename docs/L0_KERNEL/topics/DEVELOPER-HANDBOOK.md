@@ -1,7 +1,7 @@
 # L0 Topic: Developer Handbook
 
 ## Introduction
-Layer-0 kernel work succeeds when you treat determinism, documentation, and tests as part of the code. This handbook is the operations checklist for engineers who need to touch `cep_cell.*`, storage backends, CPS, or the heartbeat/E³ plumbing without breaking replay or portability. Use it whenever you are onboarding a teammate or returning after a gap: it points you to the docs you must reread, the files to change with care, and the build/test conventions that keep regressions out of `snaps`.
+Layer-0 kernel work succeeds when you treat determinism, documentation, and tests as part of the code. This handbook is the operations checklist for engineers who need to touch `cep_cell.*`, storage backends, CPS, or the heartbeat/E3 plumbing without breaking replay or portability. Use it whenever you are onboarding a teammate or returning after a gap: it points you to the docs you must reread, the files to change with care, and the build/test conventions that keep regressions out of `snaps`.
 
 ---
 
@@ -52,7 +52,7 @@ Layer-0 kernel work succeeds when you treat determinism, documentation, and test
 ### 6. Episodes, heartbeat, and policies
 - **Heartbeat invariants:** Capture → Compute → Commit. New work only becomes visible at beat `N+1`. Never publish mid-beat results.
 - **Enzyme registration:** Changes done mid-beat activate next beat. Always stage new descriptors via helper functions to ensure tombstones propagate.
-- **E³ usage:** Choose RO vs RW profiles intentionally. RO slices may run on the threaded executor (if enabled) but still respect budgets. RW slices remain on the heartbeat and guard their leases.
+- **E3 usage:** Choose RO vs RW profiles intentionally. RO slices may run on the threaded executor (if enabled) but still respect budgets. RW slices remain on the heartbeat and guard their leases.
 - **Budgets & cancellation:** Set `cpu_budget_ns` / `io_budget_bytes`. Use `cep_ep_check_cancel()` near loops; watchers feed into `/rt/ops/<eid>/watchers`.
 - **Policy pipeline:** `cep_enclave_policy` snapshots `/sys/security/**`; `sig_sec/pipeline_preflight` approves graphs; `cep_fed_invoke_validator()` enforces IDs + ceilings. Always rerun the preflight enzyme after editing policy trees.
 

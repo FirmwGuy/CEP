@@ -42,7 +42,7 @@ The tables and bullet lists below snapshot where the kernel stands today, what i
 ### Ready for Upper Layers
 - Security policy loader/enforcer, pipeline preflight, and pipeline metadata propagation ship today; L1 packs can rely on `pipeline_id`/`stage_id` plumbing plus `/sys/security` readiness facts.
 - CPS + CAS flush deterministically via `cep_flat_stream_emit_branch_async()` and branch controllers expose metrics/CEI hooks; higher layers can subscribe to `/data/persist/**` and `/rt/analytics/async/**` without extra instrumentation.
-- The Episodic Enzyme Engine (E³) supports hybrid RO↔RW slices and watchers, giving L1+ a deterministic orchestration substrate.
+- The Episodic Enzyme Engine (E3) supports hybrid RO↔RW slices and watchers, giving L1+ a deterministic orchestration substrate.
 - Next integration work mostly targets ergonomics (shadow cleanup, telemetry polish) rather than kernel gaps.
 
 ### Milestone Q&A

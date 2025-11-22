@@ -1,6 +1,6 @@
 # 🌱 Cascade Evolutionary Processing (CEP)
 
-CEP is a **living platform for work**: it remembers every fact, lets you try new tactics safely, and explains why things changed over time.
+CEP is a **living, evolving platform for deterministic work, supervised learning, and self‑modifying systems**: it remembers every fact, lets you try new tactics safely, and explains why things changed over time.
 
 If you picture a city that:
 
@@ -243,7 +243,7 @@ Early adopters should treat it as **experimental infrastructure**, not a drop‑
 * It can orchestrate A/B tests and policy changes.
 * It can help you **replay** and **audit** how learning systems evolved and what they did. 
 
-Think of it as the “memory and bones” around your models, not the model brain itself.
+Think of it as the “memory and frames” around your models, not the model brain itself.
 
 ---
 

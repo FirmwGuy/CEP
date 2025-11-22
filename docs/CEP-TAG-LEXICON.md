@@ -25,9 +25,7 @@ when a new behavior needs a fresh word before it lands in code.
 - **Patterns:** Several entries describe a whole family of tags (e.g.
   `sig_*`). Only the patterns listed here are valid; collisions must be resolved
   by extending the table first.
-- **Feature Area column:** records the Layer 0 subsystem (PRR, E³, serialization,
-  etc.) that owns the tag so reviewers can spot coupling at a glance; it
-  replaces the old status flag.
+- **Feature Area column:** uses acronyms to name the owning Layer 0 subsystem (see `docs/GLOSSARY.md` for definitions).
 
 ### Tag Catalogue
 
@@ -36,373 +34,376 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 #### Core Runtime Tags
 | Tag / Pattern | Feature Area | Purpose |
 | --- | --- | --- |
-| `/` | Runtime platform | root dictionary mounted during bootstrap. |
-| `agenda` | Runtime platform | per-beat agenda log recorded under `/rt/beat/<n>/agenda`. |
-| `beat` | Runtime platform | dictionary grouping heartbeat evidence for a specific beat. |
-| `cas` | Runtime platform | content-addressable storage subtree. |
-| `data` | Runtime platform | durable dataset root promoted at the end of a beat. |
-| `policy` | Runtime platform | pack-owned subtree under `/data/<pack>/policy` for publishing security pipeline specs or other pack policies. |
-| `decisions` | Runtime platform | `/journal/decisions` ledger containing Decision Cell entries for risky cross-branch reads. |
-| `persist` | Runtime platform | `/data/persist` subtree publishing CPS readiness evidence and per-branch stats. |
-| `metrics` | Runtime platform | dictionary under `/data/persist/<branch>/metrics` containing per-branch counters. |
-| `kv_eng` | Runtime platform | `val/text` field on `/data/persist/<branch>` identifying the active CPS backend (e.g. `flatfile`). |
-| `frames` | Runtime platform | metric recording the number of committed frames under `/data/persist/<branch>/metrics`. |
-| `beats` | Runtime platform | metric recording the number of beats persisted under `/data/persist/<branch>/metrics`. |
-| `bytes_idx` | Runtime platform | metric tracking cumulative bytes written to `branch.idx` under `/data/persist/<branch>/metrics`. |
-| `bytes_dat` | Runtime platform | metric tracking cumulative bytes written to `branch.dat` under `/data/persist/<branch>/metrics`. |
-| `cas_hits` | Runtime platform | metric tracking how many CAS payload lookups were served from the branch cache (`/data/persist/<branch>/metrics`). |
-| `cas_miss` | Runtime platform | metric counting CAS payload misses that required a runtime scan (`/data/persist/<branch>/metrics`). |
-| `cas_lat_ns` | Runtime platform | metric reporting the average CAS lookup latency in nanoseconds for the active branch. |
-| `persist_branch` | Runtime platform | fallback tag used when a branch name cannot be interned; hosts CPS metrics if needed. |
-| `branch_stat` | Runtime platform | dictionary under `/data/persist/<branch>/branch_stat` exposing status fields for that branch’s persistence controller. |
-| `config` | Runtime platform | dictionary under `/data/persist/<branch>/config` capturing the branch controller’s current persistence policy and scheduler knobs. |
-| `last_bt` | Runtime platform | `branch_stat` field recording the last beat that reached CPS for the branch. |
-| `pend_mut` | Runtime platform | `branch_stat` field counting pending mutations for the branch controller. |
-| `dirty_ents` | Runtime platform | `branch_stat` field mirroring the controller’s dirty-entry count. |
-| `dirty_bytes` | Runtime platform | `branch_stat` field estimating bytes currently pinned as dirty for the branch. |
-| `pin_count` | Runtime platform | `branch_stat` field counting dirty payload/store pins that block eviction. |
-| `frame_last` | Runtime platform | `branch_stat` field recording the most recent frame ID persisted for the branch. |
-| `cause_last` | Runtime platform | `branch_stat` field indicating the last flush cause (`automatic`, `manual`, `scheduled`). |
-| `flush_bytes` | Runtime platform | `branch_stat` field recording the byte estimate drained during the last flush. |
-| `flush_pins` | Runtime platform | `branch_stat` field recording how many pins the last flush cleared. |
-| `policy_mode` | Runtime platform | `config` field storing the active branch persistence policy label. |
-| `flush_every` | Runtime platform | `config` field reporting the `flush_every_beats` policy value. |
-| `flush_shdn` | Runtime platform | `config` field flagging whether the branch flushes when shutdown runs. |
-| `allow_vol` | Runtime platform | `config` field signalling whether volatile reads are permitted for the branch. |
-| `snapshot_ro` | Runtime platform | `config` field set to `1` when the branch runs under the read-only snapshot policy. |
-| `schedule_bt` | Runtime platform | `config` field recording the beat the next scheduled flush should run (0 when unscheduled). |
-| `bundle` | Runtime platform | envelope field used by `op/import` to specify the filesystem path to an exported CPS bundle. |
-| `consumer` | Runtime platform | dictionary field storing the consumer branch DT inside `/journal/decisions/<entry>`. |
-| `source` | Runtime platform | dictionary field storing the source branch DT inside `/journal/decisions/<entry>`. |
-| `risk` | Runtime platform | text field recording the branch policy risk (`dirty` or `volatile`) for a recorded decision. |
-| `persist.commit` | Runtime platform | CEI topic emitted when CPS finishes persisting a beat (`cps_storage_commit_current_beat`). |
-| `persist.frame.io` | Runtime platform | CEI topic emitted when frame staging, fsync, or copy operations fail on the CPS backend. |
-| `persist.checkpoint` | Runtime platform | CEI topic emitted when CPS writes checkpoint TOCs or reports errors during `op/checkpt`. |
-| `persist.recover` | Runtime platform | CEI topic emitted when CPS detects branch corruption and runs crash-recovery sweeps. |
-| `persist.bootstrap` | Runtime platform | CEI topic emitted when CPS bootstrap/engine activation surfaces warnings before `ist:store`. |
-| `persist.flush.begin` | Runtime platform | CEI topic emitted when a branch flush request begins emitting a frame. |
-| `persist.flush.done` | Runtime platform | CEI topic emitted when a branch flush request completes successfully. |
-| `persist.flush.fail` | Runtime platform | CEI topic emitted when a branch flush request fails to serialize or apply. |
-| `persist.evict` | Runtime platform | CEI topic emitted when CPCL trims branch cache history because RAM windows or quotas require eviction. |
-| `persist.snapshot` | Runtime platform | CEI topic emitted when an operator enables the read-only snapshot policy for a branch. |
-| `persist.defer` | Runtime platform | CEI topic emitted when a branch is placed into deferred/on-demand flush mode. |
-| `chn:serial` | Async I/O fabric | OPS/telemetry channel name reserved for the flat serializer sink. |
-| `prov:serial` | Async I/O fabric | Async provider identifier recorded alongside serializer sink requests. |
-| `react:ser` | Async I/O fabric | Reactor identifier mirrored into serializer async metadata. |
-| `caps:sync` | Async I/O fabric | Capability tag marking that the synchronous shim handled a request. |
-| `reactor` | Async I/O fabric | `/rt/analytics/async/reactor/<id>` branch storing per-reactor metrics. |
-| `cq_depth` | Async I/O fabric | metric counting the number of pending + active requests assigned to the reactor. |
-| `pend_bytes` | Async I/O fabric | metric tracking cumulative bytes staged across pending async jobs. |
-| `comp_bt` | Async I/O fabric | per-beat counter of completions drained from the reactor CQ. |
-| `tp_async_unsp` | Async I/O fabric | CEI topic emitted when a provider falls back to the async shim because native async paths are unavailable. |
-| `persist.async` | Async I/O fabric | CEI topic emitted when CPS async pipelines detect backlog or throttle events. |
-| `persist.async.tmo` | Async I/O fabric | CEI topic emitted when async persistence or serializer sinks exceed their beat/time budgets. |
-| `enc_mode` | Runtime platform | Secdata metadata field describing the AEAD mode applied to the in-RAM payload. |
-| `codec` | Runtime platform | Secdata metadata field describing the compression codec applied to the secured payload. |
-| `key_id` | Runtime platform | Namepooled identifier recorded with secured payloads referencing the key selector used for sealing. |
-| `payload_fp` | Runtime platform | Plaintext fingerprint stored alongside secured payload metadata for deterministic replay. |
-| `ram_enc` | Runtime platform | Boolean flag indicating whether the in-memory payload bytes are sealed (encrypted) between beats. |
-| `ram_cas` | Runtime platform | Boolean flag advertising whether the sealed payload has a matching CAS blob persisted on disk. |
-| `rekey` | Runtime platform | OPS verb name reserved for secdata rekey operations. |
-| `rcomp` | Runtime platform | OPS verb name reserved for secdata recompress operations. |
-| `enc_fail` | Runtime platform | CEI topic emitted when secdata sealing fails (encryption/compression errors). |
-| `dec_fail` | Runtime platform | CEI topic emitted when secdata unveiling fails (decryption errors). |
-| `rekey_fail` | Runtime platform | CEI topic emitted when a secdata rekey attempt cannot complete. |
-| `codec_mis` | Runtime platform | CEI topic emitted when secdata compression/decompression encounters an unsupported or corrupt codec stream. |
-| `dictionary` | Runtime platform | canonical store tag for dictionary nodes. |
-| `dtor` | Runtime platform | spec field storing the optional organ destructor enzyme name. |
-| `ctor` | Runtime platform | spec field storing the optional organ constructor enzyme name. |
-| `env` | Runtime platform | runtime environment subtree for external handles and the `security/env` overlay that stores environment-specific AEC policies. |
-| `security` | Runtime platform | `/sys/security` subtree that collects Access & Execution Control policies. |
-| `enclaves` | Runtime platform | dictionary under `/sys/security` describing enclave IDs and trust tiers. |
-| `edges` | Runtime platform | dictionary under `/sys/security` storing cross-enclave edge policies. |
-| `gateways` | Runtime platform | dictionary under `/sys/security` enumerating gateway enzymes surfaced to other enclaves. |
-| `branches` | Runtime platform | dictionary under `/sys/security` specifying crown-jewel branch rules. |
-| `defaults` | Runtime platform | dictionary under `/sys/security` capturing fallback budgets, TTLs, and rate ceilings. |
-| `pipelines` | Runtime platform | `/data/<pack>/policy/security/pipelines` subtree containing pack-owned pipeline specs awaiting approval. |
-| `pipeline_id` | Runtime platform | `val/text` field storing the `<pack>/<name>` identifier for a pipeline spec. |
-| `stages` | Runtime platform | ordered dictionary listing the stages for a given pipeline spec. |
-| `ceilings` | Runtime platform | optional dictionary inside a pipeline spec supplying requested aggregate ceilings. |
-| `stage_id` | Runtime platform | per-stage identifier stored in each pipeline stage definition. |
-| `stg_encl` | Runtime platform | `val/text` field assigning an enclave label to a pipeline stage. |
-| `stg_enz` | Runtime platform | `val/text` field naming the gateway enzyme executed at a pipeline stage. |
-| `approval` | Runtime platform | dictionary under each pipeline spec that records approval state, notes, and metadata. |
-| `pol_ver` | Runtime platform | `val/u64` field inside a pipeline approval noting the security snapshot version used for validation. |
-| `appr_bt` | Runtime platform | `val/u64` beat counter recorded when a pipeline spec was approved. |
-| `tot_cpu_ns` | Runtime platform | pipeline ceiling field storing allowable cumulative CPU time per DAG. |
-| `total_io_by` | Runtime platform | pipeline ceiling field storing allowable cumulative IO bytes per DAG. |
-| `max_hops` | Runtime platform | pipeline ceiling field recording the maximum allowable edge count. |
-| `max_wall_ms` | Runtime platform | pipeline ceiling field storing the maximum wall clock duration (milliseconds). |
-| `max_beats` | Runtime platform | default budget field storing allowable beats per hop. |
-| `mbox_max_bt` | Runtime platform | TTL default storing maximum heartbeat span for mailbox enforcement. |
-| `ep_max_bt` | Runtime platform | TTL default storing maximum heartbeat span for episode-level enforcement. |
-| `rsub_qps` | Runtime platform | rate ceiling field storing QPS caps per subject. |
-| `renz_qps` | Runtime platform | rate ceiling field storing QPS caps per gateway enzyme. |
-| `redge_qps` | Runtime platform | rate ceiling field storing QPS caps per edge (enclave→enclave). |
-| `prod` | Runtime platform | leaf dictionary under `/sys/security/env` for production overlays. |
-| `staging` | Runtime platform | leaf dictionary under `/sys/security/env` for staging overlays. |
-| `dev` | Runtime platform | leaf dictionary under `/sys/security/env` for development overlays. |
-| `sec.edge.deny` | Runtime platform | CEI topic emitted when an enclave edge policy denies a gateway invocation. |
-| `sec.limit.hit` | Runtime platform | CEI topic emitted when a security budget or rate ceiling blocks a send. |
-| `sig_sec/pipeline_preflight` | Signals | Signal routed to the pipeline preflight enzyme responsible for validating pipeline specs. |
-| `sec_sends` | Runtime platform | telemetry counter tracking sends consumed under a security budget. |
-| `sec_bytes` | Runtime platform | telemetry counter tracking bytes consumed under a security budget. |
-| `sec_hits` | Runtime platform | telemetry counter tracking how many times a security limit fired. |
-| `sec_rate` | Runtime platform | telemetry counter recording the current beat’s rate usage under a security ceiling. |
-| `envelope` | Runtime platform | sealed message metadata dictionary under a mailbox message. |
-| `err` | Runtime platform | root dictionary encapsulating a structured Common Error Interface fact. |
-| `enzymes` | Runtime platform | registry dictionary exposing registered enzymes. |
-| `impulses` | Runtime platform | beat impulse log recorded under `/rt/beat/<n>/impulses` (legacy `inbox` link retained for one release). |
-| `analytics` | Runtime platform | runtime analytics root under `/rt/analytics`. |
-| `spacing` | Runtime platform | beat-to-beat spacing metrics recorded by the heartbeat analytics helper. |
-| `interval_ns` | Runtime platform | nanosecond interval payload inside spacing analytics entries. |
-| `async` | Runtime platform | `/rt/analytics/async` root tracking shim/native async job summaries. |
-| `shim` | Runtime platform | analytics branch storing shim-job counters under `/rt/analytics/async`. |
-| `native` | Runtime platform | analytics branch storing provider-native async counters under `/rt/analytics/async`. |
-| `jobs_total` | Runtime platform | counter stored under `/rt/analytics/async/(shim|native)/<provider>/<mount>/` reflecting total jobs per mount. |
-| `issued_unix` | Runtime platform | unix timestamp captured alongside `issued_beat` inside a mailbox envelope. |
-| `unix_ts_ns` | Runtime platform | per-beat Unix timestamp stored under `/rt/beat/<n>/meta/unix_ts_ns` and mirrored into stage notes, OPS history, and stream journals. |
-| `paused` | Pause/Rollback/Resume | `val/bool` flag under `/sys/state` indicating the heartbeat agenda is currently gated. |
-| `view_hzn` | Pause/Rollback/Resume | `val/u64` beat number recording the rollback visibility horizon. |
-| `intent` | Runtime platform | journal entry describing requested work. |
-| `journal` | Runtime platform | append-only heartbeat evidence ledger. |
-| `kind` | Runtime platform | short organ slug persisted under `/sys/organs/<k>/spec/kind`. |
-| `lib` | Runtime platform | library snapshot directory for proxied streams. |
-| `list` | Runtime platform | store tag for linked-list containers. |
-| `log` | Runtime platform | log entry tag attached to beat records. |
-| `origin` | Runtime platform | dictionary describing the module, organ, or enzyme that emitted a CEI fact. |
-| `label` | Runtime platform | optional human-readable organ description stored in the spec branch. |
-| `meta` | Runtime platform | metadata dictionary attached to runtime cells. |
-| `msgs` | Runtime platform | mailbox message dictionary keyed by local message ID. |
-| `topic` | Runtime platform | short subject tag used by CEI facts for routing and filtering. |
-| `organ/<k>` | Runtime platform | store tag pattern identifying typed organ root dictionaries. |
-| `organs` | Runtime platform | system dictionary publishing immutable organ descriptors. |
-| `txn` | Runtime platform | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
-| `boot_oid` | Runtime platform | `val/bytes` cell under `/sys/state` publishing the boot operation OID. |
-| `shdn_oid` | Runtime platform | `val/bytes` cell under `/sys/state` publishing the shutdown operation OID. |
-| `namepool` | Runtime platform | identifier intern table. |
-| `next_msg_id` | Runtime platform | deterministic counter stored under `meta/runtime/next_msg_id`. |
-| `outcome` | Runtime platform | execution result record written after enzymes run. |
-| `target` | Runtime platform | canonical link entry used by helper-built facet dictionaries. |
-| `parent` | Runtime platform | provenance pointer stored inside `meta/parents`. |
-| `parents` | Runtime platform | provenance list capturing the source lineage. |
-| `rt` | Runtime platform | runtime staging root holding beat journals. |
-| `runtime` | Runtime platform | per-mailbox runtime metadata bucket (ID counters, expiry buckets). |
-| `rt_ctx` | Runtime platform | hidden root payload recording the owning runtime context for multi-instance isolation. |
-| `expiries` | Runtime platform | beat-indexed expiry bucket dictionary under mailbox runtime metadata. |
-| `exp_wall` | Runtime platform | unix timestamp expiry bucket dictionary under mailbox runtime metadata. |
-| `stage` | Runtime platform | per-beat stage log recording committed mutations. |
-| `spec` | Runtime platform | immutable organ descriptor snapshot stored under `/sys/organs/<k>/spec`. |
-| `store` | Runtime platform | spec field recording the organ root store DT. |
-| `stream-log` | Runtime platform | runtime log for stream adapters. |
-| `sys` | Runtime platform | system namespace with counters and configuration. |
-| `text` | Runtime platform | namepool payload store for textual data. |
-| `tmp` | Runtime platform | scratch list reserved for tooling. |
-| `ttl` | Runtime platform | TTL dictionary attached to envelopes or mailbox policy nodes. |
-| `ttl_beats` | Runtime platform | relative TTL expressed in heartbeat counts. |
-| `ttl_unix_ns` | Runtime platform | relative TTL expressed in wallclock nanoseconds. |
-| `ttl_mode` | Runtime platform | TTL control flag (`"forever"` disables expiry at that scope). |
-| `validator` | Runtime platform | spec field storing the required organ validator enzyme name. |
-| `sev:*` (`sev:fatal`, `sev:crit`, `sev:usage`, `sev:warn`, `sev:debug`) | Runtime platform | severity vocabulary used by CEI to express runtime impact. |
+| `/` | RT | root dictionary mounted during bootstrap. |
+| `agenda` | RT | per-beat agenda log recorded under `/rt/beat/<n>/agenda`. |
+| `beat` | RT | dictionary grouping heartbeat evidence for a specific beat. |
+| `cas` | RT | content-addressable storage subtree. |
+| `data` | RT | durable dataset root promoted at the end of a beat. |
+| `policy` | RT | pack-owned subtree under `/data/<pack>/policy` for publishing security pipeline specs or other pack policies. |
+| `decisions` | RT | `/journal/decisions` ledger containing Decision Cell entries for risky cross-branch reads. |
+| `persist` | RT | `/data/persist` subtree publishing CPS readiness evidence and per-branch stats. |
+| `metrics` | RT | dictionary under `/data/persist/<branch>/metrics` containing per-branch counters. |
+| `kv_eng` | RT | `val/text` field on `/data/persist/<branch>` identifying the active CPS backend (e.g. `flatfile`). |
+| `frames` | RT | metric recording the number of committed frames under `/data/persist/<branch>/metrics`. |
+| `beats` | RT | metric recording the number of beats persisted under `/data/persist/<branch>/metrics`. |
+| `bytes_idx` | RT | metric tracking cumulative bytes written to `branch.idx` under `/data/persist/<branch>/metrics`. |
+| `bytes_dat` | RT | metric tracking cumulative bytes written to `branch.dat` under `/data/persist/<branch>/metrics`. |
+| `cas_hits` | RT | metric tracking how many CAS payload lookups were served from the branch cache (`/data/persist/<branch>/metrics`). |
+| `cas_miss` | RT | metric counting CAS payload misses that required a runtime scan (`/data/persist/<branch>/metrics`). |
+| `cas_lat_ns` | RT | metric reporting the average CAS lookup latency in nanoseconds for the active branch. |
+| `persist_branch` | RT | fallback tag used when a branch name cannot be interned; hosts CPS metrics if needed. |
+| `branch_stat` | RT | dictionary under `/data/persist/<branch>/branch_stat` exposing status fields for that branch’s persistence controller. |
+| `config` | RT | dictionary under `/data/persist/<branch>/config` capturing the branch controller’s current persistence policy and scheduler knobs. |
+| `last_bt` | RT | `branch_stat` field recording the last beat that reached CPS for the branch. |
+| `pend_mut` | RT | `branch_stat` field counting pending mutations for the branch controller. |
+| `dirty_ents` | RT | `branch_stat` field mirroring the controller’s dirty-entry count. |
+| `dirty_bytes` | RT | `branch_stat` field estimating bytes currently pinned as dirty for the branch. |
+| `pin_count` | RT | `branch_stat` field counting dirty payload/store pins that block eviction. |
+| `frame_last` | RT | `branch_stat` field recording the most recent frame ID persisted for the branch. |
+| `cause_last` | RT | `branch_stat` field indicating the last flush cause (`automatic`, `manual`, `scheduled`). |
+| `flush_bytes` | RT | `branch_stat` field recording the byte estimate drained during the last flush. |
+| `flush_pins` | RT | `branch_stat` field recording how many pins the last flush cleared. |
+| `policy_mode` | RT | `config` field storing the active branch persistence policy label. |
+| `flush_every` | RT | `config` field reporting the `flush_every_beats` policy value. |
+| `flush_shdn` | RT | `config` field flagging whether the branch flushes when shutdown runs. |
+| `allow_vol` | RT | `config` field signalling whether volatile reads are permitted for the branch. |
+| `snapshot_ro` | RT | `config` field set to `1` when the branch runs under the read-only snapshot policy. |
+| `schedule_bt` | RT | `config` field recording the beat the next scheduled flush should run (0 when unscheduled). |
+| `bundle` | RT | envelope field used by `op/import` to specify the filesystem path to an exported CPS bundle. |
+| `consumer` | RT | dictionary field storing the consumer branch DT inside `/journal/decisions/<entry>`. |
+| `source` | RT | dictionary field storing the source branch DT inside `/journal/decisions/<entry>`. |
+| `risk` | RT | text field recording the branch policy risk (`dirty` or `volatile`) for a recorded decision. |
+| `persist.commit` | RT | CEI topic emitted when CPS finishes persisting a beat (`cps_storage_commit_current_beat`). |
+| `persist.frame.io` | RT | CEI topic emitted when frame staging, fsync, or copy operations fail on the CPS backend. |
+| `persist.checkpoint` | RT | CEI topic emitted when CPS writes checkpoint TOCs or reports errors during `op/checkpt`. |
+| `persist.recover` | RT | CEI topic emitted when CPS detects branch corruption and runs crash-recovery sweeps. |
+| `persist.bootstrap` | RT | CEI topic emitted when CPS bootstrap/engine activation surfaces warnings before `ist:store`. |
+| `persist.flush.begin` | RT | CEI topic emitted when a branch flush request begins emitting a frame. |
+| `persist.flush.done` | RT | CEI topic emitted when a branch flush request completes successfully. |
+| `persist.flush.fail` | RT | CEI topic emitted when a branch flush request fails to serialize or apply. |
+| `persist.evict` | RT | CEI topic emitted when CPCL trims branch cache history because RAM windows or quotas require eviction. |
+| `persist.snapshot` | RT | CEI topic emitted when an operator enables the read-only snapshot policy for a branch. |
+| `persist.defer` | RT | CEI topic emitted when a branch is placed into deferred/on-demand flush mode. |
+| `chn:serial` | ASYNC | OPS/telemetry channel name reserved for the flat serializer sink. |
+| `prov:serial` | ASYNC | Async provider identifier recorded alongside serializer sink requests. |
+| `react:ser` | ASYNC | Reactor identifier mirrored into serializer async metadata. |
+| `caps:sync` | ASYNC | Capability tag marking that the synchronous shim handled a request. |
+| `reactor` | ASYNC | `/rt/analytics/async/reactor/<id>` branch storing per-reactor metrics. |
+| `cq_depth` | ASYNC | metric counting the number of pending + active requests assigned to the reactor. |
+| `pend_bytes` | ASYNC | metric tracking cumulative bytes staged across pending async jobs. |
+| `comp_bt` | ASYNC | per-beat counter of completions drained from the reactor CQ. |
+| `tp_async_unsp` | ASYNC | CEI topic emitted when a provider falls back to the async shim because native async paths are unavailable. |
+| `persist.async` | ASYNC | CEI topic emitted when CPS async pipelines detect backlog or throttle events. |
+| `persist.async.tmo` | ASYNC | CEI topic emitted when async persistence or serializer sinks exceed their beat/time budgets. |
+| `enc_mode` | RT | Secdata metadata field describing the AEAD mode applied to the in-RAM payload. |
+| `codec` | RT | Secdata metadata field describing the compression codec applied to the secured payload. |
+| `key_id` | RT | Namepooled identifier recorded with secured payloads referencing the key selector used for sealing. |
+| `payload_fp` | RT | Plaintext fingerprint stored alongside secured payload metadata for deterministic replay. |
+| `ram_enc` | RT | Boolean flag indicating whether the in-memory payload bytes are sealed (encrypted) between beats. |
+| `ram_cas` | RT | Boolean flag advertising whether the sealed payload has a matching CAS blob persisted on disk. |
+| `rekey` | RT | OPS verb name reserved for secdata rekey operations. |
+| `rcomp` | RT | OPS verb name reserved for secdata recompress operations. |
+| `enc_fail` | RT | CEI topic emitted when secdata sealing fails (encryption/compression errors). |
+| `dec_fail` | RT | CEI topic emitted when secdata unveiling fails (decryption errors). |
+| `rekey_fail` | RT | CEI topic emitted when a secdata rekey attempt cannot complete. |
+| `codec_mis` | RT | CEI topic emitted when secdata compression/decompression encounters an unsupported or corrupt codec stream. |
+| `dictionary` | RT | canonical store tag for dictionary nodes. |
+| `dtor` | RT | spec field storing the optional organ destructor enzyme name. |
+| `ctor` | RT | spec field storing the optional organ constructor enzyme name. |
+| `env` | RT | runtime environment subtree for external handles and the `security/env` overlay that stores environment-specific AEC policies. |
+| `security` | RT | `/sys/security` subtree that collects Access & Execution Control policies. |
+| `enclaves` | RT | dictionary under `/sys/security` describing enclave IDs and trust tiers. |
+| `edges` | RT | dictionary under `/sys/security` storing cross-enclave edge policies. |
+| `gateways` | RT | dictionary under `/sys/security` enumerating gateway enzymes surfaced to other enclaves. |
+| `branches` | RT | dictionary under `/sys/security` specifying crown-jewel branch rules. |
+| `defaults` | RT | dictionary under `/sys/security` capturing fallback budgets, TTLs, and rate ceilings. |
+| `pipelines` | RT | `/data/<pack>/policy/security/pipelines` subtree containing pack-owned pipeline specs awaiting approval. |
+| `pipeline_id` | RT | `val/text` field storing the `<pack>/<name>` identifier for a pipeline spec. |
+| `dag_run_id` | RT | `val/u64` field storing the DAG run identifier inside pipeline envelopes and CEI origin metadata. |
+| `hop_index` | RT | `val/u64` field storing the hop ordinal inside pipeline envelopes and CEI origin metadata. |
+| `stages` | RT | ordered dictionary listing the stages for a given pipeline spec. |
+| `ceilings` | RT | optional dictionary inside a pipeline spec supplying requested aggregate ceilings. |
+| `stage_id` | RT | per-stage identifier stored in each pipeline stage definition. |
+| `stg_encl` | RT | `val/text` field assigning an enclave label to a pipeline stage. |
+| `stg_enz` | RT | `val/text` field naming the gateway enzyme executed at a pipeline stage. |
+| `approval` | RT | dictionary under each pipeline spec that records approval state, notes, and metadata. |
+| `pol_ver` | RT | `val/u64` field inside a pipeline approval noting the security snapshot version used for validation. |
+| `appr_bt` | RT | `val/u64` beat counter recorded when a pipeline spec was approved. |
+| `tot_cpu_ns` | RT | pipeline ceiling field storing allowable cumulative CPU time per DAG. |
+| `total_io_by` | RT | pipeline ceiling field storing allowable cumulative IO bytes per DAG. |
+| `max_hops` | RT | pipeline ceiling field recording the maximum allowable edge count. |
+| `max_wall_ms` | RT | pipeline ceiling field storing the maximum wall clock duration (milliseconds). |
+| `max_beats` | RT | default budget field storing allowable beats per hop. |
+| `mbox_max_bt` | RT | TTL default storing maximum heartbeat span for mailbox enforcement. |
+| `ep_max_bt` | RT | TTL default storing maximum heartbeat span for episode-level enforcement. |
+| `rsub_qps` | RT | rate ceiling field storing QPS caps per subject. |
+| `renz_qps` | RT | rate ceiling field storing QPS caps per gateway enzyme. |
+| `redge_qps` | RT | rate ceiling field storing QPS caps per edge (enclave→enclave). |
+| `prod` | RT | leaf dictionary under `/sys/security/env` for production overlays. |
+| `staging` | RT | leaf dictionary under `/sys/security/env` for staging overlays. |
+| `dev` | RT | leaf dictionary under `/sys/security/env` for development overlays. |
+| `sec.edge.deny` | RT | CEI topic emitted when an enclave edge policy denies a gateway invocation. |
+| `sec.limit.hit` | RT | CEI topic emitted when a security budget or rate ceiling blocks a send. |
+| `sig_sec/pipeline_preflight` | SIG | Signal routed to the pipeline preflight enzyme responsible for validating pipeline specs. |
+| `sec_sends` | RT | telemetry counter tracking sends consumed under a security budget. |
+| `sec_bytes` | RT | telemetry counter tracking bytes consumed under a security budget. |
+| `sec_hits` | RT | telemetry counter tracking how many times a security limit fired. |
+| `sec_rate` | RT | telemetry counter recording the current beat’s rate usage under a security ceiling. |
+| `envelope` | RT | sealed message metadata dictionary under a mailbox message. |
+| `err` | RT | root dictionary encapsulating a structured Common Error Interface fact. |
+| `enzymes` | RT | registry dictionary exposing registered enzymes. |
+| `impulses` | RT | beat impulse log recorded under `/rt/beat/<n>/impulses` (legacy `inbox` link retained for one release). |
+| `analytics` | RT | runtime analytics root under `/rt/analytics`. |
+| `spacing` | RT | beat-to-beat spacing metrics recorded by the heartbeat analytics helper. |
+| `interval_ns` | RT | nanosecond interval payload inside spacing analytics entries. |
+| `async` | RT | `/rt/analytics/async` root tracking shim/native async job summaries. |
+| `shim` | RT | analytics branch storing shim-job counters under `/rt/analytics/async`. |
+| `native` | RT | analytics branch storing provider-native async counters under `/rt/analytics/async`. |
+| `jobs_total` | RT | counter stored under `/rt/analytics/async/(shim-or-native)/<provider>/<mount>/` reflecting total jobs per mount. |
+| `issued_unix` | RT | unix timestamp captured alongside `issued_beat` inside a mailbox envelope. |
+| `unix_ts_ns` | RT | per-beat Unix timestamp stored under `/rt/beat/<n>/meta/unix_ts_ns` and mirrored into stage notes, OPS history, and stream journals. |
+| `paused` | PRR | `val/bool` flag under `/sys/state` indicating the heartbeat agenda is currently gated. |
+| `view_hzn` | PRR | `val/u64` beat number recording the rollback visibility horizon. |
+| `intent` | RT | journal entry describing requested work. |
+| `journal` | RT | append-only heartbeat evidence ledger. |
+| `kind` | RT | short organ slug persisted under `/sys/organs/<k>/spec/kind`. |
+| `lib` | RT | library snapshot directory for proxied streams. |
+| `list` | RT | store tag for linked-list containers. |
+| `log` | RT | log entry tag attached to beat records. |
+| `origin` | RT | dictionary describing the module, organ, or enzyme that emitted a CEI fact. |
+| `label` | RT | optional human-readable organ description stored in the spec branch. |
+| `meta` | RT | metadata dictionary attached to runtime cells. |
+| `msgs` | RT | mailbox message dictionary keyed by local message ID. |
+| `topic` | RT | short subject tag used by CEI facts for routing and filtering. |
+| `organ/<k>` | RT | store tag pattern identifying typed organ root dictionaries. |
+| `organs` | RT | system dictionary publishing immutable organ descriptors. |
+| `txn` | RT | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
+| `boot_oid` | RT | `val/bytes` cell under `/sys/state` publishing the boot operation OID. |
+| `shdn_oid` | RT | `val/bytes` cell under `/sys/state` publishing the shutdown operation OID. |
+| `namepool` | RT | identifier intern table. |
+| `next_msg_id` | RT | deterministic counter stored under `meta/runtime/next_msg_id`. |
+| `outcome` | RT | execution result record written after enzymes run. |
+| `target` | RT | canonical link entry used by helper-built facet dictionaries. |
+| `parent` | RT | provenance pointer stored inside `meta/parents`. |
+| `parents` | RT | provenance list capturing the source lineage. |
+| `rt` | RT | runtime staging root holding beat journals. |
+| `runtime` | RT | per-mailbox runtime metadata bucket (ID counters, expiry buckets). |
+| `rt_ctx` | RT | hidden root payload recording the owning runtime context for multi-instance isolation. |
+| `expiries` | RT | beat-indexed expiry bucket dictionary under mailbox runtime metadata. |
+| `exp_wall` | RT | unix timestamp expiry bucket dictionary under mailbox runtime metadata. |
+| `stage` | RT | per-beat stage log recording committed mutations. |
+| `spec` | RT | immutable organ descriptor snapshot stored under `/sys/organs/<k>/spec`. |
+| `store` | RT | spec field recording the organ root store DT. |
+| `stream-log` | RT | runtime log for stream adapters. |
+| `sys` | RT | system namespace with counters and configuration. |
+| `text` | RT | namepool payload store for textual data. |
+| `tmp` | RT | scratch list reserved for tooling. |
+| `ttl` | RT | TTL dictionary attached to envelopes or mailbox policy nodes. |
+| `ttl_beats` | RT | relative TTL expressed in heartbeat counts. |
+| `ttl_unix_ns` | RT | relative TTL expressed in wallclock nanoseconds. |
+| `ttl_mode` | RT | TTL control flag (`"forever"` disables expiry at that scope). |
+| `validator` | RT | spec field storing the required organ validator enzyme name. |
+| `sev:*` (`sev:fatal`, `sev:crit`, `sev:usage`, `sev:warn`, `sev:debug`) | RT | severity vocabulary used by CEI to express runtime impact. |
 
 #### Operational Tags
 | Tag / Pattern | Feature Area | Purpose |
 | --- | --- | --- |
-| `arg_deep` / `arg_pos` / `arg_prepend` | OPS timeline | parameters accepted by cell-operation enzymes. |
-| `armed` | E³ (Episodic Enzyme Engine) | watcher flag indicating the continuation is queued for promotion at the next beat. |
-| `close` | OPS timeline | sealed dictionary containing terminal status metadata for an operation. |
-| `code` | OPS timeline | optional numeric code attached to a history entry or current state. |
-| `cont` | E³ (Episodic Enzyme Engine) | watcher continuation signal stored under `/watchers/<id>/cont`. |
-| `deadline` | OPS timeline | watcher timeout beat stored under `/watchers/<id>/deadline`. |
-| `envelope` | OPS timeline | immutable dictionary describing an operation's verb, target, mode, and issued beat. |
-| `enz_add` / `enz_cln` / `enz_del` / `enz_mov` / `enz_upd` | OPS timeline | canonical enzyme descriptors registered at bootstrap. |
-| `history` | OPS timeline | dictionary logging state transitions (`0001/`, `0002/`, …). |
-| `hist_next` | OPS timeline | numeric field on `/rt/ops/<oid>` recording the next monotonic history auto-ID so resume/rollback loops never reuse prior names. |
-| `issued_beat` | OPS timeline | beat index recorded in an operation envelope. |
-| `ist:cutover` | Pause/Rollback/Resume | rollback operation state marking the live view pivot in progress. |
-| `ist:flush` | Pause/Rollback/Resume | shutdown operation state indicating buffered work is being flushed. |
-| `ist:halt` | Pause/Rollback/Resume | shutdown operation state indicating the runtime is halting. |
-| `ist:kernel` | OPS timeline | boot operation state marking kernel scaffolding completion. |
-| `ist:ok` | OPS timeline | terminal state recorded after `cep_op_close()` maps the final status. |
-| `ist:paused` | Pause/Rollback/Resume | pause operation state confirming agenda gating is active. |
-| `ist:packs` | OPS timeline | boot operation state marking pack readiness. |
-| `ist:plan` | OPS timeline | control operation planning state recorded when the dossier opens. |
-| `ist:quiesce` | Pause/Rollback/Resume | pause operation state marking non-essential work being parked. |
-| `ist:run` | OPS timeline | resume operation state confirming backlog drain has restarted the agenda. |
-| `ist:exec` | OPS timeline | intermediate state recorded while an OPS verb (checkpoint/compact/sync) is executing. |
-| `ist:stop` | OPS timeline | shutdown operation state marking teardown start. |
-| `ist:store` | OPS timeline | boot operation state marking persistent stores ready. |
-| `note` | OPS timeline | optional textual note attached to a history entry. |
-| `op/boot` | OPS timeline | bootstrapping operation verb emitted at startup. |
-| `op/cont` | OPS timeline | continuation signal emitted when an awaiter fires. |
-| `op/ct` | OPS timeline | constructor operation verb routed to organ roots. |
-| `op/dt` | OPS timeline | destructor operation verb routed to organ roots. |
-| `op/checkpt` | OPS timeline | persistence verb that asks CPS to write a checkpoint snapshot immediately. |
-| `op/compact` | OPS timeline | persistence verb requesting CPS compaction/retention maintenance. |
-| `op/sync` | OPS timeline | persistence verb signalling an explicit sync/export of CPS state. |
-| `op/import` | OPS timeline | persistence verb instructing CPS to verify + stage an exported bundle under the branch’s `imports/` directory. |
-| `op/br_flush` | OPS timeline | persistence verb that forces a specific branch to flush its dirty set on the next commit. |
-| `op/br_sched` | OPS timeline | persistence verb scheduling a branch to flush after a caller-provided beat offset. |
-| `op/br_defer` | OPS timeline | persistence verb that places a branch into on-demand/deferred flush mode. |
-| `op/pause` | Pause/Rollback/Resume | pause control operation verb that gates the heartbeat agenda. |
-| `op/resume` | Pause/Rollback/Resume | resume control operation verb that re-opens the agenda. |
-| `op/rollback` | Pause/Rollback/Resume | rollback control operation verb that re-points the view horizon. |
-| `op/shdn` | OPS timeline | shutdown operation verb emitted during teardown. |
-| `op/tmo` | OPS timeline | timeout signal emitted when an awaiter expires. |
-| `op/vl` | OPS timeline | validator operation verb that runs organ integrity checks. |
-| `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | OPS timeline | operation identifiers emitted by `sig_cell` payloads. |
-| `opm:states` | OPS timeline | operation mode indicating state-tracking semantics. |
-| `org:<k>:*` | OPS timeline | organ enzyme names (`org:<k>:vl`, `org:<k>:ct`, `org:<k>:dt`) bound at organ roots. |
-| `payload_id` | OPS timeline | optional `val/bytes` payload stored in envelopes and watcher entries. |
-| `qos` | OPS timeline | control-plane QoS flags stored alongside paused impulses. |
-| `role_parnt` / `role_source` / `role_subj` / `role_templ` | OPS timeline | role vocabulary consumed by mutation enzymes. |
-| `sig_cell` | OPS timeline | signal namespace for kernel cell operations. |
-| `sig_cei/*` | OPS timeline | error-channel signals dispatched by CEI helper emissions and consumed by bound enzymes. |
-| `state` | OPS timeline | current logical state (`ist:*`) stored on an operation root. |
-| `status` | OPS timeline | terminal status (`sts:*`) recorded under `/close/status`. |
-| `sts:cnl` | OPS timeline | cancellation status recorded when an operation is aborted. |
-| `sts:fail` | OPS timeline | failure status recorded when an operation terminates unsuccessfully. |
-| `sts:ok` | OPS timeline | success status recorded when an operation completes normally. |
-| `summary_id` | OPS timeline | optional summary payload identifier stored under `/close/summary_id`. |
-| `ttl` | OPS timeline | watcher expiry interval in beats. |
-| `watchers` | OPS timeline | dictionary tracking pending awaiters. |
-| `want` | OPS timeline | requested state or status captured for a watcher. |
-| `closed_beat` | OPS timeline | beat index recorded when the `/close/` branch was sealed. |
+| `arg_deep` / `arg_pos` / `arg_prepend` | OPS | parameters accepted by cell-operation enzymes. |
+| `armed` | E3 | watcher flag indicating the continuation is queued for promotion at the next beat. |
+| `close` | OPS | sealed dictionary containing terminal status metadata for an operation. |
+| `code` | OPS | optional numeric code attached to a history entry or current state. |
+| `cont` | E3 | watcher continuation signal stored under `/watchers/<id>/cont`. |
+| `deadline` | OPS | watcher timeout beat stored under `/watchers/<id>/deadline`. |
+| `envelope` | OPS | immutable dictionary describing an operation's verb, target, mode, and issued beat. |
+| `enz_add` / `enz_cln` / `enz_del` / `enz_mov` / `enz_upd` | OPS | canonical enzyme descriptors registered at bootstrap. |
+| `history` | OPS | dictionary logging state transitions (`0001/`, `0002/`, …). |
+| `hist_next` | OPS | numeric field on `/rt/ops/<oid>` recording the next monotonic history auto-ID so resume/rollback loops never reuse prior names. |
+| `issued_beat` | OPS | beat index recorded in an operation envelope. |
+| `ist:cutover` | PRR | rollback operation state marking the live view pivot in progress. |
+| `ist:flush` | PRR | shutdown operation state indicating buffered work is being flushed. |
+| `ist:halt` | PRR | shutdown operation state indicating the runtime is halting. |
+| `ist:kernel` | OPS | boot operation state marking kernel scaffolding completion. |
+| `ist:ok` | OPS | terminal state recorded after `cep_op_close()` maps the final status. |
+| `ist:paused` | PRR | pause operation state confirming agenda gating is active. |
+| `ist:packs` | OPS | boot operation state marking pack readiness. |
+| `ist:plan` | OPS | control operation planning state recorded when the dossier opens. |
+| `ist:quiesce` | PRR | pause operation state marking non-essential work being parked. |
+| `ist:run` | OPS | resume operation state confirming backlog drain has restarted the agenda. |
+| `ist:exec` | OPS | intermediate state recorded while an OPS verb (checkpoint/compact/sync) is executing. |
+| `ist:stop` | OPS | shutdown operation state marking teardown start. |
+| `ist:store` | OPS | boot operation state marking persistent stores ready. |
+| `note` | OPS | optional textual note attached to a history entry. |
+| `op/boot` | OPS | bootstrapping operation verb emitted at startup. |
+| `op/cont` | OPS | continuation signal emitted when an awaiter fires. |
+| `op/ct` | OPS | constructor operation verb routed to organ roots. |
+| `op/dt` | OPS | destructor operation verb routed to organ roots. |
+| `op/checkpt` | OPS | persistence verb that asks CPS to write a checkpoint snapshot immediately. |
+| `op/compact` | OPS | persistence verb requesting CPS compaction/retention maintenance. |
+| `op/sync` | OPS | persistence verb signalling an explicit sync/export of CPS state. |
+| `op/import` | OPS | persistence verb instructing CPS to verify + stage an exported bundle under the branch’s `imports/` directory. |
+| `op/br_flush` | OPS | persistence verb that forces a specific branch to flush its dirty set on the next commit. |
+| `op/br_sched` | OPS | persistence verb scheduling a branch to flush after a caller-provided beat offset. |
+| `op/br_defer` | OPS | persistence verb that places a branch into on-demand/deferred flush mode. |
+| `op/pause` | PRR | pause control operation verb that gates the heartbeat agenda. |
+| `op/resume` | PRR | resume control operation verb that re-opens the agenda. |
+| `op/rollback` | PRR | rollback control operation verb that re-points the view horizon. |
+| `op/shdn` | OPS | shutdown operation verb emitted during teardown. |
+| `op/tmo` | OPS | timeout signal emitted when an awaiter expires. |
+| `op/vl` | OPS | validator operation verb that runs organ integrity checks. |
+| `op_add` / `op_clone` / `op_delete` / `op_move` / `op_upd` | OPS | operation identifiers emitted by `sig_cell` payloads. |
+| `opm:states` | OPS | operation mode indicating state-tracking semantics. |
+| `org:<k>:*` | OPS | organ enzyme names (`org:<k>:vl`, `org:<k>:ct`, `org:<k>:dt`) bound at organ roots. |
+| `payload_id` | OPS | optional `val/bytes` payload stored in envelopes and watcher entries. |
+| `qos` | OPS | control-plane QoS flags stored alongside paused impulses. |
+| `role_parnt` / `role_source` / `role_subj` / `role_templ` | OPS | role vocabulary consumed by mutation enzymes. |
+| `sig_cell` | OPS | signal namespace for kernel cell operations. |
+| `sig_cei/*` | OPS | error-channel signals dispatched by CEI helper emissions and consumed by bound enzymes. |
+| `state` | OPS | current logical state (`ist:*`) stored on an operation root. |
+| `status` | OPS | terminal status (`sts:*`) recorded under `/close/status`. |
+| `sts:cnl` | OPS | cancellation status recorded when an operation is aborted. |
+| `sts:fail` | OPS | failure status recorded when an operation terminates unsuccessfully. |
+| `sts:ok` | OPS | success status recorded when an operation completes normally. |
+| `summary_id` | OPS | optional summary payload identifier stored under `/close/summary_id`. |
+| `ttl` | OPS | watcher expiry interval in beats. |
+| `watchers` | OPS | dictionary tracking pending awaiters. |
+| `want` | OPS | requested state or status captured for a watcher. |
+| `closed_beat` | OPS | beat index recorded when the `/close/` branch was sealed. |
 
 #### Episode Engine Tags
 | Tag / Pattern | Feature Area | Purpose |
 | --- | --- | --- |
-| `op/ep` | E³ (Episodic Enzyme Engine) | operation verb assigned to episodic dossiers tracked under `/rt/ops/<eid>`. |
-| `ep/cont` | E³ (Episodic Enzyme Engine) | continuation signal emitted when an episode should resume on the next beat. |
-| `ist:yield` | E³ (Episodic Enzyme Engine) | state recorded when an episode voluntarily yields the current slice. |
-| `ist:await` | E³ (Episodic Enzyme Engine) | state recorded while an episode is waiting on an external operation. |
-| `ist:cxl` | E³ (Episodic Enzyme Engine) | intermediate cancellation state published before closing with `sts:cnl`. |
-| `ep:pro/ro` | E³ (Episodic Enzyme Engine) | metadata marker indicating a read-only episode profile. |
-| `ep:pro/rw` | E³ (Episodic Enzyme Engine) | metadata marker indicating a read-write episode profile. |
-| `ep:bud/io` | E³ (Episodic Enzyme Engine) | CEI topic emitted when an episode exceeds its configured I/O budget. |
-| `ep:bud/cpu` | E³ (Episodic Enzyme Engine) | CEI topic emitted when an episode exceeds its configured CPU budget. |
-| `episode` | E³ (Episodic Enzyme Engine) | metadata dictionary under an `op/ep` branch capturing policy and paths. |
-| `bud_cpu_ns` | E³ (Episodic Enzyme Engine) | metadata field storing the per-slice CPU budget in nanoseconds. |
-| `bud_io_by` | E³ (Episodic Enzyme Engine) | metadata field storing the per-slice I/O budget in bytes. |
-| `sig_path` | E³ (Episodic Enzyme Engine) | metadata field recording the signal path used to dispatch the episode. |
-| `tgt_path` | E³ (Episodic Enzyme Engine) | metadata field recording the target path resumed by continuations. |
-| `max_beats` | E³ (Episodic Enzyme Engine) | metadata field constraining how many slices an episode may execute. |
+| `op/ep` | E3 | operation verb assigned to episodic dossiers tracked under `/rt/ops/<eid>`. |
+| `ep/cont` | E3 | continuation signal emitted when an episode should resume on the next beat. |
+| `ist:yield` | E3 | state recorded when an episode voluntarily yields the current slice. |
+| `ist:await` | E3 | state recorded while an episode is waiting on an external operation. |
+| `ist:cxl` | E3 | intermediate cancellation state published before closing with `sts:cnl`. |
+| `ep:pro/ro` | E3 | metadata marker indicating a read-only episode profile. |
+| `ep:pro/rw` | E3 | metadata marker indicating a read-write episode profile. |
+| `ep:bud/io` | E3 | CEI topic emitted when an episode exceeds its configured I/O budget. |
+| `ep:bud/cpu` | E3 | CEI topic emitted when an episode exceeds its configured CPU budget. |
+| `episode` | E3 | metadata dictionary under an `op/ep` branch capturing policy and paths. |
+| `bud_cpu_ns` | E3 | metadata field storing the per-slice CPU budget in nanoseconds. |
+| `bud_io_by` | E3 | metadata field storing the per-slice I/O budget in bytes. |
+| `sig_path` | E3 | metadata field recording the signal path used to dispatch the episode. |
+| `tgt_path` | E3 | metadata field recording the target path resumed by continuations. |
+| `max_beats` | E3 | metadata field constraining how many slices an episode may execute. |
 
 #### I/O Tags
 | Tag / Pattern | Feature Area | Purpose |
 | --- | --- | --- |
-| `library` | Serialization/IO | metadata tag describing proxied library payloads. |
-| `stdio_res` / `stdio_str` | Serialization/IO | stdio-backed stream resource and descriptor nodes. |
-| `zip_entry` / `zip_stream` | Serialization/IO | libzip-backed resource and stream adapters. |
+| `library` | SER | metadata tag describing proxied library payloads. |
+| `stdio_res` / `stdio_str` | SER | stdio-backed stream resource and descriptor nodes. |
+| `zip_entry` / `zip_stream` | SER | libzip-backed resource and stream adapters. |
 
 #### Federation Tags
 | Tag / Pattern | Feature Area | Purpose |
 | --- | --- | --- |
-| `net` | Federation transport | root dictionary for federation metadata (peers, mounts, transports). |
-| `mounts` | Federation transport | groups mount declarations by peer and mode under `/net/mounts`. |
-| `peers` | Federation transport | peer registry keyed by peer identifier; hosts services and CEI health. |
-| `catalog` | Federation transport | per-mode mount catalog generated during bootstrap under `/net/catalog`. |
-| `transports` | Federation transport | registry of transport providers keyed by provider ID. |
-| `transport` | Federation transport | per-mount dictionary recording the chosen provider and capability summary. |
-| `caps` | Federation transport | nested dictionary capturing capability bitmaps (required, preferred, or provider-specific). |
-| `cap_crc32c` | Federation transport | provider capability flag indicating CRC32C checksum support. |
-| `cap_deflate` | Federation transport | provider capability flag indicating deflate frame compression support. |
-| `cap_aead` | Federation transport | provider capability flag indicating AEAD payload encryption support. |
-| `cap_cmpver` | Federation transport | provider capability flag signalling comparator-version awareness. |
-| `prov_caps` | Federation transport | mirrors the selected provider capability bitset for the active mount. |
-| `provider` | Federation transport | stores the provider identifier associated with a mount record. |
-| `upd_latest` | Federation transport | boolean flag indicating a mount opts into droppable gauge frames. |
-| `src_peer` | Federation transport | mirror organ request field naming the remote peer supplying bundles. |
-| `src_chan` | Federation transport | mirror organ request field naming the remote channel supplying bundles. |
-| `max_infl` | Federation transport | mirror organ bundle parameter limiting simultaneous in-flight bundles. |
-| `resume_tok` | Federation transport | mirror organ optional token handed to callers to resume paused mirrors. |
-| `pend_resum` | Federation transport | mirror organ status field publishing the pending resume token when manual commits pause work. |
-| `serializer` | Federation transport | optional mirror organ dictionary constraining flat serializer features. |
-| `crc32c_ok` | Federation transport | serializer policy flag that permits CRC32C emission on a mirror mount. |
-| `deflate_ok` | Federation transport | serializer policy flag that permits deflate compression on a mirror mount. |
-| `aead_ok` | Federation transport | serializer policy flag that permits AEAD encryption on a mirror mount. |
-| `warn_down` | Federation transport | serializer policy flag enabling/disabling CEI when downgrading features. |
-| `cmp_max_ver` | Federation transport | serializer policy field limiting comparator versions emitted for a mirror mount. |
-| `bundle_seq` | Federation transport | mirror organ status field recording the last committed bundle sequence. |
-| `commit_beat` | Federation transport | mirror organ status field recording the beat of the most recent commit. |
-| `tp_inv_timeout` | Federation transport | CEI topic emitted when a remote invocation exceeds its beat budget. |
-| `tp_inv_reject` | Federation transport | CEI topic emitted when the remote peer rejects an invocation request. |
-| `services` | Federation transport | peer-level dictionary listing advertised services/mounts. |
-| `telemetry` | Federation transport | heartbeat-sampled metrics root under `/net/telemetry`. |
-| `ceh` | Federation transport | consolidated CEI health facts per peer keyed by telemetry topic. |
-| `net_discovery` | Federation transport | discovery organ slug registered by the federation pack. |
-| `net_health` | Federation transport | health organ slug registered by the federation pack. |
-| `bp_count` | Federation transport | telemetry counter tracking total backpressure events for a mount. |
-| `bp_flag` | Federation transport | boolean flag indicating the mount is currently backpressured. |
-| `last_mode` | Federation transport | telemetry field recording the last transmitted frame mode. |
-| `last_sample` | Federation transport | telemetry field recording the first byte of the last transmitted frame. |
-| `async_pnd` | Federation transport | telemetry counter storing how many async requests are inflight for the mount. |
-| `async_shm` | Federation transport | telemetry counter tracking completions handled by shim worker threads. |
-| `async_nat` | Federation transport | telemetry counter tracking provider-native async completions. |
-| `tp_backpr` | Federation transport | CEI topic and health key for backpressure notifications. |
-| `tp_catsync` | Federation transport | CEI topic for catalog/telemetry publication failures. |
-| `tp_fatal` | Federation transport | CEI topic recording fatal transport channel events. |
-| `tp_noprov` | Federation transport | CEI topic recorded when no provider satisfies mount requirements. |
-| `tp_async_unsp` | Federation transport | CEI topic emitted when a mount falls back to the async shim because the provider lacks async hooks. |
-| `tp_openfail` | Federation transport | CEI topic emitted when provider channel negotiation fails. |
-| `tp_provcell` | Federation transport | CEI topic noting provider cell resolution failures. |
-| `tp_provid` | Federation transport | CEI topic emitted when provider identifiers cannot be encoded. |
-| `tp_schema` | Federation transport | CEI topic indicating the mount schema branch could not be ensured. |
-| `tp_schemup` | Federation transport | CEI topic signalling mount schema update failures. |
-| `tp_sendfail` | Federation transport | CEI topic emitted when a provider send operation fails. |
-| `tp_upd_den` | Federation transport | CEI topic capturing rejected `upd_latest` frames (mount opted out). |
-| `tp_upd_mis` | Federation transport | CEI topic capturing `upd_latest` frames sent to non-unreliable transports. |
-| `tp_flatneg` | Federation transport | CEI topic emitted when the sender downgrades CRC32C/deflate/AEAD for a mount. |
-| `tp_mconf` | Federation transport | CEI topic emitted when a mirror organ request conflicts with an existing mount. |
-| `tp_mtimeout` | Federation transport | CEI topic emitted when a mirror organ request exceeds its deadline. |
+| `net` | FED | root dictionary for federation metadata (peers, mounts, transports). |
+| `mounts` | FED | groups mount declarations by peer and mode under `/net/mounts`. |
+| `peers` | FED | peer registry keyed by peer identifier; hosts services and CEI health. |
+| `catalog` | FED | per-mode mount catalog generated during bootstrap under `/net/catalog`. |
+| `transports` | FED | registry of transport providers keyed by provider ID. |
+| `transport` | FED | per-mount dictionary recording the chosen provider and capability summary. |
+| `caps` | FED | nested dictionary capturing capability bitmaps (required, preferred, or provider-specific). |
+| `cap_crc32c` | FED | provider capability flag indicating CRC32C checksum support. |
+| `cap_deflate` | FED | provider capability flag indicating deflate frame compression support. |
+| `cap_aead` | FED | provider capability flag indicating AEAD payload encryption support. |
+| `cap_cmpver` | FED | provider capability flag signalling comparator-version awareness. |
+| `prov_caps` | FED | mirrors the selected provider capability bitset for the active mount. |
+| `provider` | FED | stores the provider identifier associated with a mount record. |
+| `upd_latest` | FED | boolean flag indicating a mount opts into droppable gauge frames. |
+| `src_peer` | FED | mirror organ request field naming the remote peer supplying bundles. |
+| `src_chan` | FED | mirror organ request field naming the remote channel supplying bundles. |
+| `max_infl` | FED | mirror organ bundle parameter limiting simultaneous in-flight bundles. |
+| `resume_tok` | FED | mirror organ optional token handed to callers to resume paused mirrors. |
+| `pend_resum` | FED | mirror organ status field publishing the pending resume token when manual commits pause work. |
+| `serializer` | FED | optional mirror organ dictionary constraining flat serializer features. |
+| `crc32c_ok` | FED | serializer policy flag that permits CRC32C emission on a mirror mount. |
+| `deflate_ok` | FED | serializer policy flag that permits deflate compression on a mirror mount. |
+| `aead_ok` | FED | serializer policy flag that permits AEAD encryption on a mirror mount. |
+| `warn_down` | FED | serializer policy flag enabling/disabling CEI when downgrading features. |
+| `cmp_max_ver` | FED | serializer policy field limiting comparator versions emitted for a mirror mount. |
+| `bundle_seq` | FED | mirror organ status field recording the last committed bundle sequence. |
+| `commit_beat` | FED | mirror organ status field recording the beat of the most recent commit. |
+| `tp_inv_timeout` | FED | CEI topic emitted when a remote invocation exceeds its beat budget. |
+| `tp_inv_reject` | FED | CEI topic emitted when the remote peer rejects an invocation request. |
+| `services` | FED | peer-level dictionary listing advertised services/mounts. |
+| `telemetry` | FED | heartbeat-sampled metrics root under `/net/telemetry`. |
+| `ceh` | FED | consolidated CEI health facts per peer keyed by telemetry topic. |
+| `net_discovery` | FED | discovery organ slug registered by the federation pack. |
+| `net_health` | FED | health organ slug registered by the federation pack. |
+| `bp_count` | FED | telemetry counter tracking total backpressure events for a mount. |
+| `bp_flag` | FED | boolean flag indicating the mount is currently backpressured. |
+| `last_mode` | FED | telemetry field recording the last transmitted frame mode. |
+| `last_sample` | FED | telemetry field recording the first byte of the last transmitted frame. |
+| `async_pnd` | FED | telemetry counter storing how many async requests are inflight for the mount. |
+| `async_shm` | FED | telemetry counter tracking completions handled by shim worker threads. |
+| `async_nat` | FED | telemetry counter tracking provider-native async completions. |
+| `tp_backpr` | FED | CEI topic and health key for backpressure notifications. |
+| `tp_catsync` | FED | CEI topic for catalog/telemetry publication failures. |
+| `tp_fatal` | FED | CEI topic recording fatal transport channel events. |
+| `tp_noprov` | FED | CEI topic recorded when no provider satisfies mount requirements. |
+| `tp_async_unsp` | FED | CEI topic emitted when a mount falls back to the async shim because the provider lacks async hooks. |
+| `tp_openfail` | FED | CEI topic emitted when provider channel negotiation fails. |
+| `tp_provcell` | FED | CEI topic noting provider cell resolution failures. |
+| `tp_provid` | FED | CEI topic emitted when provider identifiers cannot be encoded. |
+| `tp_schema` | FED | CEI topic indicating the mount schema branch could not be ensured. |
+| `tp_schemup` | FED | CEI topic signalling mount schema update failures. |
+| `tp_sendfail` | FED | CEI topic emitted when a provider send operation fails. |
+| `tp_upd_den` | FED | CEI topic capturing rejected `upd_latest` frames (mount opted out). |
+| `tp_upd_mis` | FED | CEI topic capturing `upd_latest` frames sent to non-unreliable transports. |
+| `tp_flatneg` | FED | CEI topic emitted when the sender downgrades CRC32C/deflate/AEAD for a mount. |
+| `tp_mconf` | FED | CEI topic emitted when a mirror organ request conflicts with an existing mount. |
+| `tp_mtimeout` | FED | CEI topic emitted when a mirror organ request exceeds its deadline. |
 
 #### Test Harness Tags
 | Tag / Pattern | Feature Area | Purpose |
 | --- | --- | --- |
-| `catalog` | Test harness | storage fixture exercising catalog/indexed semantics. |
-| `cmp_root` | Test harness | comparison root used by traversal and enzyme tests. |
-| `dict` | Test harness | shorthand tag used by dynamic dictionary fixtures. |
-| `domain` | Test harness | domain/tag packing validation tag. |
-| `hash` | Test harness | storage fixture for hash-indexed tables. |
-| `hyb_field` | Test harness | hybrid integration POC field mutated during promote/demote coverage. |
-| `hyb_fin` | Test harness | hybrid episode test tag confirming RO guard after demotion. |
-| `hyb_mut` | Test harness | hybrid episode test tag recording the RW mutation slice. |
-| `oct_root` / `oct_space` | Test harness | octree storage fixtures in randomized tests. |
-| `pq_buffer` / `pq_root` | Test harness | packed-queue storage fixtures. |
-| `poc` | Test harness | integration POC root covering the end-to-end heartbeat timeline scenario. |
-| `poc_catalog` | Test harness | dictionary store standing in for the catalog branch during integration testing. |
-| `poc_event` | Test harness | log entry payload tag used by the integration log/history assertions. |
-| `poc_item` | Test harness | catalog value payload type exercised by the integration scenario. |
-| `poc_link` | Test harness | scratch dictionary used to validate link/backlink semantics in the integration test. |
-| `poc_log` | Test harness | list store tag backing the integration log branch. |
-| `poc_stream_root` | Test harness | stream/proxy dictionary hosting the journalled stdio adapter in the integration test. |
-| `poc_replay` | Test harness | replay root populated when verifying serialization round-trips. |
-| `poc_txn` | Test harness | veiled transaction branch staged during the integration heartbeat timeline. |
-| `space` | Test harness | octree dictionary mounted under `/data/poc` to exercise spatial store plumbing during integration. |
-| `space_entry` | Test harness | deterministic point payload inserted into the spatial store to validate octree comparisons. |
-| `rand_entry_*` | Test harness | seeded log entries appended during randomized mutation passes to ensure logging remains deterministic. |
-| `prr_pause` | Test harness | backlog dictionary that records retained impulses while pause/rollback is exercised. |
-| `enz:poc_idx` / `enz:poc_agg` | Test harness | ordered enzyme pair asserting catalog reindex sequencing. |
-| `enz:poc_rand` | Test harness | deterministic random enzyme descriptor feeding seeded impulse bursts. |
-| `sig:poc/prr` | Test harness | integration heartbeat signal that exercises pause/rollback sequencing. |
-| `org:poc:*` | Test harness | integration organ descriptor signals (`org:poc:val`, `org:poc:ctor`, `org:poc:dtor`). |
-| `org:fixture:*` | Test harness | OVH (Organ Validation Harness) fixture signals exercising constructor/destructor/validator dossiers. |
-| `sig_apply` `sig_beta` `sig_broad` `sig_cycle` `sig_dedup` `sig_dup` `sig_empty` `sig_expect` `sig_gamma` `sig_hb` `sig_img` `sig_mask` `sig_match` `sig_nop` `sig_rand` `sig_root` `sig_rty` `sig_skip` `sig_thumb` `sig_tree` | Test harness | assorted signal tags exercised by scheduler and heartbeat tests. |
-| `sys_child` / `sys_root` | Test harness | synthetic system fixtures in randomized tests. |
-| `test_enz_*` (`test_enz_a`, `test_enz_b`, `test_enz_c`, `test_enz_d`, `test_enz_da`, `test_enz_e`, `test_enz_le`, `test_enz_ro`) | Test harness | enzyme dependency graphs in unit tests. |
-| `test_ez_*` (`test_ez_bc`, `test_ez_bd`, `test_ez_da`, `test_ez_du`, `test_ez_er`, `test_ez_ge`, `test_ez_la`, `test_ez_le`, `test_ez_li`, `test_ez_ma`, `test_ez_mi`, `test_ez_no`, `test_ez_p1`, `test_ez_p2`, `test_ez_p3`, `test_ez_pl`, `test_ez_ro`, `test_ez_si`, `test_ez_sig`, `test_ez_sp`, `test_ez_sr`, `test_ez_st`, `test_ez_wl`) | Test harness | synthetic descriptor names used by dispatch tests. |
-| `test_hb_*` (`test_hb_a`, `test_hb_b`, `test_hb_cn`, `test_hb_r`, `test_hb_rt`) | Test harness | heartbeat test hooks. |
-| `test_img_*` (`test_img_ch`, `test_img_vi`) | Test harness | image stream fixtures in serialization tests. |
-| `test_lck_*` (`test_lck_ch`, `test_lck_in`) | Test harness | lock hierarchy fixtures. |
-| `tst_enz*` (`tst_enza`, `tst_enzb`, `tst_enzc`, `tst_enzi`, `tst_enzj`, `tst_enzk`, `tst_enzl`, `tst_enzm`, `tst_enzo`, `tst_enzp`, `tst_enzq`, `tst_enzr`) | Test harness | randomized enzyme descriptors used by registry fuzz tests. |
-| `tst_*` (`tst_a`, `tst_b`, `tst_branch`, `tst_child`, `tst_chld`, `tst_clone`, `tst_data`, `tst_dedup`, `tst_drop`, `tst_empty`, `tst_far`, `tst_head`, `tst_keep_a`, `tst_keep_b`, `tst_leaf`, `tst_list`, `tst_mask`, `tst_mid`, `tst_nop`, `tst_path`, `tst_remove`, `tst_root`, `tst_sig`, `tst_stor`, `tst_tree`, `tst_update`, `tst_val`, `tst_value`) | Test harness | generic test scaffolding tags. |
-| `raw_all_sib` | Test harness | veiled sibling fixture used by raw traversal helper tests. |
-| `value` | Test harness | generic payload tag for value-type fixtures. |
-| `var_leaf` | Test harness | variant selection fixture in unit tests. |
+| `catalog` | TEST | storage fixture exercising catalog/indexed semantics. |
+| `cmp_root` | TEST | comparison root used by traversal and enzyme tests. |
+| `dict` | TEST | shorthand tag used by dynamic dictionary fixtures. |
+| `domain` | TEST | domain/tag packing validation tag. |
+| `hash` | TEST | storage fixture for hash-indexed tables. |
+| `hyb_field` | TEST | hybrid integration POC field mutated during promote/demote coverage. |
+| `hyb_fin` | TEST | hybrid episode test tag confirming RO guard after demotion. |
+| `hyb_mut` | TEST | hybrid episode test tag recording the RW mutation slice. |
+| `oct_root` / `oct_space` | TEST | octree storage fixtures in randomized tests. |
+| `pq_buffer` / `pq_root` | TEST | packed-queue storage fixtures. |
+| `poc` | TEST | integration POC root covering the end-to-end heartbeat timeline scenario. |
+| `poc_catalog` | TEST | dictionary store standing in for the catalog branch during integration testing. |
+| `poc_event` | TEST | log entry payload tag used by the integration log/history assertions. |
+| `poc_item` | TEST | catalog value payload type exercised by the integration scenario. |
+| `poc_link` | TEST | scratch dictionary used to validate link/backlink semantics in the integration test. |
+| `poc_log` | TEST | list store tag backing the integration log branch. |
+| `poc_stream_root` | TEST | stream/proxy dictionary hosting the journalled stdio adapter in the integration test. |
+| `poc_replay` | TEST | replay root populated when verifying serialization round-trips. |
+| `poc_txn` | TEST | veiled transaction branch staged during the integration heartbeat timeline. |
+| `space` | TEST | octree dictionary mounted under `/data/poc` to exercise spatial store plumbing during integration. |
+| `space_entry` | TEST | deterministic point payload inserted into the spatial store to validate octree comparisons. |
+| `rand_entry_*` | TEST | seeded log entries appended during randomized mutation passes to ensure logging remains deterministic. |
+| `prr_pause` | TEST | backlog dictionary that records retained impulses while pause/rollback is exercised. |
+| `enz:poc_idx` / `enz:poc_agg` | TEST | ordered enzyme pair asserting catalog reindex sequencing. |
+| `enz:poc_rand` | TEST | deterministic random enzyme descriptor feeding seeded impulse bursts. |
+| `sig:poc/prr` | TEST | integration heartbeat signal that exercises pause/rollback sequencing. |
+| `org:poc:*` | TEST | integration organ descriptor signals (`org:poc:val`, `org:poc:ctor`, `org:poc:dtor`). |
+| `org:fixture:*` | TEST | OVH (Organ Validation Harness) fixture signals exercising constructor/destructor/validator dossiers. |
+| `sig_apply` `sig_beta` `sig_broad` `sig_cycle` `sig_dedup` `sig_dup` `sig_empty` `sig_expect` `sig_gamma` `sig_hb` `sig_img` `sig_mask` `sig_match` `sig_nop` `sig_rand` `sig_root` `sig_rty` `sig_skip` `sig_thumb` `sig_tree` | TEST | assorted signal tags exercised by scheduler and heartbeat tests. |
+| `sys_child` / `sys_root` | TEST | synthetic system fixtures in randomized tests. |
+| `test_enz_*` (`test_enz_a`, `test_enz_b`, `test_enz_c`, `test_enz_d`, `test_enz_da`, `test_enz_e`, `test_enz_le`, `test_enz_ro`) | TEST | enzyme dependency graphs in unit tests. |
+| `test_ez_*` (`test_ez_bc`, `test_ez_bd`, `test_ez_da`, `test_ez_du`, `test_ez_er`, `test_ez_ge`, `test_ez_la`, `test_ez_le`, `test_ez_li`, `test_ez_ma`, `test_ez_mi`, `test_ez_no`, `test_ez_p1`, `test_ez_p2`, `test_ez_p3`, `test_ez_pl`, `test_ez_ro`, `test_ez_si`, `test_ez_sig`, `test_ez_sp`, `test_ez_sr`, `test_ez_st`, `test_ez_wl`) | TEST | synthetic descriptor names used by dispatch tests. |
+| `test_hb_*` (`test_hb_a`, `test_hb_b`, `test_hb_cn`, `test_hb_r`, `test_hb_rt`) | TEST | heartbeat test hooks. |
+| `test_img_*` (`test_img_ch`, `test_img_vi`) | TEST | image stream fixtures in serialization tests. |
+| `test_lck_*` (`test_lck_ch`, `test_lck_in`) | TEST | lock hierarchy fixtures. |
+| `tst_enz*` (`tst_enza`, `tst_enzb`, `tst_enzc`, `tst_enzi`, `tst_enzj`, `tst_enzk`, `tst_enzl`, `tst_enzm`, `tst_enzo`, `tst_enzp`, `tst_enzq`, `tst_enzr`) | TEST | randomized enzyme descriptors used by registry fuzz tests. |
+| `tst_*` (`tst_a`, `tst_b`, `tst_branch`, `tst_child`, `tst_chld`, `tst_clone`, `tst_data`, `tst_dedup`, `tst_drop`, `tst_empty`, `tst_far`, `tst_head`, `tst_keep_a`, `tst_keep_b`, `tst_leaf`, `tst_list`, `tst_mask`, `tst_mid`, `tst_nop`, `tst_path`, `tst_remove`, `tst_root`, `tst_sig`, `tst_stor`, `tst_tree`, `tst_update`, `tst_val`, `tst_value`) | TEST | generic test scaffolding tags. |
+| `raw_all_sib` | TEST | veiled sibling fixture used by raw traversal helper tests. |
+| `value` | TEST | generic payload tag for value-type fixtures. |
+| `var_leaf` | TEST | variant selection fixture in unit tests. |
 
 #### Reserved Upper-Layer Tags
 | Tag / Pattern | Feature Area | Purpose |
 | --- | --- | --- |
+| *reserved* | L1–L4 | Placeholder row; add upper-layer tag definitions here before minting them in code. |
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor
   declarations. Emitting them outside the heartbeat dispatcher is undefined.

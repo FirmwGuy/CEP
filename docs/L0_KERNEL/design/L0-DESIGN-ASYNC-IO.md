@@ -1,4 +1,4 @@
-# L0 Design — Async I/O Fabric
+# L0 Design: Async I/O Fabric
 
 ## Introduction
 Layer 0 increasingly needs to juggle persistence, federation, and serialization workloads that exceed what synchronous I/O can provide, yet the heartbeat must stay deterministic and replayable. The async I/O fabric described here shows how the kernel can adopt a non-blocking execution style without exposing nondeterminism to callers. It explains the moving parts, why they are required, and how operators benefit from improved throughput and observability.
@@ -41,7 +41,7 @@ Shipping builds currently run exclusively on the worker-thread shim so targets w
   }
   ```
   `cep_async_promote_completion` updates the owning OPS dossier, appends `op/cont` or `op/tmo`, bumps watcher TTL counters, and enqueues follow-on work for Compute. CQ drains never happen mid-beat unless replay is rewinding history inside the same deterministic order.
-- **Episode awareness:** E³ episodes that owns async work receive borrow tokens so they can peek at completions during cooperative yields, but any mutation still posts back into OPS for beat-stage visibility.
+- **Episode awareness:** E3 episodes that owns async work receive borrow tokens so they can peek at completions during cooperative yields, but any mutation still posts back into OPS for beat-stage visibility.
 - **Pause/rollback quiesce:** calling `cep_io_reactor_quiesce(deadline_beats)` sets `/io_reactor/draining=true`, drains CQs, issues cancels for outstanding requests, and blocks until worker shims stop. Requests exceeding the deadline receive `sts:cnl` plus CEI `persist.async.tmo` or transport-specific topics; only then does the heartbeat advance the pause/rollback beat.
 - **Shutdown:** `cep_heartbeat_emit_shutdown()` triggers the same quiesce call with a short default budget so no background thread can observe torn shutdown state.
 - **Metrics:** Reactors publish `/rt/analytics/async/reactor/<rid>/` entries (`cq_depth`, `pending_bytes`, `completions_per_beat`, `timeouts`) the heartbeat updates once per drain so dashboards see live progress.

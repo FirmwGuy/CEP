@@ -57,6 +57,38 @@ The notes below translate the workshop metaphor into concrete data structures, f
   - Resolved enzymes run through Kahn’s algorithm to honour `before`/`after` constraints. When several enzymes are simultaneously ready, the dispatcher keeps the priority tuple: dual-path matches (target + signal) ahead of single-path, higher combined specificity, descriptor name, then registration order.
   - Each descriptor runs at most once per `(signal_path, target_path, beat)` pair.
 
+### Canonical enzyme template
+- Use the real prototype `int (*)(const cepPath *signal, const cepPath *target)`.
+- Fetch context with `cep_enzyme_context_current()`, require RW via `cep_ep_require_rw()`, then resolve/mutate through the standard helpers so branch policy and enclave guards fire automatically.
+- Return `CEP_ENZYME_SUCCESS` on success; `CEP_ENZYME_RETRY` to ask for re-run; `CEP_ENZYME_FATAL` to abort.
+
+```c
+static int ez_update(const cepPath *sig, const cepPath *tgt) {
+    (void)sig;
+    const cepEnzymeContext *ctx = cep_enzyme_context_current();
+    if (!ctx || cep_ep_require_rw(ctx) != CEP_OK) return CEP_ENZYME_FATAL;
+
+    cepCell *root = cep_root();
+    if (!root || !tgt) return CEP_ENZYME_FATAL;
+
+    cepCell *parent = cep_cell_find_by_path(root, tgt);
+    if (!parent) return CEP_ENZYME_FATAL;
+
+    cepDT name = /* build DT for child name */;
+    cepCell *child = cep_cell_find_by_name(parent, &name);
+    if (!child) {
+        if (cep_cell_make_scratch_dt(&name, CEP_STORE_DICTIONARY, &child) != CEP_OK)
+            return CEP_ENZYME_FATAL;
+        if (cep_cell_add(parent, child) != CEP_OK) return CEP_ENZYME_FATAL;
+    }
+
+    cepData *d = cep_cell_data(child);
+    if (cep_data_set_value(d, "new-bytes", strlen("new-bytes")) != CEP_OK)
+        return CEP_ENZYME_FATAL;
+    return CEP_ENZYME_SUCCESS;
+}
+```
+
 ### Heartbeat Cycle
 1) Begin beat N: create/ensure `rt/beat/<N>/*` structures.
 2) Resolve agenda: for each impulse ledger entry, find all matching enzymes via the registry, order them deterministically, and enqueue them in `rt/beat/<N>/agenda`. The dispatcher memoises the resolved descriptor list for each unique `(signal_path, target_path)` pair during the beat so later duplicates reuse the cached ordering instead of repeating the registry scan.

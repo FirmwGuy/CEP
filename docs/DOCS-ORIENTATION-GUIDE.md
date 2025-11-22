@@ -21,21 +21,21 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/topics/LINKS-AND-SHADOWING.md` — Link lifecycle and backlink invariants that moves/clones/deletes rely on.
   - `docs/CEP-TAG-LEXICON.md` — Canonical tag catalog; extend here before introducing new identifiers.
   - `docs/L0_KERNEL/design/L0-DESIGN-CPS.md` — CPS storage architecture, CAS caching, metrics, fixtures, and operational guidance.
-  - `CPCL.md` — Shipping CPCL behavior, telemetry surfaces under `/data/persist`, and the policy knobs (`flush_every`, `flush_on_shutdown`, `allow_volatile_reads`, `snapshot_ro`, `history_ram_*`, `ram_quota`) that branch controllers interpret today.
-  - `CPCL_FUTURE_FEATURES.md` — Backlog for upcoming CPCL modes (commit-once, lazy-save, advanced RAM controls) so you can tell which promises are aspirational vs. implemented.
 
 - **Runtime & Lifecycle**
   - `docs/LAYER-BOOTSTRAP-POLICY.md` — Kernel vs. pack responsibilities during bootstrap.
   - `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md` — Boot/shutdown operation timeline, states, and awaiter guidance.
   - `docs/L0_KERNEL/topics/CEI.md` — Emission helper, diagnostics mailbox defaults, and severity rules for CEI facts.
   - `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` — Beat phases, agenda ordering, and signal staging contracts.
+  - `docs/L0_KERNEL/topics/PIPELINES-AND-HYDRATION.md` — Friendly walkthrough of L0 pipeline metadata, cross-enclave approvals, and safe hydration for pipeline-aware enzymes.
+  - `docs/L0_KERNEL/topics/CACHE-AND-CONTROLLERS.md` — Cache/branch controller overview: policies, history windows, flush triggers, telemetry, and CEI.
   - `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` — Mailbox identity helpers, TTL precedence, and retention planning.
   - `docs/L0_KERNEL/topics/MAILBOX-CEI-MAPPING.md` — Line-by-line severity map for mailbox helpers so CEI emits stay consistent.
   - `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md` — Binding inheritance, wildcard routing, and tombstones.
   - `docs/L0_KERNEL/topics/CELL-OPERATIONS-ENZYMES.md` — Reference semantics for the standard `sig_cell/op_*` helpers.
   - `docs/L0_KERNEL/topics/FEDERATION-TRANSPORT.md` — Transport manager duties, capability negotiation rules, the `/net` schema for peers/catalog/telemetry, and the discovery/health/link/mirror/invoke validators (now all flat-serializer by default).
   - `docs/L0_KERNEL/topics/ORGANS-AUTHORING.md` — Register organ descriptors, enforce validator bindings, and coordinate ctor/dtor/validation ops.
-  - `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` — How the Episodic Enzyme Engine (E³) handles RO budgets, hybrid RO↔RW promotions/demotions, and cooperative cancellation.
+  - `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` — How the Episodic Enzyme Engine (E3) handles RO budgets, hybrid RO↔RW promotions/demotions, and cooperative cancellation.
   - `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` — Episodic engine design rationale, executor backends, and queue invariants.
 - **External Integrations**
 - `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md` — Flat-frame record taxonomy, capability negotiation, AEAD/compression knobs, and replay expectations.
@@ -73,6 +73,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/LICENSING.md` — Licensing split across core, tests, and third-party components.
   - `docs/CEP-FOR-PL-SQL-DEVS.md` — Translation layer for database-centric contributors.
   - `docs/Doxyfile.in` — Doxygen template; helpful when altering documentation tooling.
+  - `docs/GLOSSARY.md` — Acronyms and terminology cheat sheet for non-specialists.
 
 ## Global Q&A
 - **What do I skim every time I start coding?** Revisit the Core Architecture block, then dip into Data & Storage or Runtime sections that match the subsystem you plan to touch.
@@ -122,6 +123,7 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/L0_KERNEL/topics/CELL-OPERATIONS-ENZYMES.md` | Enzyme helpers for cell operations | Standard enzyme suite | Live | Align with `src/l0_kernel/enzymes/`. |
 | `docs/L0_KERNEL/topics/DEVELOPER-HANDBOOK.md` | Hands-on implementation guide for kernel contributors | `cep_cell.*`, storage backends, tests | Live | Restructured with nontechnical intro and final Q&A. |
 | `docs/L0_KERNEL/topics/EXTERNAL-LIBRARIES-INTERFACE.md` | Adapters for foreign libraries and handles | Proxy/library ops | Live | Ensure adapter API changes are reflected. |
+| `docs/L0_KERNEL/topics/CACHE-AND-CONTROLLERS.md` | Cache/branch controllers and policy knobs | CPS/branch controllers, telemetry, CEI | Live | One-stop overview of flush modes, history windows, CEI topics, and async flow. |
 | `docs/L0_KERNEL/topics/GLOB-MATCHING.md` | Domain/tag glob semantics | Naming helpers | Live | Keep examples aligned with `cep_id_matches`. |
 | `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` | Heartbeat phases and enzyme scheduling | Heartbeat engine, registry | Live | Sync with agenda ordering rules. |
 | `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` | Mailbox lifecycle | `cep_mailbox_*`, retention planners | Live | Documents diagnostics mailbox defaults and CEI TTL interplay. |
@@ -132,11 +134,12 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/L0_KERNEL/topics/NATIVE-TYPES.md` | Handling of VALUE/DATA/HANDLE/STREAM payloads | `cepData`, hashing, naming | Live | Examples rely on upper-layer agreements, not kernel features. |
 | `docs/L0_KERNEL/topics/ORGANS-AUTHORING.md` | Authoring organ descriptors and lifecycle | Organ registration, validators | Live | Ensure organ descriptor enums stay updated. |
 | `docs/L0_KERNEL/topics/PROXY-CELLS.md` | Proxy cell lifecycle and serialization | Proxy adapters | Live | Update when proxy ABI changes. |
+| `docs/L0_KERNEL/topics/PIPELINES-AND-HYDRATION.md` | Friendly overview of pipeline metadata and safe hydration | Pipeline metadata, CEI tagging, cross-enclave approval cues | Live | Non-expert walkthrough of pipeline blocks, federation approvals, and `cep_cell_hydrate_for_enzyme()` usage. |
 | `docs/L0_KERNEL/topics/RAW-TRAVERSAL-HELPERS.md` | Planned traversal helper APIs | Traversal roadmap | Planned | Pending implementation; reference before adding traversal helpers. |
 | `docs/L0_KERNEL/topics/SERIALIZATION-AND-STREAMS.md` | Serialization format and reader/writer APIs | Serialization core | Live | Verify manifest and chunk descriptions against code. |
 | `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md` | Boot/shutdown operation timelines | Lifecycle operations | Live | Should be reread before editing lifecycle helpers. |
 | `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` | Episodic Enzyme Engine overview (episodes, budgets, cancellation) | Heartbeat executor, OPS dossiers | Live | Describes queue semantics, RO guardrails, and CEI integration for the shipping executor. |
-| `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` | Episodic engine design (lifecycle, executor backends, migration) | Heartbeat executor, OPS dossiers | Live | Explains why E³ unifies long-running work, how budgets/leases interact, and what each backend guarantees. |
+| `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` | Episodic engine design (lifecycle, executor backends, migration) | Heartbeat executor, OPS dossiers | Live | Explains why E3 unifies long-running work, how budgets/leases interact, and what each backend guarantees. |
 
 ### Planned Document Type: Design Papers
 Design documents live under `docs/L0_KERNEL/design/` and cover the architectural rationale behind concrete implementations. See `docs/L0_KERNEL/design/L0-DESIGN-GUIDE.md` for structure and expectations.

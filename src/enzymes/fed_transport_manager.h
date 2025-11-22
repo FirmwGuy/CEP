@@ -99,6 +99,12 @@ void cep_fed_transport_manager_mount_set_flat_history(cepFedTransportManagerMoun
 void cep_fed_transport_manager_mount_set_flat_policy(cepFedTransportManagerMount* mount,
                                                      const cepFedTransportFlatPolicy* policy);
 
+void cep_fed_transport_manager_mount_set_pipeline_metadata(cepFedTransportManagerMount* mount,
+                                                           const char* pipeline_id,
+                                                           const char* stage_id,
+                                                           uint64_t dag_run_id,
+                                                           uint64_t hop_index);
+
 bool cep_fed_transport_manager_request_receive(cepFedTransportManager* manager,
                                                cepFedTransportManagerMount* mount);
 

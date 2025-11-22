@@ -1,65 +1,74 @@
-# L0 Design: Federation Transport and Organs
+# L0 Design: Federation
 
 ## Introduction
-Federation lets independent CEP runtimes exchange signals, mirror persistent state, and invoke enzymes across process boundaries without sacrificing the determinism guarantees Layer 0 already enforces. Think of it as a well-lit causeway between runtimes: each side publishes the services it can host, the transport manager negotiates how to move frames, and a trio of organs—link, mirror, and invoke—turn those frames into familiar heartbeat work. This note explains how the design fits together so you can reason about beats, telemetry, and CEI diagnostics before touching the code. Every federation frame is a flat serializer frame; the transport manager owns the call to `cep_fed_transport_manager_send_cell()` so per-mount history/AEAD/compression settings ride along without bespoke emitters. Next-stage work will extend mount negotiation so checksum/compression/AEAD/comparator capabilities are explicit rather than trial-and-error.
+Federation is how separate CEP runtimes share data and work without breaking determinism. Every byte rides the flat serializer; the transport manager chooses how to move those bytes; and three organs—link, mirror, invoke—turn them back into heartbeat work. This note explains the design in plain language, flagging what ships today and what is still forward-looking, so you can edit transports or organs with a clear mental model.
 
-## Technical Details
-### Beat Roadmap Overview
-- **Beat 0 — Bootstrap & Pack Wiring.** `cep_fed_pack_bootstrap` seeds `/net` with catalog, telemetry, and organ scaffolding, then registers transport providers (tcp, pipe, mock). The transport manager resolves providers without opening channels yet; the heartbeat simply advances through bootstrap as usual.
-- **Beat 1 — Manager Initialization.** The shared `cepFedTransportManager` binds to `/net/mounts`, `/net/peers`, and `/net/telemetry`. It exposes helpers for configuring mounts, refreshing telemetry, and recording CEI topics so every subsequent organ call shares the same store-and-diagnostics plumbing.
-- **Beat 2 — Organs & Providers.** Validators under `/net/organs/link|mirror|invoke/requests/*` translate request dictionaries into transport mount configurations:
-  - *Link* provisions long-lived channels for control traffic and telemetry. It enforces capability flags (`reliable`, `ordered`, `remote_net`, …), captures CEI topics like `tp_fatal`, and publishes state/provider fields back into the request.
-  - *Mirror* stages beat bundles through the episodic engine. Requests supply `beat_window` (`val/u32`), `max_infl` (`val/u16`), and source peer/channel identifiers. The organ caches runtime-specific state, arms leases, and surfaces bundle commit evidence under the request.
-  - *Invoke* routes remote enzyme submissions. Validators ensure peer/mount/local node identifiers respect CEP word limits, derive required transport caps, and register timeout handlers that enqueue `sig:fed_inv:timeout` if the remote side never responds.
-- **Beat 3 — Validation & Documentation.** Dual-runtime harnesses exercise happy path (discovery → link → mirror → invoke) and failure modes (timeout, provider loss). Documentation—this design note plus updates to `FEDERATION-TRANSPORT.md` and the orientation guide—keeps the workflow discoverable.
+## Big picture
+- **Transport-neutral:** Providers (sockets, pipes, mocks) plug into the transport manager. All traffic is flat frames; transports only move them.
+- **Schema-first:** `/net/transports`, `/net/mounts`, `/net/telemetry`, and `/net/peers` record mounts, caps, and health so replay/debugging never depends on opaque provider state.
+- **Organ trio:** link opens/control channels, mirror moves branch bundles, invoke runs remote enzymes. Discovery/health organs keep schemas clean and telemetry trustworthy.
+- **Policy-aware:** Security checks (enclave edges, pipeline approvals, budgets) run on invoke; serializer caps and `upd_latest` are enforced centrally.
 
-### Transport Manager Responsibilities
-- Maintains mount registry: `configure_mount`, `close`, `request_receive`, and telemetry refresh helpers.
-- Emits CEI topics (`tp_noprov`, `tp_backpr`, `tp_fatal`, ...) and mirrors them under `/net/peers/<peer>/ceh/<topic>/`.
-- Tracks per-mount counters so tests can assert readiness, backpressure, and fatal event evidence without poking providers directly.
-- Provides callbacks to organs so they see consistent on_frame/on_event behaviour across real transports and mocks.
+## Transport manager
+- **Catalog:** Providers register caps (CRC32C, deflate, AEAD, comparator ceiling, unreliable for `upd_latest`); catalog is mirrored under `/net/transports/<id>/`.
+- **Mounts:** `/net/mounts/<peer>/<mode>/<mount>/` holds `caps/{required,preferred,upd_latest}`, `transport/{provider,prov_caps,upd_latest}`, and negotiated `serializer/{crc32c_ok,deflate_ok,aead_ok,warn_down,cmp_max_ver}`.
+- **Negotiation:** required caps must match; preferred caps break ties (lexicographic fallback). `upd_latest=true` restricts to unreliable providers. Missing serializer caps trigger `tp_flatneg` once unless `warn_down=false`.
+- **Lifecycle:** configure → open channel immediately; close leaves schema so reconfigure is cheap. Telemetry is updated beat-by-beat for replay.
 
-### Organ Behaviour and State
-- **Link Organ**
-  - Requests store fields: `peer`, `mount`, `mode`, `local_node`, optional `pref_prov`, `allow_upd`, `deadline`, and capability dictionaries.
-  - Validator configures mounts via `cep_fed_link_mount_apply`, updates request `state/provider/error_note`, and records CEI when configuration fails.
-  - Optional serializer policy lives under `serializer/` (`crc32c_ok`, `deflate_ok`, `aead_ok`, `warn_down`, `cmp_max_ver`). The validator passes those booleans to the transport manager so the negotiated policy is visible under `/net/mounts/<peer>/link/<mount>/serializer/`.
-  - Destructor closes mounts (reason `link-request-destroy`) and marks requests `removed`.
-- **Mirror Organ**
-  - Request contexts now record `cepRuntime*` so duplicate detection occurs per runtime. This prevents cross-runtime tests from tripping “mirror mount already active”.
-  - Reads bundle settings (`beat_window` `val/u32`, `max_infl` `val/u16`, optional commit mode/resume tokens) and episodic deadlines (`val/u64`).
-  - Manages episodic leases, tracks inflight bundle counts, updates telemetry (`bundle_seq`, `commit_beat`), and publishes CEI topics on schema conflicts or timeouts.
-- **Invoke Organ**
-  - Validates path segments and ensures textual IDs fit the 11-character CEP word constraint.
-  - Configures mounts against required caps (reliable + ordered), schedules heartbeat-managed timeouts, and emits CEI topics `tp_inv_timeout` or `tp_inv_reject`.
-  - Requests can also include a `serializer/` dictionary with the same fields as link/mirror; the validator feeds those flags to `cep_fed_transport_manager_mount_set_flat_policy`, and the manager records the result under `/net/mounts/<peer>/invoke/<mount>/serializer/`.
-  - Submission paths enqueue request frames with invocation IDs; responses remove pending entries and trigger completion callbacks.
+## Organs
+- **Discovery (`org:net_discovery:vl`):** validates `/net/peers/<peer>/services/<service>/` (mode, mount, local_node, provider, `upd_latest`); prunes empty service branches on destroy.
+- **Health (`org:net_health:vl`):** validates `/net/telemetry/<peer>/<mount>/` counters/flags/provider; prunes telemetry/CEI when mounts vanish.
+- **Link:** turns request dictionaries into mounts with serializer policy. Records provider/state/error and CEI (`tp_schema`, `tp_flatneg`, `tp_fatal`). Destructor closes mounts.
+- **Mirror:** stages beat bundles via the episodic engine. Handles `beat_window`, `max_infl`, resume tokens, episodic deadlines, inflight counters, and publishes telemetry (`bundle_seq`, `commit_beat`) plus CEI on conflicts/timeouts.
+- **Invoke:** validates IDs (CEP word limits), requires reliable+ordered caps, schedules heartbeat-managed timeouts, and emits `tp_inv_timeout`/`tp_inv_reject`. Accepts `serializer/` policy like link/mirror and records negotiated policy on the mount.
 
-### Federation Data Model
-- All organ-visible data remains standard CEP dictionaries/values. Numeric knobs use canonical tags (`val/u32`, `val/u16`, `val/u64`), booleans use `val/bool`, and textual identifiers use `val/text`.
-- Telemetry branches publish counts as `val/u64`, last-event text as `val/text`, and flags as `val/bool`.
-- CEI topics adopt the short-form naming (`tp_*`) documented in the tag lexicon so observers can pattern-match across organs.
+## Serializer and caps
+- Flat serializer is mandatory; caps cover CRC32C, deflate, AEAD, comparator ceilings, and history beats.
+- Mount `serializer/` policy can opt out of features or set `cmp_max_ver`; downgrades are logged (`tp_flatneg`) unless `warn_down=false`.
+- Future: broader algorithm menus once providers ship them.
 
-### Failure Handling & Diagnostics
-- Transport manager surfaces provider failures through telemetry (`last_event`, `fatal_count`) and CEI topics.
-- Mirror and invoke organs emit CEI on schema violations, timeouts, or provider rejections and reset request state when they tear down mounts.
-- Dual-runtime harnesses rely on mock providers to simulate drop/reject conditions; unit tests assert that completion callbacks reflect success or failure and that request nodes carry the expected state transitions.
+## Security and pipeline metadata
+- Invoke requests carry `pipeline/{pipeline_id,stage_id,dag_run_id,hop_index}`; `cep_fed_invoke_validator()` enforces enclave edges, approved security pipeline specs, and budgets (beats, CPU, IO bytes, hops, wallclock).
+- Denials emit `sec.pipeline.reject`, `sec.edge.deny`, or `sec.limit.hit` with `origin/pipeline` populated. No pipeline metadata → cross-enclave invoke is rejected.
+
+## Configuration examples
+Here is a concrete wiring to make two peers talk deterministically without surprises.
+
+- **Peer setup:** `/net/transports/tcp_main` registers `caps/required={crc32c=1}` and `caps/preferred={deflate=1,aead=1}`. Peer `saturn` exposes a single service `invoke/main`.
+- **Mount + serializer policy:** `/net/mounts/saturn/invoke/main/` holds:
+  - `caps/required={crc32c=1}` and `caps/preferred={deflate=1,aead=1,cmp_max_ver=0}`; `upd_latest=false` so only reliable transports qualify.
+  - `serializer/{warn_down=true,cmp_max_ver=0}` to tolerate feature downgrades with CEI breadcrumbs.
+  - `transport/{provider=tcp_main,prov_caps={crc32c=1,deflate=1,aead=1},upd_latest=false}` reflecting negotiation.
+  - Optional `pipeline/{pipeline_id=demo/ingest,stage_id=StageA}` stamped by `sig_sec/pipeline_preflight` so cross-enclave invokes clear security checks.
+- **Invoke request sketch:** `/net/peers/saturn/services/invoke/main/` carries `peer=saturn`, `mount=main`, `mode=invoke`, `local_node=node0`, `deadline_bt=+4`, `payload` (flat frame), and inherits the mount’s negotiated serializer caps. Validation emits CEI (`tp_inv_timeout`, `tp_inv_reject`) if the pipeline approval or caps are missing.
+
+## Telemetry and evidence
+- `/net/telemetry/<peer>/<mount>/`: `ready_count`, `bp_count`, `fatal_count`, `frame_count`, `last_mode`, `last_sample`, `last_event`, `bp_flag`.
+- `/net/peers/<peer>/ceh/<topic>`: CEI health mirror (e.g., `tp_flatneg`, `tp_backpr`, `tp_fatal`, `tp_inv_timeout`).
+- OPS dossiers for mirror/invoke (episodic or otherwise) capture envelopes, watcher states, and close status for replay and audits.
+
+## Failure handling
+- Provider loss/backpressure updates telemetry and CEI; link/mirror/invoke mark requests with error notes and close mounts when necessary.
+- Timeouts are beat-based; invoke schedules `sig:fed_inv:timeout` and reports via CEI plus request state.
+- Duplicate detection is per-runtime: request contexts stash `cepRuntime*` to avoid cross-runtime clashes in tests.
+
+## Roadmap (forward-looking)
+- Native async transports (epoll/kqueue) in more builds instead of shim-only paths.
+- Richer serializer negotiation profiles beyond the current CRC32C/deflate/AEAD set.
+- Better perspectives (pack-owned) to surface mount/provider mismatches automatically.
 
 ## Q&A
-**Q: How do runtimes agree on which transports to use?**  
-The transport manager inspects capability requirements (`caps/required`) and chooses a registered provider that satisfies them. If none match, it emits `tp_noprov` and leaves the request in `state=error`.
+**How do runtimes agree on a transport?**  
+The manager matches `caps/required`; if none satisfy, it emits `tp_noprov` and leaves the request in error. Preferred caps only break ties.
 
-**Q: What keeps duplicate requests from conflicting across multiple runtimes?**  
-Request contexts in each organ stash the current `cepRuntime*`; duplicate detection compares both runtime and peer/mount IDs. The dual-runtime harness now configures unique request names per runtime to make this explicit.
+**Why did a mount downgrade features?**  
+The provider lacked a requested serializer cap. The manager kept the mount, disabled the feature, and emitted `tp_flatneg` unless `warn_down=false`.
 
-**Q: How are timeouts enforced for remote invokes?**  
-Submissions capture the current beat, schedule `sig:fed_inv:timeout`, and enqueue the timeout handler at the deadline. When it fires, the handler emits `tp_inv_timeout`, marks the request error note, and fails the completion callback.
+**What evidence do I get when something breaks?**  
+Telemetry (`bp_flag`, counters, `last_event`) plus CEI under `/net/peers/<peer>/ceh/*` and the request’s state/error_note. Mirror/invoke OPS dossiers also record status transitions.
 
-**Q: Where should new federation-native tags live?**  
-Add them to `docs/CEP-TAG-LEXICON.md`, following the federation transport section. Numeric/scalar fields should use the canonical `val/*` tags described in `Native Types`.
+**How does this fit the heartbeat?**  
+Organs run as normal enzymes: validate during capture, process callbacks during compute, publish telemetry/OPS updates at commit. No bypass of Capture → Compute → Commit.
 
-**Q: What evidence do I get when a provider dies?**  
-Telemetry marks `last_event` (e.g., `fatal` or `close`), counters increment, and `tp_fatal` (or similar) CEI entries update under `/net/peers/<peer>/ceh/`. Link/mirror/invoke validators propagate provider selection into the request so you can correlate CEI with the active provider.
-
-**Q: How does this integrate with Layer 0 heartbeat?**  
-Organs run as heartbeat enzymes. Link/mirror/invoke validators execute during the capture phase, transport callbacks fire during compute, and request state/telemetry updates land during commit. Federation never shortcuts the beat pipeline.
+**How do I reuse one transport for link, mirror, and invoke?**  
+Register the provider once (for example `/net/transports/tcp_main`), then create three mounts under `/net/mounts/<peer>/{link,mirror,invoke}/<name>/` that share `transport/provider=tcp_main` but tailor `caps/required` (`invoke` insists on reliable/ordered, `mirror` may allow `upd_latest`). CEI will show individual mount downgrades if a feature is missing.***

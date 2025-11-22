@@ -10,6 +10,40 @@ Organs let you treat an entire subtree as a typed unit with clear lifecycle hook
 - **Constructor/destructor dispatch.** The stock `sig_cell` enzymes detect organ roots. After a successful insert, `cep_organ_request_constructor` queues `op/ct` for the new root when a constructor is defined. During deletes, `cep_organ_request_destructor` queues `op/dt` and the `sig_cell` handler skips immediate removal so the destructor enzyme can tear down state (and ultimately delete) deterministically.
 - **Validator wrapper.** `cep_organ_request_validation` locates the containing organ for any cell and enqueues the organ-specific `org:<kind>:vl` signal against the root. The validator enzyme receives the impulse with the root as target, starts the appropriate `op/vl` OPS/STATES sequence, and closes with `sts:ok` or `sts:fail` once checks finish.
 
+## Organ skeleton template
+- Register once during bootstrap with `cep_organ_register()`; use the real enzyme prototype (`int (*)(const cepPath*, const cepPath*)`) for ctor/dtor/validator.
+- Bind the validator with `propagate=true` on the organ root; optional ctor/dtor bindings can be added after registration. Deletion will queue `op/dt` instead of immediate removal when a destructor is present.
+
+```c
+// Descriptor published at bootstrap
+static const cepOrganDescriptor g_widget_desc = {
+    .kind        = "widget",
+    .label       = "Widget organ",
+    .store       = cep_organ_store_dt("widget"),   // organ/widget store tag
+    .validator   = cep_ops_make_dt("org:widget:vl"),
+    .constructor = cep_ops_make_dt("org:widget:ct"),
+    .destructor  = cep_ops_make_dt("org:widget:dt"),
+};
+
+static int org_widget_validator(const cepPath *sig, const cepPath *tgt) {
+    (void)sig; (void)tgt;
+    // Inspect root, emit CEI/ops as needed…
+    return CEP_ENZYME_SUCCESS;
+}
+
+static int org_widget_ctor(const cepPath *sig, const cepPath *tgt) {
+    (void)sig; (void)tgt;
+    // Seed child state under the organ root…
+    return CEP_ENZYME_SUCCESS;
+}
+
+static int org_widget_dtor(const cepPath *sig, const cepPath *tgt) {
+    (void)sig; (void)tgt;
+    // Tear down state, then remove the root…
+    return CEP_ENZYME_SUCCESS;
+}
+```
+
 ## Global Q&A
 - **When should I register my organ descriptor?** Do it during bootstrap before binding enzymes. Registration must happen once; repeated calls return success only if the descriptor is identical.
 - **What if my organ doesn’t need a constructor or destructor?** Leave the corresponding `cepDT` fields invalid (`{0}`). The runtime treats them as absent and the `sig_cell` enzymes become no-ops for that pathway.

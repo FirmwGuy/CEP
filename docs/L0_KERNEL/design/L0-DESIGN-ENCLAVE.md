@@ -1,62 +1,77 @@
 # L0 Design: Enclave Enforcement
 
 ## Introduction
-Layer 0 now ships a deterministic Enclave gatekeeper so every cross‑enclave call, pipeline hop, and crown‑jewel branch read/write respects the same capture→compute→commit beat contract. Rather than sprinkling ACLs around the tree, we centralise policy inside `/sys/security/**`, replay it into a compact resolver (`cep_enclave_policy`), and wire the resolver into federation validators, branch guards, and the pipeline preflight enzyme. This note records the architecture so future edits can re-check the moving parts—policy snapshots, freeze guards, diagnostics, and tests—before touching code.
+Enclaves are CEP’s “trust bubbles.” Each runtime—or even a fenced-off subtree—declares which bubble it lives in and what other bubbles it is willing to talk to. The Enclave design turns that idea into a single, replayable gatekeeper so cross-enclave calls, pipeline hops, and reads of crown-jewel branches all follow the same capture → compute → commit rhythm. Instead of scattered ACLs, policy sits under `/sys/security/**`, is replayed into a compact resolver (`cep_enclave_policy`), and every enforcement point listens to that resolver. This note explains the design in plain language so newcomers can see what an enclave is, how enforcement fits together, and where to look when something misbehaves.
 
-## Architecture Overview
-- **Enclaves & trust tiers.** Each runtime (or isolated subtree) registers an enclave ID plus a trust tier. Higher tiers (T0–T1) run trusted enzymes, while T2+ enclaves sandbox partner or user code. The policy tree enumerates enclaves, trust tiers, and per-enclave overlays.
-- **Gateways & edges.** Cross‑enclave work only enters a destination enclave through declared gateways. Edges (`from` → `to`) map allowed gateway IDs, verbs, and per-hop budgets (CPU, IO bytes, beats, rate).
-- **Pipelines.** Pipelines stitch multiple stages across enclaves. Specs live under `/data/<pack>/policy/security/pipelines/*`. The `sig_sec/pipeline_preflight` enzyme validates the shape, stamps approvals, and binds resolved ceilings to pipeline IDs.
-- **Internal branch rules.** Trusted enclaves may flag specific branches (e.g., `/data/payments/**`) for diet ACLs. The branch guard´s default fast path stays open, but `cep_cell_svo_context_guard()` consults Enclave rules when it detects a security branch.
+## What an Enclave Is (and Is Not)
+- An **enclave** is a named trust zone (often a runtime) plus a **trust tier**. Tier 0/1 enclaves run trusted CEP code; Tier 2+ enclaves sandbox partner or user modules.
+- **Gateways** are the only doors into an enclave. Each gateway is a specific enzyme that other enclaves may call.
+- **Edges** describe which enclaves may talk to which, through which gateways, and with what budgets (CPU, IO bytes, beats, rate).
+- **Pipelines** can span multiple enclaves. A pipeline spec lists the stages (gateway + enclave) and optional ceilings the pack is requesting.
+- **Crown-jewel branches** (for example `/data/payments/**`) can require explicit allow rules even inside the trusted enclave; everything else defaults to open unless policy says otherwise.
+
+Think of the policy as a map: enclaves, the doors between them, the allowed trips, and the speed limits for each trip.
+
+## Policy Map at a Glance
+```
+/sys/security/
+  enclaves/    # who exists + trust tier
+  edges/       # allowed from → to edges with budgets
+  gateways/    # per-enclave gateway enzymes
+  branches/    # optional branch allow-list for crown jewels
+  defaults/    # fallback budgets/TTLs/rates
+  env/*/       # overlays per environment (prod, staging, dev, …)
+/data/<pack>/policy/security/pipelines/<id>/  # pack-owned pipeline specs
+```
+Merge order: defaults → global → env overlay → per-enclave overrides → pack policy. “Deny” and “tightest budget wins” when rules overlap.
+
+## How a Cross-Enclave Call Flows
+1. **Policy is loaded.** The loader snapshots `/sys/security/**`, hashes it (`pol_ver`), and publishes readiness under `/sys/state/security`.
+2. **A caller sends work.** Federation validators resolve the source→dest edge, check the gateway is allowed, and ensure the call belongs to an approved pipeline stage if `pipeline_id`/`stage_id` are present.
+3. **Budgets apply.** Per-edge ceilings (beats, CPU, IO bytes, rates) decrement for this hop. If a ceiling trips, the call is denied and a CEI fact (`sec.limit.hit`) is emitted.
+4. **The destination runs the gateway enzyme.** Branch guards still protect sensitive `/sys/security` subtrees inside the enclave.
+5. **Telemetry and ledger updates.** `/rt/analytics/security/**` counts allow/deny/limit hits; CEI facts record the why; ledger cells land in `/journal/decisions/sec` for replay.
 
 ## Policy Loader & Snapshots
-- `cep_enclave_policy` captures `/sys/security/{enclaves,edges,gateways,branches,defaults,env/**}` during Beat A. It maintains watchers so later edits land in a pending state until the next capture window.
-- Loads are atomic: the snapshot is parsed into in-memory structures, hashed, and swapped in when everything succeeds. Failures emit `state=error` in `/sys/state/security`.
-- Reloads are tracked via `pol_ver` (hash of the snapshot). The `cep_enclave_policy_freeze_enter/leave` helpers let validators hold the version steady during retries (e.g., the fed invoke test harness).
-- The loader records readiness under `/sys/state/security` with `state`, `note`, `fault`, `pol_ver`, and `beat`. Bootstrap and organ validators watch this path for deterministic liveness.
+- `cep_enclave_policy` captures `/sys/security/{enclaves,edges,gateways,branches,defaults,env/**}` during Capture, parses it in-memory, hashes it, and swaps it in atomically. Failed parses keep the old snapshot and publish `state=error fault=<reason>` in `/sys/state/security`.
+- The loader writes readiness under `/sys/state/security` (`state`, `note`, `fault`, `pol_ver`, `beat`). Organ validators and bootstrap code watch this path instead of polling the tree.
+- `cep_enclave_policy_freeze_enter/leave` pins the current `pol_ver` for test retries or multi-step approval edits. While frozen, approvals using the frozen hash remain valid.
 
 ## Enforcement Points
-1. **Federation transport manager (`cep_fed_transport_manager_send*`).**
-   - Each mount carries resolved `security_limits` (budgets, TTL, per-edge QPS).
-   - When limits trip, the manager emits `sec.limit.hit` CEI facts and increments `/rt/analytics/security/edges|gateways`.
-2. **Federation validators (link/mirror/invoke).**
-   - `cep_fed_invoke_validator()` resolves the source→dest edge, checks the recorded pipeline approval, and fails closed when the edge denies access or the approval is stale.
-   - `cep_fed_transport_manager_emit_diag()` always uses CEP-domain severities so diag mailboxes record stable severities across builds.
-3. **Pipeline preflight enzyme (`sig_sec/pipeline_preflight`).**
-   - Parses DAG specs under `/data/<pack>/policy/security/pipelines/*`, re-validates edges and ceilings, and writes deterministic approvals (state, note, `pol_ver`, `beat`).
-4. **Branch guard (`cep_cell_svo_context_guard()`).**
-   - When the guarded branch lives under `/sys/security`, the helper formats the resolved path and runs it through `cep_enclave_policy_check_branch()`.
-   - Denies emit `sec.branch.deny`, append ledger entries to `/journal/decisions/sec`, and, when CEP_ENABLE_DEBUG is set, print `[svo_guard]` breadcrumbs so CEP_DEBUG_LOG captures the exact branch note.
+- **Federation transport manager (`cep_fed_transport_manager_send*`).** Each mount carries resolved `security_limits` (budgets, TTLs, per-edge QPS). On a trip, counters decrement; limit hits emit `sec.limit.hit` CEI facts and bump `/rt/analytics/security/edges|gateways`.
+- **Gateway validators (link/mirror/invoke).** `cep_fed_invoke_validator()` resolves the source→dest edge, verifies the gateway, and refuses the call if the edge is denied or the pipeline approval is missing/stale. Diagnostics use CEP-domain severities via `cep_fed_transport_manager_emit_diag()`.
+- **Pipeline preflight (`sig_sec/pipeline_preflight`).** Validates `/data/<pack>/policy/security/pipelines/*` DAGs, re-checks edges/ceilings, and stamps `approval/{state,note,pol_ver,beat}`. Cross-enclave calls carrying pipeline metadata are rejected when no approval exists (`sec.pipeline.reject`).
+- **Branch guard (`cep_cell_svo_context_guard()`).** When touching `/sys/security/**` (or other security-flagged branches), the guard consults enclave policy. Denials emit `sec.branch.deny`, append to `/journal/decisions/sec`, and—with `CEP_ENABLE_DEBUG=1`—print `[svo_guard]` breadcrumbs (plus `TEST_BRANCH_DEBUG=1` mailbox dumps during tests).
+- **Edge denies.** Policy mismatches on the edge itself emit `sec.edge.deny` before any work runs, keeping replays aligned with enforcement decisions.
 
-## Beat Integration
-- **Capture (Beat A).** Policy snapshots load, watchers latch, `/sys/state/security` switches to `state=loading` then `state=ready` (or `state=error` with `fault` text).
-- **Compute (Beat B).** Federation validators consult the snapshot, apply per-hop budgets, and record ledger entries before mutating runtime state. Branch guards run inline with cell ops.
-- **Commit (Beat C).** `/rt/analytics/security` accumulates per-edge/per-gateway allow/deny counters and beat digests; CEI diagnostics are sealed; ledger cells in `/journal/decisions/sec` get appended for replay.
+## Beat Rhythm
+- **Capture (Beat A):** Snapshot loads; `/sys/state/security` flips to `state=loading` then `state=ready` (or `state=error` with `fault`).
+- **Compute (Beat B):** Validators apply budgets and approvals before mutations; branch guards run inline with cell operations.
+- **Commit (Beat C):** `/rt/analytics/security` tallies allow/deny/limit-hit counts, CEI facts are sealed, and `/journal/decisions/sec` receives ledger entries for replay.
 
-## Telemetry & Diagnostics
-- `/sys/state/security` — live readiness/fault metadata for bootstrap, OVH (`/CEP/organ/sys_state`), and integration harnesses.
-- `/rt/analytics/security/edges|gateways` — hashed allow/deny counters plus labels. `/rt/analytics/security/beats/<bt>` stores digests (allow, deny, limit hits) per beat.
-- CEI topics — `sec.edge.deny`, `sec.branch.deny`, `sec.limit.hit`, `sec.pipeline.reject`. Diagnostics land in the default mailbox unless callers pass a custom root.
-- Debug hooks — `CEP_ENABLE_DEBUG` enables `[svo_guard]` prints and the branch diag dumper (set `TEST_BRANCH_DEBUG=1` during tests to dump the diag mailbox when assertions fail).
+## Diagnostics & Telemetry
+- `/sys/state/security` — live readiness + snapshot hash for bootstrap, OVH, and integration harnesses.
+- `/rt/analytics/security/edges|gateways` — hashed allow/deny counters plus labels; `/rt/analytics/security/beats/<bt>` stores per-beat digests (`allow`, `deny`, `limit_hit`).
+- **CEI topics:** `sec.edge.deny`, `sec.branch.deny`, `sec.limit.hit`, `sec.pipeline.reject`. Diagnostics land in the default mailbox unless callers provide another root.
+- **Debug hooks:** `CEP_ENABLE_DEBUG=1` enables `[svo_guard]` breadcrumbs; `TEST_BRANCH_DEBUG=1` dumps the diagnostics mailbox when `/CEP/branch/security_guard` fails so you see the exact topic/note.
 
 ## Tests & Tooling
-- **Unit suites:** `/CEP/fed_security/analytics_limit`, `/CEP/fed_security/pipeline_enforcement`, `/CEP/fed_invoke/decision_ledger`, and `/CEP/branch/security_guard` prove the resolver, ledger, telemetry, and branch CEI paths.
-- **Full sweeps:** run both the default and ASAN configurations so gateway/branch diagnostics remain consistent under sanitizers.
-- **Valgrind batches:** execute the federation suites in groups of ≤3 selectors and archive logs under `build/logs/valgrind_*.log`; integration POC fixtures run separately because they hold locks longer.
-- **Lexicon tool:** `tools/check_unused_tags.py` keeps `docs/CEP-TAG-LEXICON.md` aligned with the `sec.*` tags. See `docs/BUILD.md` (“Enclave Validation Workflow”) for the exact commands.
+- **Unit suites:** `/CEP/fed_security/analytics_limit`, `/CEP/fed_security/pipeline_enforcement`, `/CEP/fed_invoke/decision_ledger`, `/CEP/branch/security_guard`.
+- **Sweeps:** Run default + ASAN so gateway/branch diagnostics stay consistent under sanitizers; run Valgrind in ≤3-test batches and archive logs under `build/logs/valgrind_*.log`.
+- **Lexicon:** `tools/check_unused_tags.py` keeps `docs/CEP-TAG-LEXICON.md` aligned with `sec.*` tags. See `docs/BUILD.md` (“Enclave Validation Workflow”) for the exact command list.
 
 ## Q&A
-**What happens if the policy snapshot fails to parse?**  
-`cep_enclave_policy` leaves the previous snapshot intact, publishes `state=error fault=<reason>` in `/sys/state/security`, and emits CEI diagnostics. Validators treat it as a fatal condition and block cross-enclave work until the fault clears.
+**What happens if the snapshot fails to parse?**  
+The previous snapshot stays active; `/sys/state/security` records `state=error fault=<reason>`, and CEI facts explain the failure. Cross-enclave work remains blocked until the fault clears and readiness returns to `state=ready`.
 
 **How do tests keep policy versions stable during retries?**  
-The fed invoke fixtures call `cep_enclave_policy_freeze_enter()` before mutating approval cells, run the validator, and then call `_leave()` so watcher-driven reloads resume. The freeze guard also relaxes version matching (older `pol_ver` is accepted while frozen) to avoid unnecessary denials mid-test.
+Wrap the mutation with `cep_enclave_policy_freeze_enter()`/`_leave()`. While frozen, approvals stamped with the frozen `pol_ver` are accepted so replays do not trip on a moving hash.
 
 **Where do budgets reset?**  
-Budgets decrement in `cep_fed_transport_manager_send*()` and refresh each beat during the manager’s commit hook. Telemetry shows both the current counter and the beat that wrote it, so replays can confirm the reset cadence.
+In `cep_fed_transport_manager_send*()` budgets decrement for the hop, then refresh each beat during the manager’s commit hook. Telemetry records both the counters and the beat that wrote them so replays match.
 
-**How do I extend the policy schema?**  
-Add the new tags to `docs/CEP-TAG-LEXICON.md`, update the loader parser, and document the field in `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md`. Every addition should include CEI/telemetry evidence so operators can observe it without cracking binaries.
+**How do I extend the policy schema safely?**  
+Add new tags to `docs/CEP-TAG-LEXICON.md`, update the loader parser, and describe the field in `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md`. Ship CEI/telemetry evidence alongside the new field so operators can see it without code spelunking.
 
-**What’s the recommended operator workflow?**  
-Edit `/sys/security/**`, wait for `/sys/state/security state=ready pol_ver=<hash>`, rerun `sig_sec/pipeline_preflight`, and recheck `/rt/analytics/security` counters. When staging new features, set `CEP_ENABLE_DEBUG=1` to capture `[svo_guard]` breadcrumbs.
+**What is the operator happy path?**  
+Edit `/sys/security/**`, wait for `/sys/state/security state=ready pol_ver=<hash>`, rerun `sig_sec/pipeline_preflight` if pipelines changed, then watch `/rt/analytics/security` (and CEI topics) to verify edges, gateways, and budgets are behaving as expected. When staging risky edits, keep `CEP_ENABLE_DEBUG=1` on to capture breadcrumbs.

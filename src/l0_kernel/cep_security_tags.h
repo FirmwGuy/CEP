@@ -52,5 +52,8 @@ CEP_DEFINE_STATIC_DT(dt_sec_stage_enzyme_field, CEP_ACRO("CEP"), CEP_WORD("stg_e
 CEP_DEFINE_STATIC_DT(dt_sec_pipeline_approval_name, CEP_ACRO("CEP"), CEP_WORD("approval"));
 CEP_DEFINE_STATIC_DT(dt_sec_pipeline_version_field, CEP_ACRO("CEP"), CEP_WORD("pol_ver"));
 CEP_DEFINE_STATIC_DT(dt_sec_pipeline_beat_field, CEP_ACRO("CEP"), CEP_WORD("appr_bt"));
+CEP_DEFINE_STATIC_DT(dt_pipeline_envelope_field, CEP_ACRO("CEP"), CEP_WORD("pipeline"));
+CEP_DEFINE_STATIC_DT(dt_pipeline_run_field, CEP_ACRO("CEP"), CEP_WORD("dag_run_id"));
+CEP_DEFINE_STATIC_DT(dt_pipeline_hop_field, CEP_ACRO("CEP"), CEP_WORD("hop_index"));
 
 #endif /* CEP_SECURITY_TAGS_H */

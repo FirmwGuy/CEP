@@ -59,7 +59,7 @@ Following these steps guarantees that helpers such as `cep_heartbeat_data_root()
 * **Proxies & Libraries**: represent external resources/streams inside cells  .
 * **Naming & Namepool**: compact Domain/Tag IDs, intern/lookup text names  .
 * **Locking, History & “soft” vs “hard”**: data/store locks, append-only timelines, snapshot traversals, read-only snapshot policy (`op/br_snapshot`) and cache eviction windows .
-* **Episodic Enzyme Engine (E³)**: promote/demote episodic work between threaded RO and cooperative RW slices without breaking replay invariants.
+* **Episodic Enzyme Engine (E3)**: promote/demote episodic work between threaded RO and cooperative RW slices without breaking replay invariants.
 * **Pause / Rollback / Resume (PRR)**: gate the heartbeat agenda, rewind the visible horizon, and drain postponed impulses deterministically.
 
 ---
@@ -277,6 +277,25 @@ When ingesting messages or managing backlogs, use the shared helpers so CEP keep
 
 Mailbox organs and PRR rely on these APIs, so reusing them keeps routing/backlog behaviour consistent across packs and replay runs.
 
+### 1.12 Episodic Enzyme Engine (E3) promotion and demotion
+
+When you select the hybrid profile (`cepEpExecutionPolicy.profile = CEP_EP_PROFILE_HYBRID`), episodes start life on the threaded RO pool but can opt into mutations when needed:
+
+- **Promote to RW.** Call `cep_ep_promote_to_rw()` from inside the active slice. Pass an optional array of `cepEpLeaseRequest` descriptors when you already know which subtrees need locks (supply both the path and, when convenient, the resolved `cepCell*` so the lease can reuse the pointer without another lookup). The helper queues those lease requests, flips the episode into `mode_next = RW`, and forces a yield so the heartbeat activates the cooperative slice on the next beat. When the new slice begins, `cep_ep_apply_pending_leases()` acquires the requested store/data locks before your callback resumes.
+- **Mutate safely.** Once promoted, the slice behaves like a standard RW episode—`cep_ep_request_lease()` continues to work, `cep_ep_require_rw()` allows writes (but still enforces lease ownership), and CPU/IO budgets continue to accumulate on the shared `cepEpExecutionContext`.
+- **Demote back to RO.** After releasing leases and finalising any transactional work (`cep_txn_commit`/`cep_txn_abort`), call `cep_ep_demote_to_ro()`. The helper records `mode_next = RO` and yields; the heartbeat rebuilds a threaded ticket so subsequent slices return to the worker pool. Attempting to demote while leases remain (or while the slice is suspended) fails fast so replay stays deterministic.
+
+If you forget to promote before mutating, `cep_ep_require_rw()` emits a CEI advisory (`ep:pro/ro`) and returns false, making it obvious that an upgrade is required. Demotion requests are idempotent—calling them in an already-RO slice simply returns true.
+
+### 1.13 Pause / Rollback / Resume (PRR)
+
+The PRR helpers (`cep_runtime_pause()`, `cep_runtime_rollback()`, `cep_runtime_resume()`) let you gate work deterministically while maintenance or recovery tasks run:
+
+- **Pause.** Acquires `/data` locks, enqueues an `op/pause` dossier (`ist:plan → ist:quiesce → ist:paused`), and routes new impulses into `/data/mailbox/impulses` until resume opens the gate.
+- **Rollback.** Records the target beat, updates `/sys/state/view_hzn`, trims the backlog mailbox, and emits `op/rollback` history so downstream tooling knows which beat range is visible.
+- **Resume.** Re-opens the agenda, drains the backlog mailbox in deterministic ID order, and closes the control dossier with `sts:ok` once normal scheduling resumes.
+
+Tests: see `src/test/l0_kernel/test_prr.c` and the integration POC pause/rollback scenario. Design rationale lives in `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md`.
 
 ## 2) Serialization & streams (wire format)
 
@@ -638,7 +657,7 @@ if (!cep_txn_commit(&txn)) {
 
 ## 8) Integration guidance & gotchas
 
-* **E³ episodes drive long-running work.** Model multi-beat tasks as episodes: queue slices with the executor (stub or threaded), await `op/ep` dossiers, and use `cep_ep_cancel_ticket()` / `cep_ep_check_cancel()` for cooperative shutdown.
+* **E3 episodes drive long-running work.** Model multi-beat tasks as episodes: queue slices with the executor (stub or threaded), await `op/ep` dossiers, and use `cep_ep_cancel_ticket()` / `cep_ep_check_cancel()` for cooperative shutdown.
 * **Don’t mutate mid‑beat registrations.** Register enzymes freely, but let CEP **activate** them between beats (`activate_pending`) to avoid agenda drift .
 * **Prefer soft deletes** for observability; reserve hard deletes for GC or error recovery workflows. Past traversals depend on timestamps and history lists .
 * **Respect locks**. Both **data** and **store** locks check the *entire ancestor chain*; if anything is locked above, mutations are denied to keep invariants intact  .
@@ -706,22 +725,4 @@ See `docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md` for the architectural rationale
 - *When should I choose `opm:direct` over `opm:states`?* `opm:direct` fits two-impulse flows (start → close). `opm:states` is for multi-phase work where intermediate checkpoints must be observable or awaitable.
 - *How do I test awaiters deterministically?* Register a test enzyme on `op/cont` (or `op/tmo`), call `cep_op_await()`, advance a beat with `cep_heartbeat_step()`, then resolve the agenda. The enzyme should fire exactly once—immediately if the state already matched, otherwise on the next beat.
 - *Can I attach large artefacts to the close record?* Yes. Drop a CAS handle or library reference into the `summary` payload; the close branch keeps it immutable while heavy bytes live in content storage.
-- ### 1.12 Episodic Enzyme Engine (E³) promotion and demotion
-
-When you select the hybrid profile (`cepEpExecutionPolicy.profile = CEP_EP_PROFILE_HYBRID`), episodes start life on the threaded RO pool but can opt into mutations when needed:
-
-- **Promote to RW.** Call `cep_ep_promote_to_rw()` from inside the active slice. Pass an optional array of `cepEpLeaseRequest` descriptors when you already know which subtrees need locks (supply both the path and, when convenient, the resolved `cepCell*` so the lease can reuse the pointer without another lookup). The helper queues those lease requests, flips the episode into `mode_next = RW`, and forces a yield so the heartbeat activates the cooperative slice on the next beat. When the new slice begins, `cep_ep_apply_pending_leases()` acquires the requested store/data locks before your callback resumes.
-- **Mutate safely.** Once promoted, the slice behaves like a standard RW episode—`cep_ep_request_lease()` continues to work, `cep_ep_require_rw()` allows writes (but still enforces lease ownership), and CPU/IO budgets continue to accumulate on the shared `cepEpExecutionContext`.
-- **Demote back to RO.** After releasing leases and finalising any transactional work (`cep_txn_commit`/`cep_txn_abort`), call `cep_ep_demote_to_ro()`. The helper records `mode_next = RO` and yields; the heartbeat rebuilds a threaded ticket so subsequent slices return to the worker pool. Attempting to demote while leases remain (or while the slice is suspended) fails fast so replay stays deterministic.
-
-If you forget to promote before mutating, `cep_ep_require_rw()` emits a CEI advisory (`ep:pro/ro`) and returns false, making it obvious that an upgrade is required. Demotion requests are idempotent—calling them in an already-RO slice simply returns true.
-
-### 1.13 Pause / Rollback / Resume (PRR)
-
-The PRR helpers (`cep_runtime_pause()`, `cep_runtime_rollback()`, `cep_runtime_resume()`) let you gate work deterministically while maintenance or recovery tasks run:
-
-- **Pause.** Acquires `/data` locks, enqueues an `op/pause` dossier (`ist:plan → ist:quiesce → ist:paused`), and routes new impulses into `/data/mailbox/impulses` until resume opens the gate.
-- **Rollback.** Records the target beat, updates `/sys/state/view_hzn`, trims the backlog mailbox, and emits `op/rollback` history so downstream tooling knows which beat range is visible.
-- **Resume.** Re-opens the agenda, drains the backlog mailbox in deterministic ID order, and closes the control dossier with `sts:ok` once normal scheduling resumes.
-
-Tests: see `src/test/l0_kernel/test_prr.c` and the integration POC pause/rollback scenario. Design rationale lives in `docs/L0_KERNEL/design/L0-DESIGN-PAUSE-AND-ROLLBACK.md`.
+ 

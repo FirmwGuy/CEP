@@ -131,7 +131,7 @@ Parameters, models, and configuration knobs for learning live in branches as jus
   * Descriptors registered in `/enzymes/**` define callbacks, match policies (exact/prefix), dependency lists, and idempotency hints. 
   * Bindings attach descriptors to subtrees; tombstones mask inherited bindings to keep resolution deterministic.
 
-* **Episodic Enzyme Engine (E³)**
+* **Episodic Enzyme Engine (E3)**
 
   * Long‑running work is tracked as episodes (`op/ep`) under `/rt/ops/**`. 
   * Episodes run slices with budgets and cancellation; they can span many beats (for example, background training jobs or multi‑stage pipeline runs).
@@ -263,6 +263,7 @@ Layer 2 reintroduces CEP’s ecological concepts explicitly:
 * **Niches** – Contextual regions where certain variants are preferred (e.g. new users, heavy users, specific geos).
 * **Organisms** – Individual flow/module instances executing in specific contexts (e.g. “Ranker_v2 handling this user+session”).
 * **Guardians** – Invariants and safety constraints that veto unsafe actions or configurations.
+* **Predators** – Watchers that actively hunt misbehaving or underperforming variants/species, culling or isolating them when evidence or policy says they are unsafe.
 
 Selection pressures come from:
 

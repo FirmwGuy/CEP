@@ -97,11 +97,14 @@ typedef struct {
     const cepPath*          signal_path;    /**< Path that identifies the impulse kind. */
     const cepPath*          target_path;    /**< Path that receives the enzyme output. */
     cepImpulseQoS           qos;            /**< QoS hints that influence pause/rollback handling. */
+    bool                    has_pipeline;   /**< True when pipeline metadata is populated. */
+    cepPipelineMetadata     pipeline;       /**< Optional pipeline metadata for the impulse. */
 } cepImpulse;
 
 
 typedef struct _cepEnzymeRegistry  cepEnzymeRegistry;
 
+typedef struct cepEnzymeContext cepEnzymeContext;
 
 cepEnzymeRegistry*  cep_enzyme_registry_create(void);
 void                cep_enzyme_registry_destroy(cepEnzymeRegistry* registry);
@@ -116,6 +119,7 @@ int                 cep_cell_unbind_enzyme(cepCell* cell, const cepDT* name);
 const cepEnzymeBinding* cep_cell_enzyme_bindings(const cepCell* cell);
 void                cep_cell_clear_bindings(cepCell* cell);
 const cepEnzymeDescriptor* cep_enzyme_current(void);
+const cepEnzymeContext*    cep_enzyme_context_current(void);
 
 
 #ifdef __cplusplus

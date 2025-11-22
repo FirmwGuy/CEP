@@ -1,7 +1,7 @@
-# L0 Topic: Episodic Enzyme Engine (E³)
+# L0 Topic: Episodic Enzyme Engine (E3)
 
 ## Introduction
-Imagine taking a long-running job, slicing it into safe, deterministic beats, and letting the kernel keep score. The Episodic Enzyme Engine (E³) is Layer 0’s answer: a scheduler that lets enzymes span beats, run on read-only worker slices, and cancel cooperatively—without giving up the calm, replayable heartbeats that define CEP.
+Imagine taking a long-running job, slicing it into safe, deterministic beats, and letting the kernel keep score. The Episodic Enzyme Engine (E3) is Layer 0’s answer: a scheduler that lets enzymes span beats, run on read-only worker slices, and cancel cooperatively—without giving up the calm, replayable heartbeats that define CEP.
 
 ## Technical Details
 - **Episodes & OPS dossiers.** Every episode is tracked as an `op/ep` operation under `/rt/ops/<eid>` so tooling can await state transitions (`ist:plan`, `ist:run`, `ist:yield`, `ist:await`, `ist:ok`, `ist:cxl`, `ist:fail`) and inspect watcher activity. The dossier outlives the worker slice, keeping cancellation and completion evidence append-only.
@@ -35,7 +35,7 @@ Imagine taking a long-running job, slicing it into safe, deterministic beats, an
 
 ## Q&A
 **Q: Why not keep the old control plane?**  
-Legacy rendezvous-style registries relied on bespoke wait handles. E³ folds long-running work into the heartbeat + OPS machinery, so watchers, CEI, and replay all behave the same way—no forked control plane.
+Legacy rendezvous-style registries relied on bespoke wait handles. E3 folds long-running work into the heartbeat + OPS machinery, so watchers, CEI, and replay all behave the same way—no forked control plane.
 
 **Q: Can read-only episodes mutate state at the end?**  
 They can queue intents (e.g., stage a transaction) for commit on the next beat, but mutation helpers stay guarded. Use a dedicated RW episode (with leases) for mutators; RO slices exist to analyse state, stream data, or schedule follow-on work.

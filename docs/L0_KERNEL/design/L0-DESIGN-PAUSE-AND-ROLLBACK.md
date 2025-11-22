@@ -1,43 +1,50 @@
 # L0 Design: Pause, Rollback, and Resume
 
 ## Introduction
-CEP now ships first-class Pause, Rollback, and Resume controls so operators can freeze heartbeat work, rewind the visible beat window, and return to normal execution without violating determinism. This paper captures how the control verbs surface through OPS dossiers, which runtime flags they touch, and where durable evidence lives so tooling can always explain what the kernel did. Use it as the orientation map when reviewing PRR code paths or extending the control plane.
+Pause/Rollback/Resume (PRR) lets operators freeze work, roll back the visible beat horizon, and resume without breaking determinism. Think of Pause as closing the theater doors, Rollback as rewinding the visible scene, and Resume as reopening with the same script. This design explains the control verbs, the evidence they leave (OPS/CEI/mailboxes), and the guardrails that keep PRR replayable.
 
-## Technical Details
+## Control surface (what you see)
+- **OPS dossiers:** `op/pause`, `op/rollback`, `op/resume` all use `opm:states` so watchers can await `ist:*`.
+  - Pause: `ist:plan → ist:quiesce → ist:paused → sts:ok`
+  - Rollback: `ist:plan → ist:cutover → ist:ok → sts:ok`
+  - Resume: `ist:plan → ist:run → ist:ok → sts:ok`
+- **Published flags:** Pause sets `/sys/state/paused=true`; Rollback sets `/sys/state/view_hzn=<beat>`; Resume clears both (view horizon to `CEP_BEAT_INVALID`).
+- **APIs:** `cep_runtime_pause()`, `cep_runtime_rollback(target_beat)`, `cep_runtime_resume()` enqueue the control ops, refuse conflicting requests, and capture the rollback target.
 
-The following subsections describe how the public control wrappers drive OPS dossiers, gating, backlog retention, and failure paths so that pause/rollback behaviour stays deterministic under replay.
-### Control Surface and State Machines
-- **OPS dossiers:** Each control verb opens an OPS record under `/rt/ops/*`. The verbs (`op/pause`, `op/rollback`, `op/resume`) share the `opm:states` mode so watchers can await `ist:*` transitions. The state ladders are:
-  - Pause — `ist:plan → ist:quiesce → ist:paused → sts:ok`
-  - Rollback — `ist:plan → ist:cutover → ist:ok → sts:ok`
-  - Resume — `ist:plan → ist:run → ist:ok → sts:ok`
-- **Runtime flags:** `cepHeartbeatRuntime` now records `paused` and `view_horizon`. Pause sets both the runtime flag and the published cell `/sys/state/paused = val/bool:true`; Resume clears the flag and resets `/sys/state/view_hzn` to `CEP_BEAT_INVALID`.
-- **Wrappers:** The public entry points `cep_runtime_pause()`, `cep_runtime_resume()`, and `cep_runtime_rollback()` enqueue the control dossiers, guard against conflicting operations, and capture the target beat for rollback.
+## How gating works
+- **Allow list during gating:** only control signals (pause/resume/rollback/shutdown), `op/cont`, `op/tmo`, and CEI pass through. Everything else is parked.
+- **Locks:** Pause grabs hierarchical read locks on `/data` (store + data locks) before gating; Resume releases them after draining the backlog.
+- **Backlog mailbox:** Parked impulses go to `/data/mailbox/impulses` with full signal/target `cepDT` segments and QoS flags. IDs are deterministic (`cep_mailbox_select_message_id`) so replay order is stable.
+- **QoS bits:** `CONTROL` (never parked), `RETAIN_ON_PAUSE` (default for kernel impulses), `DISCARD_ON_ROLLBACK` (drop before replaying backlog after rollback).
+- **Draining:** Resume disables gating, drains messages in ID order, and re-enqueues them for the next beat—no surprises for enzyme ordering.
 
-### Heartbeat Gating and Locks
-- **Allow list:** While `gating_active` is true only control signals (pause/resume/rollback/shutdown, `op/cont`, `op/tmo`, and CEI signals) are allowed through. Everything else is diverted to the backlog.
-- **Locks:** Pause acquires hierarchical locks on `/data` (`cep_store_lock` + `cep_data_lock`) before the agenda gate engages. Resume releases the locks once gating is lifted.
-- **View horizon:** Rollback updates `CEP_RUNTIME.view_horizon` and publishes `/sys/state/view_hzn = val/u64:<beat>`. The value remains in place until Resume clears it, keeping “as-of” consumers aware of the rollback window.
+## Rollback specifics
+- **View horizon:** published at `/sys/state/view_hzn`. Consumers can use it as “as-of beat” while paused.
+- **Impulse cleanup:** messages marked `DISCARD_ON_ROLLBACK` are dropped before re-enqueue; others survive.
+- **Namepool:** must be reactivated before Resume so descriptor interning works after horizon moves.
 
-### Backlog Mailbox and QoS
-- **Mailbox organ:** Paused impulses land in `/data/mailbox/impulses`. Each message stores signal and target paths, QoS flags, and the beat that captured the impulse. Identifiers are assigned via `cep_mailbox_select_message_id()` so replay order matches dictionary order.
-- **QoS flags:** `cepHeartbeatImpulseRecord` carries `cepImpulseQoS`. The new bits map to behaviours:
-  - `CEP_IMPULSE_QOS_CONTROL` → always allowed (never parked).
-  - `CEP_IMPULSE_QOS_RETAIN_ON_PAUSE` → default for kernel impulses; ensures they survive through Pause/Resume.
-  - `CEP_IMPULSE_QOS_DISCARD_ON_ROLLBACK` → Rollback drops these messages before re-exposing the backlog.
-- **Draining:** Resume disables gating, drains the backlog deterministically (by message ID order), and re-enqueues the stored impulses for the next beat.
-- **Path fidelity:** When parking an impulse we persist the full `cepDT` domain/tag payload for every signal/target segment (not just `cep_id(...)`). `cep_control_path_read()` reconstructs segments directly from the stored `cepData`, so glob markers and naming bits survive Pause/Resume and enzymes continue matching the backlog replay exactly as when the impulse was captured.
+## Failure paths and evidence
+- **State-machine guardrails:** transitions only advance on new beats. If a phase fails (locks, OPS write, backlog drain), the op closes with `sts:fail` and the wrapper returns false.
+- **Diagnostics:** CEI continues to emit into `/data/mailbox/diag` even while gated. Failures ride both CEI and OPS history.
+- **Heartbeat continues:** OPS expiry, CEI emission, and control watchers still advance; only non-allowed impulses are parked.
 
-### Failure Handling
-- **State-machine guard rails:** Every phase records the most recent beat so transitions only happen on a new tick. If any step fails (lock acquisition, OPS update, backlog drain) the operation closes with `sts:fail` and control wrappers return `false`.
-- **Diagnostics:** Failures bubble through the OPS dossier (`sts:fail`). The CEI surface inherits the existing diagnostics mailbox, so additional severity reporting can be layered without altering the control plane.
+## Quick operator walkthrough
+1. Call `cep_runtime_pause()`. Watch `/rt/ops/<oid>` for `ist:paused`; `/sys/state/paused` flips to true.
+2. Optional: call `cep_runtime_rollback(target)` to set `/sys/state/view_hzn`. Impulses tagged discard-on-rollback are dropped.
+3. Call `cep_runtime_resume()`. It drains the backlog in order, clears `/sys/state/paused` and `/sys/state/view_hzn`, and closes with `sts:ok`.
 
-## Appendix A — Minimal L0 runtime contract during PRR
-- Heartbeat core stays live to advance OPS dossiers, watcher expiries, CEI emissions, and backlog drains, even while non-essential impulses are gated.
-- OPS dossiers for `op/pause`, `op/rollback`, and `op/resume` record `ist:*` transitions and close status so tooling can await or audit control flow beat-by-beat.
-- Namepool revival is required before resume: `/rt/namepool/*` pages regain owners/writable flags so control code can intern descriptors post-rollback without hitting veiled stores.
-- `/data/mailbox/impulses` remains writable and durable while paused; cefImpulseQoS flags (`retain_on_pause`, `discard_on_rollback`) drive backlog policy.
-- CEI diagnostics continue to emit into `/data/mailbox/diag` with severity mapping even when general work is parked.
+## Q&A
+**What if Pause and Rollback race?**  
+Control wrappers refuse conflicting ops; only one PRR op can be active. Use watchers to await `sts:ok` before issuing another.
+
+**Does CEI stop during Pause?**  
+No. CEI is on the allow list; diagnostics keep flowing to `/data/mailbox/diag`.
+
+**Can I keep some impulses from replaying after rollback?**  
+Yes—emit them with `DISCARD_ON_ROLLBACK`. Everything else is retained and re-enqueued.
+
+**How do I know PRR stayed deterministic?**  
+Check `/rt/ops/<oid>` history for each control op, `/data/mailbox/impulses` order/contents, and CEI topics emitted during gating. Replay consumes the same parked messages in the same order.
 - IO/timer shims stay armed for control continuations; external effects remain staged until resume completes.
 
 ## Q&A

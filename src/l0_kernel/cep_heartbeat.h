@@ -81,6 +81,8 @@ typedef struct {
     cepPath* signal_path;
     cepPath* target_path;
     cepImpulseQoS qos;
+    bool     has_pipeline;
+    cepPipelineMetadata pipeline;
 } cepHeartbeatImpulseRecord;
 
 
@@ -156,6 +158,8 @@ typedef struct {
     bool                      sys_shutdown_emitted;
     bool                      bootstrapping;
     const cepEnzymeDescriptor* current_descriptor;
+    cepEnzymeContext          current_ctx;
+    bool                      current_ctx_valid;
     cepBeatNumber             last_wallclock_beat;
     uint64_t                  last_wallclock_ns;
     size_t                    spacing_window;

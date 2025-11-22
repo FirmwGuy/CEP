@@ -125,6 +125,10 @@ bool cep_heartbeat_impulse_queue_append(cepHeartbeatImpulseQueue* queue, const c
         }
     }
     record->qos = impulse->qos;
+    record->has_pipeline = impulse->has_pipeline;
+    if (record->has_pipeline) {
+        record->pipeline = impulse->pipeline;
+    }
 
     queue->count += 1u;
     return true;

@@ -1,7 +1,7 @@
-# L0 Design: Episodic Enzyme Engine (E³)
+# L0 Design: Episodic Enzyme Engine (E3)
 
 ## Introduction
-Think of an “episode” as a deterministic mini-story that plays out across several heartbeat beats. The Episodic Enzyme Engine (E³) lets enzymes pause, resume, and even borrow read-only worker threads without ever breaking the beat-by-beat determinism that Layer 0 guarantees. This design note explains why the engine exists, the invariants it must protect, and how executor backends keep wall-clock concurrency tamed.
+Think of an “episode” as a deterministic mini-story that plays out across several heartbeat beats. The Episodic Enzyme Engine (E3) lets enzymes pause, resume, and even borrow read-only worker threads without ever breaking the beat-by-beat determinism that Layer 0 guarantees. This design note explains why the engine exists, the invariants it must protect, and how executor backends keep wall-clock concurrency tamed.
 
 ## Technical Details
 - **Deterministic lifecycle.** Every episode is represented by an `op/ep` dossier rooted at `/rt/ops/<eid>`. The envelope captures the signal, target, execution profile, and budgets; history entries log state changes (`ist:plan`, `ist:run`, `ist:yield`, `ist:await`, `ist:ok`, `ist:fail`, `ist:cxl`) with beats and optional diagnostic notes. Watchers reuse the existing OPS machinery so continuations (`CEP:ep/cont`) and timeouts (`CEP:op/tmo`) stay observable and replayable.
@@ -13,7 +13,7 @@ Think of an “episode” as a deterministic mini-story that plays out across se
 - **Lease tracking.** RW episodes maintain a linked list of lease records with precomputed paths and lock tokens. Closing an episode or cancelling it unwinds any outstanding leases. Violations are latched (`cep_ep_episode_record_violation`) so CEI emits a single `ep:lease/missing` fact per offending slice.
 - **Coroutine coordination.** Cooperative schedulers call `cep_ep_suspend_rw()` before yielding a mutating coroutine; the helper clears TLS guardrails and, when requested, releases leases. `cep_ep_resume_rw()` rebinds the context, reacquires dropped leases deterministically, and cancels the episode if another owner grabbed the lock in the meantime.
 
-### Why E³ matters
+### Why E3 matters
 - **Single control plane.** Long-running work stays inside OPS so the existing await/watcher contracts, history, and CEI hooks apply automatically.
 - **Replay safety.** Episodes respect the capture → compute → commit cadence. No slice publishes visible mutations mid-beat; RW episodes stage their work and rely on heartbeat commit to graft results.
 - **Predictable concurrency.** Threaded slices run concurrently only when marked RO and only with explicit budgets. FIFO ordering and deterministic watcher wake-ups keep replays stable regardless of OS scheduling.

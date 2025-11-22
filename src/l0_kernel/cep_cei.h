@@ -54,6 +54,8 @@ typedef struct {
     uint32_t       ttl_beats;        /**< Beat TTL for mailbox routing. */
     bool           has_ttl_unix_ns;  /**< Provide unix TTL if true. */
     uint64_t       ttl_unix_ns;      /**< Wallclock TTL for mailbox routing. */
+    bool           has_pipeline;     /**< Optional pipeline metadata to attach under origin/pipeline. */
+    cepPipelineMetadata pipeline;    /**< Pipeline metadata (honoured when has_pipeline is true). */
 } cepCeiRequest;
 
 /**

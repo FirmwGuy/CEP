@@ -1,57 +1,62 @@
 # L0 Topic: Enclave Policy Operations
 
 ## Introduction
-This field guide explains how to edit the Enclave policy tree, validate pipelines, and read the evidence surfaces (`/sys/state/security`, `/rt/analytics/security`, `sec.*` CEI topics). Use it whenever you touch the security tree or chase enclave regressions, so each beat stays replayable and tests stay deterministic.
+Enclaves are CEP’s trust bubbles. This guide walks through how to edit the policy map, approve pipelines, and read the evidence surfaces (`/sys/state/security`, `/rt/analytics/security`, and the `sec.*` CEI topics) without needing to be a security specialist. Use it whenever you change the security tree or diagnose cross-enclave issues so every beat stays replayable.
 
-## Policy Tree Layout
+## Quick Refresher: What Lives Where
 ```
 /sys/security/
-  enclaves/            # trust tiers + enclave IDs
-  edges/               # cross-enclave policies (from -> to)
-  gateways/            # exported gateway enzymes per enclave
-  branches/            # optional crown-jewel branch rules
-  defaults/            # global budgets/TTL/rates
-  env/<name>/          # environment overlays (prod, staging, dev, test)
+  enclaves/    # enclave IDs + trust tiers
+  edges/       # allowed from → to edges
+  gateways/    # gateway enzymes per enclave
+  branches/    # optional crown-jewel allow rules
+  defaults/    # fallback budgets/TTLs/rates
+  env/<name>/  # overlays (prod, staging, dev, test)
 /data/<pack>/policy/security/pipelines/<id>/
-  spec/                # pipeline stages (enclave + enzyme IDs)
-  approval/            # stamped by sig_sec/pipeline_preflight
+  spec/        # stages = gateway + enclave per hop
+  approval/    # stamped by sig_sec/pipeline_preflight
 ```
+Merge order: defaults → global → env overlay → per-enclave overrides → pack policy cells. Deny beats allow; tightest budget wins when rules overlap.
 
-### Merge Order
-1. `defaults/`
-2. global `/sys/security/*.yaml`
-3. environment overlays (`env/<name>/`)
-4. per-enclave overrides
-5. per-pack policy cells
+## Step-by-Step Operator Workflow
+1. **Edit the policy map.** Touch `/sys/security/**` (edges, gateways, branches, defaults, env overlays). If you need a breadcrumb trail of dirty sources, enable `CEP_ENABLE_DEBUG=1`; the loader logs each source with a stack trace.
+2. **Watch readiness.** `/sys/state/security` moves to `state=loading` while parsing, then `state=ready pol_ver=<hash>` on success. Parse failures leave the old snapshot active and record `state=error fault=<reason>`.
+3. **Freeze when you need stability.** Call `cep_enclave_policy_freeze_enter()` before multi-step edits or test retries to pin `pol_ver`; call `_leave()` even on failure paths.
+4. **Re-run pipeline preflight.** Trigger `sig_sec/pipeline_preflight` so every `/data/<pack>/policy/security/pipelines/*` spec gets revalidated. Approvals record `state`, `note`, `pol_ver`, and the beat that wrote them.
+5. **Check the evidence surfaces.**
+   - `/rt/analytics/security/edges/<hash>` and `/rt/analytics/security/gateways/<hash>` show allow/deny counters plus labels; `/rt/analytics/security/beats/<beat>` shows per-beat digests (`allow`, `deny`, `limit_hit`).
+   - CEI topics (`sec.edge.deny`, `sec.branch.deny`, `sec.limit.hit`, `sec.pipeline.reject`) land in the default mailbox unless a caller overrides it. `TEST_BRANCH_DEBUG=1` dumps the mailbox automatically in branch-guard tests.
+   - `/journal/decisions/sec` records ledger entries for denials, including the matched rule and snapshot hash, so replays explain every block.
+6. **Run the validation flow.** Follow `docs/BUILD.md` (“Enclave Validation Workflow”) for the exact test list: targeted unit suites, default + ASAN sweeps, lexicon check, and Valgrind batches (≤3 selectors per run).
 
-Conflicts resolve to *deny > allow* and *most specific wins*. Budgets, TTLs, and rates resolve to the most restrictive limits.
+## Reading the Evidence
+- **Limit hits vs. denies.** `sec.limit.hit` means budgets were exceeded; `sec.edge.deny` means policy said “no” before budgets; `sec.pipeline.reject` means the pipeline approval was missing or stale; `sec.branch.deny` means a guarded branch lacked an allow rule.
+- **Analytics counters.** The per-edge/gateway counters are hashed labels; use them to confirm that traffic is flowing on the expected edges and whether denies are rising.
+- **Debug breadcrumbs.** With `CEP_ENABLE_DEBUG=1`, `cep_cell_svo_context_guard()` prints `[svo_guard]` lines with the resolved path, verb, and rule. Running `/CEP/fed_invoke/success` with debug on produces `build/logs/fed_invoke_policy_trace.log`, listing each dirty source that triggered a reload.
+- **Cleaning diagnostics.** `test_branch_clear_diag_mailbox()` (see `test_branch_controller.c`) clears `/data/mailbox/diag/msgs`; handy between repeated runs of `/CEP/branch/security_guard`.
 
-## Operator Workflow
-1. **Edit policy.** Update `/sys/security/**` (edges, gateways, branches, defaults, env overlays). Watch `cep_enclave_policy_mark_dirty()` traces (enable `CEP_ENABLE_DEBUG=1`) if you need stack traces for dirty pulses.
-2. **Wait for readiness.** `/sys/state/security` transitions to `state=loading` while the snapshot parses, then `state=ready pol_ver=<hash>` when successful. If parsing fails, the cell records `state=error fault=<reason>`.
-3. **Freeze when necessary.** Tests and tooling can call `cep_enclave_policy_freeze_enter()` before mutating approvals to keep `pol_ver` stable; remember to call `_leave()` even on failures.
-4. **Re-run pipeline preflight.** Execute `sig_sec/pipeline_preflight` (via tests or CLI). Approvals store `state`, `note`, `pol_ver`, and the beat that wrote them.
-5. **Verify runtime evidence.**
-   - `/rt/analytics/security/edges/<hash>` and `/rt/analytics/security/gateways/<hash>` show allow/deny counters plus the hashed labels.
-   - `/rt/analytics/security/beats/<beat>` stores per-beat digests (`allow`, `deny`, `limit_hit`).
-   - Diagnostics appear under the default mailbox; set `TEST_BRANCH_DEBUG=1` during tests to dump the latest entries when assertions fail.
-6. **Exercise the suites.** Follow the Enclave validation workflow in `docs/BUILD.md` to rerun the targeted unit suites, full default/ASAN sweeps, lexicon checks, and Valgrind batches; this keeps `/sys/state/security`, `/rt/analytics/security`, and the CEI topics aligned with the latest snapshot.
+## Configuration examples
+Use this skeleton to wire two enclaves (`alpha`, `beta`) and a guarded pipeline hop.
 
-## Diagnostics Cheatsheet
-- **CEI topics.** `sec.edge.deny`, `sec.branch.deny`, `sec.limit.hit`, `sec.pipeline.reject`. Subscribers can filter by severity or topic. Diag mailboxes store `topic`, `note`, `origin`, and beat metadata.
-- **Ledger entries.** `/journal/decisions/sec` records structured entries for denies (subjects, verbs, matched rule, snapshot hash).
-- **Branch guard breadcrumbs.** With `CEP_ENABLE_DEBUG=1`, `cep_cell_svo_context_guard()` prints `[svo_guard]` entries that include the formatted branch path, verb, subject, and resolved topic.
-- **Policy trace logs.** Set `CEP_ENABLE_DEBUG=1` and run `/CEP/fed_invoke/success` to generate `build/logs/fed_invoke_policy_trace.log`, which lists every dirty source (store/data) plus stack traces.
+- **Policy map:** `/sys/security/enclaves/{alpha, beta}` (tiers optional), `/sys/security/gateways/beta/gw_ingest { }`, `/sys/security/edges/alpha/beta/` with `label="alpha_to_beta"`, `beats=128`, `io_bytes=1048576`, `rate_qps=500`, `ttl_bt=4`, and child `allow_gw/gw_ingest { }`. Add `/sys/security/branches/data/payments { allow=1 }` when a crown-jewel branch needs explicit allow rules. Overlays live under `/sys/security/env/staging/*` when staging budgets differ.
+- **Pipeline approval:** `/data/paypack/policy/security/pipelines/pay_ingest/spec/` lists hops (`alpha→beta` via `gw_ingest`). After running `sig_sec/pipeline_preflight`, `/approval/{state=ready, pol_ver=<hash>, beat=<bt>}` proves the hop is allowed.
+- **Runtime call:** A federation invoke from alpha to beta includes `pipeline_id=pay_ingest`, `stage_id=gw_ingest`, and consumes the negotiated edge budgets. CEI (`sec.limit.hit`, `sec.edge.deny`, `sec.pipeline.reject`) fires if budgets or approvals are missing.
 
 ## Q&A
-**How do I know which policy edit triggered a reload?**  
-Set `CEP_ENABLE_DEBUG=1`. The loader logs each dirty source (store/data) with the owning cell path into `build/logs/fed_invoke_policy_trace.log`.
+**How do I spot which edit caused a reload?**  
+Enable `CEP_ENABLE_DEBUG=1` and run a validator (for example `/CEP/fed_invoke/success`). The loader writes each dirty store/data source and stack trace into `build/logs/fed_invoke_policy_trace.log`.
 
-**What if a test hits `approval out of date`?**  
-Wrap the test in a policy freeze (`cep_enclave_policy_freeze_enter/leave`) and rerun `sig_sec/pipeline_preflight`. The helper accepts approvals whose recorded `pol_ver` lags during the freeze window.
+**What if I see “approval out of date”?**  
+Freeze the policy (`cep_enclave_policy_freeze_enter/leave`), rerun `sig_sec/pipeline_preflight`, and retry. During the freeze window, approvals stamped with the frozen `pol_ver` remain valid.
 
-**How do I clear noisy diagnostics between runs?**  
-Use `test_branch_clear_diag_mailbox()` (see `test_branch_controller.c`) or manually delete children under `/data/mailbox/diag/msgs`. The helper already runs at the start of `/CEP/branch/security_guard`.
+**How do I clear noisy diagnostics between iterations?**  
+Use `test_branch_clear_diag_mailbox()` or delete children under `/data/mailbox/diag/msgs`. The helper already runs at the start of `/CEP/branch/security_guard`.
 
-**Where do new tags go?**  
-Add them to `docs/CEP-TAG-LEXICON.md` and rerun `python3 tools/check_unused_tags.py`. Federation/security tags are grouped near the existing `sec.*` entries.
+**Where do new tags belong?**  
+Add them to `docs/CEP-TAG-LEXICON.md` and rerun `python3 tools/check_unused_tags.py`. Federation/security tags live next to the existing `sec.*` entries.
+
+**How do I explain enclaves to a teammate in one line?**  
+They’re named trust zones with explicit doors (gateways) between them, plus speed limits. Policy under `/sys/security` defines the doors and limits; telemetry and CEI facts show every allow, deny, and budget hit.
+
+**How do I stage a new edge without disturbing production?**  
+Add it under `/sys/security/env/staging/edges/...` with tighter budgets; run `sig_sec/pipeline_preflight` while the policy is frozen (`cep_enclave_policy_freeze_enter/leave`), then watch `/rt/analytics/security/beats/*` for staging-only allows/denies before promoting the edge into the global tree.

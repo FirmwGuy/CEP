@@ -85,6 +85,11 @@ struct cepFedTransportManagerMount {
     uint64_t                       security_limit_hits;
     cepBeatNumber                  security_rate_beat;
     uint32_t                       security_rate_count;
+    bool                           pipeline_metadata_known;
+    char                           pipeline_label[128];
+    char                           stage_label[128];
+    uint64_t                       pipeline_run_id;
+    uint64_t                       pipeline_hop_index;
 };
 
 struct cepFedTransportAsyncHandle {
@@ -659,15 +664,49 @@ cep_fed_transport_manager_emit_limit_hit(cepFedTransportManagerMount* mount,
     const char* limit = limit_label ? limit_label : "<unknown>";
     const char* info = detail ? detail : "";
 
+    const char* pipeline = (mount->pipeline_label[0] != '\0') ? mount->pipeline_label : "<none>";
+    const char* stage = (mount->stage_label[0] != '\0') ? mount->stage_label : "<none>";
     char note[256];
-    snprintf(note,
-             sizeof note,
-             "peer=%s node=%s mount=%s limit=%s detail=%s",
-             peer,
-             local,
-             mount_id,
-             limit,
-             info);
+    if (mount->pipeline_metadata_known) {
+        snprintf(note,
+                 sizeof note,
+                 "peer=%s node=%s mount=%s limit=%s detail=%s pipeline=%s stage=%s run=%" PRIu64 " hop=%" PRIu64,
+                 peer,
+                 local,
+                 mount_id,
+                 limit,
+                 info,
+                 pipeline,
+                 stage,
+                 mount->pipeline_run_id,
+                 mount->pipeline_hop_index);
+    } else {
+        snprintf(note,
+                 sizeof note,
+                 "peer=%s node=%s mount=%s limit=%s detail=%s",
+                 peer,
+                 local,
+                 mount_id,
+                 limit,
+                 info);
+    }
+
+    cepPipelineMetadata pipeline_meta = {0};
+    bool has_pipeline = mount->pipeline_metadata_known;
+    if (has_pipeline) {
+        if (mount->pipeline_label[0]) {
+            pipeline_meta.pipeline_id = cep_namepool_intern_cstr(mount->pipeline_label);
+        }
+        if (mount->stage_label[0]) {
+            pipeline_meta.stage_id = cep_namepool_intern_cstr(mount->stage_label);
+        }
+        pipeline_meta.dag_run_id = mount->pipeline_run_id;
+        pipeline_meta.hop_index = mount->pipeline_hop_index;
+        has_pipeline = pipeline_meta.pipeline_id ||
+                       pipeline_meta.stage_id ||
+                       pipeline_meta.dag_run_id ||
+                       pipeline_meta.hop_index;
+    }
 
     cepCeiRequest req = {
         .severity = *dt_sev_warn_name(),
@@ -680,6 +719,10 @@ cep_fed_transport_manager_emit_limit_hit(cepFedTransportManagerMount* mount,
         .attach_to_op = false,
         .ttl_forever = true,
     };
+    req.has_pipeline = has_pipeline;
+    if (has_pipeline) {
+        req.pipeline = pipeline_meta;
+    }
     (void)cep_cei_emit(&req);
 
     if (mount->manager) {
@@ -2554,6 +2597,37 @@ void cep_fed_transport_manager_mount_set_flat_policy(cepFedTransportManagerMount
     if (mount->manager) {
         (void)cep_fed_transport_manager_update_mount_schema(mount);
     }
+}
+
+void
+cep_fed_transport_manager_mount_set_pipeline_metadata(cepFedTransportManagerMount* mount,
+                                                      const char* pipeline_id,
+                                                      const char* stage_id,
+                                                      uint64_t dag_run_id,
+                                                      uint64_t hop_index)
+{
+    if (!mount) {
+        return;
+    }
+    bool has_metadata = false;
+    if (pipeline_id && *pipeline_id) {
+        snprintf(mount->pipeline_label, sizeof mount->pipeline_label, "%s", pipeline_id);
+        has_metadata = true;
+    } else {
+        mount->pipeline_label[0] = '\0';
+    }
+    if (stage_id && *stage_id) {
+        snprintf(mount->stage_label, sizeof mount->stage_label, "%s", stage_id);
+        has_metadata = true;
+    } else {
+        mount->stage_label[0] = '\0';
+    }
+    mount->pipeline_run_id = dag_run_id;
+    mount->pipeline_hop_index = hop_index;
+    if (dag_run_id || hop_index) {
+        has_metadata = true;
+    }
+    mount->pipeline_metadata_known = has_metadata;
 }
 static bool cep_fed_env_push_override(const char* name,
                                       uint32_t value,
