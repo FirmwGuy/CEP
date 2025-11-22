@@ -5,7 +5,7 @@ When long-running tests stall, the watchdog is what yanks them back. This primer
 ## Technical Details
 
 - `test_watchdog_create(seconds)` arms a background thread that calls `_Exit()` once the negotiated timeout elapses; Layer 0 Organ Validation Harness (OVH) suites default to 240 s but you can override the budget with the `timeout=` Munit parameter.
-- The max clamp now sits at 300 s (`WATCHDOG_MAX_TIMEOUT_SECONDS`), so multi-minute diagnostics can run with an appropriately high ceiling without bypassing the kill switch.
+- The max clamp sits at 300 s (`WATCHDOG_MAX_TIMEOUT_SECONDS`), so multi-minute diagnostics can run with an appropriately high ceiling without bypassing the kill switch.
 - Set `TEST_WATCHDOG_TRACE=1` to mirror armed/cleared/expired events on `stderr`, including elapsed seconds since arming; traces respect the default 1 s granularity.
 - The shared `test_ovh_watchdog_setup/tear_down` fixture arms watchdogs for `/CEP/heartbeat/bootstrap`, `/CEP/organ/sys_state`, and `/CEP/organ/rt_ops`, ensuring they signal completion before teardown.
 - You can still request a shorter runtime by passing `timeout=60` (or similar) through Meson: `meson test -C build-asan-linux --test-args="--param timeout 60"`.

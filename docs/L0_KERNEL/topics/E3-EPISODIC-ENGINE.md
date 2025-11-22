@@ -34,8 +34,8 @@ Imagine taking a long-running job, slicing it into safe, deterministic beats, an
 - Debugging: inspect `/rt/ops/<eid>/history` to confirm state transitions, `/rt/ops/<eid>/watchers` for outstanding awaits, and the diagnostics mailbox for guard or budget violations.
 
 ## Q&A
-**Q: Why not keep Rendezvous?**  
-Rendezvous relied on bespoke registries and opaque wait handles. E³ folds long-running work into the existing heartbeat + OPS machinery, so watchers, CEI, and replay all behave the same way—no forked control plane.
+**Q: Why not keep the old control plane?**  
+Legacy rendezvous-style registries relied on bespoke wait handles. E³ folds long-running work into the heartbeat + OPS machinery, so watchers, CEI, and replay all behave the same way—no forked control plane.
 
 **Q: Can read-only episodes mutate state at the end?**  
 They can queue intents (e.g., stage a transaction) for commit on the next beat, but mutation helpers stay guarded. Use a dedicated RW episode (with leases) for mutators; RO slices exist to analyse state, stream data, or schedule follow-on work.

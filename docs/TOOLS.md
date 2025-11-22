@@ -17,6 +17,8 @@ CEP bundles a handful of helper scripts in `tools/` so you can keep the build ar
   Lightweight wrapper that runs Doxygen, optionally triggers a post-processing step (such as `fix_doxygen_toc.py`), and touches a stamp file so Meson knows the doc build succeeded. Meson’s `docs_html` target uses it; invoke it manually if you maintain a custom documentation pipeline.
 - **`tools/check_docs_structure.py`**  
   Scans every Markdown file under `docs/` and fails if a document is missing a terminal `## Global Q&A` section. Run it in CI or pre-commit hooks to keep the new structural contract intact.
+- **`tools/valgrind.supp`**  
+  Suppression file shared by the Meson/Makefile workflows when running `valgrind`. Keep it updated as toolchains evolve; add entries only for known false positives so genuine leaks still surface.
 
 ## Global Q&A
 - **Do I need to install anything extra to use these helpers?**  

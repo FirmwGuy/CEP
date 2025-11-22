@@ -1,7 +1,7 @@
 # L0 Design: Episodic Enzyme Engine (E³)
 
 ## Introduction
-Think of an “episode” as a deterministic mini-story that plays out across several heartbeat beats. The Episodic Enzyme Engine (E³) replaces the retired Rendezvous prototype so enzymes can pause, resume, and even borrow read-only worker threads without ever breaking the beat-by-beat determinism that Layer 0 guarantees. This design note explains why the engine exists, the invariants it must protect, and how executor backends keep wall-clock concurrency tamed.
+Think of an “episode” as a deterministic mini-story that plays out across several heartbeat beats. The Episodic Enzyme Engine (E³) lets enzymes pause, resume, and even borrow read-only worker threads without ever breaking the beat-by-beat determinism that Layer 0 guarantees. This design note explains why the engine exists, the invariants it must protect, and how executor backends keep wall-clock concurrency tamed.
 
 ## Technical Details
 - **Deterministic lifecycle.** Every episode is represented by an `op/ep` dossier rooted at `/rt/ops/<eid>`. The envelope captures the signal, target, execution profile, and budgets; history entries log state changes (`ist:plan`, `ist:run`, `ist:yield`, `ist:await`, `ist:ok`, `ist:fail`, `ist:cxl`) with beats and optional diagnostic notes. Watchers reuse the existing OPS machinery so continuations (`CEP:ep/cont`) and timeouts (`CEP:op/tmo`) stay observable and replayable.
@@ -13,8 +13,8 @@ Think of an “episode” as a deterministic mini-story that plays out across se
 - **Lease tracking.** RW episodes maintain a linked list of lease records with precomputed paths and lock tokens. Closing an episode or cancelling it unwinds any outstanding leases. Violations are latched (`cep_ep_episode_record_violation`) so CEI emits a single `ep:lease/missing` fact per offending slice.
 - **Coroutine coordination.** Cooperative schedulers call `cep_ep_suspend_rw()` before yielding a mutating coroutine; the helper clears TLS guardrails and, when requested, releases leases. `cep_ep_resume_rw()` rebinds the context, reacquires dropped leases deterministically, and cancels the episode if another owner grabbed the lock in the meantime.
 
-### Why E³ supersedes Rendezvous
-- **Single control plane.** Rendezvous relied on bespoke registries. E³ keeps long-running work inside OPS so the existing await/watcher contracts, history, and CEI hooks apply automatically.
+### Why E³ matters
+- **Single control plane.** Long-running work stays inside OPS so the existing await/watcher contracts, history, and CEI hooks apply automatically.
 - **Replay safety.** Episodes respect the capture → compute → commit cadence. No slice publishes visible mutations mid-beat; RW episodes stage their work and rely on heartbeat commit to graft results.
 - **Predictable concurrency.** Threaded slices run concurrently only when marked RO and only with explicit budgets. FIFO ordering and deterministic watcher wake-ups keep replays stable regardless of OS scheduling.
 
@@ -24,10 +24,10 @@ Think of an “episode” as a deterministic mini-story that plays out across se
 - Cooperative builds still execute slices during heartbeat commit; this keeps deterministic behaviour on platforms without threads (wasm/emscripten) and doubles as a predictable test harness.
 
 ### Migration checklist
-1. Replace legacy Rendezvous registrations with calls to `cep_ep_start()`. Capture the signal/target paths and specify the desired execution profile and budgets.
-2. Fold legacy wait handles into OPS watchers by calling `cep_ep_await()` or directly wiring `cep_op_await()` to the foreign dossier/event.
+1. Call `cep_ep_start()` to register the episode. Capture the signal/target paths and specify the desired execution profile and budgets.
+2. Fold any bespoke wait handles into OPS watchers by calling `cep_ep_await()` or directly wiring `cep_op_await()` to the foreign dossier/event.
 3. Audit mutators: ensure RW code paths acquire leases before touching cells, release them when done, and honour the guard result from `cep_ep_require_rw()`.
-4. Update observability: tooling should inspect `/rt/ops/<eid>` history, watchers, and `close/` data rather than bespoke rendezvous logs.
+4. Update observability: tooling should inspect `/rt/ops/<eid>` history, watchers, and `close/` data rather than bespoke rendezvous registries.
 
 ## Q&A
 **Q: How do threaded episodes stay deterministic if wall-clock scheduling differs per run?**  
@@ -40,4 +40,4 @@ RW slices still execute cooperatively on the heartbeat thread. The threaded exec
 Use the OPS dossier (`/rt/ops/<eid>/history`, `/watchers`) for lifecycle and watcher status, and the diagnostics mailbox for guard/budget violations. Avoid bespoke logging pipelines; they drift from replay semantics.
 
 **Q: Do I need to update the orientation guide when adding new episode helpers?**  
-Yes. Extend `docs/DOCS-ORIENTATION-GUIDE.md` and `docs/DOCS-INDEX.md` so contributors rediscover the relevant topic/design docs quickly. Update `docs/CEP-TAG-LEXICON.md` if new tags become public.
+Yes. Extend `docs/DOCS-ORIENTATION-GUIDE.md` so contributors rediscover the relevant topic/design docs quickly. Update `docs/CEP-TAG-LEXICON.md` if new tags become public.

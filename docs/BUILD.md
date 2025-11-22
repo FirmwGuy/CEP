@@ -2,7 +2,7 @@
 
 ## Introduction
 
-CEP is a C library with a small test executable. You can build it on Windows (MSYS2 UCRT64) and Linux (Manjaro) using Meson and Ninja. If you’re not a programmer: Meson prepares the build plan, and Ninja runs the fast, incremental compilation. All temporary files stay inside a build folder so your source files remain clean.
+CEP is a C library with a small test executable. You can build it on Windows (MSYS2 UCRT64) and Linux (Arch/Manjaro) using Meson and Ninja. If you’re not a programmer: Meson prepares the build plan, and Ninja runs the fast, incremental compilation. All temporary files stay inside a build folder so your source files remain clean.
 
 ## Getting Started (Simple)
 
@@ -12,7 +12,7 @@ CEP is a C library with a small test executable. You can build it on Windows (MS
   - Build: `meson compile -C build`
   - Run tests: `meson test -C build`
 
-- Manjaro Linux
+- Arch/Manjaro Linux
   - Install tools: `sudo pacman -S --needed gcc meson ninja`
   - Configure: `meson setup build`
   - Build: `meson compile -C build`
@@ -65,7 +65,7 @@ The bundled copy ships the full upstream sources (crc32, deflate/inflate, gz* ut
 
 - Sanitizers (optional)
   - Enable with: `meson setup build -Dasan=true`.
-  - Recommended with Clang on MSYS2 UCRT64; supported with GCC/Clang on Manjaro.
+  - Recommended with Clang on MSYS2 UCRT64; supported with GCC/Clang on Arch/Manjaro.
 
 ## Clang Build (Optional)
 
@@ -75,7 +75,7 @@ If you want extra diagnostics and better sanitizers, you can build with Clang.
   - Windows (MSYS2 UCRT64 shell):
     - `pacman -S --needed mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-clang-tools-extra mingw-w64-ucrt-x86_64-compiler-rt`
     - Optional extras: `mingw-w64-ucrt-x86_64-clang-analyzer mingw-w64-ucrt-x86_64-include-what-you-use`
-  - Manjaro Linux:
+  - Arch/Manjaro Linux:
     - `sudo pacman -S --needed clang clang-tools-extra lld llvm compiler-rt compiler-rt-sanitizers`
 
 - Configure with Clang

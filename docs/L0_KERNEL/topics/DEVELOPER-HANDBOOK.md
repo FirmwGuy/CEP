@@ -1,298 +1,79 @@
 # L0 Topic: Developer Handbook
 
 ## Introduction
-Layer 0 kernel work thrives on deliberate practice more than memorising every helper. This handbook is the front door for engineers who need to touch `cep_cell.*`, storage backends, or the surrounding utilities without breaking determinism. It assumes you already skimmed the Layer 0 overview and now want the practical checklist that keeps day-to-day changes safe.
-
-Use it whenever you are onboarding a teammate or jumping back into kernel code after a break: it points to the right files, the support docs to reread, and the build/test rituals that prevent regressions.
-
-## Technical Details
-
-This section spells out the conventions, helper macros, and review requirements you should follow while authoring kernel patches so contributions stay consistent with the existing codebase.
-### Scope at a Glance
-- Hands-on guidance for implementing and extending CEP Layer 0 (Kernel) and preparing for Layers 1–2.
-- Focus on `cep_cell.*` as the foundation; enzyme/heartbeat modules appear only when absolutely required.
-- Determinism and replayability are non-negotiable design constraints; every helper choice should reinforce them.
-
-### Repository Layout
-- `src/l0_kernel/cep_cell.h|.c` — Core cell/data/store types and operations.
-- `src/l0_kernel/storage/*` — Pluggable child-storage implementations (linked list, dynamic array, packed queue, RB-tree, octree).
-- `src/l0_kernel/cep_molecule.h` — Low-level utilities: memory, alignment, branch prediction, small helpers.
-- `src/test/*` — MUnit tests, examples of API usage.
-- `docs/CEP.md` — Conceptual blueprint: layers, execution model, goals.
-
-### Related Docs
-- Core cell model
-  - `docs/L0_KERNEL/topics/NATIVE-TYPES.md` — L0 native types, canonical encoding, hashing/comparison.
-  - `docs/L0_KERNEL/topics/LINKS-AND-SHADOWING.md` — Link resolution, backlinks, and shadowing (tree → safe graph).
-  - `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md` — Append‑only history and idempotent updates for cells.
-- Runtime and scheduling
-  - `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` — Beat model, scheduling, enzyme contracts, replay safety.
-  - `docs/ROOT-DIRECTORY-LAYOUT.md` — Recommended root structure, journal/CAS, visibility rules.
-  - `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` — Operations timeline, watcher lifecycle, shutdown sequencing rationale.
-  - `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` — Mailbox helpers, TTL planning, retention metadata.
-  - `docs/L0_KERNEL/topics/CEI.md` — Common Error Interface helper, diagnostics mailbox defaults, severity policy integration.
-- External I/O
-  - `docs/L0_KERNEL/topics/EXTERNAL-LIBRARIES-INTERFACE.md` — Access to foreign structures; handles vs snapshots; zero‑copy rules.
-  - `docs/L0_KERNEL/topics/IO-STREAMS-AND-FOREIGN-RESOURCES.md` — Effect log, streams, preconditions, CAS, replay modes.
-
-### Build & Test (MSYS/bash)
-- Meson/Ninja (recommended)
-  - Configure: `meson setup build`
-  - Build: `meson compile -C build`
-  - Run tests: `meson test -C build`
-- Fallback Makefile (no Meson/Ninja)
-  - Build: `make -C unix`
-  - Run tests with debug logs: `../build-make/bin/cep_tests --log-visible debug`
-  - Clean: `make -C unix clean`
-### Notes
-
-- Toolchain: gcc + Meson/Ninja on MSYS2 UCRT64 and Manjaro works out of the box; fallback Makefile uses `gcc + make`.
-- CFLAGS are tuned for this codebase: assertions are used heavily; do not strip them while developing.
-- During instrumentation, prefer staging breadcrumbs inside a temporary `meta/debug` child (for example, on the active OPS dossier) instead of dumping to stderr; scrub the branch once the fix ships so the tree stays clean.
-
-### Kernel Concepts (L0)
-- cepID: 64-bit value encoded with naming bits. Supports multiple naming modes: word (lowercase), acronym (upper), reference, numeric. Helpers convert to/from compact encodings.
-- cepDT: Domain-Tag pair (name). Comparison is lexicographic: first domain, then tag.
-- cepMetacell: Metadata + name bits (type, visibility, shadowing, domain, tag). Same size/layout as cepDT; system bits occupy 2×6 positions.
-- cepData: Data payload with metadata and representation type:
-  - VALUE: in-struct small buffer (`value[]`).
-  - DATA: heap buffer (`data`, `destructor`).
-  - HANDLE: opaque resource (external library), references another cell.
-  - STREAM: window onto external stream.
-  - Ordering and semantics: L0 treats payloads as opaque bytes and orders data by (cepDT, size, bytes). Enzymes or upper-layer packs define any per-tag canonicalization or schemas.
-- cepStore: Child container with configurable storage and indexing strategy.
-  - Storage: linked list, array, packed queue, red-black tree, octree.
-  - Indexing: insertion order, by name, by user compare, by hash+compare.
-- cepCell: The unit node. Holds metacell, optional data or link, and optional store for children.
-
-### Operations timeline (OPS) essentials
-Long-running work, lifecycle boot/shutdown, and pack-specific jobs should surface through the OPS API so tooling can observe progress deterministically. Use `cep_op_start(verb_dt, target_path, mode_dt, payload, size, ttl)` to open a dossier under `/rt/ops/<oid>`, then append state/history entries with the helper routines in `cep_ops.c` or close it via `cep_op_close(oid, status_dt, summary, len)`. Watchers attach with `cep_op_await(oid, want_dt, ttl, continuation_dt, payload, size)` and fire during heartbeat commit, eliminating the need for polling. Always consult `docs/L0_KERNEL/design/L0-DESIGN-HEARTBEAT-AND-OPS.md` before adjusting sequencing so envelope creation, history ordering, and watcher TTL behaviour stay deterministic.
-
-### Diagnostics mailbox and CEI helper
-`cep_cei_emit` is the canonical path for recording structured Error Facts. It resolves the diagnostics mailbox at `/data/mailbox/diag` (or a mailbox you pass in), stages an immutable `err/` branch, records TTL metadata via `cep_mailbox_record_expiry`, and optionally emits `sig_cei/<severity>` impulses or closes an OPS dossier when `attach_to_op` is set. Always ensure the heartbeat has been configured (`cep_heartbeat_configure`) and started so the diagnostics mailbox exists, and favour `cep_cell_put_*` helpers when adding fields to avoid breaking hashing. The mailbox topic and CEI paper detail TTL precedence, retention bookkeeping, and severity policy—revisit them before altering message layout or introducing new severities.
-
-### Lifecycle scopes and bootstrap cadence
-Kernel startup is deterministic: call `cep_l0_bootstrap()` to provision the cell system, heartbeat, diagnostics mailbox, and namepool; then configure the heartbeat (`cep_heartbeat_configure`), run `cep_heartbeat_startup`, and begin beats via `cep_heartbeat_begin` or `cep_heartbeat_step`. Each scope (`kernel`, `store`, `packs`) reports readiness through the `op/boot` dossier so packs can await specific states. Shutdown mirrors the sequence: `cep_heartbeat_emit_shutdown` opens `op/shdn`, lifecycle scopes unwind in reverse order, and shutdown closes with `sts:ok` unless a fatal CEI emission forces failure. The startup/shutdown topic documents the published OIDs and watcher guidance—skim it before modifying bootstrap helpers or writing tests that depend on lifecycle signalling.
-
-### Naming vs Structural Tags
-- `cell->metacell.dt` carries the cell's own name (domain + tag). For dictionary children this matches the key assigned by the parent.
-- `cell->data->dt` describes the payload schema or datatype. Helpers such as `cep_cell_add_value` pass a DT here so higher layers know how to interpret the bytes while keeping the payload opaque to the kernel.
-- `cell->store->dt` labels the child collection. `cep_cell_add_dictionary(child, name, context_dt, type_dt, ...)` uses `name` for the child's metacell and `type_dt` for the store so traversal can recognize record classes ("CEP:being", "CEP:bond", etc.).
-- Rule of thumb: metacell names identity; data/store `dt` signal structure. Mixing them makes history harder to read and breaks discovery helpers.
-
-### Convenience wrappers for common chores
-Layer 0 now ships a handful of ergonomic helpers so contributors can focus on behaviour instead of repeating store boilerplate. They make it easy to normalise links, guarantee writable dictionaries, and copy child trees without remembering the low-level sequencing.
-
-**Technical details**
-- `cep_cell_require_store()` / `cep_cell_require_dictionary_store()` resolve links and confirm the backing store is present (upgrading to a dictionary when needed). Use them whenever you inherit a cell pointer from another subsystem.
-- `cep_cell_ensure_dictionary_child(parent, field, storage)` creates or resolves a dictionary child in one call. It is link-safe and preserves existing metadata, which keeps ledger reuse deterministic.
-- `cep_cell_put_text()` / `cep_cell_put_uint64()` / `cep_cell_put_dt()` replace the common "remove child → format value → add child" dance. They coerce parents into dictionaries, drop old values safely, and update the content hash so monitoring remains consistent.
-- `cep_cell_clear_children()` wipes a store while keeping the container alive, and `cep_cell_copy_children(src, dst, deep)` copies an entire subtree, handling link resolution and memory ownership for you.
-
-### Quick Q&A
-- **When should I prefer the wrappers over manual calls?** Whenever you are writing Layer‑0 code that needs to mutate dictionaries or copy children—using the wrappers keeps link handling and hashing consistent across modules.
-- **Do the setters allocate when the value text already matches?** No. They remove any existing child first, then insert the new payload; idempotent callers can rely on the helper without pre-checking.
-- **Can I still access the lower-level API?** Absolutely. The wrappers sit on top of the regular `cep_cell_add_*` family, so specialised code can drop down a level when it needs bespoke behaviour.
-
-### Stability before shaving cycles
-Future you would rather debug readable code than a micro-optimised crash dump. When in doubt, bias towards the approach that keeps ownership obvious, even if it means paying an extra dictionary lookup.
-
-**Technical details**
-- Treat cached child pointers as disposable unless you fully control the store; use domain/tag lookups after structural mutations to avoid dangling references.
-- Leave deliberate `/* OPTIMIZE: ... */` breadcrumbs where a slower path is intentional and explain the data required before revisiting the trade-off.
-- Keep assertions intact—Layer 0 relies on them to catch ownership mistakes the moment they happen.
-
-**Q&A**
-- **Is caching ever okay?** Yes, but only when the data structure cannot swap the node from under you (e.g., you own the store for the duration).
-- **How should I flag potential speedups?** Add a short `/* OPTIMIZE: rationale */` note so future profiling runs know where to focus.
-- **What if profiling shows the lookup dominates the cost?** Document the numbers, then add a guarded fast-path while keeping the safe code path as the default.
-
-### Name Interning
-Short nicknames stay on the label; long nicknames get filed once and every cell just keeps a reference number. You still talk to the cell the same way, but the kernel decides the cheapest way to store the name.
-
-#### Name Interning Technical Notes
-- Fast paths: decimal strings that fit 56 bits become `CEP_NAMING_NUMERIC`. Lowercase/punctuated text (≤11 chars) uses word IDs, uppercase/punctuated text (≤9 chars) uses acronym IDs. These never touch the intern pool.
-- Reference IDs: anything longer or mixed (UTF-8) up to 256 bytes goes through `cep_namepool_intern[_static]`, which stores the bytes under `/CEP/sys/namepool` and returns a `CEP_NAMING_REFERENCE` (page,slot) ID. Static entries reuse the caller’s buffer; dynamic ones copy into the CAS-backed value.
-- Refcounts: dynamic interns bump a refcount and can be released via `cep_namepool_release(id)` when modules unload. Static interns are permanent. Lookup returns the canonical byte pointer for logging or API use.
-- Validation: `cep_id_text_valid` and `cep_dt_is_valid` now treat reference IDs as first-class, so downstream code doesn’t need special cases.
-
-### Developer Q&A
-- **How do I guarantee replayability while adding features?** Make every choice explicit and logged. No implicit randomness—tie ordering to store/indexing helpers and record decisions so the heartbeat can replay them.
-- **Can I modify facts in place?** Treat `cepData` as the current value only; if you need immutable history, append new cells or rely on higher-layer packs to version meaning explicitly.
-- **Where should I look when performance slips?** Profile the relevant store first, then cross-reference `docs/L0_KERNEL/L0-TUNING-NOTES.md` to adjust storage or payload choices before reaching for new helpers.
-- **When do I need to update other docs?** After touching kernel internals, check `docs/L0_KERNEL/L0-OVERVIEW.md`, this handbook, and any affected topic files so the narrative matches the code.
-- **What if I discover an undocumented convention?** Add it to the Style Guide section here, update the lexicon or overview as needed, and note the change in `docs/DOCS-INDEX.md` for the next audit.
+Layer-0 kernel work succeeds when you treat determinism, documentation, and tests as part of the code. This handbook is the operations checklist for engineers who need to touch `cep_cell.*`, storage backends, CPS, or the heartbeat/E³ plumbing without breaking replay or portability. Use it whenever you are onboarding a teammate or returning after a gap: it points you to the docs you must reread, the files to change with care, and the build/test conventions that keep regressions out of `snaps`.
 
 ---
 
-### Namepool Q&A
-- **Do I have to call the pool for every name?** No. Only call it if you need a reference ID explicitly; helpers such as `cep_cell_set_name` already fall back to word/acronym/numeric.
-- **What happens during replay?** The `/CEP/sys/namepool` cells are part of the append-only history. Replaying rebuilds the same table so `(page,slot)` IDs are stable.
-- **How do I remove dynamic names?** Keep the ID and call `cep_namepool_release(id)` once you no longer use it (e.g., when unloading a shared library). The pool clears the slot when the refcount drops to zero.
+## Technical Details
 
-### Core Invariants
-- Deterministic operations: no nondeterministic iteration over children; ordering is defined by storage/indexing.
-- Valid names only: `cep_dt_is_valid()` for any DT used; ID/naming helpers gate correctness.
-- Ownership clarity:
-  - `store->owner` links a store back to its parent cell.
-  - `cell->parent` points to the parent store (not the parent cell directly).
-  - Transfers move structs without deep copies unless explicitly cloning.
-- Memory discipline: allocate via `cep_malloc*`, free via `cep_free`, use `CEP_0()` to zero-initialize, and clean up on all exit paths. Most functions assert on preconditions.
+### 1. Before touching kernel code
+- Skim `docs/DOCS-ORIENTATION-GUIDE.md` (it now contains the full inventory) and reopen:
+  - `docs/CEP-Implementation-Reference.md` for contract-level guarantees.
+  - `docs/L0_KERNEL/L0-OVERVIEW.md` plus the relevant topic note (locking, native types, serialization, etc.).
+  - `docs/L0_KERNEL/L0-TUNING-NOTES.md` when your work touches performance-sensitive paths.
+- If policy/enclave code is involved, reread `docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md` and `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md`.
+- When editing long-running work or heartbeat scheduling, refresh `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` and `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md`.
 
-### Primary API (Patterns)
-- Initialize a cell
-  - Empty: `cep_cell_initialize_empty(&c, CEP_DT...)`
-  - With data: `cep_cell_initialize_value(...)` or `cep_cell_initialize_data(...)`
-  - With children store: `cep_cell_initialize_list|dictionary|catalog|spatial(...)`
-- Add/append children
-  - Insert (pos/name/sorted): `cep_cell_add(...)`
-  - Append/prepend (insertion index): `cep_cell_append(..., prepend)`
-  - Shorthands: `cep_cell_add_value|data|list|dictionary|catalog|link`, and their `append|prepend` variants.
-- Lookup and navigation
-  - First/last/prev/next: `cep_cell_first|last|prev|next`
-  - By name/key/position/path: `cep_cell_find_by_*`
-  - Traverse shallow/deep: `cep_cell_traverse`, `cep_cell_deep_traverse`
-    - Kernel-only raw variants: `_first_all`, `_next_all`, `_last_all`, `_prev_all`, and `cep_cell_deep_traverse_all` bypass visibility filters for sealing/digests. Avoid them in product code so veils and tombstones remain respected.
-- Removal
-  - Remove/pull from parent store: soft delete via `cep_cell_child_take|pop` (marks child deleted and returns a link), hard removal via `cep_cell_child_take_hard|pop_hard` (reorganizes siblings), `cep_cell_remove`
-- Data access/update
-  - Read: `cep_cell_data(cell)` for VALUE/DATA or `cep_cell_stream_read(cell, offset, dst, size, out_read)` for HANDLE/STREAM through library adapters
-  - Update: `cep_cell_update(cell, size, capacity, value, swap)` (records a snapshot) or `cep_cell_update_hard(...)` for in-place overwrites; HANDLE/STREAM writes use `cep_cell_stream_write` so effects are staged and journalled
-  - Delete data/store: `cep_cell_delete_data|store|children`
-  - Sort: `cep_cell_to_dictionary`, `cep_cell_sort(compare, ctx)`
+### 2. Repository quick map
+- `src/l0_kernel/cep_cell.*` – Cells, stores, payloads, shadowing, and core helpers.
+- `src/l0_kernel/storage/*` – Linked list, array, packed queue, RB-tree, hash table, octree implementations.
+- `src/l0_kernel/cep_async.c`, `cep_io_reactor.c`, `cps/*` – CPS controllers, CAS helpers, async reactor backends.
+- `src/l0_kernel/cep_enclave_policy.c`, `secdata/*` – Policy loader and runtime enforcement.
+- `src/enzymes/*` – Cell/OPS/federation/security enzymes.
+- `src/test/*` – MUnit suites; treat them as living documentation.
+- `tools/` – Fixture capture, lexicon checker, Doxygen helpers, code map generator, valgrind suppression.
 
-### Child Storage Strategies
-- Linked list (`cep_linked_list.h`)
-  - Strengths: fast prepend/append; simple sorted insertion; easy traversal.
-  - Cost: O(n) random access; more pointers per node.
-- Dynamic array (`cep_dynamic_array.h`)
-  - Strengths: cache-friendly, O(1) by position; supports named and sorted operations.
-  - Cost: shifts on insertion/removal; capacity management.
-- Packed queue (`cep_packed_queue.h`)
-  - Strengths: amortized fast head/tail operations.
-  - Limitation: insertion indexing only; not for name/sorted modes.
-- Red-black tree (`cep_red_black_tree.h`)
-  - Strengths: ordered by name or custom compare; O(log n) insert/find.
-  - Note: resorting/rebalancing changes are controlled; no insertion-order mode.
-- Octree (`cep_octree.h`)
-  - Strengths: spatial indexing with user comparator.
-  - Precondition: requires center/subwide bound and comparator.
+### 3. Coding conventions (non-negotiable)
+- **Determinism first:** no hidden randomness. All ordering goes through stores/indexing or heartbeat dependency ordering. Episodes record every decision in `/rt/ops/**`.
+- **Name hygiene:** DT helpers (`CEP_WORD`, `CEP_ACRO`, `CEP_ID_GLOB_*`) for fixed labels; namepool references for user strings. Extend `docs/CEP-TAG-LEXICON.md` first, then use the new tag.
+- **Payload/store rules:** Do not bypass `cep_cell_add*` / `cep_cell_update*`. Those helpers stamp history, auto-IDs, and visibility bits.
+- **Lifetimes:** If Layer-0 allocates, Layer-0 frees. Set destructors on DATA payloads, release namepool refs, and zero proxies when the adapter is done.
+- **Logging & diagnostics:** prefer CEI facts or temporary `meta/debug` breadcrumbs on the affected OPS dossier. User-facing logging belongs to higher layers.
 
-### Hash-Indexed Stores
-Hash-indexed stores keep duplicate detection consistent without changing the public API. Linked lists, dynamic arrays, and red-black trees accept `CEP_INDEX_BY_HASH`, but they still rely on their comparator to walk the full collection (hashes are used only for equality checks). The dedicated hash-table backend is the only one that actually buckets by hash and resizes to keep lookups near O(1).
+### 4. Build & test loop
+| Step | Command | Notes |
+| --- | --- | --- |
+| Configure (full build) | `meson setup build` | Pass `-Dexecutor_backend=threaded` only when the host supports threads; wasm/emscripten auto-downgrade. |
+| Incremental build | `meson compile -C build` | Re-run after each logical change. |
+| Default tests | `meson test -C build` | Add `--repeat=3` for flaky hunts; use `MESON_TEST_WRAPPER="valgrind ... --suppressions=tools/valgrind.supp"` for leak sweeps. |
+| ASAN build | `meson setup build-asan -Dasan=true` | Keep ASAN and default builds separate; never mix valgrind with ASAN binaries. |
+| Fallback Makefile | `make -C unix` | Produces `build-make/bin/cep_tests`; mirrors Meson sources and includes CPS/libsodium/zlib bundles. |
+| Docs | `meson compile -C build docs_html` | Run `python tools/fix_doxygen_toc.py build/docs/html` afterwards; `tools/check_docs_structure.py` catches missing Q&A sections. |
+| Fixtures | `CEP_UPDATE_PAYLOAD_REF_FIXTURES=1 meson test -C build /CEP/cps/replay/*` then `tools/capture-fixtures.sh` | Always commit the refreshed fixture logs/frames together. |
 
-#### Hash-Indexed Store Technical Notes
-- Supported backends: linked lists, dynamic arrays, and red-black trees reuse the sorted-insert path while consulting the hash to deduplicate entries; the hash-table backend stores children in real buckets and grows/shrinks as needed.
-- Creation contract: call `cep_store_new(..., CEP_INDEX_BY_HASH, compare)` and provide a comparator that first checks the stored hash and then compares a secondary field to resolve collisions. Callers constructing children manually can follow the `hash_index_add_value` pattern from the kernel tests: initialise a temporary cell, then pass it to `cep_cell_add`.
-- Operations: use `cep_cell_add` or `cep_store_add_child` for inserts. The deduplication logic treats two children with equal structure and hash/compare results as the same record. Append/prepend helpers are restricted to insertion-ordered stores and will assert if used with hash indexing.
-- Traversal: `cep_cell_traverse` and `store_traverse` iterate in hash/secondary order with no sentinel callback at the end, matching the behaviour of the other sorted backends.
-- Testing: `test_cell_tech_hash` in `src/test/l0_kernel/test_cell.c` seeds each supported backend, verifies comparator lookups, forces rehashing or tree rotations, and checks aggregate sums to confirm bookkeeping stays consistent.
+### 5. Instrumentation & diagnostics
+- **CEI:** use `cep_cei_emit()` with deterministic topics (`persist.flush.*`, `ep:bud/*`, `sec.*`). Pick severities based on `docs/L0_KERNEL/topics/CEI.md`.
+- **OPS dossiers:** long-running work uses `op/*` and `op/ep` trees. Track progress via `ist:*` states instead of custom logs.
+- **Async reactor:** watch `/rt/analytics/async/(shim|native)` and `/rt/ops/<oid>/io_req/*` before assuming persistence “hung”.
+- **Branch telemetry:** `/data/persist/<branch>/{config,branch_stat}` shows flush cadence, cache bytes, and laziness; rely on it when tuning `flush_every`, `hist_ram_*`, or `ram_quota`.
+- **Security policy:** `/sys/state/security` exposes readiness/faults; `/rt/analytics/security` gives allow/deny counters. Keep watchers running when editing policy files.
 
-#### Hash-Indexed Store Q&A
-- **When should I choose the hash-table storage over a red-black tree?** Pick the hash-table when you need predictable O(1) inserts and primarily fetch by key. Reach for the tree when ordered neighbour queries or range scans matter more than raw insertion speed.
-- **Do I need to recompute hashes after mutating payload data?** Yes. Update the stored hash (for example via `cep_data_compute_hash`) before reinserting or replacing the child so bucket placement stays correct.
-- **Can I mix `CEP_INDEX_BY_HASH` with append/prepend helpers?** No. Hash-indexed stores expect comparator-driven inserts. Use `cep_cell_add` with a prepared child; append/prepend remain reserved for insertion-order storage.
+### 6. Episodes, heartbeat, and policies
+- **Heartbeat invariants:** Capture → Compute → Commit. New work only becomes visible at beat `N+1`. Never publish mid-beat results.
+- **Enzyme registration:** Changes done mid-beat activate next beat. Always stage new descriptors via helper functions to ensure tombstones propagate.
+- **E³ usage:** Choose RO vs RW profiles intentionally. RO slices may run on the threaded executor (if enabled) but still respect budgets. RW slices remain on the heartbeat and guard their leases.
+- **Budgets & cancellation:** Set `cpu_budget_ns` / `io_budget_bytes`. Use `cep_ep_check_cancel()` near loops; watchers feed into `/rt/ops/<eid>/watchers`.
+- **Policy pipeline:** `cep_enclave_policy` snapshots `/sys/security/**`; `sig_sec/pipeline_preflight` approves graphs; `cep_fed_invoke_validator()` enforces IDs + ceilings. Always rerun the preflight enzyme after editing policy trees.
 
-### Coding Conventions
-- Assertions everywhere: validate pointers, modes, and index ranges. Fail fast in debug.
-- Instrumentation should stay sparse and meaningful: log state only when it changes, immediately after the mutation, so traces capture transitions rather than steady-state noise.
-- Avoid hidden side effects: functions that mutate also document store/indexing prerequisites (e.g., insertion-only vs. dictionary vs. sorted modes).
-- Clear lifetimes: if you allocate, you free. For DATA, always set destructor or adopt ownership.
-- Use `cep_cell_transfer` to move contents between cells without deep copy; only use deep clone when needed.
-- Respect naming constraints:
-  - Words: lowercase + `: _ - . /` up to 11 chars.
-  - Acronyms: ASCII 0x20–0x5F up to 9 chars.
-  - Numeric: parent-local auto-id unless explicitly set.
+### 7. Documentation & TODO hygiene
+- Update `docs/DOCS-ORIENTATION-GUIDE.md` whenever you add or remove a doc, so the inventory stays accurate.
+- Mention new coding conventions here in the Handbook and cross-reference the relevant topic/design note.
+- For larger features, add a `TODO`/checklist file in the repo root (or extend existing ones) before coding, per AGENTS.md instructions.
+- When editing terminology, change `docs/CEP-TAG-LEXICON.md`, related topic notes, and the Implementation Reference together.
 
-### Testing Guidelines
-- Prefer MUnit patterns shown in `src/test/test_cell.c`:
-  - Zero/one/multi-item operations per storage flavor.
-  - Nested structure tests for traversal correctness.
-  - Sequencing tests: confirm storage equivalence across implementations.
-- Build incremental tests when adding features:
-  - Cover HANDLE/STREAM stream helpers (`cep_cell_stream_read|write|map`) and verify staged commits via `cep_stream_commit_pending`.
-  - Keep hash indexing coverage current across linked list/array/tree and the hash-table backend.
-  - Add range queries and path iteration robustness.
-
-### Roadmap (Kernel-Focused)
-
-Keep this list handy when prioritising kernel work—it summarises the near-term tasks and dependencies that unblock the wider roadmap.
-### 1) Complete Data Backends
-   - Extend HANDLE/STREAM history snapshots and diagnostics; the read/write path now lives in `cep_cell_stream.c`.
-   - Clarify resource lifecycle: reference counting or explicit unref on HANDLE/STREAM.
-### 2) Shadowing and Links
-   - Maintain reverse shadow lists in targets (`cepShadow`) when creating/removing links.
-   - Expose APIs to enumerate shadows and to update nested links on replace/move (`cep_cell_update_nested_links(old,new)`).
-### 3) Indexing Features
-   - Implement `CEP_INDEX_BY_HASH` (primary hash, secondary comparator) across list/array/tree where applicable.
-   - Range queries for dictionaries/catalogs (min/max and between).
-### 4) Sorting/Resorting
-   - RB-tree: re-sort/re-index helpers when switching compare functions.
-   - Octree: reinsert on compare/bound changes; verify traversal ordering contracts.
-### 5) Path/Traverse Robustness
-   - Adaptive stack now grows on demand; add instrumentation to capture depth high-water marks and surface them to tooling.
-   - Add internal-order traversal (storage-native sequencing) explicitly verified by tests.
-### 6) Specialized Stores
-   - One-member-only dictionary (organizational convenience) with fast replace semantics.
-### 7) Concurrency and Locks (Pre-Heartbeat)
-   - Define lock bit semantics in `cepStore`/`cepData`. Provide coarse-grained writer locks and assert-only checks in debug. No atomics required yet; keep determinism.
-### 8) Persistence Hooks (Pre-Enzyme)
-   - Define snapshot/restore surfaces at cell/store boundaries; hash and encoding metadata are already present.
-
-### Integration Previews (Beyond Kernel)
-- Heartbeat (L0 runtime):
-  - Step boundary semantics: outputs from step N appear in N+1; never earlier.
-  - Memory safety: per-beat staging structures; commit on tick.
-  - Scheduling API draft: queue impulses, poll enzymes, flush writes.
-- Enzymes (L0 actors):
-  - Contract: consume cells, emit cells; no hidden side effects; declare domains touched.
-  - Safety: deterministic within a heartbeat, with full provenance (who/why).
-
-### Contributing Checklist
-- Does the new code preserve determinism and ordering contracts of the chosen storage/indexing?
-- Are all pointer and mode preconditions asserted?
-- Are lifetimes clear and destructors set where needed?
-- Are name/ID rules respected and validated?
-- Are tests added to cover normal, boundary, and error paths for the new behavior?
-
-### Common Pitfalls
-- Forgetting to set `store->owner` when attaching a store or after transfers.
-- Mutating data when `writable` is false.
-- Using insertion-only operations on dictionary/sorted stores (asserts will fire).
-- Not updating auto-id when IDs are auto-pending; call `store_check_auto_id` flow via existing add/append helpers.
-
-### Minimal Usage Example
-- Create a dictionary under root, insert a value, and query it:
-  - `cep_cell_system_initiate();`
-  - `cepCell* dict = cep_cell_add_dictionary(cep_root(), CEP_DTWA("CEP","temp"), 0, CEP_DTWA("CEP","dictionary"), CEP_STORAGE_ARRAY, 16);`
-  - `uint32_t v = 42;`
-  - `cepCell* item = cep_cell_add_value(dict, CEP_DTWA("CEP","enum"), 0, CEP_DTWA("CEP","enum"), (cepID)0, CEP_ID(0), &v, sizeof v, sizeof v);`
-  - `cepCell* found = cep_cell_find_by_name(dict, cep_cell_get_name(item));`
-  - `assert(found == item);`
-  - `cep_cell_system_shutdown();`
-
-### Style Guide (Local)
-- Prefer small `static inline` helpers in headers for fast-path checks.
-- Keep public entry points in `.c` minimal and assert-rich.
-- No one-letter variables in public APIs; keep internal helpers concise and consistent with existing code.
-- Avoid adding external dependencies; keep Layer 0 standalone and portable.
-
-### Where to Look When Extending
-- Storage feature patterns: mirror linked list/array APIs to keep store-agnostic logic in `cep_cell.c` straightforward.
-- Name encoding: see `CEP_TEXT_TO_*` macros for adding custom naming schemes if ever needed.
-- Tests as documentation: `src/test/test_cell.c` shows expected semantics across all storage/indexing pairs.
-
-### Next Steps You Can Pick Up
-- Extend HANDLE/STREAM support with historical snapshots and error-channel integration so adapters surface deterministic diagnostics.
-- Add hash-based indexing across list/array/tree with a thin hash adapter.
-- Introduce range queries for dictionaries/catalogs (include tests mirroring by-name/by-key behavior).
-- Add regression tests that exercise the adaptive traversal stack at extreme depths and report the high-water metrics.
+### 8. Common pitfalls (2025 audit)
+- Forgetting to seal scratch branches before exposing them; always call `cep_cell_finalize()` or `cep_branch_seal_immutable()` when appropriate.
+- Mixing globbed and literal IDs in hot loops, causing resolve storms.
+- Running RO episodes without budgets or cancellation checks—shutdowns will hang.
+- Skipping CEI entries when refactoring persistence; the review team relies on `persist.*` and `ep:bud/*` topics to understand incidents.
+- Editing `unix/Makefile` without matching changes in Meson. Keep both build paths aligned (zip/libsodium/zlib/cps sources, flags, etc.).
 
 ---
 
 ## Global Q&A
-- **How do I guarantee replayability while adding features?** Make every choice explicit and logged. No implicit randomness—tie ordering to store/indexing helpers and record decisions so the heartbeat can replay them.
-- **Can I modify facts in place?** Treat `cepData` as the current value only; if you need immutable history, append new cells or rely on higher-layer packs to version meaning explicitly.
-- **Where should I look when performance slips?** Profile the relevant store first, then cross-reference `docs/L0_KERNEL/L0-TUNING-NOTES.md` to adjust storage or payload choices before reaching for new helpers.
-- **When do I need to update other docs?** After touching kernel internals, check `docs/L0_KERNEL/L0-OVERVIEW.md`, this handbook, and any affected topic files so the narrative matches the code.
-- **What if I discover an undocumented convention?** Add it to the Style Guide section here, extend the lexicon if naming changes, and note the update in `docs/DOCS-INDEX.md` for the next audit.
+- **How do I guarantee replayability?** Make every decision explicit: log it via CEI or Decision Cells, avoid hidden randomness, and keep ordering tied to stores/indices. Re-run `meson test -C build --repeat=2` before landing.
+- **Can I mutate payloads in place?** Only via `_hard` helpers when history is not required and after ensuring no readers rely on previous states. Otherwise append a new cell or record the change via higher-layer packs.
+- **Where do I start debugging a perf issue?** Inspect `/data/persist/<branch>` metrics, compare against `docs/L0_KERNEL/L0-TUNING-NOTES.md`, and profile the relevant store before adding new helpers.
+- **When should I update docs?** Every time you touch internals or APIs. At minimum: this handbook, the Overview, any topic note you touched, and the orientation inventory.
+- **What if I find an undocumented convention?** Add it to the “Coding conventions” section here, extend the lexicon if naming changes, and record the update in `docs/DOCS-ORIENTATION-GUIDE.md` so the inventory highlights it during the next audit.

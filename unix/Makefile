@@ -3,6 +3,7 @@
 
 # Directories
 SRCDIR := ../src
+THIRD_PARTY_DIR := $(SRCDIR)/third_party
 # Use a separate build dir so accidental `make` does not clobber Meson builds
 BUILD_DIR := ../build-make
 OBJ_DIR := $(BUILD_DIR)/obj
@@ -14,16 +15,53 @@ DOCS_HTML_INDEX := $(DOCS_DIR)/html/index.html
 # Target
 TARGET := $(BIN_DIR)/cep_tests
 
+# Platform detection (used for flags/backends)
+UNAME_S := $(shell uname -s 2>/dev/null)
+
 # Tools and flags
 CC ?= gcc
 CFLAGS ?= -g -Wall -std=gnu11 -D_GNU_SOURCE -fplan9-extensions \
           -I$(SRCDIR)/l0_kernel -I$(SRCDIR)/l0_kernel/storage \
+          -I$(SRCDIR)/l0_kernel/secdata \
+          -I$(SRCDIR)/cps \
           -I$(SRCDIR)/enzymes \
+          -I$(THIRD_PARTY_DIR)/blake3 \
+          -I$(THIRD_PARTY_DIR)/munit \
+          -I$(THIRD_PARTY_DIR)/libsodium/src/libsodium/include \
+          -I$(THIRD_PARTY_DIR)/libsodium/src/libsodium/include/sodium \
           -I$(SRCDIR)/test
+# Keep the fallback deterministic and portable.
+CFLAGS += -DCEP_RV_DISABLED=1 \
+          -DCEP_EXECUTOR_BACKEND_STUB=1 \
+          -DCEP_IO_REACTOR_BACKEND_DEFAULT_PORTABLE=1 \
+          -DCEP_LIBSODIUM_BUNDLED=1 \
+          -DCONFIGURED=1 \
+          -DDEV_MODE=0 \
+          -DSODIUM_STATIC=1 \
+          -DCEP_ZLIB_BUNDLED=1 \
+          -DBLAKE3_NO_SSE2 \
+          -DBLAKE3_NO_SSE41 \
+          -DBLAKE3_NO_AVX2 \
+          -DBLAKE3_NO_AVX512 \
+          -DBLAKE3_USE_NEON=0
+
+# Allow epoll hints when building on Linux so the portable backend can still
+# advertise support for switching later.
+ifeq ($(UNAME_S),Linux)
+  CFLAGS += -DCEP_IO_REACTOR_HAS_EPOLL=1
+endif
+
 ifeq ($(OS),Windows_NT)
 CFLAGS += -D__STDC_NO_ATOMICS__
 endif
 LDFLAGS :=
+
+ifeq ($(UNAME_S),Linux)
+  CFLAGS += -pthread
+  LDFLAGS += -pthread -lm -ldl
+else ifeq ($(UNAME_S),Darwin)
+  LDFLAGS += -lm
+endif
 
 # Optional libzip support (set USE_LIBZIP=1 to enable)
 USE_LIBZIP ?= 0
@@ -42,12 +80,39 @@ endif
 
 # Sources and objects (core kernel plus tests)
 CORE_SRC := $(wildcard $(SRCDIR)/l0_kernel/*.c) \
+            $(wildcard $(SRCDIR)/l0_kernel/secdata/*.c) \
             $(wildcard $(SRCDIR)/l0_kernel/stream/*.c) \
-            $(wildcard $(SRCDIR)/enzymes/*.c)
+            $(wildcard $(SRCDIR)/enzymes/*.c) \
+            $(wildcard $(SRCDIR)/cps/*.c)
 
 ifeq ($(USE_LIBZIP),0)
   CORE_SRC := $(filter-out $(SRCDIR)/l0_kernel/stream/cep_stream_zip.c,$(CORE_SRC))
 endif
+
+# Third-party sources bundled for offline builds
+BLAKE3_SRC := \
+  $(THIRD_PARTY_DIR)/blake3/blake3.c \
+  $(THIRD_PARTY_DIR)/blake3/blake3_dispatch.c \
+  $(THIRD_PARTY_DIR)/blake3/blake3_portable.c
+
+# Always rely on the portable implementations in fallback builds.
+
+LIBSODIUM_SRC := \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/crypto_aead/chacha20poly1305/aead_chacha20poly1305.c \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/crypto_aead/xchacha20poly1305/aead_xchacha20poly1305.c \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/crypto_core/hchacha20/core_hchacha20.c \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/crypto_onetimeauth/poly1305/onetimeauth_poly1305.c \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/crypto_onetimeauth/poly1305/donna/poly1305_donna.c \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/crypto_stream/chacha20/stream_chacha20.c \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/crypto_stream/chacha20/ref/chacha20_ref.c \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/crypto_verify/verify.c \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/randombytes/randombytes.c \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/randombytes/sysrandom/randombytes_sysrandom.c \
+  $(THIRD_PARTY_DIR)/libsodium/src/libsodium/randombytes/internal/randombytes_internal_random.c \
+  $(THIRD_PARTY_DIR)/libsodium_shims.c \
+  $(THIRD_PARTY_DIR)/libsodium_runtime_stubs.c
+
+ZLIB_SRC := $(wildcard $(THIRD_PARTY_DIR)/zlib/*.c)
 
 # Collect test sources. The fallback bundle skips libzip/L2 fixtures; the Meson
 # build still exercises everything.
@@ -58,7 +123,7 @@ ifeq ($(USE_LIBZIP),0)
 endif
 
 # Combine
-SRC := $(CORE_SRC) $(TEST_SRC)
+SRC := $(CORE_SRC) $(BLAKE3_SRC) $(LIBSODIUM_SRC) $(ZLIB_SRC) $(TEST_SRC)
 OBJ := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRC))
 
 DOCS_MAIN_MD := $(firstword $(foreach f,../docs/CEP.md ../docs/README.md ../docs/BUILD.md,$(if $(wildcard $(f)),$(abspath $(f)))))
