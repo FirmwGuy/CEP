@@ -5,6 +5,22 @@ This document condenses every implementation-relevant rule and guarantee scatter
 
 ## Technical Details
 
+### Layer 0 – Implemented surface (shipping)
+- Kernel heartbeat and storage: deterministic Capture → Compute → Commit, cells/stores/CAS/CPS, append-only history, locks, link/shadow bookkeeping, and async I/O with flat serializer frames.
+- Security and federation: enclave policy loader/enforcement, gateway validation, pipeline preflight hook, CEI surfaces (`sec.edge.deny`, `sec.limit.hit`, `sec.pipeline.reject`), and transport manager plumbing with capability negotiation.
+- Pipeline metadata plumbing: `pipeline_id`/`stage_id` (plus optional DAG run/hop) carried through envelopes, watchers, CEI origin, async requests, federation invoke/link/mirror, and enzyme contexts without interpreting graphs.
+- Episodic engine and OPS timelines: `op/boot`/`op/shdn`, `op/ep`, watcher semantics, pause/rollback/resume, and diagnostics mailboxes.
+- Persistence: CPS controllers, flatfile backend, async commit flow, branch policies (`allow_volatile_reads`, `snapshot_ro`), Decision Cells for cross-branch reads, and CEI telemetry for commits/flushes/checkpoints.
+- Tooling/testing stance: ASAN/Valgrind separation, sanitizer build directory split, code map generation, and opt-in pack testing conventions.
+
+### Layer 1 – Current implementation (partial, optional pack)
+- Pack bootstrap/shutdown helpers create `/data/coh/**` and `/data/flow/**`, register the adjacency-closure enzyme stub, and publish pack readiness via `op/l1_boot`/`op/l1_shdn`.
+- Coherence scaffolding: helpers to add beings, bonds, contexts, facets, and debts with namepool-backed IDs; contexts accept role bindings that create participants and facets; debts are recorded and marked resolved when closure sees complete data (closure logic is still minimal and local).
+- Pipeline DAG scaffolding: ensures pipeline/stage/edge dictionaries under `/data/flow/pipelines/**`, records pipeline IDs, allows adding edges, and binds pipelines/stages back to coherence beings for provenance.
+- Runtime scaffolding: records runs and per-stage states under `/data/flow/runtime/**`, tracks metrics and annotations, and can emit pipeline-aware impulses carrying L0 metadata.
+- Testing: opt-in smoke suite under `src/test/l1_coherence/` gated by `CEP_L1_TESTS`; no full orchestrator/closure coverage yet.
+- Not implemented yet: full adjacency closure/debt sweeps with CEI/history, graph validation/versioning, orchestrator triggers/fan-in/out, hydration helper, federation/security alignment for L1 stages, and richer metrics/annotations (tracked separately).
+
 ### Layer scope and adoption order
 - CEP’s layers align with `docs/CEP.md`: **Layer 0 – Kernel & Pipeline Substrate**, **Layer 1 – Coherence & Pipeline Graphs**, **Layer 2 – Ecology & Flows (Modules and Evolution)**, **Layer 3 – Awareness, Datasets & Human Interaction**, and **Layer 4 – Governance, Safety & Self‑Evolution**. Only Layer 0 ships in this repository; higher layers remain planned but their invariants (Decision Cells, facet closure, supervisory approvals) inform the kernel contracts and API surface.
 - Beats remain strictly Capture → Compute → Commit. Inputs for beat *N* freeze during Capture, work executes during Compute, and results become visible at beat *N + 1*. Every non-deterministic choice must emit a Decision Cell so replays consume recorded decisions instead of re-executing randomness, matching Layer 0’s heartbeat description in `docs/CEP.md §2.1`.

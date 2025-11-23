@@ -39,6 +39,15 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `beat` | RT | dictionary grouping heartbeat evidence for a specific beat. |
 | `cas` | RT | content-addressable storage subtree. |
 | `data` | RT | durable dataset root promoted at the end of a beat. |
+| `coh` | L1 | Layer 1 coherence root under `/data/coh` (beings, bonds, contexts, facets, debts). |
+| `beings` | L1 | Coherence beings dictionary under `/data/coh` storing durable identities. |
+| `bonds` | L1 | Coherence bond records under `/data/coh` connecting beings with roles. |
+| `contexts` | L1 | Context tuples linking beings under `/data/coh` with typed positions. |
+| `facets` | L1 | Facet projections materialised for coherence closure under `/data/coh`. |
+| `debts` | L1 | Adjacency debts recorded while required coherence facets are pending. |
+| `flow` | L1 | Layer 1 flow root under `/data/flow` hosting pipeline definitions and runtime state. |
+| `runs` | L1 | Runtime run records under `/data/flow/runtime/runs` capturing pipeline progress. |
+| `annotations` | L1 | Human/runtime annotations attached to pipelines or runs under `/data/flow/annotations`. |
 | `policy` | RT | pack-owned subtree under `/data/<pack>/policy` for publishing security pipeline specs or other pack policies. |
 | `decisions` | RT | `/journal/decisions` ledger containing Decision Cell entries for risky cross-branch reads. |
 | `persist` | RT | `/data/persist` subtree publishing CPS readiness evidence and per-branch stats. |
@@ -117,7 +126,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `gateways` | RT | dictionary under `/sys/security` enumerating gateway enzymes surfaced to other enclaves. |
 | `branches` | RT | dictionary under `/sys/security` specifying crown-jewel branch rules. |
 | `defaults` | RT | dictionary under `/sys/security` capturing fallback budgets, TTLs, and rate ceilings. |
-| `pipelines` | RT | `/data/<pack>/policy/security/pipelines` subtree containing pack-owned pipeline specs awaiting approval. |
+| `pipelines` | RT | `/data/<pack>/policy/security/pipelines` subtree containing pack-owned pipeline specs awaiting approval; reused under `/data/flow/pipelines` for Layer 1 DAG definitions. |
 | `pipeline_id` | RT | `val/text` field storing the `<pack>/<name>` identifier for a pipeline spec. |
 | `dag_run_id` | RT | `val/u64` field storing the DAG run identifier inside pipeline envelopes and CEI origin metadata. |
 | `hop_index` | RT | `val/u64` field storing the hop ordinal inside pipeline envelopes and CEI origin metadata. |
@@ -180,6 +189,8 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `txn` | RT | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
 | `boot_oid` | RT | `val/bytes` cell under `/sys/state` publishing the boot operation OID. |
 | `shdn_oid` | RT | `val/bytes` cell under `/sys/state` publishing the shutdown operation OID. |
+| `op/l1_boot` | L1 | Operation verb used by the Layer 1 pack boot helper to publish readiness evidence. |
+| `op/l1_shdn` | L1 | Operation verb used by the Layer 1 pack shutdown helper to mark teardown. |
 | `namepool` | RT | identifier intern table. |
 | `next_msg_id` | RT | deterministic counter stored under `meta/runtime/next_msg_id`. |
 | `outcome` | RT | execution result record written after enzymes run. |
@@ -187,7 +198,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `parent` | RT | provenance pointer stored inside `meta/parents`. |
 | `parents` | RT | provenance list capturing the source lineage. |
 | `rt` | RT | runtime staging root holding beat journals. |
-| `runtime` | RT | per-mailbox runtime metadata bucket (ID counters, expiry buckets). |
+| `runtime` | RT | per-mailbox runtime metadata bucket (ID counters, expiry buckets); reused under `/data/flow/runtime` for Layer 1 run state. |
 | `rt_ctx` | RT | hidden root payload recording the owning runtime context for multi-instance isolation. |
 | `expiries` | RT | beat-indexed expiry bucket dictionary under mailbox runtime metadata. |
 | `exp_wall` | RT | unix timestamp expiry bucket dictionary under mailbox runtime metadata. |

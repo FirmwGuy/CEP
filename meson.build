@@ -16,6 +16,7 @@ host_cpu = host_machine.cpu_family()
 
 inc_paths = [
   'src/l0_kernel',
+  'src/l1_coherence',
   'src/test',
   'src/enzymes',
   'src/cps',
@@ -105,6 +106,11 @@ l0_srcs = files(
   'src/enzymes/fed_transport_manager.c',
   'src/enzymes/fed_transport_providers.c',
   'src/enzymes/sec_pipeline.c',
+  'src/l1_coherence/cep_l1_schema.c',
+  'src/l1_coherence/cep_l1_pack.c',
+  'src/l1_coherence/cep_l1_pipelines.c',
+  'src/l1_coherence/cep_l1_runtime.c',
+  'src/l1_coherence/cep_l1_coherence.c',
   'src/cps/cps_flatfile.c',
   'src/cps/cps_storage_service.c',
   'src/cps/cps_runtime.c',
@@ -335,6 +341,7 @@ if get_option('tests').enabled()
     'src/test/poc/l0_integration_poc.c',
     'src/test/cps/cps_fixture_defs.c',
     'src/test/cps/test_cps_replay.c',
+    'src/test/l1_coherence/test_l1_smoke.c',
     )
   test_dependencies = []
   if zip_dep.found()

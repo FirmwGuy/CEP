@@ -12,6 +12,8 @@
 #include "cep_ops.h"
 #include "cep_executor.h"
 #include "../cps/cps_runtime.h"
+#include "../l1_coherence/cep_l1_pack.h"
+#include "l1_coherence/test_l1_smoke.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
@@ -887,11 +889,15 @@ int main(int argC, char* argV[MUNIT_ARRAY_PARAM(argC + 1)]) {
     if (seed_env && *seed_env) {
         override_seed = strtoul(seed_env, NULL, 0);
     }
-    MunitSuite sub_suites[3];
+    MunitSuite sub_suites[4];
     size_t suite_index = 0u;
 
     for (size_t i = 0u; lock_suites[i].tests != NULL && suite_index < cep_lengthof(sub_suites) - 1u; ++i) {
         sub_suites[suite_index++] = lock_suites[i];
+    }
+    MunitSuite* l1_suite = test_suite_l1();
+    if (l1_suite && suite_index < cep_lengthof(sub_suites) - 1u) {
+        sub_suites[suite_index++] = *l1_suite;
     }
     sub_suites[suite_index++] = integration_poc_suite;
     sub_suites[suite_index] = (MunitSuite){0};

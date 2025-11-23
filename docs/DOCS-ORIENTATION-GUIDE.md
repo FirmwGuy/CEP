@@ -7,6 +7,8 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - **Core Architecture**
   - `docs/CEP.md` — Big-picture mission and vocabulary; skim first to align terminology.
   - `docs/CEP-Implementation-Reference.md` — Deterministic contract digest covering cells, stores, transports, episodes, higher-layer invariants, and the shipping Enclave policy loader/enforcement workflow.
+- **Layer 1 coherence + pipelines**
+  - `docs/L1_COHERENCE/README.md` — Scope for beings/bonds/contexts/facets plus the flow runtime surface under `/data/flow/**` (pipelines, runtime runs, metrics, annotations).
 - `docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md` — Enclave architecture: policy loader, gateways/edges, pipeline approvals, diagnostics, and invariants behind `cep_enclave_policy`.
 - `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md` — Operator workflow for policy edits, pipeline preflight, diagnostics, and the regression test matrix.
   - `docs/L0_KERNEL/L0-OVERVIEW.md` — Layer‑0 capabilities, storage choices, and lifecycle behaviors that every kernel edit touches.
@@ -30,11 +32,13 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/topics/PIPELINES-AND-HYDRATION.md` — Friendly walkthrough of L0 pipeline metadata, cross-enclave approvals, and safe hydration for pipeline-aware enzymes.
   - `docs/L0_KERNEL/topics/CACHE-AND-CONTROLLERS.md` — Cache/branch controller overview: policies, history windows, flush triggers, telemetry, and CEI.
   - `docs/L0_KERNEL/topics/MAILBOX-LIFECYCLE.md` — Mailbox identity helpers, TTL precedence, and retention planning.
-  - `docs/L0_KERNEL/topics/MAILBOX-CEI-MAPPING.md` — Line-by-line severity map for mailbox helpers so CEI emits stay consistent.
-  - `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md` — Binding inheritance, wildcard routing, and tombstones.
-  - `docs/L0_KERNEL/topics/CELL-OPERATIONS-ENZYMES.md` — Reference semantics for the standard `sig_cell/op_*` helpers.
-  - `docs/L0_KERNEL/topics/FEDERATION-TRANSPORT.md` — Transport manager duties, capability negotiation rules, the `/net` schema for peers/catalog/telemetry, and the discovery/health/link/mirror/invoke validators (now all flat-serializer by default).
-  - `docs/L0_KERNEL/topics/ORGANS-AUTHORING.md` — Register organ descriptors, enforce validator bindings, and coordinate ctor/dtor/validation ops.
+- `docs/L0_KERNEL/topics/MAILBOX-CEI-MAPPING.md` — Line-by-line severity map for mailbox helpers so CEI emits stay consistent.
+- `docs/L0_KERNEL/topics/CELL-BOUND-ENZYME-BINDINGS.md` — Binding inheritance, wildcard routing, and tombstones.
+- `docs/L0_KERNEL/topics/CELL-OPERATIONS-ENZYMES.md` — Reference semantics for the standard `sig_cell/op_*` helpers.
+- `docs/L1_COHERENCE/README.md` — Landing spot for all Layer 1 coherence/pipeline docs and future pack notes.
+- `docs/L1_COHERENCE/ADJACENCY-CLOSURE.md` — Sketch of the coherence closure/debt contract for contexts, facets, and adjacency sweeps.
+- `docs/L0_KERNEL/topics/FEDERATION-TRANSPORT.md` — Transport manager duties, capability negotiation rules, the `/net` schema for peers/catalog/telemetry, and the discovery/health/link/mirror/invoke validators (now all flat-serializer by default).
+- `docs/L0_KERNEL/topics/ORGANS-AUTHORING.md` — Register organ descriptors, enforce validator bindings, and coordinate ctor/dtor/validation ops.
   - `docs/L0_KERNEL/topics/E3-EPISODIC-ENGINE.md` — How the Episodic Enzyme Engine (E3) handles RO budgets, hybrid RO↔RW promotions/demotions, and cooperative cancellation.
   - `docs/L0_KERNEL/design/L0-DESIGN-E3-EPISODIC-ENGINE.md` — Episodic engine design rationale, executor backends, and queue invariants.
 - **External Integrations**
@@ -94,6 +98,8 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/BUILD.md` | Build workflows, Meson/Ninja options, platform setup | Tooling: Meson/Ninja configs, test harness | Live | Matches current Meson options; keep fallback Makefile steps in sync with `unix/Makefile`. |
 | `docs/CEP.md` | Conceptual overview of CEP across all layers | Layer 0 kernel (live), Layers 1–4 (planned) | Mixed | Layer 0 sections align with shipped code; higher-layer coverage remains aspirational and is labelled as such. |
 | `docs/CEP-FOR-PL-SQL-DEVS.md` | Onboarding bridge for SQL-centric engineers | Layer 0 API surface, higher-layer concepts (planned) | Mixed | Keep terminology aligned with `docs/CEP-TAG-LEXICON.md`; note that policy/governance layers remain future work. |
+| `docs/L1_COHERENCE/README.md` | Layer 1 coherence/pipeline doc home | Layer 1 pack (coherence + pipelines) | Live | Add future L1 docs under this directory; keep the index in sync. |
+| `docs/L1_COHERENCE/ADJACENCY-CLOSURE.md` | Contract sketch for coherence adjacency closure and debts | Layer 1 pack (coherence closure) | Draft | TODO hooks for enzymes/CEI; use as design reference before implementation. |
 | `docs/CEP-TAG-LEXICON.md` | Canonical tag catalogue and naming rules | Domain/tag encoding, namepool tooling | Live | Run `tools/check_unused_tags.py` after expanding the table. |
 | `docs/L0_KERNEL/topics/DEBUG-MACROS.md` | Debug macro behaviour and usage patterns | `src/l0_kernel/cep_molecule.h`, debug flags | Live | No drift detected; ensure new debug wrappers get documented here. |
 | `docs/DOCS-ORIENTATION-GUIDE.md` | Reading map for contributors returning to the repo | Documentation navigation | Live | Updated whenever new doc categories (e.g., Design docs) join the set. |

@@ -118,6 +118,8 @@ MunitResult test_fed_transport_send_cell_provider_caps(const MunitParameter para
 MunitResult test_fed_mirror_frame_contract(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_emit_cell(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_mirror_emit_cell(const MunitParameter params[], void* user_data_or_fixture);
+
+MunitSuite* test_suite_l1(void);
 MunitResult test_fed_invoke_emit_cell(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_frame_contract(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_frame_contract(const MunitParameter params[], void* user_data_or_fixture);
