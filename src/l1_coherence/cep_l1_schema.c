@@ -15,6 +15,12 @@ CEP_DEFINE_STATIC_DT(dt_bonds_name,     CEP_ACRO("CEP"), CEP_WORD("bonds"));
 CEP_DEFINE_STATIC_DT(dt_contexts_name,  CEP_ACRO("CEP"), CEP_WORD("contexts"));
 CEP_DEFINE_STATIC_DT(dt_facets_name,    CEP_ACRO("CEP"), CEP_WORD("facets"));
 CEP_DEFINE_STATIC_DT(dt_debts_name,     CEP_ACRO("CEP"), CEP_WORD("debts"));
+CEP_DEFINE_STATIC_DT(dt_adj_name,       CEP_ACRO("CEP"), CEP_WORD("adj"));
+CEP_DEFINE_STATIC_DT(dt_by_being_name,  CEP_ACRO("CEP"), CEP_WORD("by_being"));
+CEP_DEFINE_STATIC_DT(dt_by_context_name, CEP_ACRO("CEP"), CEP_WORD("by_ctx"));
+CEP_DEFINE_STATIC_DT(dt_by_facet_name,  CEP_ACRO("CEP"), CEP_WORD("by_facet"));
+CEP_DEFINE_STATIC_DT(dt_schema_name,    CEP_ACRO("CEP"), CEP_WORD("schema"));
+CEP_DEFINE_STATIC_DT(dt_ctx_rules_name, CEP_ACRO("CEP"), CEP_WORD("ctx_rules"));
 CEP_DEFINE_STATIC_DT(dt_flow_root_name, CEP_ACRO("CEP"), CEP_WORD("flow"));
 CEP_DEFINE_STATIC_DT(dt_state_root_name, CEP_ACRO("CEP"), CEP_WORD("state"));
 CEP_DEFINE_STATIC_DT(dt_pipelines_name, CEP_ACRO("CEP"), CEP_WORD("pipelines"));
@@ -68,6 +74,12 @@ bool cep_l1_schema_ensure(cepL1SchemaLayout* layout) {
     cepCell* coh_contexts = NULL;
     cepCell* coh_facets = NULL;
     cepCell* coh_debts = NULL;
+    cepCell* coh_adj = NULL;
+    cepCell* coh_adj_by_being = NULL;
+    cepCell* coh_adj_by_context = NULL;
+    cepCell* coh_adj_by_facet = NULL;
+    cepCell* coh_schema = NULL;
+    cepCell* coh_ctx_rules = NULL;
 
     if (!cep_l1_schema_require_dict(coh_root, dt_beings_name(), &coh_beings)) {
         return false;
@@ -82,6 +94,24 @@ bool cep_l1_schema_ensure(cepL1SchemaLayout* layout) {
         return false;
     }
     if (!cep_l1_schema_require_dict(coh_root, dt_debts_name(), &coh_debts)) {
+        return false;
+    }
+    if (!cep_l1_schema_require_dict(coh_root, dt_adj_name(), &coh_adj)) {
+        return false;
+    }
+    if (!cep_l1_schema_require_dict(coh_adj, dt_by_being_name(), &coh_adj_by_being)) {
+        return false;
+    }
+    if (!cep_l1_schema_require_dict(coh_adj, dt_by_context_name(), &coh_adj_by_context)) {
+        return false;
+    }
+    if (!cep_l1_schema_require_dict(coh_adj, dt_by_facet_name(), &coh_adj_by_facet)) {
+        return false;
+    }
+    if (!cep_l1_schema_require_dict(coh_root, dt_schema_name(), &coh_schema)) {
+        return false;
+    }
+    if (!cep_l1_schema_require_dict(coh_schema, dt_ctx_rules_name(), &coh_ctx_rules)) {
         return false;
     }
 
@@ -125,6 +155,12 @@ bool cep_l1_schema_ensure(cepL1SchemaLayout* layout) {
     layout->coh_contexts = coh_contexts;
     layout->coh_facets = coh_facets;
     layout->coh_debts = coh_debts;
+    layout->coh_adj = coh_adj;
+    layout->coh_adj_by_being = coh_adj_by_being;
+    layout->coh_adj_by_context = coh_adj_by_context;
+    layout->coh_adj_by_facet_kind = coh_adj_by_facet;
+    layout->coh_schema = coh_schema;
+    layout->coh_context_rules = coh_ctx_rules;
     layout->flow_root = flow_root;
     layout->flow_state = flow_state;
     layout->flow_pipelines = flow_pipelines;

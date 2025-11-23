@@ -13,13 +13,14 @@ This document condenses every implementation-relevant rule and guarantee scatter
 - Persistence: CPS controllers, flatfile backend, async commit flow, branch policies (`allow_volatile_reads`, `snapshot_ro`), Decision Cells for cross-branch reads, and CEI telemetry for commits/flushes/checkpoints.
 - Tooling/testing stance: ASAN/Valgrind separation, sanitizer build directory split, code map generation, and opt-in pack testing conventions.
 
-### Layer 1 – Current implementation (partial, optional pack)
-- Pack bootstrap/shutdown helpers create `/data/coh/**` and `/data/flow/**`, register the adjacency-closure enzyme stub, and publish pack readiness via `op/l1_boot`/`op/l1_shdn`.
-- Coherence scaffolding: helpers to add beings, bonds, contexts, facets, and debts with namepool-backed IDs; contexts accept role bindings that create participants and facets; debts are recorded and marked resolved when closure sees complete data (closure logic is still minimal and local).
-- Pipeline DAG scaffolding: ensures pipeline/stage/edge dictionaries under `/data/flow/pipelines/**`, records pipeline IDs, allows adding edges, and binds pipelines/stages back to coherence beings for provenance.
-- Runtime scaffolding: records runs and per-stage states under `/data/flow/runtime/**`, tracks metrics and annotations, and can emit pipeline-aware impulses carrying L0 metadata.
-- Testing: opt-in smoke suite under `src/test/l1_coherence/` gated by `CEP_L1_TESTS`; no full orchestrator/closure coverage yet.
-- Not implemented yet: full adjacency closure/debt sweeps with CEI/history, graph validation/versioning, orchestrator triggers/fan-in/out, hydration helper, federation/security alignment for L1 stages, and richer metrics/annotations (tracked separately).
+### Layer 1 – Current implementation (optional pack)
+- Pack bootstrap/shutdown helpers create `/data/coh/**` and `/data/flow/**`, register the adjacency-closure enzyme, and publish pack readiness via `op/l1_boot`/`op/l1_shdn`. `op/coh_sweep` rebuilds adjacency and debts on demand.
+- Coherence scaffolding: helpers add beings, bonds, contexts, facets, and debts with namepool-backed IDs; contexts accept role bindings, closure validates roles/facets against `/data/coh/schema/ctx_rules/**`, materializes facets, records debts (`coh.debt.new`/`coh.debt.resolved`/`coh.role.invalid`/`coh.closure.fail`), and keeps append-only debt history with `ctx_kind` lineage. Adjacency mirrors live under `/data/coh/adj/**`.
+- Pipeline DAG scaffolding: ensures pipeline/stage/edge dictionaries under `/data/flow/pipelines/**`, records IDs/revisions/owners/provinces, enforces basic edge sanity (no self-loops, `max_hops` ceiling), and binds pipelines/stages back to coherence beings via `has_stage` bonds and `pipeline_edge` contexts.
+- Runtime scaffolding: records runs under `/data/flow/runtime/runs/**`, mirrors pipeline stages/edges into runs to seed `fan_in`, tracks per-stage state/triggers/metrics/annotations, accumulates pipeline + stage metrics, emits CEI `flow.dispatch.blocked` when pause/rollback gates dispatch, emits `flow.pipeline.missing_metadata` when metadata is absent, and auto fan-outs along recorded edges bumping hop indexes.
+- Federation alignment: invoke helpers require pipeline metadata, attach it to requests, and emit `sec.pipeline.reject` or `flow.pipeline.missing_metadata` on failures; link/mirror mount helpers stamp pipeline metadata and fail fast if IDs cannot be interned.
+- Hydration helper: `cep_l1_coh_hydrate_safe` wraps the L0 hydrate call with optional snapshot view and CEI on failures (`coh.hydrate.fail`, `coh.cross_read` for allowed cross-branch reads).
+- Testing: opt-in smoke suite under `src/test/l1_coherence/` gated by `CEP_L1_TESTS`, covering closure/debts, pipeline provenance, runtime fan-in/out, and federation metadata preparation.
 
 ### Layer scope and adoption order
 - CEP’s layers align with `docs/CEP.md`: **Layer 0 – Kernel & Pipeline Substrate**, **Layer 1 – Coherence & Pipeline Graphs**, **Layer 2 – Ecology & Flows (Modules and Evolution)**, **Layer 3 – Awareness, Datasets & Human Interaction**, and **Layer 4 – Governance, Safety & Self‑Evolution**. Only Layer 0 ships in this repository; higher layers remain planned but their invariants (Decision Cells, facet closure, supervisory approvals) inform the kernel contracts and API surface.

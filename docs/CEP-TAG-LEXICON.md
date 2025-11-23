@@ -45,6 +45,41 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `contexts` | L1 | Context tuples linking beings under `/data/coh` with typed positions. |
 | `facets` | L1 | Facet projections materialised for coherence closure under `/data/coh`. |
 | `debts` | L1 | Adjacency debts recorded while required coherence facets are pending. |
+| `adj` | L1 | Adjacency mirror root under `/data/coh/adj`. |
+| `by_being` | L1 | Adjacency index recording contexts/bonds/facets per being under `/data/coh/adj`. |
+| `by_ctx` | L1 | Adjacency index keyed by context under `/data/coh/adj`. |
+| `by_facet` | L1 | Adjacency index keyed by facet kind under `/data/coh/adj`. |
+| `schema` | L1 | Coherence schema root under `/data/coh/schema` carrying closure rule sets. |
+| `ctx_rules` | L1 | Context rule dictionaries under `/data/coh/schema` that drive facet/debt closure. |
+| `pipeline` | L1 | Being kind recorded for pipeline coherence entries. |
+| `stage` | L1 | Being kind recorded for pipeline stage coherence entries. |
+| `has_stage` | L1 | Bond kind linking pipeline beings to stage beings. |
+| `pipeline_edge` | L1 | Context kind describing directed edges between pipeline stages. |
+| `from_stage` | L1 | Context role marking the source stage of an edge. |
+| `to_stage` | L1 | Context role marking the destination stage of an edge. |
+| `rev` | L1 | Monotonic revision counter stored on pipeline definitions under `/data/flow/pipelines`. |
+| `ver` | L1 | Human-readable pipeline version string stored alongside `rev` on pipeline definitions. |
+| `owner` | L1 | Pipeline owner identifier stored on pipeline definitions and coherence beings. |
+| `owned_by` | L1 | Bond kind linking pipeline beings to owner beings. |
+| `province` | L1 | Being kind representing a deployment province tied to pipeline definitions. |
+| `in_province` | L1 | Bond kind linking pipeline beings to province beings. |
+| `roles` | L1 | Context-rule vocabulary bucket under `/data/coh/schema/ctx_rules/<kind>/roles`. |
+| `required` | L1 | Boolean flag on context-rule entries indicating mandatory roles or facets. |
+| `ctx_kind` | L1 | Debt lineage field recording the context kind associated with the debt. |
+| `coh.debt.new` | L1 | CEI topic emitted when a coherence debt is recorded. |
+| `coh.debt.resolved` | L1 | CEI topic emitted when a coherence debt transitions to resolved. |
+| `coh.role.invalid` | L1 | CEI topic emitted when a context binding role fails validation. |
+| `coh.closure.fail` | L1 | CEI topic emitted when closure cannot materialize required facets. |
+| `coh.hydrate.fail` | L1 | CEI topic emitted when a hydration attempt fails in L1 enzymes. |
+| `coh.cross_read` | L1 | CEI topic emitted when L1 performs a cross-branch hydration. |
+| `triggers` | L1 | Trigger list under a pipeline run/stage capturing event/label/schedule cues. |
+| `ready` | L1 | Boolean readiness flag for a pipeline stage. |
+| `fan_in` | L1 | Expected fan-in count for a stage used by the runtime orchestrator. |
+| `fan_seen` | L1 | Counter tracking how many fan-in triggers a stage has observed. |
+| `flow.dispatch.blocked` | L1 | CEI topic emitted when pipeline dispatch is gated by pause/rollback control state. |
+| `flow.pipeline.missing_metadata` | L1 | CEI topic emitted when L1 runtime/federation helpers lack pipeline metadata. |
+| `beat` | L1 | Beat counter attached to triggers or runtime markers. |
+| `sec.pipeline.reject` | SEC | CEI topic emitted when pipeline preflight or invoke submission fails. |
 | `flow` | L1 | Layer 1 flow root under `/data/flow` hosting pipeline definitions and runtime state. |
 | `runs` | L1 | Runtime run records under `/data/flow/runtime/runs` capturing pipeline progress. |
 | `annotations` | L1 | Human/runtime annotations attached to pipelines or runs under `/data/flow/annotations`. |
@@ -191,6 +226,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `shdn_oid` | RT | `val/bytes` cell under `/sys/state` publishing the shutdown operation OID. |
 | `op/l1_boot` | L1 | Operation verb used by the Layer 1 pack boot helper to publish readiness evidence. |
 | `op/l1_shdn` | L1 | Operation verb used by the Layer 1 pack shutdown helper to mark teardown. |
+| `op/coh_sweep` | L1 | Operation verb used to run a coherence adjacency/facet sweep over all contexts. |
 | `namepool` | RT | identifier intern table. |
 | `next_msg_id` | RT | deterministic counter stored under `meta/runtime/next_msg_id`. |
 | `outcome` | RT | execution result record written after enzymes run. |

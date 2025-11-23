@@ -22,6 +22,12 @@ typedef struct {
     cepCell* coh_contexts;
     cepCell* coh_facets;
     cepCell* coh_debts;
+    cepCell* coh_adj;
+    cepCell* coh_adj_by_being;
+    cepCell* coh_adj_by_context;
+    cepCell* coh_adj_by_facet_kind;
+    cepCell* coh_schema;
+    cepCell* coh_context_rules;
     cepCell* flow_root;
     cepCell* flow_state;
     cepCell* flow_pipelines;

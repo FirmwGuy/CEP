@@ -10,11 +10,13 @@
 #include "../l0_kernel/cep_ops.h"
 #include "../l0_kernel/cep_heartbeat.h"
 #include "../l0_kernel/cep_runtime.h"
+#include "../l0_kernel/cep_namepool.h"
 
 #include <string.h>
 
 CEP_DEFINE_STATIC_DT(dt_l1_boot_verb, CEP_ACRO("CEP"), CEP_WORD("op/l1_boot"));
 CEP_DEFINE_STATIC_DT(dt_l1_shdn_verb, CEP_ACRO("CEP"), CEP_WORD("op/l1_shdn"));
+CEP_DEFINE_STATIC_DT(dt_l1_coh_sweep_verb, CEP_ACRO("CEP"), cep_namepool_intern_cstr("op/coh_sweep"));
 CEP_DEFINE_STATIC_DT(dt_l1_op_mode_states, CEP_ACRO("CEP"), CEP_WORD("opm:states"));
 CEP_DEFINE_STATIC_DT(dt_l1_state_field, CEP_ACRO("CEP"), CEP_WORD("state"));
 CEP_DEFINE_STATIC_DT(dt_l1_note_field, CEP_ACRO("CEP"), CEP_WORD("note"));
@@ -141,6 +143,39 @@ bool cep_l1_pack_bootstrap(void) {
     g_l1_pack_state.bootstrap_done = true;
     cep_runtime_restore_active(previous_scope);
     return true;
+}
+
+/* Run a coherence sweep over all contexts, recording an op dossier so callers
+   can audit closure attempts. This is a light-weight maintenance helper and
+   can run even when the pack was already bootstrapped. */
+bool cep_l1_pack_coh_sweep(void) {
+    cepRuntime* runtime = cep_runtime_default();
+    if (!runtime) {
+        return false;
+    }
+    cepRuntime* previous_scope = cep_runtime_set_active(runtime);
+
+    cepL1SchemaLayout layout = {0};
+    bool ok = cep_l1_schema_ensure(&layout);
+    if (!ok) {
+        cep_runtime_restore_active(previous_scope);
+        return false;
+    }
+
+    cepOID oid = cep_op_start(*dt_l1_coh_sweep_verb(),
+                              "/data/coh",
+                              *dt_l1_op_mode_states(),
+                              NULL,
+                              0u,
+                              0u);
+
+    bool closure_ok = cep_l1_coh_run_closure(&layout, NULL);
+    if (cep_oid_is_valid(oid)) {
+        (void)cep_op_close(oid, closure_ok ? *dt_l1_status_ok() : *dt_l1_status_fail(), NULL, 0u);
+    }
+
+    cep_runtime_restore_active(previous_scope);
+    return closure_ok;
 }
 
 /* Roll back the Layer 1 pack readiness markers so the next bootstrap can rebuild

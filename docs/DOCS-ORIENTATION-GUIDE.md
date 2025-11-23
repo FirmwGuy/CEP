@@ -8,7 +8,10 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/CEP.md` — Big-picture mission and vocabulary; skim first to align terminology.
   - `docs/CEP-Implementation-Reference.md` — Deterministic contract digest covering cells, stores, transports, episodes, higher-layer invariants, and the shipping Enclave policy loader/enforcement workflow.
 - **Layer 1 coherence + pipelines**
-  - `docs/L1_COHERENCE/README.md` — Scope for beings/bonds/contexts/facets plus the flow runtime surface under `/data/flow/**` (pipelines, runtime runs, metrics, annotations).
+- `docs/L1_COHERENCE/README.md` — Layer 1 Coherence — Overview (scope, structure, doc map).
+- Adjacency and closure rules now live under `/data/coh/adj/**` and `/data/coh/schema/ctx_rules/**`; use `op/coh_sweep` to rebuild mirrors. See the L1 coherence README for the latest layout.
+- `docs/L1_COHERENCE/USAGE.md` — Practical how-to for beings/bonds/contexts/facets/debts, pipeline setup, runtime dispatch, and federation metadata.
+- `docs/L1_COHERENCE/IMPLEMENTATION.md` — Shipping L1 implementation notes (IDs, closure/debts, adjacency, pipelines, runtime fan-in/out/fan-out scaffolding, federation metadata helpers, pack lifecycle).
 - `docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md` — Enclave architecture: policy loader, gateways/edges, pipeline approvals, diagnostics, and invariants behind `cep_enclave_policy`.
 - `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md` — Operator workflow for policy edits, pipeline preflight, diagnostics, and the regression test matrix.
   - `docs/L0_KERNEL/L0-OVERVIEW.md` — Layer‑0 capabilities, storage choices, and lifecycle behaviors that every kernel edit touches.
@@ -98,8 +101,10 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/BUILD.md` | Build workflows, Meson/Ninja options, platform setup | Tooling: Meson/Ninja configs, test harness | Live | Matches current Meson options; keep fallback Makefile steps in sync with `unix/Makefile`. |
 | `docs/CEP.md` | Conceptual overview of CEP across all layers | Layer 0 kernel (live), Layers 1–4 (planned) | Mixed | Layer 0 sections align with shipped code; higher-layer coverage remains aspirational and is labelled as such. |
 | `docs/CEP-FOR-PL-SQL-DEVS.md` | Onboarding bridge for SQL-centric engineers | Layer 0 API surface, higher-layer concepts (planned) | Mixed | Keep terminology aligned with `docs/CEP-TAG-LEXICON.md`; note that policy/governance layers remain future work. |
-| `docs/L1_COHERENCE/README.md` | Layer 1 coherence/pipeline doc home | Layer 1 pack (coherence + pipelines) | Live | Add future L1 docs under this directory; keep the index in sync. |
+| `docs/L1_COHERENCE/README.md` | Layer 1 Coherence — Overview | Layer 1 pack (coherence + pipelines) | Live | Add future L1 docs under this directory; keep the index in sync. |
+| `docs/L1_COHERENCE/USAGE.md` | Practical usage guide for beings/bonds/contexts/facets/debts/pipelines/runtime/federation | Layer 1 pack (coherence + pipelines) | Live | Step-by-step API walkthroughs and CEI expectations. |
 | `docs/L1_COHERENCE/ADJACENCY-CLOSURE.md` | Contract sketch for coherence adjacency closure and debts | Layer 1 pack (coherence closure) | Draft | TODO hooks for enzymes/CEI; use as design reference before implementation. |
+| `docs/L1_COHERENCE/IMPLEMENTATION.md` | Shipping L1 implementation surface and CEI/topic coverage | Layer 1 pack (coherence + pipelines) | Live | Mirrors current helpers (closure, pipelines, runtime fan-in/out, federation metadata). |
 | `docs/CEP-TAG-LEXICON.md` | Canonical tag catalogue and naming rules | Domain/tag encoding, namepool tooling | Live | Run `tools/check_unused_tags.py` after expanding the table. |
 | `docs/L0_KERNEL/topics/DEBUG-MACROS.md` | Debug macro behaviour and usage patterns | `src/l0_kernel/cep_molecule.h`, debug flags | Live | No drift detected; ensure new debug wrappers get documented here. |
 | `docs/DOCS-ORIENTATION-GUIDE.md` | Reading map for contributors returning to the repo | Documentation navigation | Live | Updated whenever new doc categories (e.g., Design docs) join the set. |
