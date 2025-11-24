@@ -6,8 +6,10 @@
 #include "cep_l1_pipelines.h"
 #include "cep_l1_coherence.h"
 
+#include "../l0_kernel/cep_cei.h"
 #include "../l0_kernel/cep_namepool.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -23,6 +25,20 @@ CEP_DEFINE_STATIC_DT(dt_version_field, CEP_ACRO("CEP"), CEP_WORD("ver"));
 CEP_DEFINE_STATIC_DT(dt_owner_field_flow, CEP_ACRO("CEP"), CEP_WORD("owner"));
 CEP_DEFINE_STATIC_DT(dt_province_field_flow, CEP_ACRO("CEP"), CEP_WORD("province"));
 CEP_DEFINE_STATIC_DT(dt_max_hops_field_flow, CEP_ACRO("CEP"), CEP_WORD("max_hops"));
+CEP_DEFINE_STATIC_DT(dt_sev_warn_pipeline, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
+CEP_DEFINE_STATIC_DT(dt_topic_pipeline_invalid, CEP_ACRO("CEP"), cep_namepool_intern_cstr("flow.pipeline.invalid"));
+
+static void cep_l1_pipeline_emit_invalid(const char* note, cepCell* subject) {
+    cepCeiRequest req = {
+        .severity = *dt_sev_warn_pipeline(),
+        .topic = cep_namepool_lookup(dt_topic_pipeline_invalid()->tag, NULL),
+        .topic_len = 0u,
+        .note = note,
+        .subject = subject,
+        .emit_signal = false,
+    };
+    (void)cep_cei_emit(&req);
+}
 
 static bool cep_l1_pipeline_make_dt(const char* pipeline_id, cepDT* out) {
     if (!pipeline_id || !out) {
@@ -191,8 +207,8 @@ bool cep_l1_pipeline_ensure(cepCell* pipelines_root,
         return false;
     }
 
-    cepCell* existing_rev = cep_cell_find_by_name(pipeline, dt_revision_field());
-    existing_rev = existing_rev ? cep_cell_resolve(existing_rev) : NULL;
+    uint64_t existing_rev_value = 0u;
+    bool has_existing_rev = cep_l1_pipeline_copy_uint64_field(pipeline, dt_revision_field(), &existing_rev_value);
     if (meta) {
         if (meta->version && *meta->version) {
             (void)cep_cell_put_text(pipeline, dt_version_field(), meta->version);
@@ -203,12 +219,19 @@ bool cep_l1_pipeline_ensure(cepCell* pipelines_root,
         if (meta->province && *meta->province) {
             (void)cep_cell_put_text(pipeline, dt_province_field_flow(), meta->province);
         }
+        if (meta->max_hops > 0u) {
+            (void)cep_cell_put_uint64(pipeline, dt_max_hops_field_flow(), meta->max_hops);
+        }
         if (meta->revision > 0u) {
+            if (has_existing_rev && meta->revision < existing_rev_value) {
+                cep_l1_pipeline_emit_invalid("revision regression during pipeline ensure", pipeline);
+                return false;
+            }
             (void)cep_cell_put_uint64(pipeline, dt_revision_field(), meta->revision);
-        } else if (!existing_rev) {
+        } else if (!has_existing_rev) {
             (void)cep_cell_put_uint64(pipeline, dt_revision_field(), 1u);
         }
-    } else if (!existing_rev) {
+    } else if (!has_existing_rev) {
         (void)cep_cell_put_uint64(pipeline, dt_revision_field(), 1u);
     }
 
@@ -359,59 +382,156 @@ static bool cep_l1_pipeline_validate(cepL1PipelineLayout* layout, const char* pi
     if (!layout || !layout->pipeline || !layout->stages || !layout->edges) {
         return false;
     }
-    if (!cep_cell_require_dictionary_store(&layout->stages) ||
-        !cep_cell_require_dictionary_store(&layout->edges)) {
+    cepCell* pipeline = layout->pipeline ? cep_cell_resolve(layout->pipeline) : NULL;
+    cepCell* stages = layout->stages ? cep_cell_resolve(layout->stages) : NULL;
+    cepCell* edges = layout->edges ? cep_cell_resolve(layout->edges) : NULL;
+
+    bool ok = true;
+    bool stages_ok = false;
+    bool edges_ok = false;
+
+    if (!pipeline || !cep_cell_require_dictionary_store(&pipeline)) {
+        cep_l1_pipeline_emit_invalid("pipeline missing or not a dictionary", layout ? layout->pipeline : NULL);
         return false;
     }
 
-    bool ok = true;
-
-    for (cepCell* stage = cep_cell_first(layout->stages); stage; stage = cep_cell_next(layout->stages, stage)) {
-        stage = stage ? cep_cell_resolve(stage) : NULL;
-        if (!stage || !cep_cell_require_dictionary_store(&stage)) {
-            ok = false;
-            continue;
-        }
-        char stage_buffer[128] = {0};
-        if (!cep_l1_pipeline_copy_text_field(stage, dt_stage_id(), stage_buffer, sizeof stage_buffer)) {
-            ok = false;
-        }
+    stages_ok = stages && cep_cell_require_dictionary_store(&stages);
+    if (!stages_ok) {
+        cep_l1_pipeline_emit_invalid("pipeline stages missing or not a dictionary", pipeline);
+        ok = false;
     }
 
-    for (cepCell* edge = cep_cell_first(layout->edges); edge; edge = cep_cell_next(layout->edges, edge)) {
-        edge = edge ? cep_cell_resolve(edge) : NULL;
-        if (!edge || !cep_cell_require_dictionary_store(&edge)) {
+    edges_ok = edges && cep_cell_require_dictionary_store(&edges);
+    if (!edges_ok) {
+        cep_l1_pipeline_emit_invalid("pipeline edges missing or not a dictionary", pipeline);
+        ok = false;
+    }
+
+    char pipeline_buffer[128] = {0};
+    const char* expected_pipeline_id = pipeline_id;
+    if (!cep_l1_pipeline_copy_text_field(pipeline, dt_pipeline_id_field(), pipeline_buffer, sizeof pipeline_buffer) ||
+        !pipeline_buffer[0]) {
+        cep_l1_pipeline_emit_invalid("pipeline missing pipeline_id", pipeline);
+        ok = false;
+    } else if (expected_pipeline_id && *expected_pipeline_id && strcmp(pipeline_buffer, expected_pipeline_id) != 0) {
+        cep_l1_pipeline_emit_invalid("pipeline_id mismatch", pipeline);
+        ok = false;
+    } else if (!expected_pipeline_id || !*expected_pipeline_id) {
+        expected_pipeline_id = pipeline_buffer;
+    }
+
+    uint64_t revision = 0u;
+    if (!cep_l1_pipeline_copy_uint64_field(pipeline, dt_revision_field(), &revision) || revision == 0u) {
+        cep_l1_pipeline_emit_invalid("pipeline revision missing or zero", pipeline);
+        ok = false;
+    }
+
+    char version_buffer[128] = {0};
+    if (!cep_l1_pipeline_copy_text_field(pipeline, dt_version_field(), version_buffer, sizeof version_buffer) ||
+        !version_buffer[0]) {
+        cep_l1_pipeline_emit_invalid("pipeline version missing", pipeline);
+        ok = false;
+    }
+
+    char owner_buffer[128] = {0};
+    if (!cep_l1_pipeline_copy_text_field(pipeline, dt_owner_field_flow(), owner_buffer, sizeof owner_buffer) ||
+        !owner_buffer[0]) {
+        cep_l1_pipeline_emit_invalid("pipeline owner missing", pipeline);
+        ok = false;
+    }
+
+    char province_buffer[128] = {0};
+    if (!cep_l1_pipeline_copy_text_field(pipeline, dt_province_field_flow(), province_buffer, sizeof province_buffer) ||
+        !province_buffer[0]) {
+        cep_l1_pipeline_emit_invalid("pipeline province missing", pipeline);
+        ok = false;
+    }
+
+    uint64_t max_hops = 0u;
+    cepCell* max_hops_cell = cep_cell_find_by_name(pipeline, dt_max_hops_field_flow());
+    max_hops_cell = max_hops_cell ? cep_cell_resolve(max_hops_cell) : NULL;
+    if (max_hops_cell) {
+        cepData* data = NULL;
+        if (!cep_cell_require_data(&max_hops_cell, &data) || !data || data->size < sizeof(uint64_t)) {
+            cep_l1_pipeline_emit_invalid("max_hops present but invalid", pipeline);
             ok = false;
-            continue;
-        }
-        char source_buffer[128] = {0};
-        char target_buffer[128] = {0};
-        (void)cep_l1_pipeline_copy_text_field(edge, dt_source_field(), source_buffer, sizeof source_buffer);
-        (void)cep_l1_pipeline_copy_text_field(edge, dt_target_field(), target_buffer, sizeof target_buffer);
-        if (!source_buffer[0] || !target_buffer[0] || strcmp(source_buffer, target_buffer) == 0) {
-            ok = false;
-            continue;
-        }
-        if (!cep_l1_pipeline_stage_exists(layout->stages, source_buffer) ||
-            !cep_l1_pipeline_stage_exists(layout->stages, target_buffer)) {
-            ok = false;
-        }
-        if (pipeline_id && *pipeline_id) {
-            char pipeline_buffer[128] = {0};
-            if (cep_l1_pipeline_copy_text_field(edge, dt_pipeline_id_field(), pipeline_buffer, sizeof pipeline_buffer) &&
-                pipeline_buffer[0] && strcmp(pipeline_buffer, pipeline_id) != 0) {
+        } else {
+            memcpy(&max_hops, cep_data_payload(data), sizeof max_hops);
+            if (max_hops == 0u) {
+                cep_l1_pipeline_emit_invalid("max_hops present but zero", pipeline);
                 ok = false;
             }
         }
     }
 
-    if (layout->pipeline) {
-        uint64_t max_hops = 0u;
-        if (cep_l1_pipeline_copy_uint64_field(layout->pipeline, dt_max_hops_field_flow(), &max_hops) && max_hops > 0u) {
-            size_t edge_count = cep_cell_children(layout->edges);
-            if (edge_count > max_hops) {
+    if (stages_ok) {
+        for (cepCell* stage = cep_cell_first(stages); stage; stage = cep_cell_next(stages, stage)) {
+            stage = stage ? cep_cell_resolve(stage) : NULL;
+            if (!stage || !cep_cell_require_dictionary_store(&stage)) {
+                cep_l1_pipeline_emit_invalid("stage entry missing dictionary store", pipeline);
+                ok = false;
+                continue;
+            }
+            char stage_buffer[128] = {0};
+            if (!cep_l1_pipeline_copy_text_field(stage, dt_stage_id(), stage_buffer, sizeof stage_buffer) ||
+                !stage_buffer[0]) {
+                cep_l1_pipeline_emit_invalid("stage missing stage_id", stage);
                 ok = false;
             }
+        }
+    }
+
+    if (edges_ok) {
+        for (cepCell* edge = cep_cell_first(edges); edge; edge = cep_cell_next(edges, edge)) {
+            edge = edge ? cep_cell_resolve(edge) : NULL;
+            if (!edge || !cep_cell_require_dictionary_store(&edge)) {
+                cep_l1_pipeline_emit_invalid("edge entry missing dictionary store", pipeline);
+                ok = false;
+                continue;
+            }
+            char source_buffer[128] = {0};
+            char target_buffer[128] = {0};
+            bool source_ok = cep_l1_pipeline_copy_text_field(edge, dt_source_field(), source_buffer, sizeof source_buffer) && source_buffer[0];
+            bool target_ok = cep_l1_pipeline_copy_text_field(edge, dt_target_field(), target_buffer, sizeof target_buffer) && target_buffer[0];
+            if (!source_ok || !target_ok) {
+                cep_l1_pipeline_emit_invalid("edge missing source/target", edge);
+                ok = false;
+                continue;
+            }
+            if (strcmp(source_buffer, target_buffer) == 0) {
+                cep_l1_pipeline_emit_invalid("edge self-loop rejected", edge);
+                ok = false;
+                continue;
+            }
+            if (!stages_ok ||
+                !cep_l1_pipeline_stage_exists(stages, source_buffer) ||
+                !cep_l1_pipeline_stage_exists(stages, target_buffer)) {
+                char note[160] = {0};
+                snprintf(note, sizeof note, "edge endpoints missing (%.64s -> %.64s)", source_buffer, target_buffer);
+                cep_l1_pipeline_emit_invalid(note, edge);
+                ok = false;
+            }
+            if (expected_pipeline_id && *expected_pipeline_id) {
+                char edge_pipeline[128] = {0};
+                if (!cep_l1_pipeline_copy_text_field(edge, dt_pipeline_id_field(), edge_pipeline, sizeof edge_pipeline) ||
+                    !edge_pipeline[0]) {
+                    cep_l1_pipeline_emit_invalid("edge missing pipeline_id", edge);
+                    ok = false;
+                } else if (strcmp(edge_pipeline, expected_pipeline_id) != 0) {
+                    cep_l1_pipeline_emit_invalid("edge pipeline_id mismatch", edge);
+                    ok = false;
+                }
+            }
+        }
+    }
+
+    if (edges_ok && max_hops > 0u) {
+        size_t edge_count = cep_cell_children(edges);
+        if (edge_count > max_hops) {
+            char note[160] = {0};
+            snprintf(note, sizeof note, "max_hops limit exceeded (%zu > %" PRIu64 ")", edge_count, max_hops);
+            cep_l1_pipeline_emit_invalid(note, pipeline);
+            ok = false;
         }
     }
 
@@ -518,7 +638,7 @@ bool cep_l1_pipeline_bind_coherence(cepL1SchemaLayout* schema,
             };
 
             char edge_note[160] = {0};
-            snprintf(edge_note, sizeof edge_note, "edge %s -> %s", source_buffer, target_buffer);
+            snprintf(edge_note, sizeof edge_note, "edge %.64s -> %.64s", source_buffer, target_buffer);
             (void)cep_l1_coh_add_context(schema, "pipeline_edge", edge_note, edge_bindings, 3u, NULL);
         }
     }

@@ -155,7 +155,8 @@ static bool cep_l1_runtime_copy_uint64_field(cepCell* parent,
 
 static void cep_l1_runtime_emit_run_cei(const cepDT* topic_dt,
                                         const char* note,
-                                        cepCell* subject) {
+                                        cepCell* subject,
+                                        const cepPipelineMetadata* meta) {
     if (!topic_dt || !cep_dt_is_valid(topic_dt)) {
         return;
     }
@@ -167,6 +168,10 @@ static void cep_l1_runtime_emit_run_cei(const cepDT* topic_dt,
         .subject = subject,
         .emit_signal = false,
     };
+    if (meta && meta->pipeline_id) {
+        req.has_pipeline = true;
+        req.pipeline = *meta;
+    }
     (void)cep_cei_emit(&req);
 }
 
@@ -222,6 +227,7 @@ static bool cep_l1_runtime_resolve_stage(cepCell* run_root,
         return false;
     }
 
+    (void)cep_cell_put_text(stage, dt_stage_id_field_l1(), stage_id);
     *stage_out = stage;
     return true;
 }
@@ -402,6 +408,132 @@ static bool cep_l1_runtime_seed_pipeline_shape(cepCell* run_root,
     return true;
 }
 
+static const char* cep_l1_runtime_lookup_id(cepID id) {
+    return id ? cep_namepool_lookup(id, NULL) : NULL;
+}
+
+static bool cep_l1_runtime_collect_metadata(cepCell* run_root,
+                                            const char* stage_id_hint,
+                                            const cepPipelineMetadata* provided,
+                                            bool require_run_id,
+                                            bool require_hop,
+                                            cepPipelineMetadata* out,
+                                            char* pipeline_text,
+                                            size_t pipeline_text_size,
+                                            char* stage_text,
+                                            size_t stage_text_size,
+                                            char* note,
+                                            size_t note_size) {
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof *out);
+    if (pipeline_text && pipeline_text_size) {
+        pipeline_text[0] = '\0';
+    }
+    if (stage_text && stage_text_size) {
+        stage_text[0] = '\0';
+    }
+    if (note && note_size) {
+        note[0] = '\0';
+    }
+
+    cepCell* stage_cell = NULL;
+    if (run_root && stage_id_hint) {
+        (void)cep_l1_runtime_resolve_stage(run_root, stage_id_hint, &stage_cell);
+    }
+
+    const char* pipeline_text_src = NULL;
+    if (provided && provided->pipeline_id) {
+        pipeline_text_src = cep_l1_runtime_lookup_id(provided->pipeline_id);
+        out->pipeline_id = provided->pipeline_id;
+    }
+    char run_pipeline_buffer[128] = {0};
+    if (run_root && (!pipeline_text_src || !*pipeline_text_src)) {
+        if (cep_l1_runtime_copy_text_field(run_root,
+                                           dt_pipeline_id_field_l1(),
+                                           run_pipeline_buffer,
+                                           sizeof run_pipeline_buffer) &&
+            run_pipeline_buffer[0]) {
+            out->pipeline_id = cep_namepool_intern_cstr(run_pipeline_buffer);
+            pipeline_text_src = cep_l1_runtime_lookup_id(out->pipeline_id);
+        }
+    }
+    if (!pipeline_text_src || !*pipeline_text_src) {
+        if (note && note_size) {
+            snprintf(note, note_size, "missing pipeline_id");
+        }
+        return false;
+    }
+
+    const char* stage_text_src = NULL;
+    if (provided && provided->stage_id) {
+        stage_text_src = cep_l1_runtime_lookup_id(provided->stage_id);
+        out->stage_id = provided->stage_id;
+    }
+    if ((!stage_text_src || !*stage_text_src) && stage_id_hint && *stage_id_hint) {
+        stage_text_src = stage_id_hint;
+        out->stage_id = cep_namepool_intern_cstr(stage_id_hint);
+    }
+    if (!stage_text_src || !*stage_text_src) {
+        if (note && note_size) {
+            snprintf(note, note_size, "missing stage_id");
+        }
+        return false;
+    }
+
+    if (run_pipeline_buffer[0] && strcmp(run_pipeline_buffer, pipeline_text_src) != 0) {
+        if (note && note_size) {
+            snprintf(note, note_size, "pipeline_id mismatch");
+        }
+        return false;
+    }
+
+    uint64_t dag_run_id = (provided && provided->dag_run_id) ? provided->dag_run_id : 0u;
+    if (dag_run_id == 0u && run_root) {
+        (void)cep_l1_runtime_copy_uint64_field(run_root, dt_dag_run_id_field_l1(), &dag_run_id);
+    }
+    if (require_run_id && dag_run_id == 0u) {
+        if (note && note_size) {
+            snprintf(note, note_size, "missing dag_run_id");
+        }
+        return false;
+    }
+    out->dag_run_id = dag_run_id;
+
+    uint64_t hop_index = (provided && provided->hop_index) ? provided->hop_index : 0u;
+    if (hop_index == 0u && stage_cell) {
+        (void)cep_l1_runtime_copy_uint64_field(stage_cell, dt_hop_index_field_l1(), &hop_index);
+    }
+    if (hop_index == 0u) {
+        if (require_hop) {
+            if (note && note_size) {
+                snprintf(note, note_size, "missing hop_index");
+            }
+            return false;
+        }
+        hop_index = 1u;
+    }
+    out->hop_index = hop_index;
+
+    if (stage_cell) {
+        (void)cep_cell_put_text(stage_cell, dt_stage_id_field_l1(), stage_text_src);
+        (void)cep_cell_put_uint64(stage_cell, dt_hop_index_field_l1(), hop_index);
+    }
+    if (run_root) {
+        (void)cep_cell_put_text(run_root, dt_pipeline_id_field_l1(), pipeline_text_src);
+    }
+
+    if (pipeline_text && pipeline_text_size) {
+        snprintf(pipeline_text, pipeline_text_size, "%s", pipeline_text_src);
+    }
+    if (stage_text && stage_text_size) {
+        snprintf(stage_text, stage_text_size, "%s", stage_text_src);
+    }
+
+    return out->pipeline_id && out->stage_id && (!require_run_id || out->dag_run_id > 0u);
+}
+
 static void cep_l1_runtime_fan_out_edges(cepCell* run_root,
                                          const char* stage_id,
                                          const cepPipelineMetadata* meta) {
@@ -461,8 +593,20 @@ bool cep_l1_runtime_record_run(cepCell* runs_root,
                                const char* state_tag,
                                const cepPipelineMetadata* metadata,
                                cepCell** run_out) {
-    if (!runs_root || !pipeline_id || !state_tag) {
+    if (!runs_root || !pipeline_id || !*pipeline_id || !state_tag || dag_run_id == 0u) {
         return false;
+    }
+
+    const char* pipeline_text = pipeline_id;
+    if (metadata && metadata->pipeline_id) {
+        const char* meta_text = cep_l1_runtime_lookup_id(metadata->pipeline_id);
+        if (!meta_text || !*meta_text) {
+            return false;
+        }
+        if (strcmp(meta_text, pipeline_id) != 0) {
+            return false;
+        }
+        pipeline_text = meta_text;
     }
 
     cepDT run_dt = {0};
@@ -476,19 +620,8 @@ bool cep_l1_runtime_record_run(cepCell* runs_root,
         return false;
     }
 
-    if (metadata && metadata->pipeline_id) {
-        cepDT pipeline_dt = {.domain = cep_namepool_intern_cstr("CEP"), .tag = metadata->pipeline_id};
-        if (!cep_cell_put_dt(run, dt_pipeline_id_field_l1(), &pipeline_dt)) {
-            return false;
-        }
-        const char* pipeline_text = cep_namepool_lookup(metadata->pipeline_id, NULL);
-        if (pipeline_text && *pipeline_text) {
-            pipeline_id = pipeline_text;
-        }
-    } else {
-        if (!cep_cell_put_text(run, dt_pipeline_id_field_l1(), pipeline_id)) {
-            return false;
-        }
+    if (!cep_cell_put_text(run, dt_pipeline_id_field_l1(), pipeline_text)) {
+        return false;
     }
     if (!cep_cell_put_uint64(run, dt_dag_run_id_field_l1(), dag_run_id)) {
         return false;
@@ -504,10 +637,20 @@ bool cep_l1_runtime_record_run(cepCell* runs_root,
 
     if (metadata) {
         if (metadata->stage_id) {
-            cepDT stage_dt = {.domain = cep_namepool_intern_cstr("CEP"), .tag = metadata->stage_id};
-            (void)cep_cell_put_dt(run, dt_stage_id_field_l1(), &stage_dt);
+            const char* stage_text = cep_l1_runtime_lookup_id(metadata->stage_id);
+            if (stage_text && *stage_text) {
+                (void)cep_cell_put_text(run, dt_stage_id_field_l1(), stage_text);
+                cepCell* stage_cell = NULL;
+                if (cep_l1_runtime_resolve_stage(run, stage_text, &stage_cell)) {
+                    if (metadata->hop_index > 0u) {
+                        (void)cep_cell_put_uint64(stage_cell, dt_hop_index_field_l1(), metadata->hop_index);
+                    }
+                }
+            }
         }
-        (void)cep_cell_put_uint64(run, dt_hop_index_field_l1(), metadata->hop_index);
+        if (metadata->hop_index > 0u) {
+            (void)cep_cell_put_uint64(run, dt_hop_index_field_l1(), metadata->hop_index);
+        }
     }
 
     cepCell* stages = NULL;
@@ -520,8 +663,8 @@ bool cep_l1_runtime_record_run(cepCell* runs_root,
         return false;
     }
 
-    if (pipeline_id && *pipeline_id) {
-        (void)cep_l1_runtime_seed_pipeline_shape(run, pipeline_id);
+    if (pipeline_text && *pipeline_text) {
+        (void)cep_l1_runtime_seed_pipeline_shape(run, pipeline_text);
     }
 
     /* TODO: emit pipeline-aware impulses once orchestrator wiring lands. */
@@ -808,11 +951,36 @@ bool cep_l1_runtime_dispatch_if_ready(cepCell* run_root,
         return false;
     }
 
+    cepPipelineMetadata resolved_meta = {0};
+    char pipeline_text[128] = {0};
+    char stage_text[128] = {0};
+    char meta_note[160] = {0};
+    if (!cep_l1_runtime_collect_metadata(run_root,
+                                         stage_id,
+                                         metadata,
+                                         true,
+                                         false,
+                                         &resolved_meta,
+                                         pipeline_text,
+                                         sizeof pipeline_text,
+                                         stage_text,
+                                         sizeof stage_text,
+                                         meta_note,
+                                         sizeof meta_note)) {
+        const char* note = meta_note[0] ? meta_note : "dispatch blocked: missing pipeline metadata";
+        cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(),
+                                    note,
+                                    stage,
+                                    metadata);
+        return false;
+    }
+
     if (cep_runtime_is_paused()) {
         (void)cep_cell_put_uint64(run_root, dt_paused_field_l1(), 1u);
         cep_l1_runtime_emit_run_cei(dt_topic_dispatch_blocked(),
                                     "dispatch blocked: runtime paused or rollback gating active",
-                                    stage);
+                                    stage,
+                                    &resolved_meta);
         return false;
     }
 
@@ -821,51 +989,16 @@ bool cep_l1_runtime_dispatch_if_ready(cepCell* run_root,
         return false;
     }
 
-    char pipeline_buffer[128] = {0};
-    (void)cep_l1_runtime_copy_text_field(run_root, dt_pipeline_id_field_l1(), pipeline_buffer, sizeof pipeline_buffer);
-
-    cepPipelineMetadata meta = {0};
-    if (metadata) {
-        meta = *metadata;
-    }
-    if (!meta.pipeline_id && pipeline_buffer[0]) {
-        meta.pipeline_id = cep_namepool_intern_cstr(pipeline_buffer);
-    }
-    if (!meta.stage_id) {
-        meta.stage_id = cep_namepool_intern_cstr(stage_id);
-    }
-    if (meta.dag_run_id == 0u) {
-        uint64_t dag_run_id = 0u;
-        (void)cep_l1_runtime_copy_uint64_field(run_root, dt_dag_run_id_field_l1(), &dag_run_id);
-        meta.dag_run_id = dag_run_id;
-    }
-    if (meta.hop_index == 0u) {
-        uint64_t hop_index = 0u;
-        (void)cep_l1_runtime_copy_uint64_field(stage, dt_hop_index_field_l1(), &hop_index);
-        meta.hop_index = hop_index;
-    }
-
-    const char* pipeline_text = pipeline_buffer;
-    if (!pipeline_text || !*pipeline_text) {
-        pipeline_text = cep_namepool_lookup(meta.pipeline_id, NULL);
-    }
-    if (!pipeline_text || !*pipeline_text) {
-        cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(),
-                                    "dispatch blocked: missing pipeline metadata",
-                                    stage);
-        return false;
-    }
-
     bool dispatched = cep_l1_runtime_emit_impulse(signal,
                                                   target,
                                                   pipeline_text,
-                                                  stage_id,
-                                                  meta.dag_run_id,
-                                                  meta.hop_index,
+                                                  stage_text[0] ? stage_text : stage_id,
+                                                  resolved_meta.dag_run_id,
+                                                  resolved_meta.hop_index,
                                                   qos);
     if (dispatched) {
         (void)cep_cell_put_uint64(stage, dt_ready_field_l1(), 0u);
-        cep_l1_runtime_fan_out_edges(run_root, stage_id, &meta);
+        cep_l1_runtime_fan_out_edges(run_root, stage_id, &resolved_meta);
     }
     return dispatched;
 }
@@ -880,7 +1013,7 @@ bool cep_l1_runtime_emit_impulse(const cepPath* signal,
                                  uint64_t dag_run_id,
                                  uint64_t hop_index,
                                  cepImpulseQoS qos) {
-    if (!signal || !target || !pipeline_id) {
+    if (!signal || !target || !pipeline_id || !*pipeline_id || !stage_id || !*stage_id) {
         return false;
     }
 
@@ -889,11 +1022,9 @@ bool cep_l1_runtime_emit_impulse(const cepPath* signal,
     if (!meta.pipeline_id) {
         return false;
     }
-    if (stage_id && *stage_id) {
-        meta.stage_id = cep_namepool_intern_cstr(stage_id);
-        if (!meta.stage_id) {
-            return false;
-        }
+    meta.stage_id = cep_namepool_intern_cstr(stage_id);
+    if (!meta.stage_id) {
+        return false;
     }
     meta.dag_run_id = dag_run_id;
     meta.hop_index = hop_index;
@@ -909,7 +1040,8 @@ bool cep_l1_runtime_emit_impulse(const cepPath* signal,
     return cep_heartbeat_enqueue_impulse(cep_heartbeat_current(), &impulse) == CEP_ENZYME_SUCCESS;
 }
 
-static void cep_l1_runtime_emit_pipeline_reject_cei(const char* note) {
+static void cep_l1_runtime_emit_pipeline_reject_cei(const char* note,
+                                                    const cepPipelineMetadata* meta) {
     cepCeiRequest cei = {
         .severity = *dt_sev_warn_l1(),
         .topic = cep_namepool_lookup(dt_topic_pipeline_reject()->tag, NULL),
@@ -917,6 +1049,10 @@ static void cep_l1_runtime_emit_pipeline_reject_cei(const char* note) {
         .note = note,
         .emit_signal = false,
     };
+    if (meta && meta->pipeline_id) {
+        cei.has_pipeline = true;
+        cei.pipeline = *meta;
+    }
     (void)cep_cei_emit(&cei);
 }
 
@@ -927,10 +1063,28 @@ bool cep_l1_fed_prepare_request(cepCell* request_cell,
     if (!request_cell || !metadata) {
         return false;
     }
-    if (!metadata->pipeline_id) {
-        cep_l1_runtime_emit_pipeline_reject_cei("missing pipeline metadata for invoke request");
+
+    cepPipelineMetadata resolved = {0};
+    char pipeline_text[128] = {0};
+    char stage_text[128] = {0};
+    char meta_note[160] = {0};
+    if (!cep_l1_runtime_collect_metadata(NULL,
+                                         NULL,
+                                         metadata,
+                                         true,
+                                         true,
+                                         &resolved,
+                                         pipeline_text,
+                                         sizeof pipeline_text,
+                                         stage_text,
+                                         sizeof stage_text,
+                                         meta_note,
+                                         sizeof meta_note)) {
+        const char* note = meta_note[0] ? meta_note : "missing pipeline metadata for invoke request";
+        cep_l1_runtime_emit_pipeline_reject_cei(note, metadata);
         return false;
     }
+
     request_cell = cep_cell_resolve(request_cell);
     if (!request_cell || !cep_cell_require_dictionary_store(&request_cell)) {
         return false;
@@ -942,29 +1096,10 @@ bool cep_l1_fed_prepare_request(cepCell* request_cell,
         return false;
     }
 
-    const char* pipeline_text = cep_namepool_lookup(metadata->pipeline_id, NULL);
-    if (!pipeline_text || !*pipeline_text) {
-        cep_l1_runtime_emit_pipeline_reject_cei("pipeline id could not be interned for invoke request");
-        return false;
-    }
-
-    if (metadata->pipeline_id) {
-        (void)cep_cell_put_text(pipeline, dt_sec_pipeline_id_field(), pipeline_text);
-    }
-    if (metadata->stage_id) {
-        const char* text = cep_namepool_lookup(metadata->stage_id, NULL);
-        if (!text || !*text) {
-            cep_l1_runtime_emit_pipeline_reject_cei("stage id could not be interned for invoke request");
-            return false;
-        }
-        (void)cep_cell_put_text(pipeline, dt_sec_stage_id_field(), text);
-    }
-    if (metadata->dag_run_id) {
-        (void)cep_cell_put_uint64(pipeline, dt_pipeline_run_field(), metadata->dag_run_id);
-    }
-    if (metadata->hop_index) {
-        (void)cep_cell_put_uint64(pipeline, dt_pipeline_hop_field(), metadata->hop_index);
-    }
+    (void)cep_cell_put_text(pipeline, dt_sec_pipeline_id_field(), pipeline_text);
+    (void)cep_cell_put_text(pipeline, dt_sec_stage_id_field(), stage_text);
+    (void)cep_cell_put_uint64(pipeline, dt_pipeline_run_field(), resolved.dag_run_id);
+    (void)cep_cell_put_uint64(pipeline, dt_pipeline_hop_field(), resolved.hop_index);
     return true;
 }
 
@@ -978,27 +1113,51 @@ bool cep_l1_fed_request_submit(const cepFedInvokeRequest* request,
         return false;
     }
 
-    if (!metadata || !metadata->pipeline_id) {
-        cep_l1_runtime_emit_pipeline_reject_cei("missing pipeline metadata for invoke submit");
+    cepPipelineMetadata resolved = {0};
+    char pipeline_text[128] = {0};
+    char stage_text[128] = {0};
+    char meta_note[160] = {0};
+    if (!cep_l1_runtime_collect_metadata(NULL,
+                                         NULL,
+                                         metadata,
+                                         true,
+                                         true,
+                                         &resolved,
+                                         pipeline_text,
+                                         sizeof pipeline_text,
+                                         stage_text,
+                                         sizeof stage_text,
+                                         meta_note,
+                                         sizeof meta_note)) {
+        const char* note = meta_note[0] ? meta_note : "missing pipeline metadata for invoke submit";
+        cep_l1_runtime_emit_pipeline_reject_cei(note, metadata);
         return false;
     }
 
-    if (request_cell && metadata) {
-        if (!cep_l1_fed_prepare_request(request_cell, metadata)) {
+    if (request_cell) {
+        if (!cep_l1_fed_prepare_request(request_cell, &resolved)) {
             return false;
         }
+    }
+
+    char approval_note[128] = {0};
+    uint64_t approved_version = 0u;
+    if (!cep_sec_pipeline_approved(pipeline_text, &approved_version, approval_note, sizeof approval_note)) {
+        const char* note = approval_note[0] ? approval_note : "pipeline approval missing";
+        cep_l1_runtime_emit_pipeline_reject_cei(note, &resolved);
+        return false;
     }
 
     if (submission->target_path) {
         int rc = cep_sec_pipeline_run_preflight(submission->target_path);
         if (rc != CEP_ENZYME_SUCCESS) {
-            cep_l1_runtime_emit_pipeline_reject_cei("pipeline preflight rejected invoke");
+            cep_l1_runtime_emit_pipeline_reject_cei("pipeline preflight rejected invoke", &resolved);
             return false;
         }
     }
 
     if (!cep_fed_invoke_request_submit(request, submission)) {
-        cep_l1_runtime_emit_pipeline_reject_cei("federation invoke submit failed");
+        cep_l1_runtime_emit_pipeline_reject_cei("federation invoke submit failed", &resolved);
         return false;
     }
 
@@ -1010,26 +1169,36 @@ bool cep_l1_fed_request_submit(const cepFedInvokeRequest* request,
    metadata is missing or cannot be interned. */
 bool cep_l1_fed_mount_attach_pipeline(cepFedTransportManagerMount* mount,
                                       const cepPipelineMetadata* metadata) {
-    if (!mount || !metadata || !metadata->pipeline_id) {
-        cep_l1_runtime_emit_pipeline_reject_cei("missing pipeline metadata for mount");
+    if (!mount || !metadata) {
+        cep_l1_runtime_emit_pipeline_reject_cei("missing pipeline metadata for mount", metadata);
         return false;
     }
 
-    const char* pipeline_text = cep_namepool_lookup(metadata->pipeline_id, NULL);
-    const char* stage_text = metadata->stage_id ? cep_namepool_lookup(metadata->stage_id, NULL) : NULL;
-    if (!pipeline_text || !*pipeline_text) {
-        cep_l1_runtime_emit_pipeline_reject_cei("pipeline id could not be interned for mount");
-        return false;
-    }
-    if (metadata->stage_id && (!stage_text || !*stage_text)) {
-        cep_l1_runtime_emit_pipeline_reject_cei("stage id could not be interned for mount");
+    cepPipelineMetadata resolved = {0};
+    char pipeline_text[128] = {0};
+    char stage_text[128] = {0};
+    char meta_note[160] = {0};
+    if (!cep_l1_runtime_collect_metadata(NULL,
+                                         NULL,
+                                         metadata,
+                                         true,
+                                         true,
+                                         &resolved,
+                                         pipeline_text,
+                                         sizeof pipeline_text,
+                                         stage_text,
+                                         sizeof stage_text,
+                                         meta_note,
+                                         sizeof meta_note)) {
+        const char* note = meta_note[0] ? meta_note : "missing pipeline metadata for mount";
+        cep_l1_runtime_emit_pipeline_reject_cei(note, metadata);
         return false;
     }
 
     cep_fed_transport_manager_mount_set_pipeline_metadata(mount,
                                                           pipeline_text,
                                                           stage_text,
-                                                          metadata->dag_run_id,
-                                                          metadata->hop_index);
+                                                          resolved.dag_run_id,
+                                                          resolved.hop_index);
     return true;
 }

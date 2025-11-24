@@ -72,12 +72,14 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `coh.closure.fail` | L1 | CEI topic emitted when closure cannot materialize required facets. |
 | `coh.hydrate.fail` | L1 | CEI topic emitted when a hydration attempt fails in L1 enzymes. |
 | `coh.cross_read` | L1 | CEI topic emitted when L1 performs a cross-branch hydration. |
+| `coh.rule.invalid` | L1 | CEI topic emitted when `ctx_rules` entries are malformed or missing required fields. |
 | `triggers` | L1 | Trigger list under a pipeline run/stage capturing event/label/schedule cues. |
 | `ready` | L1 | Boolean readiness flag for a pipeline stage. |
 | `fan_in` | L1 | Expected fan-in count for a stage used by the runtime orchestrator. |
 | `fan_seen` | L1 | Counter tracking how many fan-in triggers a stage has observed. |
 | `flow.dispatch.blocked` | L1 | CEI topic emitted when pipeline dispatch is gated by pause/rollback control state. |
 | `flow.pipeline.missing_metadata` | L1 | CEI topic emitted when L1 runtime/federation helpers lack pipeline metadata. |
+| `flow.pipeline.invalid` | L1 | CEI topic emitted when pipeline validation fails (missing metadata or invalid topology). |
 | `beat` | L1 | Beat counter attached to triggers or runtime markers. |
 | `sec.pipeline.reject` | SEC | CEI topic emitted when pipeline preflight or invoke submission fails. |
 | `flow` | L1 | Layer 1 flow root under `/data/flow` hosting pipeline definitions and runtime state. |

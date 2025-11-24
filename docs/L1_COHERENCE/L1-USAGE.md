@@ -18,10 +18,10 @@ Layer 1 gives you a reliable way to describe identities and relationships (bei
   1) Prepare bindings (`cepL1CohBinding[]`).  
   2) Add context: `cep_l1_coh_add_context(layout, ctx_kind, note, bindings, count, out_ctx)`; IDs are canonical (sorted role → being → bond).  
   3) Closure reads `/data/coh/schema/ctx_rules/<kind>/roles|facets` to validate roles, create facets, and record debts when required data is missing. Debts live under `/data/coh/debts/**` with append-only history and `ctx_kind` lineage.  
-  CEI you may see: `coh.debt.new`, `coh.debt.resolved`, `coh.role.invalid`, `coh.closure.fail`, `coh.hydrate.fail`, `coh.cross_read`.
+  CEI you may see: `coh.debt.new`, `coh.debt.resolved`, `coh.role.invalid`, `coh.rule.invalid`, `coh.closure.fail`, `coh.hydrate.fail`, `coh.cross_read`.
 
 ## How to set up pipelines
-- Ensure a definition: `cep_l1_pipeline_ensure(flow_pipelines_root, pipeline_id, meta, &layout)` (stores `pipeline_id`, revision, owner, province, `max_hops`).
+- Ensure a definition: `cep_l1_pipeline_ensure(flow_pipelines_root, pipeline_id, meta, &layout)` (stores `pipeline_id`, revision >= 1, version, owner, province, optional `max_hops` ceiling; rejects revision regressions).
 - Add stages: `cep_l1_pipeline_stage_stub(&layout, stage_id, &stage)`.
 - Wire edges: `cep_l1_pipeline_add_edge(&layout, from_stage, to_stage, note)`; rejects self-loops and honors `max_hops`.
 - Bind to coherence: `cep_l1_pipeline_bind_coherence(schema_layout, &layout)` creates beings for pipelines/stages plus `has_stage` bonds and `pipeline_edge` contexts (`pipeline`, `from_stage`, `to_stage` roles).
@@ -41,7 +41,7 @@ Layer 1 gives you a reliable way to describe identities and relationships (bei
 - Link/Mirror: `cep_l1_fed_mount_attach_pipeline` stamps pipeline metadata on mounts and fails fast when IDs cannot be interned.
 
 ## Hydration
-- Use `cep_l1_coh_hydrate_safe` in enzymes to hydrate with optional snapshot view and Decision Cell enforcement for cross-branch reads; CEI `coh.hydrate.fail` / `coh.cross_read` record issues.
+- Use `cep_l1_coh_hydrate_safe` in enzymes to hydrate with optional snapshot view and Decision Cell enforcement for cross-branch reads; cross-branch is default-deny, emits `coh.hydrate.fail` on policy denials, and emits `coh.cross_read` when explicitly allowed and hydrated.
 
 ## Q&A
 - **Add a new required role/facet?** Set `required=1` under `/data/coh/schema/ctx_rules/<ctx_kind>/roles|facets` and rerun closure (`op/coh_sweep`).

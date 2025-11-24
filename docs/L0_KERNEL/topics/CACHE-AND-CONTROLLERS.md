@@ -30,7 +30,7 @@ CEP’s cache story lives in the branch controllers (often dubbed “CPCL” for
 
 ## Cross-branch reads and determinism
 - Before cloning/reading across branches, `cep_branch_policy_check_read()` enforces `allow_volatile_reads` and `snapshot_ro`.
-- Risky cross-reads record Decision Cells (`cep_decision_cell_record_cross_branch`) and emit `cell.cross_read` CEI so replay consumes the same ledger.
+- Risky cross-reads record Decision Cells (`cep_decision_cell_record_cross_branch`) and emit `cell.cross_read` CEI so replay consumes the same ledger. L1 enzymes should call `cep_l1_coh_hydrate_safe()` so cross-branch reads stay default-deny, log `coh.hydrate.fail` on policy errors, and carry pipeline metadata into CEI when present.
 
 ## Configuration examples
 Here is a minimal mapping you can mirror in tests or staging to see CPCL and CPS working together.

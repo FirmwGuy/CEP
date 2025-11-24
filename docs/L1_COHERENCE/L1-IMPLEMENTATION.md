@@ -14,13 +14,14 @@ Layer 1 gives CEP durable structure: beings, bonds, contexts, facets, adjacenc
   - Add helpers ensure dictionary stores exist, intern IDs through the namepool, and attach append-only debt history.
 - **Closure and debts**  
   - Context creation records bindings under `roles/` and updates adjacency mirrors by being/context.  
-  - Closure loads optional context rules: validates allowed/required roles, materializes facets, records debts for missing roles/facets/beings, and emits CEI (`coh.debt.new`, `coh.debt.resolved`, `coh.role.invalid`, `coh.closure.fail`). Required rules set `required=1`; debts keep `ctx_kind` for lineage.  
-  - Hydration uses the L0 helper with optional snapshot-only mode; cross-branch reads emit `coh.cross_read` with Decision Cells when allowed; failures emit `coh.hydrate.fail`.
+  - Closure loads optional context rules: validates allowed/required roles, materializes facets, records debts for missing roles/facets/beings, and emits CEI (`coh.debt.new`, `coh.debt.resolved`, `coh.role.invalid`, `coh.rule.invalid`, `coh.closure.fail`). Required rules set `required=1`; debts keep `ctx_kind` for lineage.  
+  - Malformed `ctx_rules` entries emit `coh.rule.invalid`; facet/role rules must declare kind + role to participate in closure.  
+  - Hydration uses the L0 helper with optional snapshot-only mode; cross-branch reads are default-deny, require Decision Cells when allowed, emit `coh.cross_read` on allow, and `coh.hydrate.fail` on policy denials/failures.
 - **Adjacency mirrors**  
   - `by_being` tracks contexts, bonds, facets per being; `by_ctx` tracks participants and facets; `by_facet` indexes facets by kind. Mirrors are derived and safe to rebuild via closure/sweep.
 - **Pipelines and coherence**  
-  - Pipeline definitions under `/data/flow/pipelines` store `pipeline_id`, `rev` (default 1), optional `ver`, `owner`, `province`, and `max_hops`.  
-  - Stages live under `stages/`; edges under `edges/` with `source/target` text. Validation rejects self-loops, missing endpoints, and max-hop overflow.  
+  - Pipeline definitions under `/data/flow/pipelines` store `pipeline_id`, `rev` (>=1, default 1), `ver`, `owner`, `province`, and optional non-zero `max_hops`.  
+  - Stages live under `stages/`; edges under `edges/` with `source/target` text. Validation enforces required metadata (pipeline_id, rev, ver, owner, province), rejects self-loops/missing endpoints/pipeline_id drift, enforces `max_hops`, and emits CEI `flow.pipeline.invalid` when checks fail.  
   - `cep_l1_pipeline_bind_coherence` creates beings for pipeline/stages, bonds `has_stage`, and pipeline-edge contexts (`pipeline_edge` with roles `pipeline`, `from_stage`, `to_stage`). Owner/province beings get `owned_by` and `in_province` bonds.
 - **Runtime scaffolding**  
   - Runs are recorded under `/data/flow/runtime/runs/<run>` with pipeline metadata; per-stage state lives in `stages/<stage>/`. Pipeline stages/edges are mirrored into runs to pre-fill `fan_in` expectations.  

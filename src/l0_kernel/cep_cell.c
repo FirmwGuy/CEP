@@ -2785,7 +2785,7 @@ bool cep_cell_put_text(cepCell* parent, const cepDT* field, const char* text) {
 
 bool cep_cell_put_uint64(cepCell* parent, const cepDT* field, uint64_t value) {
     char buffer[32];
-    int written = snprintf(buffer, sizeof buffer, "%" PRIu64, (unsigned long long)value);
+    int written = snprintf(buffer, sizeof buffer, "%" PRIu64, (uint64_t)value);
     if (written <= 0 || (size_t)written >= sizeof buffer) {
         return false;
     }
@@ -6915,16 +6915,18 @@ bool cep_cell_path(const cepCell* cell, cepPath** path) {
     // Traverse up the hierarchy to construct the path in reverse order
     for (const cepCell* current = cell;  current;  current = cep_cell_parent(current)) {
         if (tempPath->length >= tempPath->capacity) {
+            unsigned used = tempPath->length;
+            unsigned start = tempPath->capacity - used;
             unsigned newCapacity = tempPath->capacity * 2;
             size_t bytes = sizeof(cepPath) + ((size_t)newCapacity * sizeof(cepPast));
             cepPath* resized = cep_realloc(tempPath, bytes);
             if (!resized)
                 return false;
 
-            if (tempPath->length) {
-                unsigned used = tempPath->length;
-                unsigned start = tempPath->capacity - used;
-                memmove(&resized->past[newCapacity - used], &resized->past[start], used * sizeof(cepPast));
+            if (used) {
+                memmove(&resized->past[newCapacity - used],
+                        &resized->past[start],
+                        used * sizeof(cepPast));
             }
 
             tempPath = resized;
@@ -7368,7 +7370,7 @@ bool cep_txn_commit(cepTxn* txn) {
     cep_txn_clear_metadata(root);
 
     char note[128];
-    snprintf(note, sizeof note, "txn commit: root=%p beat=%" PRIu64, (void*)root, (unsigned long long)txn->begin_beat);
+    snprintf(note, sizeof note, "txn commit: root=%p beat=%" PRIu64, (void*)root, (uint64_t)txn->begin_beat);
     cep_heartbeat_stage_note(note);
 
     txn->root = NULL;
@@ -7391,7 +7393,7 @@ void cep_txn_abort(cepTxn* txn) {
 
     cep_txn_update_state(root, "aborted");
     char note[128];
-    snprintf(note, sizeof note, "txn abort: root=%p beat=%" PRIu64, (void*)root, (unsigned long long)txn->begin_beat);
+    snprintf(note, sizeof note, "txn abort: root=%p beat=%" PRIu64, (void*)root, (uint64_t)txn->begin_beat);
     cep_heartbeat_stage_note(note);
     cep_cell_remove_hard(root, NULL);
 

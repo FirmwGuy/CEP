@@ -21,6 +21,7 @@ typedef struct {
     const char* province;
     const char* version;
     uint64_t    revision;
+    uint64_t    max_hops;
 } cepL1PipelineMeta;
 
 typedef struct {

@@ -10,6 +10,8 @@
 #include "../l0_kernel/cep_enzyme.h"
 #include "../l0_kernel/cep_heartbeat.h"
 #include "../l0_kernel/cep_cell.h"
+#include "../l0_kernel/cep_branch_controller.h"
+#include "../l0_kernel/cep_runtime.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -39,6 +41,7 @@ CEP_DEFINE_STATIC_DT(dt_topic_role_invalid, CEP_ACRO("CEP"), cep_namepool_intern
 CEP_DEFINE_STATIC_DT(dt_topic_closure_fail, CEP_ACRO("CEP"), cep_namepool_intern_cstr("coh.closure.fail"));
 CEP_DEFINE_STATIC_DT(dt_topic_hydrate_fail, CEP_ACRO("CEP"), cep_namepool_intern_cstr("coh.hydrate.fail"));
 CEP_DEFINE_STATIC_DT(dt_topic_cross_read,    CEP_ACRO("CEP"), cep_namepool_intern_cstr("coh.cross_read"));
+CEP_DEFINE_STATIC_DT(dt_topic_rule_invalid,  CEP_ACRO("CEP"), cep_namepool_intern_cstr("coh.rule.invalid"));
 CEP_DEFINE_STATIC_DT(dt_roles_bucket,     CEP_ACRO("CEP"), CEP_WORD("roles"));
 CEP_DEFINE_STATIC_DT(dt_required_field_coh, CEP_ACRO("CEP"), CEP_WORD("required"));
 CEP_DEFINE_STATIC_DT(dt_ctx_kind_field,   CEP_ACRO("CEP"), CEP_WORD("ctx_kind"));
@@ -106,7 +109,10 @@ static char* cep_l1_coh_dup_being_key(const char* kind, const char* external_id)
     return key;
 }
 
-static void cep_l1_coh_emit_cei(const cepDT* topic_dt, const char* note, cepCell* subject) {
+static void cep_l1_coh_emit_cei(const cepDT* topic_dt,
+                                const char* note,
+                                cepCell* subject,
+                                const cepPipelineMetadata* pipeline) {
     if (!topic_dt || !cep_dt_is_valid(topic_dt)) {
         return;
     }
@@ -119,6 +125,10 @@ static void cep_l1_coh_emit_cei(const cepDT* topic_dt, const char* note, cepCell
         .subject = subject,
         .emit_signal = false,
     };
+    if (pipeline && pipeline->pipeline_id) {
+        req.has_pipeline = true;
+        req.pipeline = *pipeline;
+    }
     (void)cep_cei_emit(&req);
 }
 
@@ -150,18 +160,95 @@ bool cep_l1_coh_hydrate_safe(cep_cell_ref_t* ref,
     if (!ref || !enz_ctx) {
         return false;
     }
+    cepPipelineMetadata pipeline_meta = {0};
+    if (enz_ctx->has_pipeline) {
+        pipeline_meta = enz_ctx->pipeline;
+    }
+
+    cepRuntime* runtime = cep_runtime_default();
+    cepBranchControllerRegistry* registry = runtime ? cep_runtime_branch_registry(runtime) : NULL;
+    const cepBranchController* consumer_ctrl = NULL;
+    const cepBranchController* source_ctrl = NULL;
+    if (registry && cep_dt_is_valid(&enz_ctx->branch_dt)) {
+        consumer_ctrl = cep_branch_registry_find_by_dt(registry, &enz_ctx->branch_dt);
+    }
+    if (ref->cell) {
+        source_ctrl = cep_branch_controller_for_cell(ref->cell);
+    }
+    if (!source_ctrl && registry && cep_dt_is_valid(&ref->branch_dt)) {
+        source_ctrl = cep_branch_registry_find_by_dt(registry, &ref->branch_dt);
+    }
+
+    bool dt_crossing = cep_dt_is_valid(&enz_ctx->branch_dt) &&
+                       cep_dt_is_valid(&ref->branch_dt) &&
+                       (cep_dt_compare(&enz_ctx->branch_dt, &ref->branch_dt) != 0);
+    bool crossing = (consumer_ctrl && source_ctrl) ? (consumer_ctrl != source_ctrl) : dt_crossing;
+
+    char consumer_label[64] = {0};
+    char source_label[64] = {0};
+    if (consumer_ctrl) {
+        cep_branch_controller_format_label(consumer_ctrl, consumer_label, sizeof consumer_label);
+    }
+    if (source_ctrl) {
+        cep_branch_controller_format_label(source_ctrl, source_label, sizeof source_label);
+    }
+
+    cepBranchPolicyResult policy = {
+        .access = CEP_BRANCH_POLICY_ACCESS_ALLOW,
+        .risk = CEP_BRANCH_POLICY_RISK_NONE,
+    };
+    if (crossing) {
+        policy = cep_branch_policy_check_read(consumer_ctrl, source_ctrl);
+    }
+
+    if (crossing && !allow_cross_branch) {
+        char note[160] = {0};
+        snprintf(note,
+                 sizeof note,
+                 "cross-branch hydration denied (%.*s -> %.*s)",
+                 48,
+                 consumer_label[0] ? consumer_label : "consumer",
+                 48,
+                 source_label[0] ? source_label : "source");
+        cep_l1_coh_emit_cei(dt_topic_hydrate_fail(),
+                            note,
+                            (cepCell*)ref->cell,
+                            enz_ctx->has_pipeline ? &pipeline_meta : NULL);
+        return false;
+    }
+
+    if (crossing && allow_cross_branch && policy.access == CEP_BRANCH_POLICY_ACCESS_DENY) {
+        const char* risk_label = cep_branch_policy_risk_label(policy.risk);
+        char note[160] = {0};
+        snprintf(note,
+                 sizeof note,
+                 "cross-branch hydration denied (risk=%s %.*s -> %.*s)",
+                 risk_label ? risk_label : "unknown",
+                 48,
+                 consumer_label[0] ? consumer_label : "consumer",
+                 48,
+                 source_label[0] ? source_label : "source");
+        cep_l1_coh_emit_cei(dt_topic_hydrate_fail(),
+                            note,
+                            (cepCell*)ref->cell,
+                            enz_ctx->has_pipeline ? &pipeline_meta : NULL);
+        return false;
+    }
+
     /* TODO: If L0 tightens hydrate policy (new budgets/Decision Cell rules),
        thread the updated opts here so L1 enzymes stay aligned with kernel
        expectations. */
     cep_hydrate_opts_t opts = {
         .view = CEP_HYDRATE_VIEW_LIVE,
         .allow_cross_branch = allow_cross_branch,
-        .require_decision_cell = allow_cross_branch, /* require Decision Cell when crossing branches */
-        .max_depth = 4u,
-        .max_meta_bytes = 64 * 1024u,
-        .max_payload_bytes = 128 * 1024u,
-        .lock_ancestors_ro = true,
-        .hydrate_children = true,
+        .require_decision_cell = allow_cross_branch &&
+                                 crossing &&
+                                 policy.access == CEP_BRANCH_POLICY_ACCESS_DECISION, /* require Decision Cell when crossing branches */
+        .max_depth = 0u,
+        .max_meta_bytes = 0u,
+        .max_payload_bytes = 0u,
+        .lock_ancestors_ro = false,
+        .hydrate_children = false,
         .hydrate_payload = true,
     };
     if (allow_snapshot_only) {
@@ -170,11 +257,25 @@ bool cep_l1_coh_hydrate_safe(cep_cell_ref_t* ref,
     cep_hydrate_result_t result = {0};
     cepHydrateStatus st = cep_cell_hydrate_for_enzyme(ref, enz_ctx, &opts, &result);
     if (st != CEP_HYDRATE_STATUS_OK) {
-        cep_l1_coh_emit_cei(dt_topic_hydrate_fail(), "hydrate failed", (cepCell*)ref->cell);
+        const char* reason = (st == CEP_HYDRATE_STATUS_POLICY) ? "hydrate failed: policy denied" : "hydrate failed";
+        cep_l1_coh_emit_cei(dt_topic_hydrate_fail(),
+                            reason,
+                            (cepCell*)ref->cell,
+                            enz_ctx->has_pipeline ? &pipeline_meta : NULL);
         return false;
     }
-    if (allow_cross_branch && ref->branch_dt.domain && ref->branch_dt.tag) {
-        cep_l1_coh_emit_cei(dt_topic_cross_read(), "cross-branch hydration performed", (cepCell*)ref->cell);
+    if (allow_cross_branch && crossing) {
+        const char* risk_label = cep_branch_policy_risk_label(policy.risk);
+        char note[160] = {0};
+        snprintf(note,
+                 sizeof note,
+                 "cross-branch hydration performed%s%s",
+                 (risk_label && policy.risk != CEP_BRANCH_POLICY_RISK_NONE) ? " risk=" : "",
+                 (risk_label && policy.risk != CEP_BRANCH_POLICY_RISK_NONE) ? risk_label : "");
+        cep_l1_coh_emit_cei(dt_topic_cross_read(),
+                            note,
+                            (cepCell*)ref->cell,
+                            enz_ctx->has_pipeline ? &pipeline_meta : NULL);
     }
     return true;
 }
@@ -295,6 +396,7 @@ static void cep_l1_coh_free_role_rules(cepL1CohRoleRule* rules, size_t count) {
 }
 
 static bool cep_l1_coh_collect_role_rules(cepCell* rule_root,
+                                          cepCell* subject,
                                           cepL1CohRoleRule** out_rules,
                                           size_t* out_count) {
     if (!out_rules || !out_count) {
@@ -326,6 +428,7 @@ static bool cep_l1_coh_collect_role_rules(cepCell* rule_root,
             (void)cep_l1_coh_copy_dt_text(cep_cell_get_name(resolved_rule), role_name, sizeof role_name);
         }
         if (!role_name[0]) {
+            cep_l1_coh_emit_cei(dt_topic_rule_invalid(), "role rule missing role id", subject, NULL);
             continue;
         }
         rules[filled].role = cep_malloc(strlen(role_name) + 1u);
@@ -632,7 +735,7 @@ static void cep_l1_coh_mark_debt_state(cepL1SchemaLayout* layout,
         return;
     }
     if (cep_l1_coh_append_debt_state(debt, state, note) && state == dt_debt_state_done()) {
-        cep_l1_coh_emit_cei(dt_topic_debt_done(), note, debt);
+        cep_l1_coh_emit_cei(dt_topic_debt_done(), note, debt, NULL);
     }
 }
 
@@ -1062,7 +1165,7 @@ bool cep_l1_coh_record_debt(cepL1SchemaLayout* layout,
         (void)cep_cell_put_text(debt, dt_ctx_kind_field(), ctx_kind);
     }
     (void)cep_l1_coh_append_debt_state(debt, dt_debt_state_open(), note ? note : requirement);
-    cep_l1_coh_emit_cei(dt_topic_debt_new(), note ? note : requirement, debt);
+    cep_l1_coh_emit_cei(dt_topic_debt_new(), note ? note : requirement, debt, NULL);
     cep_free(debt_key);
     return true;
 }
@@ -1092,7 +1195,7 @@ static bool cep_l1_coh_process_context(cepL1SchemaLayout* layout, cepCell* ctx, 
     participants = participants ? cep_cell_resolve(participants) : NULL;
     if (!participants || !cep_cell_require_dictionary_store(&participants)) {
         (void)cep_l1_coh_record_debt(layout, "missing_participants", ctx_id, "participants", "context has no participants to close");
-        cep_l1_coh_emit_cei(dt_topic_closure_fail(), "context missing participants", ctx);
+        cep_l1_coh_emit_cei(dt_topic_closure_fail(), "context missing participants", ctx, NULL);
         return true;
     }
     cep_l1_coh_resolve_debt(layout, "missing_participants", ctx_id, "participants", "participants recorded");
@@ -1135,7 +1238,7 @@ static bool cep_l1_coh_process_context(cepL1SchemaLayout* layout, cepCell* ctx, 
             }
         }
     }
-    (void)cep_l1_coh_collect_role_rules(role_rules_root, &role_rules, &role_rule_count);
+    (void)cep_l1_coh_collect_role_rules(role_rules_root, ctx, &role_rules, &role_rule_count);
     bool enforce_roles = facet_rules != NULL || role_rule_count > 0u;
 
     for (cepCell* binding = ok ? cep_cell_first(participants) : NULL;
@@ -1161,7 +1264,7 @@ static bool cep_l1_coh_process_context(cepL1SchemaLayout* layout, cepCell* ctx, 
 
         if (!role_buffer[0] || !being_buffer[0]) {
             (void)cep_l1_coh_record_debt(layout, "missing_binding", ctx_id, role_buffer[0] ? role_buffer : "binding", "binding missing role or being");
-            cep_l1_coh_emit_cei(dt_topic_role_invalid(), "binding missing role or being", ctx);
+            cep_l1_coh_emit_cei(dt_topic_role_invalid(), "binding missing role or being", ctx, NULL);
             missing = true;
             continue;
         }
@@ -1175,7 +1278,7 @@ static bool cep_l1_coh_process_context(cepL1SchemaLayout* layout, cepCell* ctx, 
         }
         if (enforce_roles && !role_allowed) {
             (void)cep_l1_coh_record_debt(layout, "invalid_role", ctx_id, role_buffer, "role not allowed by context rules");
-            cep_l1_coh_emit_cei(dt_topic_role_invalid(), "role not allowed by context rules", ctx);
+            cep_l1_coh_emit_cei(dt_topic_role_invalid(), "role not allowed by context rules", ctx, NULL);
             missing = true;
             continue;
         }
@@ -1276,7 +1379,7 @@ static bool cep_l1_coh_process_context(cepL1SchemaLayout* layout, cepCell* ctx, 
         for (size_t i = 0; i < role_rule_count; ++i) {
             if (role_rules[i].required && !role_rules[i].seen) {
                 (void)cep_l1_coh_record_debt(layout, "missing_role", ctx_id, role_rules[i].role, "required role missing");
-                cep_l1_coh_emit_cei(dt_topic_role_invalid(), "required role missing", ctx);
+                cep_l1_coh_emit_cei(dt_topic_role_invalid(), "required role missing", ctx, NULL);
                 missing = true;
             }
         }
@@ -1308,6 +1411,7 @@ static bool cep_l1_coh_process_context(cepL1SchemaLayout* layout, cepCell* ctx, 
                 label[sizeof label - 1u] = '\0';
             }
             if (!facet_kind[0] || !subject_role[0]) {
+                cep_l1_coh_emit_cei(dt_topic_rule_invalid(), "facet rule missing kind or role", ctx, NULL);
                 continue;
             }
             cepL1CohBindingView* match = NULL;
@@ -1319,7 +1423,7 @@ static bool cep_l1_coh_process_context(cepL1SchemaLayout* layout, cepCell* ctx, 
             }
             if (!match || !match->being_present) {
                 (void)cep_l1_coh_record_debt(layout, "missing_role", ctx_id, subject_role, required_facet ? "required facet role missing" : "context rule has no binding");
-                cep_l1_coh_emit_cei(dt_topic_role_invalid(), required_facet ? "required facet role missing" : "context rule missing binding", ctx);
+                cep_l1_coh_emit_cei(dt_topic_role_invalid(), required_facet ? "required facet role missing" : "context rule missing binding", ctx, NULL);
                 if (required_facet) {
                     missing = true;
                 }
@@ -1328,7 +1432,7 @@ static bool cep_l1_coh_process_context(cepL1SchemaLayout* layout, cepCell* ctx, 
             if (!cep_l1_coh_materialize_facet(layout, ctx, ctx_id, facet_kind, match->being, label)) {
                 const char* debt_note = required_facet ? "required facet missing" : "failed to materialize facet from rule";
                 (void)cep_l1_coh_record_debt(layout, "missing_facet", ctx_id, facet_kind, debt_note);
-                cep_l1_coh_emit_cei(dt_topic_closure_fail(), debt_note, ctx);
+                cep_l1_coh_emit_cei(dt_topic_closure_fail(), debt_note, ctx, NULL);
                 if (required_facet) {
                     missing = true;
                 }
@@ -1343,7 +1447,7 @@ static bool cep_l1_coh_process_context(cepL1SchemaLayout* layout, cepCell* ctx, 
             }
             if (!cep_l1_coh_materialize_facet(layout, ctx, ctx_id, views[i].role, views[i].being, views[i].role)) {
                 (void)cep_l1_coh_record_debt(layout, "missing_facet", ctx_id, views[i].role, "failed to materialize default facet");
-                cep_l1_coh_emit_cei(dt_topic_closure_fail(), "failed to materialize default facet", ctx);
+                cep_l1_coh_emit_cei(dt_topic_closure_fail(), "failed to materialize default facet", ctx, NULL);
                 missing = true;
             } else {
                 cep_l1_coh_resolve_debt(layout, "missing_facet", ctx_id, views[i].role, "facet materialized");

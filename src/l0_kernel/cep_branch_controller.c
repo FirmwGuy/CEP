@@ -1171,7 +1171,7 @@ cep_decision_cell_append_entry(const cepBranchController* consumer,
 
     cepDT entry_name = cep_decision_auto_name();
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
-    cepCell* entry = cep_cell_append_dictionary(root, &entry_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    cepCell* entry = cep_cell_add_dictionary(root, &entry_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
     if (!entry) {
         return false;
     }
@@ -1219,7 +1219,7 @@ cep_decision_cell_append_security_entry(const cepDT* branch_dt,
 
     cepDT entry_name = cep_decision_auto_name();
     cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
-    cepCell* entry = cep_cell_append_dictionary(sec_root, &entry_name, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    cepCell* entry = cep_cell_add_dictionary(sec_root, &entry_name, 0, &dict_type, CEP_STORAGE_RED_BLACK_T);
     if (!entry) {
         return false;
     }

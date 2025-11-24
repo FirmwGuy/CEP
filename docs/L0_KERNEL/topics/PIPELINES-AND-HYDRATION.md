@@ -29,6 +29,8 @@ Enzymes often need cells that have been evicted to CPS/CAS. Use `cep_cell_hydrat
 - **Tag a local stage:** set `envelope/pipeline = {pipeline_id, stage_id}` on an impulse; the enzyme sees the IDs in `ctx->pipeline` and can log CEI with `origin/pipeline`.
 - **Remote invoke with policy:** include the pipeline block in the federation request; if the `pipeline_id` or `stage_id` isn’t approved for that edge, validation emits `sec.pipeline.reject` and refuses the send.
 - **Hydrate safely across branches:** set `allow_cross_branch=true`, `require_decision_cell=true`, and choose `view=CEP_HYDRATE_VIEW_SNAPSHOT_RO` if you must avoid volatile reads. Expect a policy error when the branch forbids it.
+- **Default deny at L1:** Layer 1 wraps hydrations with `cep_l1_coh_hydrate_safe()`, which refuses cross-branch reads unless explicitly allowed, insists on Decision Cells when policy returns `DECISION`, and logs `coh.hydrate.fail`/`coh.cross_read` CEI facts (with pipeline metadata when present) so replays and telemetry stay deterministic.
+- **Remote approvals ride the same block:** Federation helpers (`cep_l1_fed_prepare_request`, `cep_l1_fed_request_submit`) copy `pipeline_id`/`stage_id`/`dag_run_id`/`hop_index` onto request envelopes and abort early with `sec.pipeline.reject` if metadata is missing or the Enclave has not approved the pipeline for that hop.
 
 ## Regression coverage
 - `test_fed_invoke_pipeline_metadata_roundtrip` proves encode/decode of the pipeline block (id, stage, run, hop) and that the invoke handler receives it.

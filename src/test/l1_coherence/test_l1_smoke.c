@@ -10,8 +10,13 @@
 #include "../../l0_kernel/cep_namepool.h"
 #include "../../l0_kernel/cep_ops.h"
 #include "../../l0_kernel/cep_enzyme.h"
+#include "../../l0_kernel/cep_cei.h"
+#include "../../l0_kernel/cep_branch_controller.h"
+#include "../../enzymes/fed_invoke.h"
+#include "../test.h"
 
 #include <string.h>
+#include <stdio.h>
 
 static bool read_bool_field(cepCell* parent, const cepDT* field, bool* out) {
     if (!parent || !field || !out) {
@@ -50,6 +55,57 @@ static uint64_t read_u64_field(cepCell* parent, const cepDT* field) {
     uint64_t value = 0u;
     memcpy(&value, cep_data_payload(data), sizeof value);
     return value;
+}
+
+static void clear_diag_mailbox(void) {
+    cepCell* mailbox = cep_cei_diagnostics_mailbox();
+    if (!mailbox) {
+        return;
+    }
+    cepCell* msgs = cep_cell_find_by_name(mailbox, CEP_DTAW("CEP", "msgs"));
+    msgs = msgs ? cep_cell_resolve(msgs) : NULL;
+    if (!msgs || !msgs->store) {
+        return;
+    }
+    cep_store_delete_children_hard(msgs->store);
+}
+
+static bool find_diag_topic(const char* expected_topic, char* buffer, size_t capacity) {
+    if (!expected_topic) {
+        return false;
+    }
+    if (buffer && capacity > 0u) {
+        buffer[0] = '\0';
+    }
+    cepCell* mailbox = cep_cei_diagnostics_mailbox();
+    if (!mailbox) {
+        return false;
+    }
+    cepCell* msgs = cep_cell_find_by_name(mailbox, CEP_DTAW("CEP", "msgs"));
+    msgs = msgs ? cep_cell_resolve(msgs) : NULL;
+    if (!msgs || !cep_cell_require_dictionary_store(&msgs)) {
+        return false;
+    }
+    for (cepCell* entry = cep_cell_last_all(msgs); entry; entry = cep_cell_prev_all(msgs, entry)) {
+        cepCell* err_root = cep_cell_find_by_name(entry, CEP_DTAW("CEP", "err"));
+        err_root = err_root ? cep_cell_resolve(err_root) : NULL;
+        if (!err_root) {
+            continue;
+        }
+        cepCell* topic_cell = cep_cell_find_by_name(err_root, CEP_DTAW("CEP", "topic"));
+        topic_cell = topic_cell ? cep_cell_resolve(topic_cell) : NULL;
+        if (!topic_cell || !cep_cell_has_data(topic_cell)) {
+            continue;
+        }
+        const char* topic_text = cep_cell_data(topic_cell);
+        if (topic_text && strcmp(topic_text, expected_topic) == 0) {
+            if (buffer && capacity > 0u) {
+                snprintf(buffer, capacity, "%s", topic_text);
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 typedef struct {
@@ -175,6 +231,7 @@ static MunitResult test_l1_pipeline_and_run(const MunitParameter params[], void*
     cepPipelineMetadata run_meta = {0};
     run_meta.pipeline_id = cep_namepool_intern_cstr("demo/pipeline");
     run_meta.stage_id = cep_namepool_intern_cstr("stageA");
+    run_meta.dag_run_id = 1u;
     run_meta.hop_index = 1;
     munit_assert_true(cep_l1_runtime_record_run(layout.flow_runs, "demo/pipeline", 1u, "ist:run", &run_meta, &run));
     munit_assert_not_null(run);
@@ -265,6 +322,16 @@ static MunitResult test_l1_pipeline_and_run(const MunitParameter params[], void*
     munit_assert_not_null(req_pipeline);
     munit_assert_not_null(cep_cell_find_by_name(req_pipeline, CEP_DTAW("CEP", "stage_id")));
 
+    cepPipelineMetadata missing_run_id = run_meta;
+    missing_run_id.dag_run_id = 0u;
+    cepCell* req_missing_run = cep_cell_ensure_dictionary_child(layout.flow_root, CEP_DTAW("CEP", "req_missrun"), CEP_STORAGE_RED_BLACK_T);
+    munit_assert_false(cep_l1_fed_prepare_request(req_missing_run, &missing_run_id));
+
+    cepPipelineMetadata missing_hop = run_meta;
+    missing_hop.hop_index = 0u;
+    cepCell* req_missing_hop = cep_cell_ensure_dictionary_child(layout.flow_root, CEP_DTAW("CEP", "req_misshop"), CEP_STORAGE_RED_BLACK_T);
+    munit_assert_false(cep_l1_fed_prepare_request(req_missing_hop, &missing_hop));
+
     cepPipelineMetadata missing_meta = {0};
     cepCell* bad_req = cep_cell_ensure_dictionary_child(layout.flow_root, CEP_DTAW("CEP", "req_missing"), CEP_STORAGE_RED_BLACK_T);
     munit_assert_false(cep_l1_fed_prepare_request(bad_req, &missing_meta));
@@ -272,9 +339,135 @@ static MunitResult test_l1_pipeline_and_run(const MunitParameter params[], void*
     return MUNIT_OK;
 }
 
+static MunitResult test_l1_cross_branch_hydration(const MunitParameter params[], void* data) {
+    (void)params;
+    (void)data;
+
+    test_runtime_enable_mock_cps();
+    clear_diag_mailbox();
+    if (!cep_cell_system_initialized()) {
+        cep_cell_system_initiate();
+    }
+    munit_assert_true(cep_l0_bootstrap());
+
+    cepCell* data_root = cep_heartbeat_data_root();
+    munit_assert_not_null(data_root);
+
+    cepDT consumer_dt = cep_ops_make_dt("coh_consumer");
+    cepDT source_dt = cep_ops_make_dt("coh_source");
+    cepCell* consumer_branch = cep_cell_ensure_dictionary_child(data_root, &consumer_dt, CEP_STORAGE_RED_BLACK_T);
+    cepCell* source_branch = cep_cell_ensure_dictionary_child(data_root, &source_dt, CEP_STORAGE_RED_BLACK_T);
+    consumer_branch = consumer_branch ? cep_cell_resolve(consumer_branch) : NULL;
+    source_branch = source_branch ? cep_cell_resolve(source_branch) : NULL;
+    munit_assert_not_null(consumer_branch);
+    munit_assert_not_null(source_branch);
+
+    cepBranchController* consumer_ctrl = cep_branch_controller_for_cell(consumer_branch);
+    cepBranchController* source_ctrl = cep_branch_controller_for_cell(source_branch);
+    munit_assert_not_null(consumer_ctrl);
+    munit_assert_not_null(source_ctrl);
+
+    const cepBranchPersistPolicy* consumer_base = cep_branch_controller_policy(consumer_ctrl);
+    const cepBranchPersistPolicy* source_base = cep_branch_controller_policy(source_ctrl);
+    munit_assert_not_null(consumer_base);
+    munit_assert_not_null(source_base);
+
+    cepBranchPersistPolicy consumer_policy = *consumer_base;
+    cepBranchPersistPolicy source_policy = *source_base;
+    source_policy.mode = CEP_BRANCH_PERSIST_VOLATILE;
+    consumer_policy.allow_volatile_reads = false;
+    cep_branch_controller_set_policy(source_ctrl, &source_policy);
+    cep_branch_controller_set_policy(consumer_ctrl, &consumer_policy);
+
+    cepCell* payload = cep_cell_ensure_dictionary_child(source_branch, CEP_DTAW("CEP", "payload"), CEP_STORAGE_RED_BLACK_T);
+    payload = payload ? cep_cell_resolve(payload) : NULL;
+    munit_assert_not_null(payload);
+
+    cep_cell_ref_t ref = {
+        .branch_dt = source_dt,
+        .cell = payload,
+        .path = NULL,
+        .is_canonical = false,
+    };
+    cepEnzymeContext ctx = {
+        .branch_dt = consumer_dt,
+        .qos = 0u,
+        .has_pipeline = true,
+        .pipeline = {
+            .pipeline_id = cep_namepool_intern_cstr("demo/pipeline"),
+            .stage_id = cep_namepool_intern_cstr("stageX"),
+            .dag_run_id = 42u,
+            .hop_index = 3u,
+        },
+    };
+
+    char topic_buffer[64] = {0};
+    munit_assert_false(cep_l1_coh_hydrate_safe(&ref, &ctx, false, false));
+    munit_assert_true(find_diag_topic("coh.hydrate.fail", topic_buffer, sizeof topic_buffer));
+
+    clear_diag_mailbox();
+    consumer_policy.allow_volatile_reads = false;
+    cep_branch_controller_set_policy(consumer_ctrl, &consumer_policy);
+    munit_assert_false(cep_l1_coh_hydrate_safe(&ref, &ctx, true, false));
+    munit_assert_true(find_diag_topic("coh.hydrate.fail", topic_buffer, sizeof topic_buffer));
+
+    clear_diag_mailbox();
+    source_policy.mode = CEP_BRANCH_PERSIST_DURABLE;
+    cep_branch_controller_set_policy(source_ctrl, &source_policy);
+    cep_branch_controller_clear_dirty(source_ctrl);
+    consumer_policy.allow_volatile_reads = true;
+    cep_branch_controller_set_policy(consumer_ctrl, &consumer_policy);
+    cepBranchPolicyResult allow_policy = cep_branch_policy_check_read(consumer_ctrl, source_ctrl);
+    munit_assert_int(allow_policy.access, ==, CEP_BRANCH_POLICY_ACCESS_ALLOW);
+    munit_assert_true(cep_l1_coh_hydrate_safe(&ref, &ctx, true, false));
+    munit_assert_true(find_diag_topic("coh.cross_read", topic_buffer, sizeof topic_buffer));
+
+    cep_cell_remove_hard(source_branch, NULL);
+    cep_cell_remove_hard(consumer_branch, NULL);
+    test_runtime_disable_mock_cps();
+    return MUNIT_OK;
+}
+
+static MunitResult test_l1_fed_pipeline_rejection(const MunitParameter params[], void* data) {
+    (void)params;
+    (void)data;
+
+    test_runtime_enable_mock_cps();
+    clear_diag_mailbox();
+    if (!cep_cell_system_initialized()) {
+        cep_cell_system_initiate();
+    }
+    munit_assert_true(cep_l0_bootstrap());
+
+    cepPipelineMetadata meta = {
+        .pipeline_id = cep_namepool_intern_cstr("demo/pipeline"),
+        .stage_id = cep_namepool_intern_cstr("stageA"),
+        .dag_run_id = 9u,
+        .hop_index = 2u,
+    };
+    const cepFedInvokeRequest* fake_request = (const cepFedInvokeRequest*)0x1;
+    cepFedInvokeSubmission submission = {0};
+    munit_assert_false(cep_l1_fed_request_submit(fake_request, NULL, &meta, &submission));
+    char topic_buffer[64] = {0};
+    munit_assert_true(find_diag_topic("sec.pipeline.reject", topic_buffer, sizeof topic_buffer));
+
+    clear_diag_mailbox();
+    cepCell* req = cep_cell_ensure_dictionary_child(cep_heartbeat_data_root(), CEP_DTAW("CEP", "req_unappr"), CEP_STORAGE_RED_BLACK_T);
+    req = req ? cep_cell_resolve(req) : NULL;
+    munit_assert_not_null(req);
+    cepPipelineMetadata missing_meta = {0};
+    munit_assert_false(cep_l1_fed_prepare_request(req, &missing_meta));
+    munit_assert_true(find_diag_topic("sec.pipeline.reject", topic_buffer, sizeof topic_buffer));
+
+    test_runtime_disable_mock_cps();
+    return MUNIT_OK;
+}
+
 static MunitTest l1_tests[] = {
     {(char*)"/l1/smoke/schema", test_l1_bootstrap_schema, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
     {(char*)"/l1/smoke/pipeline_run", test_l1_pipeline_and_run, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
+    {(char*)"/l1/runtime/cross_branch_hydration", test_l1_cross_branch_hydration, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
+    {(char*)"/l1/runtime/fed_pipeline_reject", test_l1_fed_pipeline_rejection, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
     {NULL, NULL, NULL, NULL, 0, NULL}
 };
 
