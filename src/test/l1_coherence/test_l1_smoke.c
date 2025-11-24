@@ -10,6 +10,7 @@
 #include "../../l0_kernel/cep_namepool.h"
 #include "../../l0_kernel/cep_ops.h"
 #include "../../l0_kernel/cep_enzyme.h"
+#include "../../l0_kernel/cep_organ.h"
 #include "../../l0_kernel/cep_cei.h"
 #include "../../l0_kernel/cep_branch_controller.h"
 #include "../../enzymes/fed_invoke.h"
@@ -122,6 +123,28 @@ static const cepPath* make_single_path(L1PathBuf* buf, const char* text) {
     buf->past[0].dt = cep_ops_make_dt(text);
     buf->past[0].timestamp = 0u;
     return &buf->path;
+}
+
+static int run_organ_enzyme(const char* signal_text, const char* target_text) {
+    L1PathBuf signal_buf = {0};
+    L1PathBuf target_buf = {0};
+    const cepPath* signal_path = make_single_path(&signal_buf, signal_text);
+    const cepPath* target_path = target_text ? make_single_path(&target_buf, target_text) : make_single_path(&target_buf, "tgt:l1");
+    cepImpulse impulse = {
+        .signal_path = signal_path,
+        .target_path = target_path,
+        .qos = CEP_IMPULSE_QOS_NONE,
+        .has_pipeline = false,
+    };
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
+    munit_assert_not_null(registry);
+    cep_enzyme_registry_activate_pending(registry);
+
+    const cepEnzymeDescriptor* ordered[2] = {0};
+    size_t found = cep_enzyme_resolve(registry, &impulse, ordered, 2u);
+    munit_assert_size(found, >=, 1u);
+    munit_assert_not_null(ordered[0]);
+    return ordered[0]->callback(signal_path, target_path);
 }
 
 static MunitResult test_l1_bootstrap_schema(const MunitParameter params[], void* data) {
@@ -339,6 +362,148 @@ static MunitResult test_l1_pipeline_and_run(const MunitParameter params[], void*
     return MUNIT_OK;
 }
 
+static MunitResult test_l1_organs_coherence(const MunitParameter params[], void* data) {
+    (void)params;
+    (void)data;
+
+    test_runtime_enable_mock_cps();
+    if (!cep_cell_system_initialized()) {
+        cep_cell_system_initiate();
+    }
+    munit_assert_true(cep_l0_bootstrap());
+    if (!cep_l1_pack_bootstrap()) {
+        test_runtime_disable_mock_cps();
+        return MUNIT_SKIP;
+    }
+
+    cepL1SchemaLayout layout = {0};
+    munit_assert_true(cep_l1_schema_ensure(&layout));
+    munit_assert_not_null(layout.coh_root);
+    munit_assert_not_null(layout.coh_root->store);
+    cepDT coh_store = cep_organ_store_dt("coh_root");
+    munit_assert_true(cep_dt_compare(&layout.coh_root->store->dt, &coh_store) == 0);
+
+    cepDT ctx_dt = {.domain = cep_namepool_intern_cstr("CEP"), .tag = cep_namepool_intern_cstr("pipeline_edge")};
+    cepCell* ctx_rules = cep_cell_find_by_name(layout.coh_context_rules, &ctx_dt);
+    ctx_rules = ctx_rules ? cep_cell_resolve(ctx_rules) : NULL;
+    munit_assert_not_null(ctx_rules);
+    cepCell* roles = cep_cell_find_by_name(ctx_rules, CEP_DTAW("CEP", "roles"));
+    roles = roles ? cep_cell_resolve(roles) : NULL;
+    munit_assert_not_null(roles);
+
+    const char* required_roles[] = {"pipeline", "from_stage", "to_stage"};
+    for (size_t i = 0; i < sizeof(required_roles) / sizeof(required_roles[0]); ++i) {
+        cepDT role_dt = {.domain = cep_namepool_intern_cstr("CEP"), .tag = cep_namepool_intern_cstr(required_roles[i])};
+        cepCell* role_entry = cep_cell_find_by_name(roles, &role_dt);
+        role_entry = role_entry ? cep_cell_resolve(role_entry) : NULL;
+        munit_assert_not_null(role_entry);
+        bool required = false;
+        munit_assert_true(read_bool_field(role_entry, CEP_DTAW("CEP", "required"), &required));
+        munit_assert_true(required);
+    }
+
+    munit_assert_true(cep_l1_pack_coh_sweep());
+    (void)cep_l1_pack_shutdown();
+    test_runtime_disable_mock_cps();
+    return MUNIT_OK;
+}
+
+static MunitResult test_l1_organs_flow_spec(const MunitParameter params[], void* data) {
+    (void)params;
+    (void)data;
+
+    test_runtime_enable_mock_cps();
+    if (!cep_cell_system_initialized()) {
+        cep_cell_system_initiate();
+    }
+    munit_assert_true(cep_l0_bootstrap());
+    if (!cep_l1_pack_bootstrap()) {
+        test_runtime_disable_mock_cps();
+        return MUNIT_SKIP;
+    }
+
+    const char* pipeline_id = "org/pipeline";
+    munit_assert_int(run_organ_enzyme("org:flow_spec_l1:ensure_pipeline", pipeline_id), ==, CEP_ENZYME_SUCCESS);
+
+    cepL1SchemaLayout layout = {0};
+    munit_assert_true(cep_l1_schema_ensure(&layout));
+    cepDT pipeline_dt = {.domain = cep_namepool_intern_cstr("CEP"), .tag = cep_namepool_intern_cstr(pipeline_id)};
+    cepCell* pipeline = cep_cell_find_by_name(layout.flow_pipelines, &pipeline_dt);
+    pipeline = pipeline ? cep_cell_resolve(pipeline) : NULL;
+    munit_assert_not_null(pipeline);
+    munit_assert_uint64(read_u64_field(pipeline, CEP_DTAW("CEP", "rev")), >=, 1u);
+
+    cepL1PipelineLayout pl_layout = {0};
+    munit_assert_true(cep_l1_pipeline_layout_from_root(pipeline, &pl_layout));
+    munit_assert_true(cep_l1_pipeline_stage_stub(&pl_layout, "stageA", NULL));
+    munit_assert_true(cep_l1_pipeline_stage_stub(&pl_layout, "stageB", NULL));
+    munit_assert_true(cep_l1_pipeline_add_edge(&pl_layout, "stageA", "stageB", "org test edge"));
+
+    munit_assert_int(run_organ_enzyme("org:flow_spec_l1:normalize_edges", pipeline_id), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(run_organ_enzyme("org:flow_spec_l1:rebuild_provenance", pipeline_id), ==, CEP_ENZYME_SUCCESS);
+
+    char pipeline_being[128] = {0};
+    munit_assert_true(cep_l1_coh_make_being_key("pipeline", pipeline_id, pipeline_being, sizeof pipeline_being));
+    cepDT pipeline_being_dt = {.domain = cep_namepool_intern_cstr("CEP"), .tag = cep_namepool_intern_cstr(pipeline_being)};
+    munit_assert_not_null(cep_cell_find_by_name(layout.coh_beings, &pipeline_being_dt));
+
+    char owner_being[64] = {0};
+    munit_assert_true(cep_l1_coh_make_being_key("owner", "unknown", owner_being, sizeof owner_being));
+    char owner_bond[256] = {0};
+    munit_assert_true(cep_l1_coh_make_bond_key("owned_by", pipeline_being, owner_being, owner_bond, sizeof owner_bond));
+    cepDT owner_bond_dt = {.domain = cep_namepool_intern_cstr("CEP"), .tag = cep_namepool_intern_cstr(owner_bond)};
+    munit_assert_not_null(cep_cell_find_by_name(layout.coh_bonds, &owner_bond_dt));
+
+    (void)cep_l1_pack_shutdown();
+    test_runtime_disable_mock_cps();
+    return MUNIT_OK;
+}
+
+static MunitResult test_l1_organs_flow_runtime(const MunitParameter params[], void* data) {
+    (void)params;
+    (void)data;
+
+    test_runtime_enable_mock_cps();
+    if (!cep_cell_system_initialized()) {
+        cep_cell_system_initiate();
+    }
+    munit_assert_true(cep_l0_bootstrap());
+    if (!cep_l1_pack_bootstrap()) {
+        test_runtime_disable_mock_cps();
+        return MUNIT_SKIP;
+    }
+
+    cepL1SchemaLayout layout = {0};
+    munit_assert_true(cep_l1_schema_ensure(&layout));
+
+    const char* pipeline_id = "org/runtime";
+    cepL1PipelineMeta meta = {.owner = "ops", .province = "dev", .version = "v1", .revision = 1u};
+    cepL1PipelineLayout pl = {0};
+    munit_assert_true(cep_l1_pipeline_ensure(layout.flow_pipelines, pipeline_id, &meta, &pl));
+    munit_assert_true(cep_l1_pipeline_stage_stub(&pl, "stageA", NULL));
+    munit_assert_true(cep_l1_pipeline_stage_stub(&pl, "stageB", NULL));
+    munit_assert_true(cep_l1_pipeline_add_edge(&pl, "stageA", "stageB", NULL));
+
+    cepPipelineMetadata run_meta = {
+        .pipeline_id = cep_namepool_intern_cstr(pipeline_id),
+        .stage_id = cep_namepool_intern_cstr("stageA"),
+        .dag_run_id = 5u,
+        .hop_index = 1u,
+    };
+    cepCell* run = NULL;
+    munit_assert_true(cep_l1_runtime_record_run(layout.flow_runs, pipeline_id, 5u, "ist:run", &run_meta, &run));
+    munit_assert_not_null(run);
+
+    munit_assert_int(run_organ_enzyme("org:flow_runtime_l1:vl", "tgt:runtime"), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(run_organ_enzyme("org:flow_runtime_l1:verify_edges", "tgt:runtime"), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(run_organ_enzyme("org:flow_runtime_l1:gc_runs", "tgt:runtime"), ==, CEP_ENZYME_SUCCESS);
+    munit_assert_int(run_organ_enzyme("org:flow_runtime_l1:rollup_metrics", "tgt:runtime"), ==, CEP_ENZYME_SUCCESS);
+
+    (void)cep_l1_pack_shutdown();
+    test_runtime_disable_mock_cps();
+    return MUNIT_OK;
+}
+
 static MunitResult test_l1_cross_branch_hydration(const MunitParameter params[], void* data) {
     (void)params;
     (void)data;
@@ -466,6 +631,9 @@ static MunitResult test_l1_fed_pipeline_rejection(const MunitParameter params[],
 static MunitTest l1_tests[] = {
     {(char*)"/l1/smoke/schema", test_l1_bootstrap_schema, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
     {(char*)"/l1/smoke/pipeline_run", test_l1_pipeline_and_run, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
+    {(char*)"/l1/organs/coherence", test_l1_organs_coherence, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
+    {(char*)"/l1/organs/flow_spec", test_l1_organs_flow_spec, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
+    {(char*)"/l1/organs/flow_runtime", test_l1_organs_flow_runtime, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
     {(char*)"/l1/runtime/cross_branch_hydration", test_l1_cross_branch_hydration, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
     {(char*)"/l1/runtime/fed_pipeline_reject", test_l1_fed_pipeline_rejection, NULL, NULL, MUNIT_TEST_OPTION_NONE, NULL},
     {NULL, NULL, NULL, NULL, 0, NULL}

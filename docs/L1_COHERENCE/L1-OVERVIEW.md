@@ -12,6 +12,7 @@ Layer 1 is the coherence and pipeline graph pack. It supplies durable identiti
   - `docs/L1_COHERENCE/L1-ADJACENCY-CLOSURE.md` — how closure/debts/adjacency behave.
 - **What ships (snapshot):**
   - Bootstrap/shutdown helpers create `/data/coh/**` and `/data/flow/**`, register the closure enzyme, publish readiness, and expose `op/coh_sweep`.
+  - Organs own pack roots: `org:coh_root`, `org:flow_spec_l1`, and `org:flow_runtime_l1` guard constructors/validators/destructors, seed default `ctx_rules/pipeline_edge` roles, and route `op/coh_sweep` through `org:coh_root:sweep`.
   - Coherence helpers build canonical IDs, keep append-only debt history, populate adjacency mirrors, and run rule-driven closure via `/data/coh/schema/ctx_rules/**`.
   - Pipelines live under `/data/flow/pipelines/**` with stages/edges and coherence bindings (`has_stage`, `pipeline_edge` contexts).
   - Runtime mirrors pipeline topology into runs, gates dispatch with fan-in, emits CEI on pause/rollback gating, auto fan-outs along edges, and accumulates metrics/annotations.

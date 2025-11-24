@@ -87,6 +87,22 @@ bool cep_l1_fed_request_submit(const cepFedInvokeRequest* request,
 bool cep_l1_fed_mount_attach_pipeline(cepFedTransportManagerMount* mount,
                                       const cepPipelineMetadata* metadata);
 
+/* Validate runtime runs against required metadata and optional pipeline
+   definitions, emitting `flow.pipeline.missing_metadata` on inconsistencies. */
+bool cep_l1_runtime_validate_runs(cepCell* runs_root, cepCell* pipelines_root);
+
+/* Placeholder retention hook for runs; today it just confirms the runs
+   dictionary exists so future policies have a stable entry point. */
+bool cep_l1_runtime_gc_runs(cepCell* runs_root);
+
+/* Placeholder rollup hook that keeps metrics roots warm for future
+   aggregation without mutating existing counters. */
+bool cep_l1_runtime_rollup_metrics(cepCell* runs_root, cepCell* metrics_root);
+
+/* Cross-check runtime edge mirrors against pipeline definitions (when
+   available), emitting CEI on mismatch and returning overall success. */
+bool cep_l1_runtime_verify_edges(cepCell* runs_root, cepCell* pipelines_root);
+
 #ifdef __cplusplus
 }
 #endif

@@ -181,6 +181,36 @@ static bool cep_l1_pipeline_stage_exists(cepCell* stages, const char* stage_id) 
     return stage && cep_cell_require_dictionary_store(&stage);
 }
 
+/* Build a layout view over an existing pipeline node so callers can reuse
+   resolved handles for validation and provenance without re-traversing. */
+bool cep_l1_pipeline_layout_from_root(cepCell* pipeline_root, cepL1PipelineLayout* layout) {
+    if (!pipeline_root || !layout) {
+        return false;
+    }
+
+    memset(layout, 0, sizeof *layout);
+
+    cepCell* pipeline = cep_cell_resolve(pipeline_root);
+    if (!pipeline || !cep_cell_require_dictionary_store(&pipeline)) {
+        return false;
+    }
+
+    cepCell* stages = cep_cell_find_by_name(pipeline, dt_stages_name());
+    stages = stages ? cep_cell_resolve(stages) : NULL;
+    if (stages && cep_cell_require_dictionary_store(&stages)) {
+        layout->stages = stages;
+    }
+
+    cepCell* edges = cep_cell_find_by_name(pipeline, dt_edges_name());
+    edges = edges ? cep_cell_resolve(edges) : NULL;
+    if (edges && cep_cell_require_dictionary_store(&edges)) {
+        layout->edges = edges;
+    }
+
+    layout->pipeline = pipeline;
+    return true;
+}
+
 /* Create or fetch a pipeline definition branch under `/data/flow/pipelines`,
    wiring the standard children (stages + edges) so callers can fill in DAGs.
    Validation is deliberately deferred; TODO hooks remain for edge/lineage
@@ -378,7 +408,10 @@ bool cep_l1_pipeline_add_edge(cepL1PipelineLayout* layout,
     return true;
 }
 
-static bool cep_l1_pipeline_validate(cepL1PipelineLayout* layout, const char* pipeline_id) {
+/* Validate pipeline metadata, stage/edge dictionaries, and optional max_hops.
+   Returns true when the layout looks consistent and emits CEI when issues are
+   found. */
+bool cep_l1_pipeline_validate_layout(cepL1PipelineLayout* layout, const char* pipeline_id) {
     if (!layout || !layout->pipeline || !layout->stages || !layout->edges) {
         return false;
     }
@@ -552,7 +585,7 @@ bool cep_l1_pipeline_bind_coherence(cepL1SchemaLayout* schema,
         !pipeline_buffer[0]) {
         return false;
     }
-    if (!cep_l1_pipeline_validate(pipeline, pipeline_buffer)) {
+    if (!cep_l1_pipeline_validate_layout(pipeline, pipeline_buffer)) {
         return false;
     }
 

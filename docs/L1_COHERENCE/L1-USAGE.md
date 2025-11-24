@@ -9,6 +9,11 @@ Layer 1 gives you a reliable way to describe identities and relationships (bei
 - Federation helpers that carry pipeline metadata and emit CEI on preflight/metadata failures.
 - Opt-in tests: `CEP_L1_TESTS=1`.
 
+## Organs and maintenance entrypoints
+- `org:coh_root:{ct,vl,dt}` own `/data/coh/**`; the constructor seeds `ctx_rules/pipeline_edge/roles` as required and `org:coh_root:sweep` backs `op/coh_sweep` for closure/adjacency rebuilds.
+- `org:flow_spec_l1:{ct,vl,dt}` plus helpers `org:flow_spec_l1:ensure_pipeline`, `org:flow_spec_l1:normalize_edges`, and `org:flow_spec_l1:rebuild_provenance` wrap pipeline layout/validation/binding so higher layers can call organ signals instead of editing trees directly.
+- `org:flow_runtime_l1:{ct,vl,dt,gc_runs,rollup_metrics,verify_edges}` keep runtime runs/metrics aligned with pipeline specs and ready for pause/dispatch orchestration.
+
 ## How to work with coherence
 - **Beings and bonds**  
   1) Add beings: `cep_l1_coh_add_being(layout, kind, external_id, &out)` → key `<kind>:<external_id>`.  

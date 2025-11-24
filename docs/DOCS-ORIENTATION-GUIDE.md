@@ -12,6 +12,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - Adjacency and closure rules now live under `/data/coh/adj/**` and `/data/coh/schema/ctx_rules/**`; use `op/coh_sweep` to rebuild mirrors. See the L1 coherence README for the latest layout.
 - `docs/L1_COHERENCE/USAGE.md` — Practical how-to for beings/bonds/contexts/facets/debts, pipeline setup, runtime dispatch, and federation metadata.
 - `docs/L1_COHERENCE/IMPLEMENTATION.md` — Shipping L1 implementation notes (IDs, closure/debts, adjacency, pipelines, runtime fan-in/out/fan-out scaffolding, federation metadata helpers, pack lifecycle).
+- Organs: `org:coh_root`, `org:flow_spec_l1`, and `org:flow_runtime_l1` own ct/vl/dt plus helper enzymes (ctx_rules seeding, coh_sweep routing, pipeline ensure/normalize/rebuild, runtime verify/gc/rollup); see the L1 usage/implementation notes for entrypoints.
 - `docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md` — Enclave architecture: policy loader, gateways/edges, pipeline approvals, diagnostics, and invariants behind `cep_enclave_policy`.
 - `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md` — Operator workflow for policy edits, pipeline preflight, diagnostics, and the regression test matrix.
   - `docs/L0_KERNEL/L0-OVERVIEW.md` — Layer‑0 capabilities, storage choices, and lifecycle behaviors that every kernel edit touches.

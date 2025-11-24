@@ -4,6 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "cep_l1_runtime.h"
+#include "cep_l1_pipelines.h"
 
 #include "../l0_kernel/cep_cei.h"
 #include "../l0_kernel/cep_namepool.h"
@@ -1201,4 +1202,248 @@ bool cep_l1_fed_mount_attach_pipeline(cepFedTransportManagerMount* mount,
                                                           resolved.dag_run_id,
                                                           resolved.hop_index);
     return true;
+}
+
+/* Validate runtime runs against required metadata and, when available, the
+   pipeline definitions. Emits `flow.pipeline.missing_metadata` when the runs
+   are incomplete; keeps scanning other runs instead of short-circuiting. */
+bool cep_l1_runtime_validate_runs(cepCell* runs_root, cepCell* pipelines_root) {
+    if (!runs_root) {
+        return false;
+    }
+
+    cepCell* runs = cep_cell_resolve(runs_root);
+    if (!runs || !cep_cell_require_dictionary_store(&runs)) {
+        return false;
+    }
+
+    bool ok = true;
+
+    for (cepCell* run = cep_cell_first(runs); run; run = cep_cell_next(runs, run)) {
+        cepCell* resolved = cep_cell_resolve(run);
+        if (!resolved || !cep_cell_require_dictionary_store(&resolved)) {
+            ok = false;
+            continue;
+        }
+
+        cepPipelineMetadata meta = {0};
+        char pipeline_id[128] = {0};
+        char stage_buf[128] = {0};
+        (void)cep_l1_runtime_copy_text_field(resolved, dt_pipeline_id_field_l1(), pipeline_id, sizeof pipeline_id);
+        (void)cep_l1_runtime_copy_uint64_field(resolved, dt_dag_run_id_field_l1(), &meta.dag_run_id);
+        (void)cep_l1_runtime_copy_uint64_field(resolved, dt_hop_index_field_l1(), &meta.hop_index);
+        if (pipeline_id[0]) {
+            meta.pipeline_id = cep_namepool_intern(pipeline_id, strlen(pipeline_id));
+        }
+
+        cepCell* pipeline_spec = NULL;
+        if (!pipeline_id[0]) {
+            cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(), "run missing pipeline_id", resolved, &meta);
+            ok = false;
+        } else if (pipelines_root) {
+            cepDT pipeline_dt = {0};
+            if (cep_l1_runtime_make_pipeline_dt(pipeline_id, &pipeline_dt)) {
+                pipeline_spec = cep_cell_find_by_name(pipelines_root, &pipeline_dt);
+                pipeline_spec = pipeline_spec ? cep_cell_resolve(pipeline_spec) : NULL;
+                if (pipeline_spec && !cep_cell_require_dictionary_store(&pipeline_spec)) {
+                    pipeline_spec = NULL;
+                }
+            }
+            if (!pipeline_spec) {
+                char note[192] = {0};
+                snprintf(note, sizeof note, "pipeline spec missing for run (%.96s)", pipeline_id);
+                cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(), note, resolved, &meta);
+                ok = false;
+            }
+        }
+
+        cepCell* stages = cep_cell_find_by_name(resolved, dt_stages_name_l1());
+        stages = stages ? cep_cell_resolve(stages) : NULL;
+        if (!stages || !cep_cell_require_dictionary_store(&stages)) {
+            cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(), "run missing stages dictionary", resolved, &meta);
+            ok = false;
+            continue;
+        }
+
+        cepL1PipelineLayout pipeline_layout = {0};
+        if (pipeline_spec) {
+            (void)cep_l1_pipeline_layout_from_root(pipeline_spec, &pipeline_layout);
+        }
+
+        for (cepCell* stage = cep_cell_first(stages); stage; stage = cep_cell_next(stages, stage)) {
+            cepCell* resolved_stage = cep_cell_resolve(stage);
+            if (!resolved_stage || !cep_cell_require_dictionary_store(&resolved_stage)) {
+                ok = false;
+                continue;
+            }
+
+            memset(stage_buf, 0, sizeof stage_buf);
+            if (!cep_l1_runtime_copy_text_field(resolved_stage, dt_stage_id_field_l1(), stage_buf, sizeof stage_buf) ||
+                !stage_buf[0]) {
+                cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(), "stage missing stage_id", resolved_stage, &meta);
+                ok = false;
+                continue;
+            }
+
+            cepPipelineMetadata stage_meta = meta;
+            stage_meta.stage_id = cep_namepool_intern(stage_buf, strlen(stage_buf));
+
+            if (pipeline_layout.pipeline && pipeline_layout.stages) {
+                cepDT stage_dt = {0};
+                cep_l1_runtime_make_stage_dt(stage_buf, &stage_dt);
+                cepCell* spec_stage = cep_cell_find_by_name(pipeline_layout.stages, &stage_dt);
+                spec_stage = spec_stage ? cep_cell_resolve(spec_stage) : NULL;
+                if (!spec_stage) {
+                    char note[192] = {0};
+                    snprintf(note, sizeof note, "stage %.64s missing from pipeline %.96s", stage_buf, pipeline_id);
+                    cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(), note, resolved_stage, &stage_meta);
+                    ok = false;
+                }
+            }
+        }
+    }
+
+    return ok;
+}
+
+/* Placeholder retention hook for runs. It keeps the runs dictionary alive and
+   returns success so a future policy can prune finished runs without changing
+   the call signature now. */
+bool cep_l1_runtime_gc_runs(cepCell* runs_root) {
+    if (!runs_root) {
+        return false;
+    }
+    cepCell* runs = cep_cell_resolve(runs_root);
+    return runs && cep_cell_require_dictionary_store(&runs);
+}
+
+/* Placeholder rollup hook that keeps the metrics and runs roots writable so
+   future aggregation passes can populate summaries without changing callers. */
+bool cep_l1_runtime_rollup_metrics(cepCell* runs_root, cepCell* metrics_root) {
+    if (!runs_root || !metrics_root) {
+        return false;
+    }
+    cepCell* runs = cep_cell_resolve(runs_root);
+    cepCell* metrics = cep_cell_resolve(metrics_root);
+    return runs && metrics && cep_cell_require_dictionary_store(&runs) && cep_cell_require_dictionary_store(&metrics);
+}
+
+/* Cross-check runtime edge mirrors against the pipeline definition when
+   available. Emits `flow.pipeline.missing_metadata` for missing pipeline or
+   mismatched edges but otherwise leaves runtime state untouched. */
+bool cep_l1_runtime_verify_edges(cepCell* runs_root, cepCell* pipelines_root) {
+    if (!runs_root) {
+        return false;
+    }
+
+    cepCell* runs = cep_cell_resolve(runs_root);
+    if (!runs || !cep_cell_require_dictionary_store(&runs)) {
+        return false;
+    }
+
+    bool ok = true;
+
+    for (cepCell* run = cep_cell_first(runs); run; run = cep_cell_next(runs, run)) {
+        cepCell* resolved_run = cep_cell_resolve(run);
+        if (!resolved_run || !cep_cell_require_dictionary_store(&resolved_run)) {
+            ok = false;
+            continue;
+        }
+
+        cepPipelineMetadata meta = {0};
+        char pipeline_id[128] = {0};
+        char edge_buf[128] = {0};
+        char src_buf[128] = {0};
+        char dst_buf[128] = {0};
+
+        (void)cep_l1_runtime_copy_text_field(resolved_run, dt_pipeline_id_field_l1(), pipeline_id, sizeof pipeline_id);
+        (void)cep_l1_runtime_copy_uint64_field(resolved_run, dt_dag_run_id_field_l1(), &meta.dag_run_id);
+        (void)cep_l1_runtime_copy_uint64_field(resolved_run, dt_hop_index_field_l1(), &meta.hop_index);
+
+        cepCell* pipeline_spec = NULL;
+        cepL1PipelineLayout pipeline_layout = {0};
+        if (pipeline_id[0]) {
+            meta.pipeline_id = cep_namepool_intern(pipeline_id, strlen(pipeline_id));
+            if (pipelines_root) {
+                cepDT pipeline_dt = {0};
+                if (cep_l1_runtime_make_pipeline_dt(pipeline_id, &pipeline_dt)) {
+                    pipeline_spec = cep_cell_find_by_name(pipelines_root, &pipeline_dt);
+                    pipeline_spec = pipeline_spec ? cep_cell_resolve(pipeline_spec) : NULL;
+                    if (pipeline_spec && cep_cell_require_dictionary_store(&pipeline_spec)) {
+                        (void)cep_l1_pipeline_layout_from_root(pipeline_spec, &pipeline_layout);
+                    } else {
+                        pipeline_spec = NULL;
+                    }
+                }
+            }
+        }
+
+        if (!pipeline_spec) {
+            cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(), "pipeline spec missing for edge check", resolved_run, &meta);
+            ok = false;
+            continue;
+        }
+
+        cepCell* edges = cep_cell_find_by_name(resolved_run, dt_edges_name_l1());
+        edges = edges ? cep_cell_resolve(edges) : NULL;
+        if (!edges || !cep_cell_require_dictionary_store(&edges)) {
+            cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(), "run missing edges dictionary", resolved_run, &meta);
+            ok = false;
+            continue;
+        }
+
+        for (cepCell* edge = cep_cell_first(edges); edge; edge = cep_cell_next(edges, edge)) {
+            cepCell* resolved_edge = cep_cell_resolve(edge);
+            if (!resolved_edge || !cep_cell_require_dictionary_store(&resolved_edge)) {
+                ok = false;
+                continue;
+            }
+
+            memset(edge_buf, 0, sizeof edge_buf);
+            cepDT edge_name = *cep_cell_get_name(resolved_edge);
+            const char* edge_text = cep_namepool_lookup(edge_name.tag, NULL);
+            if (edge_text) {
+                strncpy(edge_buf, edge_text, sizeof edge_buf - 1u);
+                edge_buf[sizeof edge_buf - 1u] = '\0';
+            }
+
+            cepCell* spec_edge = NULL;
+            if (pipeline_layout.edges) {
+                spec_edge = cep_cell_find_by_name(pipeline_layout.edges, &edge_name);
+                spec_edge = spec_edge ? cep_cell_resolve(spec_edge) : NULL;
+            }
+            if (!spec_edge) {
+                char note[192] = {0};
+                snprintf(note, sizeof note, "edge %.64s missing from pipeline %.96s", edge_buf[0] ? edge_buf : "<unknown>", pipeline_id);
+                cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(), note, resolved_edge, &meta);
+                ok = false;
+            }
+
+            memset(src_buf, 0, sizeof src_buf);
+            memset(dst_buf, 0, sizeof dst_buf);
+            if (!cep_l1_runtime_copy_text_field(resolved_edge, dt_source_field_l1(), src_buf, sizeof src_buf) ||
+                !cep_l1_runtime_copy_text_field(resolved_edge, dt_target_field_l1(), dst_buf, sizeof dst_buf)) {
+                cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(), "edge missing source/target", resolved_edge, &meta);
+                ok = false;
+                continue;
+            }
+
+            if (pipeline_layout.stages) {
+                cepDT src_dt = {0};
+                cepDT dst_dt = {0};
+                (void)cep_l1_runtime_make_stage_dt(src_buf, &src_dt);
+                (void)cep_l1_runtime_make_stage_dt(dst_buf, &dst_dt);
+                cepCell* src_stage = cep_cell_find_by_name(pipeline_layout.stages, &src_dt);
+                cepCell* dst_stage = cep_cell_find_by_name(pipeline_layout.stages, &dst_dt);
+                if (!(src_stage && dst_stage)) {
+                    char note[192] = {0};
+                    snprintf(note, sizeof note, "edge endpoints missing in pipeline %.96s (%.64s -> %.64s)", pipeline_id, src_buf, dst_buf);
+                    cep_l1_runtime_emit_run_cei(dt_topic_pipeline_missing(), note, resolved_edge, &meta);
+                    ok = false;
+                }
+            }
+        }
+    }
+
+    return ok;
 }

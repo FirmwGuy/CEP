@@ -8,6 +8,7 @@ Layer 1 gives CEP durable structure: beings, bonds, contexts, facets, adjacenc
   - `/data/coh/beings|bonds|contexts|facets|debts` hold authoritative coherence state.  
   - `/data/coh/adj/by_being|by_ctx|by_facet` are recomputable adjacency mirrors.  
   - `/data/coh/schema/ctx_rules/<kind>` stores per-context rules; `roles/` and `facets/` entries may mark `required=1`.  
+  - The `org:coh_root` constructor seeds `/data/coh/schema/ctx_rules/pipeline_edge/roles` with required `pipeline`/`from_stage`/`to_stage` entries so closure/debts treat pipeline edges deterministically out of the box.  
   - Companion: see `docs/L1_COHERENCE/L1-USAGE.md` for step-by-step workflows and API calls.
 - **Canonical IDs and helpers**  
   - Beings use `<kind>:<external_id>` keys; bonds use `bond:<kind>:<from>:<to>`; contexts sort bindings into `ctx:<kind>|role=being[@bond]|…`; facets use `facet:<kind>:<ctx>:<subject>:<label>`; debts use `debt:<kind>:<ctx_or_bond>:<requirement>` (with `ctx_kind` lineage).  
@@ -33,6 +34,7 @@ Layer 1 gives CEP durable structure: beings, bonds, contexts, facets, adjacenc
 - **Pack lifecycle**  
   - `cep_l1_pack_bootstrap` ensures schema roots, registers the closure enzyme (`coh:close`), and marks pack readiness.  
   - `op/coh_sweep` runs closure over all contexts for maintenance; append-only debts preserve history.
+  - Organs own pack roots: `org:coh_root`, `org:flow_spec_l1`, and `org:flow_runtime_l1` register ct/vl/dt enzymes; bootstrap invokes ct/vl, `op/coh_sweep` routes through `org:coh_root:sweep`, and organ helpers (`ensure_pipeline`, `normalize_edges`, `rebuild_provenance`, `gc_runs`, `rollup_metrics`, `verify_edges`) wrap the existing pipeline/runtime helpers.
 
 ## Q&A
 - **Where should new L1 docs go?**  
