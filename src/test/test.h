@@ -120,6 +120,7 @@ MunitResult test_fed_link_emit_cell(const MunitParameter params[], void* user_da
 MunitResult test_fed_mirror_emit_cell(const MunitParameter params[], void* user_data_or_fixture);
 
 MunitSuite* test_suite_l1(void);
+MunitSuite* test_suite_l2(void);
 MunitResult test_fed_invoke_emit_cell(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_frame_contract(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_invoke_frame_contract(const MunitParameter params[], void* user_data_or_fixture);

@@ -452,6 +452,51 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 #### Reserved Upper-Layer Tags
 | Tag / Pattern | Feature Area | Purpose |
 | --- | --- | --- |
+| `eco` | L2 | L2 ecology root under `/data/eco` (species, variants, niches, guardians, flows, runtime, metrics). |
+| `learn` | L2 | L2 learning root under `/data/learn` for model/parameter revisions. |
+| `species` | L2 | Species dictionary under `/data/eco/species`. |
+| `variants` | L2 | Variant definitions under `/data/eco/variants`. |
+| `niches` | L2 | Niche definitions under `/data/eco/niches`. |
+| `guardians` | L2 | Guardian policies under `/data/eco/guardians`. |
+| `flows` | L2 | Flow definitions under `/data/eco/flows`. |
+| `organisms` | L2 | Runtime organisms under `/data/eco/runtime/organisms`. |
+| `sched_queue` | L2 | Scheduler queues under `/data/eco/sched_queue` for flow dispatch. |
+| `models` | L2 | Model/parameter snapshots under `/data/learn/models`. |
+| `variant` | L2 | Variant identifier stored alongside organisms, history, and decisions. |
+| `per_species` | L2 | Metrics bucket under `/data/eco/metrics/per_species`. |
+| `per_variant` | L2 | Metrics bucket under `/data/eco/metrics/per_variant`. |
+| `per_niche` | L2 | Metrics bucket under `/data/eco/metrics/per_niche`. |
+| `global` | L2 | Aggregate metrics bucket under `/data/eco/metrics/global`. |
+| `history` | L2 | Append-only runtime history under `/data/eco/runtime/history`. |
+| `revisions` | L2 | Model revision index under `/data/learn/revisions`. |
+| `provenance` | L2 | Model provenance records under `/data/learn/provenance`. |
+| `graph` | L2 | Flow graph dictionary under `/data/eco/flows/<flow>/graph`. |
+| `nodes` | L2 | Flow VM node definitions under a flow graph. |
+| `entry` | L2 | Entry node identifier stored on a flow graph. |
+| `node_type` | L2 | Flow node type label (`guard`/`transform`/`wait`/`decide`/`clamp`). |
+| `next` | L2 | Primary successor pointer for a flow node. |
+| `alt_next` | L2 | Alternate successor pointer for guards/decide fallbacks. |
+| `pred` | L2 | Guard predicate flag used by Guard nodes. |
+| `resume_bt` | L2 | Beat index for resuming a Wait node. |
+| `choices` | L2 | Decide node choice list containing candidate actions. |
+| `model_upd` | L2 | Transform node sub-dictionary describing model revision output. |
+| `budgets` | L2 | Clamp node budget dictionary (steps/beats/cpu/io). |
+| `max_steps` | L2 | Clamp budget limiting Flow VM node executions. |
+| `max_beats` | L2 | Clamp budget limiting organism beat span. |
+| `on_violate` | L2 | Guardian/clamp action selector (`soft`/`hard`). |
+| `node_ptr` | L2 | Organism cursor pointing at the current flow node. |
+| `created_bt` | L2 | Beat recorded when an organism was created. |
+| `updated_bt` | L2 | Beat recorded when an organism last advanced. |
+| `niche` | L2 | Niche identifier attached to an organism or flow. |
+| `eco.guardian.violation` | L2 | CEI topic emitted when a guardian or clamp denies progress. |
+| `eco.limit.hit` | L2 | CEI topic emitted when a clamp budget trips. |
+| `eco.flow.error` | L2 | CEI topic emitted when Flow VM compilation or execution fails. |
+| `eco.evolution.proposed` | L2 | CEI topic emitted when a new organism/variant pairing is started. |
+| `org_started` | L2 | Scheduler metric counting organisms created. |
+| `flow_steps` | L2 | Scheduler metric counting Flow VM steps executed. |
+| `org_finished` | L2 | Scheduler metric counting organisms that finished. |
+| `org_failed` | L2 | Scheduler metric counting organisms that failed clamp/guardian checks. |
+| `org_waiting` | L2 | Scheduler metric counting organisms paused on Wait nodes. |
 | *reserved* | L1–L4 | Placeholder row; add upper-layer tag definitions here before minting them in code. |
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor

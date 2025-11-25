@@ -13,6 +13,9 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - `docs/L1_COHERENCE/USAGE.md` — Practical how-to for beings/bonds/contexts/facets/debts, pipeline setup, runtime dispatch, and federation metadata.
 - `docs/L1_COHERENCE/IMPLEMENTATION.md` — Shipping L1 implementation notes (IDs, closure/debts, adjacency, pipelines, runtime fan-in/out/fan-out scaffolding, federation metadata helpers, pack lifecycle).
 - Organs: `org:coh_root`, `org:flow_spec_l1`, and `org:flow_runtime_l1` own ct/vl/dt plus helper enzymes (ctx_rules seeding, coh_sweep routing, pipeline ensure/normalize/rebuild, runtime verify/gc/rollup); see the L1 usage/implementation notes for entrypoints.
+- **Layer 2 ecology & flows**
+- `docs/L2_ECOLOGY/README.md` — Optional L2 Ecology pack overview (Flow VM, species/variant/niche/guardian model, data roots, runtime history/metrics/decisions, code/test layout).
+- `docs/L2_ECOLOGY/IMPLEMENTATION.md` — Implementation plan for the L2 pack: bootstrap/shutdown contract, organs, schema, Flow VM runtime, Decision Cells/replay (with runtime decisions mirror), guardians/clamp, persistence/observability, phased delivery.
 - `docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md` — Enclave architecture: policy loader, gateways/edges, pipeline approvals, diagnostics, and invariants behind `cep_enclave_policy`.
 - `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md` — Operator workflow for policy edits, pipeline preflight, diagnostics, and the regression test matrix.
   - `docs/L0_KERNEL/L0-OVERVIEW.md` — Layer‑0 capabilities, storage choices, and lifecycle behaviors that every kernel edit touches.
@@ -106,6 +109,8 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/L1_COHERENCE/USAGE.md` | Practical usage guide for beings/bonds/contexts/facets/debts/pipelines/runtime/federation | Layer 1 pack (coherence + pipelines) | Live | Step-by-step API walkthroughs and CEI expectations. |
 | `docs/L1_COHERENCE/ADJACENCY-CLOSURE.md` | Contract sketch for coherence adjacency closure and debts | Layer 1 pack (coherence closure) | Draft | TODO hooks for enzymes/CEI; use as design reference before implementation. |
 | `docs/L1_COHERENCE/IMPLEMENTATION.md` | Shipping L1 implementation surface and CEI/topic coverage | Layer 1 pack (coherence + pipelines) | Live | Mirrors current helpers (closure, pipelines, runtime fan-in/out, federation metadata). |
+| `docs/L2_ECOLOGY/README.md` | Optional L2 Ecology pack overview (Flow VM, ecology model, data roots) | Layer 2 pack (ecology + flows) | Draft | Documents pack boundaries, optional dependency on L1, and code/test/documentation layout (runtime/metrics/decisions/history seeded; Flow VM semantics still in progress). |
+| `docs/L2_ECOLOGY/IMPLEMENTATION.md` | Implementation plan for the L2 pack | Layer 2 pack (ecology + flows) | Draft | Captures bootstrap/shutdown contract, organs, schemas, Flow VM runtime, Decision Cells/replay, guardians, and phased delivery steps (Flow VM execution still under construction). |
 | `docs/CEP-TAG-LEXICON.md` | Canonical tag catalogue and naming rules | Domain/tag encoding, namepool tooling | Live | Run `tools/check_unused_tags.py` after expanding the table. |
 | `docs/L0_KERNEL/topics/DEBUG-MACROS.md` | Debug macro behaviour and usage patterns | `src/l0_kernel/cep_molecule.h`, debug flags | Live | No drift detected; ensure new debug wrappers get documented here. |
 | `docs/DOCS-ORIENTATION-GUIDE.md` | Reading map for contributors returning to the repo | Documentation navigation | Live | Updated whenever new doc categories (e.g., Design docs) join the set. |

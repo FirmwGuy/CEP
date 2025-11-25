@@ -187,14 +187,14 @@ If you want more detail:
 
 Right now, the project is very much in motion:
 
-* **Shipping:**
-  **Layer 0 kernel** with deterministic beats, in‑memory stores, persistence, federation hooks, and security policy loading. This is what current code and tests focus on. 
+* **Shipping:**  
+  **Layer 0 kernel** with deterministic beats, in‑memory stores, persistence, federation hooks, and security policy loading. Current tests target this layer.
 
-* **Emerging:**
-  Early **Layer 1 coherence** (identity & relationships) and **Layer 2 ecology/flow helpers** exist in the tree but evolve frequently. Expect APIs and layouts to change.
+* **Emerging:**  
+  **Layer 1 coherence** pack (pipelines/contexts/adjacency) and **Layer 2 ecology scaffolding** (pack roots, runtime history/decisions, durable branches, Flow VM skeleton, L1-trigger alignment). APIs/layouts still change often.
 
-* **Planned:**
-  **Awareness (L3)** and **Governance/Self‑Evolution (L4)** live primarily in design docs and prototypes. They will arrive as optional packs on top of the kernel once the lower layers finish hardening. 
+* **Planned:**  
+  **Awareness (L3)** and **Governance/Self‑Evolution (L4)** are still design-stage and will ship as optional packs once lower layers harden. 
 
 If you build on CEP today, plan for migrations and breaking changes.
 
