@@ -190,8 +190,11 @@ Right now, the project is very much in motion:
 * **Shipping:**  
   **Layer 0 kernel** with deterministic beats, in‑memory stores, persistence, federation hooks, and security policy loading. Current tests target this layer.
 
-* **Emerging:**  
-  **Layer 1 coherence** pack (pipelines/contexts/adjacency) and **Layer 2 ecology scaffolding** (pack roots, runtime history/decisions, durable branches, Flow VM skeleton, L1-trigger alignment). APIs/layouts still change often.
+* **Available (optional):**  
+  **Layer 1 coherence pack** with beings/bonds/contexts, adjacency closure, pipeline graphs, runtime fan‑in/fan‑out, and federation metadata helpers. Ships as an optional pack that boots/shuts down independently of the kernel.
+
+* **In progress:**  
+  **Layer 2 ecology pack scaffolding** with pack roots under `/data/eco` and `/data/learn`, Flow VM + scheduler skeleton, runtime history/decisions ledgers, and guardian/clamp CEI. Interfaces are still evolving and gated behind `CEP_L2_TESTS`.
 
 * **Planned:**  
   **Awareness (L3)** and **Governance/Self‑Evolution (L4)** are still design-stage and will ship as optional packs once lower layers harden. 
