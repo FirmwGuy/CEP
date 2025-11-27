@@ -12,20 +12,16 @@
 extern "C" {
 #endif
 
-/* Bootstraps the optional Layer 2 Ecology pack on top of the active runtime,
- * seeding pack-owned branches, registering organs/enzymes, and publishing an
- * `op/l2_boot` dossier. It is safe to call multiple times; later calls become
- * no-ops when bootstrap already succeeded. */
+/* Bootstraps the Layer 2 Ecology pack (requires Layer 1) on top of the active
+ * runtime, seeding pack-owned branches, registering organs/enzymes, and
+ * publishing an `op:l2_boot` dossier. It is safe to call multiple times; later
+ * calls become no-ops when bootstrap already succeeded. */
 bool cep_l2_bootstrap(void);
 
 /* Performs a best-effort shutdown of the Layer 2 Ecology pack, closing the
- * `op/l2_shdn` dossier and marking pack readiness as torn down without
+ * `op:l2_shdn` dossier and marking pack readiness as torn down without
  * blocking kernel shutdown. */
 bool cep_l2_shutdown(void);
-
-/* Returns true when bootstrap detected L1 helpers (coherence + pipeline pack)
- * so L2 integrations can decide whether to call L1 hooks. */
-bool cep_l2_l1_present(void);
 
 #ifdef __cplusplus
 }

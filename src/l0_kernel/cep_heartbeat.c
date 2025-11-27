@@ -3398,6 +3398,10 @@ static bool cep_runtime_has_registry(void) {
 
 
 static void cep_runtime_reset_state(bool destroy_registry) {
+    if (destroy_registry) {
+        cep_cell_operations_registry_reset();
+    }
+
     if (destroy_registry && cep_runtime_has_registry()) {
         cep_enzyme_registry_destroy(CEP_RUNTIME.registry);
         CEP_RUNTIME.registry = NULL;
@@ -3429,6 +3433,7 @@ static void cep_runtime_reset_state(bool destroy_registry) {
     CEP_RUNTIME.view_horizon_floor_stamp = 0u;
 
     cep_lifecycle_reset_state();
+
     cep_organ_runtime_reset();
     cep_control_reset_state();
 }

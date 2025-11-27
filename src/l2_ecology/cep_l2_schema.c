@@ -98,11 +98,8 @@ static bool cep_l2_schema_enforce_durable_policy(cepCell* branch_root) {
 }
 
 bool cep_l2_schema_seed_roots(cepCell* data_root,
-                              bool l1_present,
                               cepCell** eco_root_out,
                               cepCell** learn_root_out) {
-    (void)l1_present; /* layout is identical regardless of L1 presence; hooks stay optional. */
-
     if (!data_root) {
         return false;
     }

@@ -19,8 +19,8 @@
 #include <stdio.h>
 #include <string.h>
 
-CEP_DEFINE_STATIC_DT(dt_l1_boot_verb, CEP_ACRO("CEP"), CEP_WORD("op/l1_boot"));
-CEP_DEFINE_STATIC_DT(dt_l1_shdn_verb, CEP_ACRO("CEP"), CEP_WORD("op/l1_shdn"));
+CEP_DEFINE_STATIC_DT(dt_l1_boot_verb, CEP_ACRO("CEP"), CEP_WORD("op:l1_boot"));
+CEP_DEFINE_STATIC_DT(dt_l1_shdn_verb, CEP_ACRO("CEP"), CEP_WORD("op:l1_shdn"));
 CEP_DEFINE_STATIC_DT(dt_l1_coh_sweep_verb, CEP_ACRO("CEP"), cep_namepool_intern_cstr("op/coh_sweep"));
 CEP_DEFINE_STATIC_DT(dt_l1_op_mode_states, CEP_ACRO("CEP"), CEP_WORD("opm:states"));
 CEP_DEFINE_STATIC_DT(dt_l1_state_field, CEP_ACRO("CEP"), CEP_WORD("state"));
@@ -344,9 +344,21 @@ static bool cep_l1_pack_start_boot_op(cepL1PackState* state) {
     if (cep_oid_is_valid(state->boot_oid)) {
         return true;
     }
-    cepOID oid = cep_op_start(*dt_l1_boot_verb(),
+    cepDT verb = *dt_l1_boot_verb();
+    if (!cep_dt_is_valid(&verb)) {
+        verb.domain = CEP_ACRO("CEP");
+        verb.tag = cep_namepool_intern_cstr("op:l1_boot");
+        verb.glob = cep_id_has_glob_char(verb.tag);
+    }
+    cepDT mode = *dt_l1_op_mode_states();
+    if (!cep_dt_is_valid(&mode)) {
+        mode.domain = CEP_ACRO("CEP");
+        mode.tag = cep_namepool_intern_cstr("opm:states");
+        mode.glob = cep_id_has_glob_char(mode.tag);
+    }
+    cepOID oid = cep_op_start(verb,
                               "/data/flow",
-                              *dt_l1_op_mode_states(),
+                              mode,
                               NULL,
                               0u,
                               0u);
@@ -612,9 +624,21 @@ bool cep_l1_pack_shutdown(void) {
         return false;
     }
 
-    cepOID shutdown_oid = cep_op_start(*dt_l1_shdn_verb(),
+    cepDT shdn = *dt_l1_shdn_verb();
+    if (!cep_dt_is_valid(&shdn)) {
+        shdn.domain = CEP_ACRO("CEP");
+        shdn.tag = cep_namepool_intern_cstr("op:l1_shdn");
+        shdn.glob = cep_id_has_glob_char(shdn.tag);
+    }
+    cepDT mode = *dt_l1_op_mode_states();
+    if (!cep_dt_is_valid(&mode)) {
+        mode.domain = CEP_ACRO("CEP");
+        mode.tag = cep_namepool_intern_cstr("opm:states");
+        mode.glob = cep_id_has_glob_char(mode.tag);
+    }
+    cepOID shutdown_oid = cep_op_start(shdn,
                                        "/data/flow",
-                                       *dt_l1_op_mode_states(),
+                                       mode,
                                        NULL,
                                        0u,
                                        0u);

@@ -62,6 +62,22 @@ cep_organ_registry_state(void)
 
 #define CEP_ORGAN_REGISTRY (*cep_organ_registry_state())
 
+static cepOrganRegistryState*
+cep_organ_registry_state_if_present(void)
+{
+    cepRuntime* default_runtime = cep_runtime_default();
+    cepRuntime* active_runtime = cep_runtime_active();
+    cepOrganRegistryState* state = cep_runtime_organ_registry_existing(default_runtime);
+    CEP_DEBUG_PRINTF_STDOUT("[instrument][organ] registry_state default=%p active=%p state=%p bootstrapped=%d count=%zu root=%p\n",
+           (void*)default_runtime,
+           (void*)active_runtime,
+           (void*)state,
+           state ? (state->bootstrapped ? 1 : 0) : -1,
+           state ? state->count : 0u,
+           state ? (void*)state->root : NULL);
+    return state;
+}
+
 static void cep_organ_release_dt(cepDT* dt);
 
 cepOrganRegistryState*
@@ -256,13 +272,13 @@ static bool cep_organ_store_cache_lookup(const char* kind, cepDT* out) {
 }
 
 void cep_organ_runtime_reset(void) {
-    cepOrganRegistryState* registry = cep_organ_registry_state();
+    cepOrganRegistryState* registry = cep_organ_registry_state_if_present();
     if (!registry) {
         return;
     }
 
-    if (CEP_ORGAN_REGISTRY.root) {
-        cepCell* organs_root = cep_cell_resolve(CEP_ORGAN_REGISTRY.root);
+    if (registry->root) {
+        cepCell* organs_root = cep_cell_resolve(registry->root);
         if (organs_root && organs_root->store) {
             cepStore* store = organs_root->store;
             unsigned writable_before = store->writable;
@@ -276,8 +292,8 @@ void cep_organ_runtime_reset(void) {
         }
     }
 
-    for (size_t i = 0; i < CEP_ORGAN_REGISTRY.count; ++i) {
-        cepOrganEntry* entry = &CEP_ORGAN_REGISTRY.entries[i];
+    for (size_t i = 0; i < registry->count; ++i) {
+        cepOrganEntry* entry = &registry->entries[i];
         if (entry->kind_storage) {
             cep_free(entry->kind_storage);
             entry->kind_storage = NULL;
@@ -292,10 +308,10 @@ void cep_organ_runtime_reset(void) {
         cep_organ_release_dt(&entry->desc.destructor);
         memset(&entry->desc, 0, sizeof(entry->desc));
     }
-    CEP_ORGAN_REGISTRY.count = 0;
-    CEP_ORGAN_REGISTRY.root = NULL;
-    CEP_ORGAN_REGISTRY.bootstrapped = false;
-    CEP_ORGAN_REGISTRY.dt_dirty = false;
+    registry->count = 0;
+    registry->root = NULL;
+    registry->bootstrapped = false;
+    registry->dt_dirty = false;
 
     for (size_t i = 0u; i < registry->store_cache_count; ++i) {
         cep_organ_store_cache_release(&registry->store_cache[i].dt);

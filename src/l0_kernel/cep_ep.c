@@ -363,6 +363,13 @@ cep_ep_runtime_init(cepRuntime* runtime, cepEpRuntimeState* state)
         state->enzyme_registered = true;
     }
 
+    if (!state->default_policy_initialized) {
+        state->default_policy.profile = CEP_EP_PROFILE_RO;
+        state->default_policy.cpu_budget_ns = CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS;
+        state->default_policy.io_budget_bytes = CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES;
+        state->default_policy_initialized = true;
+    }
+
     state->runtime_ready = true;
     return true;
 }
@@ -899,13 +906,31 @@ cep_ep_paths_equal(const cepPath* lhs, const cepPath* rhs)
 }
 
 static cepEpExecutionPolicy
-cep_ep_effective_policy(const cepEpExecutionPolicy* policy)
+cep_ep_default_policy(void)
 {
-    cepEpExecutionPolicy effective = {
+    cepEpExecutionPolicy defaults = {
         .profile = CEP_EP_PROFILE_RO,
         .cpu_budget_ns = CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS,
         .io_budget_bytes = CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES,
     };
+
+    cepEpRuntimeState* state = cep_ep_state_current();
+    if (!state) {
+        return defaults;
+    }
+
+    if (!state->default_policy_initialized) {
+        state->default_policy = defaults;
+        state->default_policy_initialized = true;
+    }
+
+    return state->default_policy;
+}
+
+static cepEpExecutionPolicy
+cep_ep_effective_policy(const cepEpExecutionPolicy* policy)
+{
+    cepEpExecutionPolicy effective = cep_ep_default_policy();
 
     if (policy) {
         if (policy->profile == CEP_EP_PROFILE_RO ||
@@ -1969,6 +1994,8 @@ cep_ep_runtime_reset(void)
     state->enzyme_registered = false;
     memset(&state->signal_ep_cont, 0, sizeof state->signal_ep_cont);
     memset(&state->signal_op_tmo, 0, sizeof state->signal_op_tmo);
+    memset(&state->default_policy, 0, sizeof state->default_policy);
+    state->default_policy_initialized = false;
     atomic_store_explicit(&state->last_lease_fail_reason, NULL, memory_order_relaxed);
 
     cepEpExecutionContext* previous_ctx = cep_executor_context_get();

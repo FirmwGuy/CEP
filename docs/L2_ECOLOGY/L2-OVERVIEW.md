@@ -10,7 +10,7 @@ Layer 2 (“Ecology & Flows”) turns CEP into a supervised learning ecosystem
   - `docs/L2_ECOLOGY/L2-IMPLEMENTATION.md` — implementation surface and delivery plan.  
   - Update `docs/DOCS-ORIENTATION-GUIDE.md` whenever L2 docs move or expand.
 - **What exists today**  
-  - Pack bootstrap/shutdown seeds `/data/eco/**` and `/data/learn/**`, registers organs (`org:eco_root`, `org:eco_flows`, `org:eco_runtime`, `org:learn_models`), and publishes `op/l2_boot`/`op/l2_shdn` dossiers without blocking kernel teardown.  
+- Pack bootstrap/shutdown seeds `/data/eco/**` and `/data/learn/**`, registers organs (`org:eco_root`, `org:eco_flows`, `org:eco_runtime`, `org:learn_models`), and publishes `op:l2_boot`/`op:l2_shdn` dossiers without blocking kernel teardown.  
   - Flow VM compiles Guard/Transform/Wait/Decide/Clamp nodes per flow and executes them inside E3 episodes with budgets. Scheduler instantiates organisms from flow defs, opens `op/ep` dossiers with pipeline/species/variant/niche metadata, and steps them each beat.  
   - Decisions log into `/journal/decisions/**` plus `/data/eco/runtime/decisions/**`; guardian/clamp outcomes emit CEI (`eco.guardian.violation`, `eco.limit.hit`, `eco.flow.error`, `eco.evolution.proposed`). Metrics roll up per species/variant/niche and globally.  
   - Model revisions land under `/data/learn/models/**` with provenance; runtime history stays append-only.

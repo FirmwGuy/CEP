@@ -50,6 +50,29 @@ cep_executor_active_runtime(void)
     return cep_runtime_default();
 }
 
+static cepEpExecutionPolicy
+cep_executor_default_policy(void)
+{
+    cepEpExecutionPolicy defaults = {
+        .profile = CEP_EP_PROFILE_RO,
+        .cpu_budget_ns = CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS,
+        .io_budget_bytes = CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES,
+    };
+
+    cepRuntime* runtime = cep_executor_active_runtime();
+    cepEpRuntimeState* ep_state = cep_runtime_ep_state(runtime);
+    if (!ep_state) {
+        return defaults;
+    }
+
+    if (!ep_state->default_policy_initialized) {
+        ep_state->default_policy = defaults;
+        ep_state->default_policy_initialized = true;
+    }
+
+    return ep_state->default_policy;
+}
+
 #if defined(CEP_EXECUTOR_BACKEND_THREADED)
 
 typedef struct {
@@ -324,14 +347,15 @@ cep_executor_submit_ro(void (*task)(void *ctx),
     slot->runtime = cep_executor_active_runtime();
     slot->state = CEP_EXECUTOR_SLOT_PENDING;
 
+    cepEpExecutionPolicy defaults = cep_executor_default_policy();
     cepEpExecutionContext *ctx_out = &slot->context;
     ctx_out->profile = CEP_EP_PROFILE_RO;
     ctx_out->cpu_budget_ns = (policy && policy->cpu_budget_ns)
         ? policy->cpu_budget_ns
-        : CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS;
+        : defaults.cpu_budget_ns;
     ctx_out->io_budget_bytes = (policy && policy->io_budget_bytes)
         ? policy->io_budget_bytes
-        : CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES;
+        : defaults.io_budget_bytes;
     ctx_out->user_data = ctx;
     ctx_out->cpu_consumed_ns = 0u;
     ctx_out->io_consumed_bytes = 0u;
@@ -559,14 +583,15 @@ cep_executor_submit_ro(void (*task)(void *ctx),
     slot->runtime = cep_executor_active_runtime();
     slot->state = CEP_EXECUTOR_SLOT_PENDING;
 
+    cepEpExecutionPolicy defaults = cep_executor_default_policy();
     cepEpExecutionContext *ctx_out = &slot->context;
     ctx_out->profile = CEP_EP_PROFILE_RO;
     ctx_out->cpu_budget_ns = (policy && policy->cpu_budget_ns)
         ? policy->cpu_budget_ns
-        : CEP_EXECUTOR_DEFAULT_CPU_BUDGET_NS;
+        : defaults.cpu_budget_ns;
     ctx_out->io_budget_bytes = (policy && policy->io_budget_bytes)
         ? policy->io_budget_bytes
-        : CEP_EXECUTOR_DEFAULT_IO_BUDGET_BYTES;
+        : defaults.io_budget_bytes;
     ctx_out->user_data = ctx;
     ctx_out->cpu_consumed_ns = 0u;
     ctx_out->io_consumed_bytes = 0u;

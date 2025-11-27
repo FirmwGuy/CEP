@@ -32,6 +32,21 @@ static size_t cep_cell_operations_registry_record_count = 0u;
 static size_t cep_cell_operations_registry_record_capacity = 0u;
 static cepEnzymeRegistry* cep_cell_operations_active_registry = NULL;
 
+/* Drop the cached registry baselines so shutdown does not leak the tracking
+   array or resurrect stale baselines when a new registry is created after a
+   teardown. */
+void
+cep_cell_operations_registry_reset(void)
+{
+    if (cep_cell_operations_registry_records) {
+        cep_free(cep_cell_operations_registry_records);
+    }
+    cep_cell_operations_registry_records = NULL;
+    cep_cell_operations_registry_record_count = 0u;
+    cep_cell_operations_registry_record_capacity = 0u;
+    cep_cell_operations_active_registry = NULL;
+}
+
 static cepCellOperationsRegistryRecord* cep_cell_operations_registry_record_find(cepEnzymeRegistry* registry) {
     if (!registry || !cep_cell_operations_registry_records) {
         return NULL;

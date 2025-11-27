@@ -5921,7 +5921,7 @@ void cep_cell_finalize_hard(cepCell* cell) {
         return;
     }
 
-    if (cep_cell_is_shadowed(cell))
+    if (!cep_cell_system_shutting_down() && cep_cell_is_shadowed(cell))
         cep_shadow_break_all(cell);
 
 #ifdef CEP_ENABLE_DEBUG

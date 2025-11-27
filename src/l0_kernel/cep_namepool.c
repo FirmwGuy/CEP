@@ -77,6 +77,8 @@ cep_namepool_state(void)
     return state;
 }
 
+#define cep_namepool_state_if_present() cep_runtime_namepool_state_existing(cep_runtime_default())
+
 #define name_pages            (cep_namepool_state()->pages)
 #define name_page_count       (cep_namepool_state()->page_count)
 #define name_page_cap         (cep_namepool_state()->page_cap)
@@ -899,13 +901,13 @@ bool cep_namepool_reference_is_glob(cepID id) {
     return entry->glob;
 }
 
-static void cep_namepool_free_pages(void) {
-    if (!name_pages) {
+static void cep_namepool_free_pages(cepNamePoolRuntimeState* state) {
+    if (!state || !state->pages) {
         return;
     }
 
-    for (size_t i = 0; i < name_page_count; ++i) {
-        cepNamePoolPage* page = name_pages[i];
+    for (size_t i = 0; i < state->page_count; ++i) {
+        cepNamePoolPage* page = state->pages[i];
         if (!page) {
             continue;
         }
@@ -914,57 +916,80 @@ static void cep_namepool_free_pages(void) {
         }
         CEP_DEBUG_PRINTF_STDOUT("[namepool:page_free] index=%zu page=%p\n", i, (void*)page);
         cep_free(page);
-        name_pages[i] = NULL;
+        state->pages[i] = NULL;
     }
-    cep_free(name_pages);
-    name_pages = NULL;
-    name_page_count = 0u;
-    name_page_cap = 0u;
+    cep_free(state->pages);
+    state->pages = NULL;
+    state->page_count = 0u;
+    state->page_cap = 0u;
 }
 
-static void cep_namepool_free_buckets(void) {
-    if (!name_buckets) {
+static void cep_namepool_free_buckets(cepNamePoolRuntimeState* state) {
+    if (!state || !state->buckets) {
         return;
     }
     CEP_DEBUG_PRINTF_STDOUT("[namepool:buckets_free] table=%p cap=%zu count=%zu\n",
-           (void*)name_buckets,
-           name_bucket_cap,
-           name_bucket_count);
-    cep_free(name_buckets);
-    name_buckets = NULL;
-    name_bucket_cap = 0u;
-    name_bucket_count = 0u;
-    name_bucket_threshold = 0u;
+           (void*)state->buckets,
+           state->bucket_cap,
+           state->bucket_count);
+    cep_free(state->buckets);
+    state->buckets = NULL;
+    state->bucket_cap = 0u;
+    state->bucket_count = 0u;
+    state->bucket_threshold = 0u;
 }
 
 void cep_namepool_clear_cache(void) {
+    cepNamePoolRuntimeState* state = cep_namepool_state_if_present();
+    if (!state) {
+        return;
+    }
+
     CEP_DEBUG_PRINTF_STDOUT("[namepool:clear_cache] root=%p pages=%p bucketTable=%p\n",
-           (void*)namepool_root,
-           (void*)name_pages,
-           (void*)name_buckets);
-    cep_namepool_free_pages();
-    cep_namepool_free_buckets();
+           (void*)state->root,
+           (void*)state->pages,
+           (void*)state->buckets);
+    cep_namepool_free_pages(state);
+    cep_namepool_free_buckets(state);
 }
 
 /** Reset cached namepool metadata so a fresh bootstrap can rebuild dictionaries
     after the cell system shuts down. */
 void cep_namepool_reset(void) {
+    cepNamePoolRuntimeState* state = cep_namepool_state_if_present();
+    if (!state) {
+        return;
+    }
+
     CEP_DEBUG_PRINTF_STDOUT("[namepool:reset] root=%p pages=%p pageCount=%zu bucketTable=%p bucketCap=%zu bucketCount=%zu threshold=%zu\n",
-           (void*)namepool_root,
-           (void*)name_pages,
-           name_page_count,
-           (void*)name_buckets,
-           name_bucket_cap,
-           name_bucket_count,
-           name_bucket_threshold);
-    cep_namepool_free_pages();
-    cep_namepool_free_buckets();
-    namepool_root = NULL;
+           (void*)state->root,
+           (void*)state->pages,
+           state->page_count,
+           (void*)state->buckets,
+           state->bucket_cap,
+           state->bucket_count,
+           state->bucket_threshold);
+    cep_namepool_free_pages(state);
+    cep_namepool_free_buckets(state);
+    state->root = NULL;
 
     CEP_DEBUG_PRINTF_STDOUT("[namepool:reset_done] root=%p pages=%p bucketTable=%p\n",
-           (void*)namepool_root,
-           (void*)name_pages,
-           (void*)name_buckets);
+           (void*)state->root,
+           (void*)state->pages,
+           (void*)state->buckets);
+}
+
+/* Release cached namepool storage and destroy the runtime state so shutdown
+   cannot resurrect a fresh state after callers already freed the previous
+   one. */
+void cep_namepool_shutdown(void) {
+    cepRuntime* runtime = cep_runtime_default();
+    cepNamePoolRuntimeState* state = cep_runtime_namepool_state_existing(runtime);
+    if (!state) {
+        return;
+    }
+    cep_namepool_reset();
+    cep_runtime_release_namepool_state(runtime);
 }
 
 struct cepNamePoolRuntimeState*

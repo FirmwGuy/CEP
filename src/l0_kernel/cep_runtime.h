@@ -8,6 +8,7 @@
 
 #include "cep_ops.h"
 #include "cep_heartbeat.h"
+#include "cep_executor.h"
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -66,6 +67,8 @@ typedef struct {
     bool                      enzyme_registered;
     cepDT                     signal_ep_cont;
     cepDT                     signal_op_tmo;
+    cepEpExecutionPolicy      default_policy;
+    bool                      default_policy_initialized;
     _Atomic(const char*)      last_lease_fail_reason;
 } cepEpRuntimeState;
 
@@ -82,11 +85,17 @@ bool             cep_runtime_attach_metadata(cepRuntime* runtime);
 cepHeartbeatRuntime*    cep_runtime_heartbeat(cepRuntime* runtime);
 struct cepControlRuntimeState* cep_runtime_control_state(cepRuntime* runtime);
 cepHeartbeatTopology*   cep_runtime_default_topology(cepRuntime* runtime);
+struct cepNamePoolRuntimeState* cep_runtime_namepool_state_existing(cepRuntime* runtime);
 struct cepNamePoolRuntimeState* cep_runtime_namepool_state(cepRuntime* runtime);
+bool             cep_runtime_has_namepool_state(const cepRuntime* runtime);
+void             cep_runtime_release_namepool_state(cepRuntime* runtime);
 cepMailboxRuntimeSettings* cep_runtime_mailbox_settings(cepRuntime* runtime);
 cepSerializationRuntimeState* cep_runtime_serialization_state(cepRuntime* runtime);
 cepEpRuntimeState* cep_runtime_ep_state(cepRuntime* runtime);
+struct cepOrganRegistryState* cep_runtime_organ_registry_existing(cepRuntime* runtime);
 struct cepOrganRegistryState* cep_runtime_organ_registry(cepRuntime* runtime);
+bool             cep_runtime_has_organ_registry(const cepRuntime* runtime);
+void             cep_runtime_release_organ_registry(cepRuntime* runtime);
 struct cepExecutorRuntimeState* cep_runtime_executor_state(cepRuntime* runtime);
 bool                    cep_runtime_has_executor_state(const cepRuntime* runtime);
 struct cepFederationRuntimeState* cep_runtime_federation_state(cepRuntime* runtime);

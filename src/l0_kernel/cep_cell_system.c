@@ -76,7 +76,8 @@ void cep_cell_system_shutdown(void) {
 
     cep_cell_finalize_hard(root);
     CEP_0(root);
-    cep_namepool_reset();
+    cep_namepool_shutdown();
+    cep_runtime_release_organ_registry(cep_runtime_default());
     g_cell_system_shutting_down = false;
 }
 

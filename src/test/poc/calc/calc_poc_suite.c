@@ -130,6 +130,8 @@ calc_poc_bootstrap_runtime(void)
 static void
 calc_poc_shutdown_runtime(void)
 {
+    (void)cep_l2_shutdown();
+    (void)cep_l1_pack_shutdown();
     cep_stream_clear_pending();
     cepRuntime* runtime = cep_runtime_active();
     if (!runtime) {
@@ -1006,6 +1008,39 @@ calc_poc_runtime_smoke(const MunitParameter params[], void* user_data_or_fixture
 
     munit_assert_true(calc_poc_bootstrap_runtime());
     calc_poc_seed_calc_layout();
+    munit_assert_true(cep_namepool_bootstrap());
+    cepL1SchemaLayout l1_layout = {0};
+    munit_assert_true(cep_l1_schema_ensure(&l1_layout));
+    (void)cep_l1_pack_shutdown();
+    if (!cep_l1_pack_bootstrap()) {
+        int last_err = cep_ops_debug_last_error();
+        cepCell* diag = cep_cei_diagnostics_mailbox();
+        diag = diag ? cep_cell_resolve(diag) : NULL;
+        size_t diag_count = 0u;
+        char diag_topics[256] = {0};
+        if (diag) {
+            cepCell* msgs = cep_cell_find_by_name(diag, CEP_DTAW("CEP", "msgs"));
+            msgs = msgs ? cep_cell_resolve(msgs) : diag;
+            diag_count = msgs ? cep_cell_children(msgs) : 0u;
+            size_t offset = 0u;
+            for (cepCell* entry = msgs ? cep_cell_first(msgs) : NULL; entry; entry = cep_cell_next(msgs, entry)) {
+                cepCell* resolved = cep_cell_resolve(entry);
+                cepCell* topic_cell = resolved ? cep_cell_find_by_name(resolved, CEP_DTAW("CEP", "topic")) : NULL;
+                topic_cell = topic_cell ? cep_cell_resolve(topic_cell) : NULL;
+                const char* topic_text = topic_cell && cep_cell_has_data(topic_cell) ? (const char*)cep_cell_data(topic_cell) : "<null>";
+                if (offset + strlen(topic_text) + 2u < sizeof diag_topics) {
+                    offset += snprintf(diag_topics + offset, sizeof diag_topics - offset, "%s,", topic_text);
+                }
+            }
+        }
+        munit_errorf("cep_l1_pack_bootstrap failed (kernel_ready=%d namepool_ready=%d registry=%p last_err=%d diag_count=%zu diag_topics=%s)",
+                     cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_KERNEL) ? 1 : 0,
+                     cep_lifecycle_scope_is_ready(CEP_LIFECYCLE_SCOPE_NAMEPOOL) ? 1 : 0,
+                     (void*)cep_heartbeat_registry(),
+                     last_err,
+                     diag_count,
+                     diag_topics);
+    }
     calc_poc_seed_l1_pipeline();
     calc_poc_seed_stdio_env();
 
@@ -1203,7 +1238,7 @@ calc_poc_runtime_smoke(const MunitParameter params[], void* user_data_or_fixture
     cepCell* nodes_root = calc_poc_require_dictionary(graph_root, "nodes", CEP_STORAGE_RED_BLACK_T);
     size_t node_count = nodes_root ? cep_cell_children(nodes_root) : 0u;
     size_t decisions_before = cep_cell_children(decisions_root);
-    bool pump_ok = cep_l2_runtime_scheduler_pump(eco_root, false);
+    bool pump_ok = cep_l2_runtime_scheduler_pump(eco_root);
     int last_err = cep_ops_debug_last_error();
     fprintf(stderr, "[calc_poc] l2 pump ok=%d flows=%zu orgs=%zu nodes=%zu err=%d\n",
             pump_ok ? 1 : 0,
@@ -1346,7 +1381,7 @@ calc_poc_runtime_smoke(const MunitParameter params[], void* user_data_or_fixture
     fprintf(stderr, "[calc_poc] decisions_before_replay=%zu\n", decisions_before_replay);
     uint64_t metric_before_replay = chosen_metric_count;
     (void)calc_poc_seed_l2_calc_flow(true, 4u, "int_small");
-    munit_assert_true(cep_l2_runtime_scheduler_pump(eco_root, false));
+    munit_assert_true(cep_l2_runtime_scheduler_pump(eco_root));
 
     results = calc_poc_branch("results", CEP_STORAGE_RED_BLACK_T);
     cepCell* replay_res = cep_cell_find_by_name(results, &expr_replay_dt);
@@ -1413,7 +1448,7 @@ calc_poc_runtime_smoke(const MunitParameter params[], void* user_data_or_fixture
         }
     }
 
-    munit_assert_true(cep_l2_runtime_scheduler_pump(eco_root, false));
+    munit_assert_true(cep_l2_runtime_scheduler_pump(eco_root));
 
     results = calc_poc_branch("results", CEP_STORAGE_RED_BLACK_T);
     cepCell* forced_res = cep_cell_find_by_name(results, &expr_forced_dt);
@@ -1463,7 +1498,7 @@ calc_poc_runtime_smoke(const MunitParameter params[], void* user_data_or_fixture
 
     (void)calc_poc_seed_l2_calc_flow(false, 1u, "int_small");
     calc_poc_seed_decision_choice(eco_root, "calc_decide", "variant:calc_safe");
-    (void)cep_l2_runtime_scheduler_pump(eco_root, false);
+    (void)cep_l2_runtime_scheduler_pump(eco_root);
 
     diag = cep_cei_diagnostics_mailbox();
     diag = diag ? cep_cell_resolve(diag) : NULL;

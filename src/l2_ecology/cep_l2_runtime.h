@@ -25,7 +25,7 @@ bool cep_l2_runtime_seed_runtime(cepCell* eco_root);
 /* Scheduler stub that will later scan L1 runtime triggers and app events to
  * start organisms. Today it only exists to preserve the call flow and should
  * be extended once triggers and Flow VM hooks are in place. */
-bool cep_l2_runtime_scheduler_pump(cepCell* eco_root, bool l1_present);
+bool cep_l2_runtime_scheduler_pump(cepCell* eco_root);
 
 /* Appends an append-only history entry under `/data/eco/runtime/history`,
  * recording pipeline metadata, ecological identifiers, and an optional note so

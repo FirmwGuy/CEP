@@ -720,7 +720,7 @@ bool cep_l2_runtime_seed_runtime(cepCell* eco_root) {
 
 /* TODO: replace stub with trigger scanning and organism creation once the Flow
  * VM and scheduler inputs are connected. */
-bool cep_l2_runtime_scheduler_pump(cepCell* eco_root, bool l1_present) {
+bool cep_l2_runtime_scheduler_pump(cepCell* eco_root) {
     if (!eco_root) {
         return false;
     }
@@ -731,35 +731,32 @@ bool cep_l2_runtime_scheduler_pump(cepCell* eco_root, bool l1_present) {
     cepCell* organisms_root = runtime_root ? cep_l2_runtime_resolve_child(runtime_root, dt_runtime_organisms()) : NULL;
     cepCell* flows_root = cep_l2_runtime_resolve_child(eco_root, dt_eco_flows_root());
 
-    cepCell* runs_root = NULL;
-    cepCell* pipelines_root = NULL;
-    cepCell* l1_metrics_root = NULL;
-    if (l1_present) {
-        cepCell* flow_root = data_root ? cep_l2_runtime_resolve_child(data_root, dt_l1_flow_root()) : NULL;
-        if (flow_root) {
-            pipelines_root = cep_l2_runtime_resolve_child(flow_root, dt_l1_flow_pipelines());
-            cepCell* flow_runtime = cep_l2_runtime_resolve_child(flow_root, dt_l1_flow_runtime());
-            runs_root = flow_runtime ? cep_l2_runtime_resolve_child(flow_runtime, dt_l1_flow_runs()) : NULL;
-            l1_metrics_root = flow_root ? cep_l2_runtime_resolve_child(flow_root, dt_l1_flow_metrics()) : NULL;
-            if (runs_root) {
-                (void)cep_l1_runtime_gc_runs(runs_root);
-                if (pipelines_root) {
-                    (void)cep_l1_runtime_verify_edges(runs_root, pipelines_root);
-                }
-                if (l1_metrics_root) {
-                    (void)cep_l1_runtime_rollup_metrics(runs_root, l1_metrics_root);
-                }
-            }
-        }
-    }
+    cepCell* flow_root = data_root ? cep_l2_runtime_resolve_child(data_root, dt_l1_flow_root()) : NULL;
+    cepCell* pipelines_root = flow_root ? cep_l2_runtime_resolve_child(flow_root, dt_l1_flow_pipelines()) : NULL;
+    cepCell* flow_runtime = flow_root ? cep_l2_runtime_resolve_child(flow_root, dt_l1_flow_runtime()) : NULL;
+    cepCell* runs_root = flow_runtime ? cep_l2_runtime_resolve_child(flow_runtime, dt_l1_flow_runs()) : NULL;
+    cepCell* l1_metrics_root = flow_root ? cep_l2_runtime_resolve_child(flow_root, dt_l1_flow_metrics()) : NULL;
 
-    if (!flows_root || !organisms_root) {
+    if (!flows_root || !organisms_root || !flow_root || !pipelines_root || !runs_root || !l1_metrics_root) {
         return false;
     }
 
+    if (!cep_cell_require_dictionary_store(&flows_root) ||
+        !cep_cell_require_dictionary_store(&organisms_root) ||
+        !cep_cell_require_dictionary_store(&flow_root) ||
+        !cep_cell_require_dictionary_store(&pipelines_root) ||
+        !cep_cell_require_dictionary_store(&runs_root) ||
+        !cep_cell_require_dictionary_store(&l1_metrics_root)) {
+        return false;
+    }
+
+    (void)cep_l1_runtime_gc_runs(runs_root);
+    (void)cep_l1_runtime_verify_edges(runs_root, pipelines_root);
+    (void)cep_l1_runtime_rollup_metrics(runs_root, l1_metrics_root);
+
     bool ok = true;
     const size_t step_budget = 4u;
-    cepCell* first_run = runs_root ? cep_cell_first(runs_root) : NULL;
+    cepCell* first_run = cep_cell_first(runs_root);
     for (cepCell* flow = cep_cell_first(flows_root); flow; flow = cep_cell_next(flows_root, flow)) {
         cepCell* resolved = cep_cell_resolve(flow);
         if (!resolved) {

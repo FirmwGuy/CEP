@@ -5,8 +5,8 @@ This note distills the Layer 2 ecology pack into the concrete surfaces that ex
 
 ## Technical Details
 - **Bootstrap/shutdown**  
-  - `cep_l2_bootstrap()` seeds `/data/eco/**` and `/data/learn/**`, registers organs/enzymes idempotently, probes for L1, seeds schemas under `/data/eco/schema/**`, and opens `op/l2_boot` with readiness evidence.  
-  - `cep_l2_shutdown()` closes `op/l2_shdn`, stops new flow episodes, marks organisms cancelled/finished, flushes metrics, and never blocks kernel teardown even if the pack never started.
+  - `cep_l2_bootstrap()` seeds `/data/eco/**` and `/data/learn/**`, registers organs/enzymes idempotently, probes for L1, seeds schemas under `/data/eco/schema/**`, and opens `op:l2_boot` with readiness evidence.  
+  - `cep_l2_shutdown()` closes `op:l2_shdn`, stops new flow episodes, marks organisms cancelled/finished, flushes metrics, and never blocks kernel teardown even if the pack never started.
 - **Organs, bindings, and schema**  
   - Organs: `org:eco_root`, `org:eco_flows`, `org:eco_runtime`, `org:learn_models` (ct/vl/dt handlers mirroring L1 patterns; deterministic tombstone-safe bindings).  
   - Pack roots: `/data/eco/**` (species, variants, niches, guardians, flows, runtime organisms/history/decisions/metrics) and `/data/learn/**` (model snapshots + provenance). Canonical IDs may mirror L1 beings/bonds/contexts when present. Append-only history applies to organisms and model revisions.
@@ -26,7 +26,7 @@ This note distills the Layer 2 ecology pack into the concrete surfaces that ex
 - **Guardians and safety**  
   - Guardian definitions under `/data/eco/guardians/**` scope to species/variants/niches with predicate + action (`hard_deny`, `soft_deny`, `escalate`). Clamp nodes consult guardians and E3 budgets, emit CEI with pipeline metadata, and set organism/episode status accordingly.
 - **Observability surfaces**  
-  - OPS dossiers: `op/l2_boot`, `op/l2_shdn`, flow episodes (with pipeline metadata).  
+- OPS dossiers: `op:l2_boot`, `op:l2_shdn`, flow episodes (with pipeline metadata).  
   - CEI topics: `eco.guardian.violation`, `eco.limit.hit`, `eco.flow.error`, `eco.evolution.proposed`. Diagnostics mailbox defaults to `/data/mailbox/diag` unless a pack-owned mailbox is supplied.
 - **Code/test layout**  
   Implementation lives in `src/l2_ecology/**`; tests sit in `src/test/l2_ecology/**` gated by `CEP_L2_TESTS` to avoid default-suite bloat. Avoid touching `src/l0_kernel/**` and `docs/L0_KERNEL/**` unless cross-layer interfaces change.
@@ -41,4 +41,4 @@ This note distills the Layer 2 ecology pack into the concrete surfaces that ex
 ## Q&A
 - **Compatibility with the shipping kernel?** The pack consumes only public L0/L1 APIs, ships its own organs/enzymes under `src/l2_ecology`, and remains optional during boot/shutdown; no L0 rewrite is required.  
 - **What if L1 is missing?** Scheduler + Flow VM still run against L0 state but skip coherence/pipeline rewrites; species/variants/niches remain pack-local and pipeline metadata defaults to caller-provided IDs.  
-- **How is readiness proven?** `op/l2_boot` closes with `sts:ok`, `/data/eco/meta/state="ready"` (with beat/version), and deterministic CEI/OPS entries around guardian hits and Decision Cells; `op/l2_shdn` mirrors shutdown progress without blocking kernel teardown.
+- **How is readiness proven?** `op:l2_boot` closes with `sts:ok`, `/data/eco/meta/state="ready"` (with beat/version), and deterministic CEI/OPS entries around guardian hits and Decision Cells; `op:l2_shdn` mirrors shutdown progress without blocking kernel teardown.

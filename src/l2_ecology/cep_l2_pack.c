@@ -16,15 +16,14 @@
 
 typedef struct {
     bool   bootstrap_done;
-    bool   l1_present;
     cepOID boot_oid;
     cepOID shdn_oid;
 } cepL2PackState;
 
 static cepL2PackState g_l2_pack_state = {0};
 
-CEP_DEFINE_STATIC_DT(dt_l2_boot_verb, CEP_ACRO("CEP"), cep_namepool_intern_cstr("op/l2_boot"));
-CEP_DEFINE_STATIC_DT(dt_l2_shdn_verb, CEP_ACRO("CEP"), cep_namepool_intern_cstr("op/l2_shdn"));
+CEP_DEFINE_STATIC_DT(dt_l2_boot_verb, CEP_ACRO("CEP"), CEP_WORD("op:l2_boot"));
+CEP_DEFINE_STATIC_DT(dt_l2_shdn_verb, CEP_ACRO("CEP"), CEP_WORD("op:l2_shdn"));
 CEP_DEFINE_STATIC_DT(dt_l2_op_mode_states, CEP_ACRO("CEP"), CEP_WORD("opm:states"));
 CEP_DEFINE_STATIC_DT(dt_l2_state_field, CEP_ACRO("CEP"), CEP_WORD("state"));
 CEP_DEFINE_STATIC_DT(dt_l2_note_field, CEP_ACRO("CEP"), CEP_WORD("note"));
@@ -94,11 +93,14 @@ bool cep_l2_bootstrap(void) {
                                             0u,
                                             0u);
 
-    g_l2_pack_state.l1_present = cep_l2_pack_detect_l1();
+    if (!cep_l2_pack_detect_l1()) {
+        (void)cep_op_close(g_l2_pack_state.boot_oid, *dt_l2_status_fail(), "l1_required", sizeof("l1_required") - 1u);
+        return false;
+    }
 
     cepCell* eco_root = NULL;
     cepCell* learn_root = NULL;
-    if (!cep_l2_schema_seed_roots(topo->data, g_l2_pack_state.l1_present, &eco_root, &learn_root)) {
+    if (!cep_l2_schema_seed_roots(topo->data, &eco_root, &learn_root)) {
         (void)cep_op_close(g_l2_pack_state.boot_oid, *dt_l2_status_fail(), "schema_seed_failed", sizeof("schema_seed_failed") - 1u);
         return false;
     }
@@ -114,7 +116,7 @@ bool cep_l2_bootstrap(void) {
         return false;
     }
 
-    if (!cep_l2_runtime_scheduler_pump(eco_root, g_l2_pack_state.l1_present)) {
+    if (!cep_l2_runtime_scheduler_pump(eco_root)) {
         (void)cep_op_close(g_l2_pack_state.boot_oid, *dt_l2_status_fail(), "scheduler_init_failed", sizeof("scheduler_init_failed") - 1u);
         return false;
     }
@@ -156,8 +158,4 @@ bool cep_l2_shutdown(void) {
     (void)cep_op_close(g_l2_pack_state.shdn_oid, *dt_l2_status_ok(), "ok", sizeof("ok") - 1u);
     g_l2_pack_state.bootstrap_done = false;
     return true;
-}
-
-bool cep_l2_l1_present(void) {
-    return g_l2_pack_state.l1_present;
 }

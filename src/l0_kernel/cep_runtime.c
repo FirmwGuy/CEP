@@ -234,6 +234,41 @@ cep_runtime_namepool_state(cepRuntime* runtime)
     return runtime->namepool_state;
 }
 
+/* Return the live namepool runtime state without instantiating a new one so
+   teardown paths can tell whether cached pages/buckets need destruction or can
+   simply exit. */
+struct cepNamePoolRuntimeState*
+cep_runtime_namepool_state_existing(cepRuntime* runtime)
+{
+    cepRuntime* target = runtime ? runtime : cep_runtime_default();
+    return target ? target->namepool_state : NULL;
+}
+
+/* Answer whether the runtime already carries a namepool state. This is useful
+   to short-circuit shutdown logic so cleanup never re-creates a state that had
+   already been destroyed earlier in the teardown sequence. */
+bool
+cep_runtime_has_namepool_state(const cepRuntime* runtime)
+{
+    const cepRuntime* target = runtime ? runtime : cep_runtime_default();
+    return target && target->namepool_state != NULL;
+}
+
+/* Destroy any existing namepool runtime state and clear the pointer so
+   subsequent bootstraps start from a clean slate instead of reusing cached
+   pages that could outlive the enclosing runtime. */
+void
+cep_runtime_release_namepool_state(cepRuntime* runtime)
+{
+    cepRuntime* target = runtime ? runtime : cep_runtime_default();
+    if (!target || !target->namepool_state) {
+        return;
+    }
+
+    cep_namepool_state_destroy(target->namepool_state);
+    target->namepool_state = NULL;
+}
+
 cepMailboxRuntimeSettings*
 cep_runtime_mailbox_settings(cepRuntime* runtime)
 {
@@ -279,6 +314,39 @@ cep_runtime_organ_registry(cepRuntime* runtime)
         runtime->organ_registry = cep_organ_registry_create();
     }
     return runtime->organ_registry;
+}
+
+/* Surface the organ registry when it already exists so reset paths do not
+   allocate fresh state while the runtime is tearing down. */
+struct cepOrganRegistryState*
+cep_runtime_organ_registry_existing(cepRuntime* runtime)
+{
+    cepRuntime* target = runtime ? runtime : cep_runtime_default();
+    return target ? target->organ_registry : NULL;
+}
+
+/* Report whether an organ registry is present so shutdown can skip any work
+   that would otherwise instantiate a new one after the caller already freed
+   the previous copy. */
+bool
+cep_runtime_has_organ_registry(const cepRuntime* runtime)
+{
+    const cepRuntime* target = runtime ? runtime : cep_runtime_default();
+    return target && target->organ_registry != NULL;
+}
+
+/* Tear down and clear the organ registry for the supplied runtime so the next
+   bootstrap does not inherit stale descriptors or leak the registry storage. */
+void
+cep_runtime_release_organ_registry(cepRuntime* runtime)
+{
+    cepRuntime* target = runtime ? runtime : cep_runtime_default();
+    if (!target || !target->organ_registry) {
+        return;
+    }
+
+    cep_organ_registry_destroy(target->organ_registry);
+    target->organ_registry = NULL;
 }
 
 struct cepExecutorRuntimeState*
@@ -555,15 +623,9 @@ cep_runtime_shutdown(cepRuntime* runtime)
         runtime->executor_state = NULL;
     }
 
-    if (runtime->organ_registry) {
-        cep_organ_registry_destroy(runtime->organ_registry);
-        runtime->organ_registry = NULL;
-        CEP_DEBUG_PRINTF_STDOUT("[instrument][runtime_shutdown] organ_registry_destroyed runtime=%p\n", (void*)runtime);
-    }
-
-    if (runtime->namepool_state) {
-        cep_namepool_state_destroy(runtime->namepool_state);
-        runtime->namepool_state = NULL;
+    cep_runtime_release_organ_registry(runtime);
+    if (!is_default_runtime) {
+        cep_runtime_release_namepool_state(runtime);
     }
 
     if (runtime->federation_state) {

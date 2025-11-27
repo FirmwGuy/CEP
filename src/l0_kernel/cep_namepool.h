@@ -31,6 +31,7 @@ const char* cep_namepool_lookup(cepID id, size_t* length);
 bool    cep_namepool_release(cepID id);
 void    cep_namepool_clear_cache(void);
 void    cep_namepool_reset(void);
+void    cep_namepool_shutdown(void);
 bool    cep_namepool_reference_is_glob(cepID id);
 
 #ifdef __cplusplus

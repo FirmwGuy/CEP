@@ -21,6 +21,10 @@ extern "C" {
  */
 bool cep_cell_operations_register(cepEnzymeRegistry* registry);
 
+/* Release cached registry bookkeeping so shutdown can restart without leaking
+   prior baseline entries. */
+void cep_cell_operations_registry_reset(void);
+
 #ifdef __cplusplus
 }
 #endif

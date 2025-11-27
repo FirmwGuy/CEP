@@ -7,6 +7,7 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - **Core Architecture**
   - `docs/CEP.md` — Big-picture mission and vocabulary; skim first to align terminology.
   - `docs/CEP-Implementation-Reference.md` — Deterministic contract digest covering cells, stores, transports, episodes, higher-layer invariants, and the shipping Enclave policy loader/enforcement workflow.
+  - `docs/CEP-CONTRACTS.md` — Runtime/ownership/threading contract (heartbeat single-owner, executor RO slices, pack bootstrap requirements) collected in one place.
 - **Layer 1 coherence + pipelines**
 - `docs/L1_COHERENCE/README.md` — Layer 1 Coherence — Overview (scope, structure, doc map).
 - Adjacency and closure rules now live under `/data/coh/adj/**` and `/data/coh/schema/ctx_rules/**`; use `op/coh_sweep` to rebuild mirrors. See the L1 coherence README for the latest layout.
@@ -29,10 +30,10 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/topics/LOCKING.md` — Store/data lock propagation to respect when touching concurrency-sensitive code.
   - `docs/L0_KERNEL/topics/LINKS-AND-SHADOWING.md` — Link lifecycle and backlink invariants that moves/clones/deletes rely on.
   - `docs/CEP-TAG-LEXICON.md` — Canonical tag catalog; extend here before introducing new identifiers.
-  - `docs/L0_KERNEL/design/L0-DESIGN-CPS.md` — CPS storage architecture, CAS caching, metrics, fixtures, and operational guidance.
+- `docs/L0_KERNEL/design/L0-DESIGN-CPS.md` — CPS storage architecture, CAS caching, metrics, fixtures, and operational guidance.
 
 - **Runtime & Lifecycle**
-  - `docs/LAYER-BOOTSTRAP-POLICY.md` — Kernel vs. pack responsibilities during bootstrap.
+  - `docs/CEP-CONTRACTS.md` — Ownership/threading contract plus pack bootstrap/shutdown responsibilities (replaces the standalone bootstrap policy).
   - `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md` — Boot/shutdown operation timeline, states, and awaiter guidance.
   - `docs/L0_KERNEL/topics/CEI.md` — Emission helper, diagnostics mailbox defaults, and severity rules for CEI facts.
   - `docs/L0_KERNEL/topics/HEARTBEAT-AND-ENZYMES.md` — Beat phases, agenda ordering, and signal staging contracts.
@@ -104,17 +105,18 @@ The table below groups documents by their owning modules or features. The **Stat
 | --- | --- | --- | --- | --- |
 | `docs/BUILD.md` | Build workflows, Meson/Ninja options, platform setup | Tooling: Meson/Ninja configs, test harness | Live | Matches current Meson options; keep fallback Makefile steps in sync with `unix/Makefile`. |
 | `docs/CEP.md` | Conceptual overview of CEP across all layers | Layer 0 kernel (live), Layers 1–4 (planned) | Mixed | Layer 0 sections align with shipped code; higher-layer coverage remains aspirational and is labelled as such. |
+| `docs/CEP-Implementation-Reference.md` | Deterministic contract digest across the shipped kernel and planned pack constraints | Layer 0 kernel (live) with upper-layer invariants | Mixed | Crosswalks cells/stores/ops/telemetry rules so agents need not reread every design paper. |
+| `docs/CEP-CONTRACTS.md` | Runtime/ownership/threading contract and bootstrap obligations | Layer 0 lifecycle, executor, optional packs | Live | Documents heartbeat single-owner rule, executor RO threading, cache teardown, and pack bootstrap/shutdown discipline. |
 | `docs/CEP-FOR-PL-SQL-DEVS.md` | Onboarding bridge for SQL-centric engineers | Layer 0 API surface, higher-layer concepts (planned) | Mixed | Keep terminology aligned with `docs/CEP-TAG-LEXICON.md`; note that policy/governance layers remain future work. |
 | `docs/L1_COHERENCE/README.md` | Layer 1 Coherence — Overview | Layer 1 pack (coherence + pipelines) | Live | Add future L1 docs under this directory; keep the index in sync. |
 | `docs/L1_COHERENCE/USAGE.md` | Practical usage guide for beings/bonds/contexts/facets/debts/pipelines/runtime/federation | Layer 1 pack (coherence + pipelines) | Live | Step-by-step API walkthroughs and CEI expectations. |
 | `docs/L1_COHERENCE/ADJACENCY-CLOSURE.md` | Contract sketch for coherence adjacency closure and debts | Layer 1 pack (coherence closure) | Draft | TODO hooks for enzymes/CEI; use as design reference before implementation. |
 | `docs/L1_COHERENCE/IMPLEMENTATION.md` | Shipping L1 implementation surface and CEI/topic coverage | Layer 1 pack (coherence + pipelines) | Live | Mirrors current helpers (closure, pipelines, runtime fan-in/out, federation metadata). |
-| `docs/L2_ECOLOGY/L2-OVERVIEW.md` | Optional L2 Ecology pack overview (Flow VM, ecology model, data roots) | Layer 2 pack (ecology + flows) | Draft | Documents pack boundaries, optional dependency on L1, and code/test/documentation layout (runtime/metrics/decisions/history seeded; Flow VM semantics still in progress). |
-| `docs/L2_ECOLOGY/L2-IMPLEMENTATION.md` | Implementation plan for the L2 pack | Layer 2 pack (ecology + flows) | Draft | Captures bootstrap/shutdown contract, organs, schemas, Flow VM runtime, Decision Cells/replay, guardians, and phased delivery steps (Flow VM execution still under construction). |
+| `docs/L2_ECOLOGY/L2-OVERVIEW.md` | Optional L2 Ecology pack overview (Flow VM, ecology model, data roots) | Layer 2 pack (ecology + flows) | Draft | Documents pack boundaries, requires L1 coherence/pipelines, and covers code/test/documentation layout (runtime/metrics/decisions/history seeded; Flow VM semantics still in progress). |
+| `docs/L2_ECOLOGY/L2-IMPLEMENTATION.md` | Implementation plan for the L2 pack | Layer 2 pack (ecology + flows) | Draft | Captures bootstrap/shutdown contract (now strictly layered on L1), organs, schemas, Flow VM runtime, Decision Cells/replay, guardians, and phased delivery steps (Flow VM execution still under construction). |
 | `docs/CEP-TAG-LEXICON.md` | Canonical tag catalogue and naming rules | Domain/tag encoding, namepool tooling | Live | Run `tools/check_unused_tags.py` after expanding the table. |
 | `docs/L0_KERNEL/topics/DEBUG-MACROS.md` | Debug macro behaviour and usage patterns | `src/l0_kernel/cep_molecule.h`, debug flags | Live | No drift detected; ensure new debug wrappers get documented here. |
 | `docs/DOCS-ORIENTATION-GUIDE.md` | Reading map for contributors returning to the repo | Documentation navigation | Live | Updated whenever new doc categories (e.g., Design docs) join the set. |
-| `docs/LAYER-BOOTSTRAP-POLICY.md` | Policy for optional packs bootstrapping alongside the kernel | Lifecycle scopes, `op/boot` interplay | Live | Mirrors current startup/shutdown guarantees; cross-check with `docs/L0_KERNEL/topics/STARTUP-AND-SHUTDOWN.md`. |
 | `docs/LICENSING.md` | Licensing breakdown for code and third-party assets | Legal notices | Live | No changes required; reference when adding dependencies. |
 | `docs/ROOT-DIRECTORY-LAYOUT.md` | Expected runtime filesystem tree | Kernel lifecycle, storage layout | Live | Ensure new directories created during bootstrap are reflected. |
 | `docs/TEST-WATCHDOG-GUIDE.md` | Watchdog and test harness expectations | Test harness utilities | Live | Keep in sync with `test/` harness parameters. |

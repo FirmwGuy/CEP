@@ -130,6 +130,8 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `persist.evict` | RT | CEI topic emitted when CPCL trims branch cache history because RAM windows or quotas require eviction. |
 | `persist.snapshot` | RT | CEI topic emitted when an operator enables the read-only snapshot policy for a branch. |
 | `persist.defer` | RT | CEI topic emitted when a branch is placed into deferred/on-demand flush mode. |
+| `op:l2_boot` | L2 | Operation verb used by the Layer 2 pack boot helper to publish readiness evidence. |
+| `op:l2_shdn` | L2 | Operation verb used by the Layer 2 pack shutdown helper to mark teardown. |
 | `chn:serial` | ASYNC | OPS/telemetry channel name reserved for the flat serializer sink. |
 | `prov:serial` | ASYNC | Async provider identifier recorded alongside serializer sink requests. |
 | `react:ser` | ASYNC | Reactor identifier mirrored into serializer async metadata. |
@@ -226,8 +228,8 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `txn` | RT | transaction metadata bucket (`meta/txn`) tracking veiled staging state. |
 | `boot_oid` | RT | `val/bytes` cell under `/sys/state` publishing the boot operation OID. |
 | `shdn_oid` | RT | `val/bytes` cell under `/sys/state` publishing the shutdown operation OID. |
-| `op/l1_boot` | L1 | Operation verb used by the Layer 1 pack boot helper to publish readiness evidence. |
-| `op/l1_shdn` | L1 | Operation verb used by the Layer 1 pack shutdown helper to mark teardown. |
+| `op:l1_boot` | L1 | Operation verb used by the Layer 1 pack boot helper to publish readiness evidence. |
+| `op:l1_shdn` | L1 | Operation verb used by the Layer 1 pack shutdown helper to mark teardown. |
 | `op/coh_sweep` | L1 | Operation verb used to run a coherence adjacency/facet sweep over all contexts. |
 | `namepool` | RT | identifier intern table. |
 | `next_msg_id` | RT | deterministic counter stored under `meta/runtime/next_msg_id`. |
