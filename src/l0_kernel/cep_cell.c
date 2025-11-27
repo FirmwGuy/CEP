@@ -2091,13 +2091,16 @@ static void cep_shadow_detach(cepCell* target, const cepCell* link)
     if (!target || !link)
         return;
 
+    unsigned shadowing = target->metacell.shadowing;
+    if (shadowing == CEP_SHADOW_NONE) {
+        ((cepCell*)link)->metacell.targetDead = 0;
+        return;
+    }
+
     cepCell** singleSlot   = cep_shadow_single_slot(target);
     cepShadow** listSlot   = cep_shadow_list_slot(target);
 
-    switch (target->metacell.shadowing) {
-      case CEP_SHADOW_NONE:
-        break;
-
+    switch (shadowing) {
       case CEP_SHADOW_SINGLE: {
         assert(singleSlot);
         assert(*singleSlot == link);
@@ -5853,8 +5856,14 @@ static void cep_cell_release_contents(cepCell* cell) {
       }
 
       case CEP_TYPE_LINK: {
-        if (cell->link)
-            cep_link_set(cell, NULL);
+        if (cell->link) {
+            if (cep_cell_system_shutting_down()) {
+                cell->link = NULL;
+                cell->metacell.targetDead = 0;
+            } else {
+                cep_link_set(cell, NULL);
+            }
+        }
         break;
       }
     }

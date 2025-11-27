@@ -88,6 +88,7 @@ cepSerializationRuntimeState* cep_runtime_serialization_state(cepRuntime* runtim
 cepEpRuntimeState* cep_runtime_ep_state(cepRuntime* runtime);
 struct cepOrganRegistryState* cep_runtime_organ_registry(cepRuntime* runtime);
 struct cepExecutorRuntimeState* cep_runtime_executor_state(cepRuntime* runtime);
+bool                    cep_runtime_has_executor_state(const cepRuntime* runtime);
 struct cepFederationRuntimeState* cep_runtime_federation_state(cepRuntime* runtime);
 struct cepAsyncRuntimeState* cep_runtime_async_state(cepRuntime* runtime);
 cepBranchControllerRegistry* cep_runtime_branch_registry(cepRuntime* runtime);

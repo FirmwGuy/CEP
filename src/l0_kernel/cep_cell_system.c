@@ -27,6 +27,14 @@ cepOpCount cep_cell_timestamp_next(void) {
     return next;
 }
 
+static bool g_cell_system_shutting_down = false;
+
+bool
+cep_cell_system_shutting_down(void)
+{
+    return g_cell_system_shutting_down;
+}
+
 void cep_cell_timestamp_reset(void) {
     cepOpCount* counter = cep_runtime_op_counter(cep_runtime_default());
     if (counter) {
@@ -63,11 +71,13 @@ void cep_cell_system_shutdown(void) {
         return;
     }
 
+    g_cell_system_shutting_down = true;
     cep_heartbeat_detach_topology();
 
     cep_cell_finalize_hard(root);
     CEP_0(root);
     cep_namepool_reset();
+    g_cell_system_shutting_down = false;
 }
 
 bool cep_cell_system_initialized(void) {

@@ -293,6 +293,13 @@ cep_runtime_executor_state(cepRuntime* runtime)
     return runtime->executor_state;
 }
 
+bool
+cep_runtime_has_executor_state(const cepRuntime* runtime)
+{
+    const cepRuntime* target = runtime ? runtime : cep_runtime_default();
+    return target && target->executor_state != NULL;
+}
+
 struct cepFederationRuntimeState*
 cep_runtime_federation_state(cepRuntime* runtime)
 {

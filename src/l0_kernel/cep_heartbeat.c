@@ -4929,6 +4929,10 @@ bool cep_heartbeat_emit_shutdown(void) {
 /** Stop the heartbeat runtime and release scratch buffers so subsequent
     start-ups begin from a clean state. */
 void cep_heartbeat_shutdown(void) {
+    if (CEP_RUNTIME.sys_shutdown_emitted) {
+        return;
+    }
+
     (void)cep_heartbeat_emit_shutdown();
 
     cep_runtime_reset_state(true);

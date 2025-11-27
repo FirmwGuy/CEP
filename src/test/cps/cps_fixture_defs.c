@@ -1,3 +1,9 @@
+/* To the extent possible under law, the authors have dedicated this
+ * work to the public domain by waiving all rights to the work worldwide
+ * under CC0 1.0. You can copy, modify, distribute, and perform this work,
+ * even for commercial purposes, without asking permission.
+ * See https://creativecommons.org/publicdomain/zero/1.0/. */
+
 #include "cps_fixture_defs.h"
 
 const uint8_t k_cps_fixture_inline_cell_key[] = {0x11u, 0x01u};

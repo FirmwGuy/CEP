@@ -1,3 +1,9 @@
+/* To the extent possible under law, the authors have dedicated this
+ * work to the public domain by waiving all rights to the work worldwide
+ * under CC0 1.0. You can copy, modify, distribute, and perform this work,
+ * even for commercial purposes, without asking permission.
+ * See https://creativecommons.org/publicdomain/zero/1.0/. */
+
 /* Calculator POC smoke scaffolding: establishes the calc branch layout, seeds
  * pipeline metadata, and anchors the stage roster so the POC can grow without
  * sharing the monolithic test runner.
@@ -126,9 +132,16 @@ calc_poc_shutdown_runtime(void)
 {
     cep_stream_clear_pending();
     cepRuntime* runtime = cep_runtime_active();
+    if (!runtime) {
+        runtime = cep_runtime_default();
+    }
+    cepEnzymeRegistry* registry = cep_heartbeat_registry();
     (void)cep_runtime_shutdown(runtime);
     if (runtime == cep_runtime_default()) {
-        cep_cell_system_shutdown();
+        if (registry) {
+            cep_enzyme_registry_destroy(registry);
+        }
+        cep_heartbeat_shutdown();
         cep_l0_bootstrap_reset();
     }
     calc_poc_stdin_fp = NULL;

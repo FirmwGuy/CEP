@@ -188,6 +188,10 @@ These commands are referenced throughout the Enclave design/topic docs; updating
 
 - How do I run tests?
   - `meson test -C build` runs the suite and prints results.
+- How do I include the optional L1/L2 suites?
+  - The L1 and L2 smoke/scaffold suites are compiled into `cep_unit_tests` but gated by env vars. Enable them with:
+    - `CEP_L1_TESTS=1 CEP_L2_TESTS=1 meson test -C build cep_unit_tests --print-errorlogs`
+  - You can also run them directly via the binary: `CEP_L1_TESTS=1 CEP_L2_TESTS=1 ./build/cep_tests --single /CEP/l1/smoke/schema --no-fork --show-stderr` (substitute any `/CEP/l1/*` or `/CEP/l2/*` selector).
 - How do I run just one test (or pass parameters)?
   - The harness uses [munit](https://nemequ.github.io/munit/) flags. Run the executable directly:
     - Discover tests: `./build/cep_tests.exe --list`

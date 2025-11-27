@@ -1947,6 +1947,7 @@ void
 cep_ep_runtime_reset(void)
 {
     cepRuntime* runtime = cep_ep_runtime_current();
+    cepRuntime* target_runtime = runtime ? runtime : cep_runtime_default();
     cepEpRuntimeState* state = cep_ep_state_for_runtime(runtime);
     if (!state) {
         return;
@@ -1971,12 +1972,14 @@ cep_ep_runtime_reset(void)
     atomic_store_explicit(&state->last_lease_fail_reason, NULL, memory_order_relaxed);
 
     cepEpExecutionContext* previous_ctx = cep_executor_context_get();
-    cepRuntime* target_runtime = runtime ? runtime : cep_runtime_default();
+    bool had_executor = cep_runtime_has_executor_state(target_runtime);
     cepEpExecutionContext shim_ctx = {0};
     shim_ctx.runtime = target_runtime;
     cepRuntime* previous_runtime_scope = cep_runtime_set_active(target_runtime);
     cep_executor_context_set(&shim_ctx);
-    cep_executor_shutdown();
+    if (had_executor) {
+        cep_executor_shutdown();
+    }
     if (previous_ctx) {
         cep_executor_context_set(previous_ctx);
     } else {
