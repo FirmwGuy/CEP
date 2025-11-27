@@ -379,6 +379,24 @@ if get_option('tests').enabled()
     suite: ['runtime'],
   )
 
+  calc_poc_srcs = files(
+    'src/third_party/munit/munit.c',
+    'src/test/poc/calc/calc_poc_suite.c',
+    'src/test/poc/calc/calc_poc_main.c',
+  )
+  calc_poc_exe = executable('cep_calc_poc_tests', calc_poc_srcs,
+    c_args: exe_cargs,
+    include_directories: inc,
+    link_with: cep_lib,
+    install: false,
+  )
+  test('calc_poc', calc_poc_exe,
+    args: ['--no-fork'],
+    timeout: 120,
+    suite: ['calc_poc'],
+    is_parallel: false,
+  )
+
 endif
 
 # CEP server executable (optional; build only if enabled and sources exist)

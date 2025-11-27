@@ -11,8 +11,10 @@
 #include "../l0_kernel/cep_molecule.h"
 #include "../l0_kernel/cep_namepool.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 typedef struct {
     cepL2CompiledNode* nodes;
@@ -88,6 +90,29 @@ CEP_DEFINE_STATIC_DT(dt_org_state_waiting, CEP_ACRO("CEP"), CEP_WORD("waiting"))
 CEP_DEFINE_STATIC_DT(dt_org_state_finished, CEP_ACRO("CEP"), CEP_WORD("finished"));
 CEP_DEFINE_STATIC_DT(dt_org_state_failed, CEP_ACRO("CEP"), CEP_WORD("failed"));
 static bool cep_l2_flow_node_id_matches(const cepDT* lhs, const cepDT* rhs);
+static void cep_l2_flow_emit_cei(const cepL2OrganismContext* ctx,
+                                 const cepDT* topic,
+                                 const cepDT* severity,
+                                 const char* note,
+                                 cepOID op);
+static cepCell* cep_l2_flow_metrics_root(cepCell* eco_root);
+static void cep_l2_flow_bump_metric(cepCell* metrics_root,
+                                    const cepDT* bucket_name,
+                                    const cepDT* id,
+                                    const char* metric_tag,
+                                    uint64_t delta);
+static void cep_l2_flow_record_history(cepL2OrganismContext* ctx, const char* note);
+CEP_DEFINE_STATIC_DT(dt_app_root_name, CEP_ACRO("CEP"), CEP_WORD("app"));
+CEP_DEFINE_STATIC_DT(dt_calc_root_name, CEP_ACRO("CEP"), cep_namepool_intern_cstr("calc"));
+CEP_DEFINE_STATIC_DT(dt_calc_exprs_name, CEP_ACRO("CEP"), cep_namepool_intern_cstr("exprs"));
+CEP_DEFINE_STATIC_DT(dt_calc_results_name, CEP_ACRO("CEP"), cep_namepool_intern_cstr("results"));
+CEP_DEFINE_STATIC_DT(dt_calc_left_field, CEP_ACRO("CEP"), CEP_WORD("left"));
+CEP_DEFINE_STATIC_DT(dt_calc_right_field, CEP_ACRO("CEP"), CEP_WORD("right"));
+CEP_DEFINE_STATIC_DT(dt_calc_op_field, CEP_ACRO("CEP"), CEP_WORD("op"));
+CEP_DEFINE_STATIC_DT(dt_calc_value_field, CEP_ACRO("CEP"), CEP_WORD("value"));
+CEP_DEFINE_STATIC_DT(dt_calc_metric_eval, CEP_ACRO("CEP"), cep_namepool_intern_cstr("calc_eval"));
+CEP_DEFINE_STATIC_DT(dt_calc_variant_safe, CEP_ACRO("CEP"), cep_namepool_intern_cstr("calc_safe"));
+CEP_DEFINE_STATIC_DT(dt_calc_variant_fast, CEP_ACRO("CEP"), cep_namepool_intern_cstr("calc_fast"));
 
 static cepDT cep_l2_flow_auto_name(void) {
     cepDT name = {0};
@@ -121,13 +146,25 @@ static bool cep_l2_flow_read_u64(cepCell* parent, const cepDT* field, uint64_t* 
         return false;
     }
     cepData* data = NULL;
-    if (!cep_cell_require_data(&child, &data) || !data || data->size < sizeof(uint64_t)) {
+    if (!cep_cell_require_data(&child, &data) || !data) {
         return false;
     }
-    uint64_t value = 0u;
-    memcpy(&value, cep_data_payload(data), sizeof value);
-    *out = value;
-    return true;
+    if (data->size >= sizeof(uint64_t)) {
+        uint64_t value = 0u;
+        memcpy(&value, cep_data_payload(data), sizeof value);
+        *out = value;
+        return true;
+    }
+    const char* text = (const char*)cep_data_payload(data);
+    if (text) {
+        char* endptr = NULL;
+        unsigned long long parsed = strtoull(text, &endptr, 10);
+        if (endptr && *endptr == '\0') {
+            *out = (uint64_t)parsed;
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool cep_l2_flow_read_text(cepCell* parent, const cepDT* field, const char** out) {
@@ -143,6 +180,124 @@ static bool cep_l2_flow_read_text(cepCell* parent, const cepDT* field, const cha
     return true;
 }
 
+static bool cep_l2_flow_eval_calc_expr(cepL2OrganismContext* ctx) {
+    if (!ctx || !ctx->eco_root) {
+        return false;
+    }
+    cepCell* data_root = cep_cell_parent(ctx->eco_root);
+    cepCell* app_root = data_root ? cep_cell_find_by_name(data_root, dt_app_root_name()) : NULL;
+    app_root = app_root ? cep_cell_resolve(app_root) : NULL;
+    if (!app_root || !cep_cell_require_dictionary_store(&app_root)) {
+        return false;
+    }
+    cepCell* calc_root = cep_cell_find_by_name(app_root, dt_calc_root_name());
+    calc_root = calc_root ? cep_cell_resolve(calc_root) : NULL;
+    if (!calc_root || !cep_cell_require_dictionary_store(&calc_root)) {
+        return false;
+    }
+
+    cepCell* exprs = cep_cell_find_by_name(calc_root, dt_calc_exprs_name());
+    cepCell* results = cep_cell_find_by_name(calc_root, dt_calc_results_name());
+    exprs = exprs ? cep_cell_resolve(exprs) : NULL;
+    results = results ? cep_cell_resolve(results) : NULL;
+    if (!exprs || !results) {
+        return false;
+    }
+
+    cepCell* expr = cep_cell_first(exprs);
+    if (!expr) {
+        return true;
+    }
+
+    cepCell* resolved = cep_cell_resolve(expr);
+    if (!resolved || !cep_cell_require_dictionary_store(&resolved)) {
+        return false;
+    }
+
+    const char* left_text = NULL;
+    const char* right_text = NULL;
+    const char* op_text = NULL;
+    if (!cep_l2_flow_read_text(resolved, dt_calc_left_field(), &left_text) ||
+        !cep_l2_flow_read_text(resolved, dt_calc_right_field(), &right_text) ||
+        !cep_l2_flow_read_text(resolved, dt_calc_op_field(), &op_text) ||
+        !left_text || !right_text || !op_text) {
+        return false;
+    }
+
+    long long left = strtoll(left_text, NULL, 10);
+    long long right = strtoll(right_text, NULL, 10);
+    char op_char = op_text[0];
+    bool fast_variant = cep_l2_flow_node_id_matches(&ctx->variant_id, dt_calc_variant_fast());
+    bool safe_variant = cep_l2_flow_node_id_matches(&ctx->variant_id, dt_calc_variant_safe());
+    if (!fast_variant && !safe_variant) {
+        fast_variant = true;
+    }
+
+    bool valid = true;
+    long long value = 0;
+    switch (op_char) {
+        case '+':
+            value = left + right;
+            break;
+        case '-':
+            value = left - right;
+            break;
+        case '*':
+            value = left * right;
+            break;
+        case '/':
+            if (right == 0) {
+                if (safe_variant) {
+                    cep_l2_flow_emit_cei(ctx, dt_topic_flow_error(), dt_sev_warn(), "calc_div_zero", ctx->episode_oid);
+                    valid = false;
+                } else {
+                    value = 0;
+                }
+            } else {
+                value = left / right;
+            }
+            break;
+        default:
+            valid = false;
+            cep_l2_flow_emit_cei(ctx, dt_topic_flow_error(), dt_sev_warn(), "calc_unknown_op", ctx->episode_oid);
+            break;
+    }
+    if (!valid) {
+        return false;
+    }
+
+    cepDT result_name = expr->metacell.dt;
+    result_name.glob = 0u;
+    cepCell* result = cep_cell_add_dictionary(results, &result_name, 0u, CEP_DTAW("CEP", "dictionary"), CEP_STORAGE_RED_BLACK_T);
+    result = result ? cep_cell_resolve(result) : NULL;
+    if (!result || !cep_cell_require_dictionary_store(&result)) {
+        return false;
+    }
+    (void)cep_cell_put_text(result, dt_calc_left_field(), left_text);
+    (void)cep_cell_put_text(result, dt_calc_right_field(), right_text);
+    (void)cep_cell_put_text(result, dt_calc_op_field(), op_text);
+    char value_buf[64];
+    snprintf(value_buf, sizeof value_buf, "%lld", value);
+    (void)cep_cell_put_text(result, dt_calc_value_field(), value_buf);
+
+    cep_cell_delete_hard(resolved);
+
+    cepCell* metrics_root = cep_l2_flow_metrics_root(ctx->eco_root);
+    const char* metric_tag = cep_namepool_lookup(dt_calc_metric_eval()->tag, NULL);
+    if (!metric_tag) {
+        metric_tag = "calc_eval";
+    }
+    fprintf(stderr,
+            "[l2_flow] bump metric variant=%llu metric=%s\n",
+            (unsigned long long)ctx->variant_id.tag,
+            metric_tag);
+    cep_l2_flow_bump_metric(metrics_root, dt_eco_metrics_global(), NULL, metric_tag, 1u);
+    if (cep_dt_is_valid(&ctx->variant_id)) {
+        cep_l2_flow_bump_metric(metrics_root, dt_eco_metrics_per_variant(), &ctx->variant_id, metric_tag, 1u);
+    }
+    cep_l2_flow_record_history(ctx, "calc_eval");
+    return true;
+}
 static bool cep_l2_flow_put_pipeline_block(cepCell* parent, const cepPipelineMetadata* pipeline) {
     if (!parent || !pipeline) {
         return true;
@@ -152,16 +307,24 @@ static bool cep_l2_flow_put_pipeline_block(cepCell* parent, const cepPipelineMet
         return false;
     }
     bool ok = true;
+    fprintf(stderr,
+            "[l2_flow] pipeline block pid=%llu sid=%llu\n",
+            (unsigned long long)pipeline->pipeline_id,
+            (unsigned long long)pipeline->stage_id);
     if (pipeline->pipeline_id) {
         const char* text = cep_namepool_lookup(pipeline->pipeline_id, NULL);
         if (text) {
             ok &= cep_cell_put_text(pipeline_root, dt_pipeline_id_field(), text);
+        } else {
+            ok &= cep_cell_put_uint64(pipeline_root, dt_pipeline_id_field(), (uint64_t)pipeline->pipeline_id);
         }
     }
     if (pipeline->stage_id) {
         const char* text = cep_namepool_lookup(pipeline->stage_id, NULL);
         if (text) {
             ok &= cep_cell_put_text(pipeline_root, dt_stage_id_field(), text);
+        } else {
+            ok &= cep_cell_put_uint64(pipeline_root, dt_stage_id_field(), (uint64_t)pipeline->stage_id);
         }
     }
     if (pipeline->dag_run_id) {
@@ -217,6 +380,10 @@ static void cep_l2_flow_bump_metric(cepCell* metrics_root,
     }
     cepCell* bucket = cep_l2_flow_metrics_bucket(metrics_root, bucket_name, id);
     if (!bucket) {
+        fprintf(stderr,
+                "[l2_flow] missing metrics bucket bucket=%s id=%llu\n",
+                bucket_name ? cep_namepool_lookup(bucket_name->tag, NULL) : "<null>",
+                id ? (unsigned long long)id->tag : 0u);
         return;
     }
     cepDT metric_dt = {0};
@@ -402,6 +569,11 @@ static bool cep_l2_flow_compile_nodes(cepCell* nodes_root, cepL2CompiledFlow* co
 
     size_t count = 0u;
     for (cepCell* node = cep_cell_first(nodes_root); node; node = cep_cell_next(nodes_root, node)) {
+        cepCell* resolved = cep_cell_resolve(node);
+        cepL2NodeType type = CEP_L2_NODE_GUARD;
+        if (!resolved || !cep_l2_flow_read_node_type(resolved, &type)) {
+            continue;
+        }
         ++count;
     }
     if (count == 0u) {
@@ -411,7 +583,8 @@ static bool cep_l2_flow_compile_nodes(cepCell* nodes_root, cepL2CompiledFlow* co
     size_t index = 0u;
     for (cepCell* node = cep_cell_first(nodes_root); node; node = cep_cell_next(nodes_root, node)) {
         cepCell* resolved = cep_cell_resolve(node);
-        if (!resolved) {
+        cepL2NodeType type = CEP_L2_NODE_GUARD;
+        if (!resolved || !cep_l2_flow_read_node_type(resolved, &type)) {
             continue;
         }
         cepL2CompiledNode* slot = &nodes[index++];
@@ -419,10 +592,7 @@ static bool cep_l2_flow_compile_nodes(cepCell* nodes_root, cepL2CompiledFlow* co
         node_id.glob = 0u;
         slot->node_id = node_id;
         slot->node_cell = resolved;
-        if (!cep_l2_flow_read_node_type(resolved, &slot->type)) {
-            cep_free(nodes);
-            return false;
-        }
+        slot->type = type;
         (void)cep_l2_flow_read_successor(resolved, dt_next_field(), &slot->successor);
         (void)cep_l2_flow_read_successor(resolved, dt_alt_field(), &slot->alt_successor);
         slot->yields = (slot->type == CEP_L2_NODE_WAIT || slot->type == CEP_L2_NODE_CLAMP);
@@ -508,6 +678,10 @@ static bool cep_l2_flow_transform(cepL2OrganismContext* ctx, cepCell* node_cell)
             const char* action_text = (const char*)cep_cell_data(resolved);
             if (action_text && strcmp(action_text, "history") == 0) {
                 cep_l2_flow_record_history(ctx, "transform");
+                continue;
+            }
+            if (action_text && strcmp(action_text, "calc_eval") == 0) {
+                ok &= cep_l2_flow_eval_calc_expr(ctx);
                 continue;
             }
             if (cep_cell_find_by_name(resolved, dt_model_update_field())) {
@@ -609,7 +783,12 @@ static cepCell* cep_l2_flow_decisions_root(cepCell* eco_root) {
     return decisions;
 }
 
-static const char* cep_l2_flow_choice_from_decisions(cepL2OrganismContext* ctx, const cepDT* node_id) {
+static const char* cep_l2_flow_choice_from_decisions(cepL2OrganismContext* ctx,
+                                                     const cepDT* node_id,
+                                                     bool* out_record_needed) {
+    if (out_record_needed) {
+        *out_record_needed = false;
+    }
     if (!ctx || !node_id) {
         return NULL;
     }
@@ -617,6 +796,9 @@ static const char* cep_l2_flow_choice_from_decisions(cepL2OrganismContext* ctx, 
     if (!decisions) {
         return NULL;
     }
+
+    const char* pending_choice = NULL;
+    bool pending_valid = false;
     for (cepCell* entry = cep_cell_first(decisions); entry; entry = cep_cell_next(decisions, entry)) {
         cepCell* resolved = cep_cell_resolve(entry);
         if (!resolved) {
@@ -626,15 +808,30 @@ static const char* cep_l2_flow_choice_from_decisions(cepL2OrganismContext* ctx, 
         if (!cep_l2_flow_read_successor(resolved, dt_decision_node_field(), &recorded_node)) {
             continue;
         }
-        if (!cep_l2_flow_node_id_matches(&recorded_node, node_id)) {
+        bool node_match = cep_l2_flow_node_id_matches(&recorded_node, node_id);
+        const char* choice = NULL;
+        if (!cep_l2_flow_read_text(resolved, dt_decision_choice_field(), &choice)) {
             continue;
         }
-        const char* choice = NULL;
-        if (cep_l2_flow_read_text(resolved, dt_decision_choice_field(), &choice)) {
+        /* Prefer previously recorded decisions that already carry pipeline metadata so
+         * replay runs do not keep appending copies. */
+        cepCell* pipeline_block = cep_cell_find_by_name(resolved, dt_pipeline_field());
+        pipeline_block = pipeline_block ? cep_cell_resolve(pipeline_block) : NULL;
+        if (pipeline_block && cep_cell_children(pipeline_block) > 0u) {
             return choice;
         }
+        if (!node_match) {
+            continue;
+        }
+        if (!pending_valid) {
+            pending_choice = choice;
+            pending_valid = true;
+        }
     }
-    return NULL;
+    if (pending_valid && out_record_needed) {
+        *out_record_needed = true;
+    }
+    return pending_choice;
 }
 
 static void cep_l2_flow_record_decision(cepL2OrganismContext* ctx,
@@ -649,6 +846,10 @@ static void cep_l2_flow_record_decision(cepL2OrganismContext* ctx,
         cepCell* root = cep_cell_ensure_dictionary_child(journal, dt_decision_root_name(), CEP_STORAGE_RED_BLACK_T);
         root = root ? cep_cell_resolve(root) : NULL;
         if (root && cep_cell_require_dictionary_store(&root)) {
+            cepPipelineMetadata pipeline = ctx ? ctx->pipeline : (cepPipelineMetadata){0};
+            if (!pipeline.pipeline_id && ctx && cep_dt_is_valid(&ctx->flow_id)) {
+                pipeline.pipeline_id = ctx->flow_id.tag;
+            }
             cepDT entry_name = cep_l2_flow_auto_name();
             cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
             cepCell* entry = cep_cell_add_dictionary(root, &entry_name, 0u, &dict_type, CEP_STORAGE_RED_BLACK_T);
@@ -659,7 +860,7 @@ static void cep_l2_flow_record_decision(cepL2OrganismContext* ctx,
                 (void)cep_cell_put_dt(entry, dt_decision_flow_field(), &ctx->flow_id);
                 (void)cep_cell_put_dt(entry, dt_decision_node_field(), node_id);
                 (void)cep_cell_put_text(entry, dt_decision_choice_field(), choice_text);
-                (void)cep_l2_flow_put_pipeline_block(entry, &ctx->pipeline);
+                (void)cep_l2_flow_put_pipeline_block(entry, &pipeline);
                 if (cep_dt_is_valid(&ctx->species_id)) {
                     (void)cep_cell_put_dt(entry, dt_species_field(), &ctx->species_id);
                 }
@@ -677,11 +878,15 @@ static void cep_l2_flow_record_decision(cepL2OrganismContext* ctx,
         cepCell* entry = cep_cell_add_dictionary(decisions, &entry_name, 0u, &dict_type, CEP_STORAGE_RED_BLACK_T);
         entry = entry ? cep_cell_resolve(entry) : NULL;
         if (entry && cep_cell_require_dictionary_store(&entry)) {
+            cepPipelineMetadata pipeline = ctx ? ctx->pipeline : (cepPipelineMetadata){0};
+            if (!pipeline.pipeline_id && ctx && cep_dt_is_valid(&ctx->flow_id)) {
+                pipeline.pipeline_id = ctx->flow_id.tag;
+            }
             (void)cep_cell_put_dt(entry, dt_decision_flow_field(), &ctx->flow_id);
             (void)cep_cell_put_dt(entry, dt_decision_node_field(), node_id);
             (void)cep_cell_put_text(entry, dt_decision_choice_field(), choice_text);
             (void)cep_cell_put_uint64(entry, CEP_DTAW("CEP", "beat"), (uint64_t)cep_beat_index());
-            (void)cep_l2_flow_put_pipeline_block(entry, &ctx->pipeline);
+            (void)cep_l2_flow_put_pipeline_block(entry, &pipeline);
         }
     }
 }
@@ -693,8 +898,12 @@ static const char* cep_l2_flow_choose_option(cepL2OrganismContext* ctx,
     if (!ctx || !node_cell || !node_id || !next_node) {
         return NULL;
     }
-    const char* recorded = cep_l2_flow_choice_from_decisions(ctx, node_id);
+    bool record_missing = false;
+    const char* recorded = cep_l2_flow_choice_from_decisions(ctx, node_id, &record_missing);
     if (recorded && *recorded) {
+        if (record_missing) {
+            cep_l2_flow_record_decision(ctx, node_id, recorded);
+        }
         return recorded;
     }
 
@@ -813,6 +1022,7 @@ static bool cep_l2_flow_clamp(cepL2OrganismContext* ctx, cepCell* node_cell, siz
  * deterministic. */
 bool cep_l2_flow_step(cepL2OrganismContext* ctx, size_t step_budget) {
     if (!ctx || !ctx->flow_root || step_budget == 0u) {
+        fprintf(stderr, "[l2_flow] invalid ctx or step_budget\n");
         return false;
     }
 
@@ -820,18 +1030,21 @@ bool cep_l2_flow_step(cepL2OrganismContext* ctx, size_t step_budget) {
     cepCell* graph = cep_cell_find_by_name(ctx->flow_root, dt_graph());
     graph = graph ? cep_cell_resolve(graph) : NULL;
     if (!graph) {
+        fprintf(stderr, "[l2_flow] missing graph\n");
         cep_l2_flow_emit_cei(ctx, dt_topic_flow_error(), dt_sev_warn(), "missing_graph", ctx->episode_oid);
         return false;
     }
     cepCell* nodes_root = cep_cell_find_by_name(graph, dt_nodes());
     nodes_root = nodes_root ? cep_cell_resolve(nodes_root) : NULL;
     if (!nodes_root || !cep_cell_require_dictionary_store(&nodes_root)) {
+        fprintf(stderr, "[l2_flow] missing nodes\n");
         cep_l2_flow_emit_cei(ctx, dt_topic_flow_error(), dt_sev_warn(), "missing_nodes", ctx->episode_oid);
         return false;
     }
 
     cepL2CompiledFlow compiled = {0};
     if (!cep_l2_flow_compile_nodes(nodes_root, &compiled)) {
+        fprintf(stderr, "[l2_flow] compile failed\n");
         cep_l2_flow_emit_cei(ctx, dt_topic_flow_error(), dt_sev_warn(), "compile_failed", ctx->episode_oid);
         return false;
     }

@@ -427,6 +427,14 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `poc_stream_root` | TEST | stream/proxy dictionary hosting the journalled stdio adapter in the integration test. |
 | `poc_replay` | TEST | replay root populated when verifying serialization round-trips. |
 | `poc_txn` | TEST | veiled transaction branch staged during the integration heartbeat timeline. |
+| `app` | TEST | test-only application root under `/data/app`. |
+| `calc` | TEST | calculator POC root under `/data/app/calc`. |
+| `inbox` | TEST | calculator inbox branch capturing raw input lines. |
+| `exprs` | TEST | parsed calculator expressions branch. |
+| `results` | TEST | calculator evaluation results branch. |
+| `outbox` | TEST | calculator outbound messages branch. |
+| `sent` | TEST | calculator archive of sent messages. |
+| `calc_meta` | TEST | calculator metadata bucket for pipeline identifiers and stage roster. |
 | `space` | TEST | octree dictionary mounted under `/data/poc` to exercise spatial store plumbing during integration. |
 | `space_entry` | TEST | deterministic point payload inserted into the spatial store to validate octree comparisons. |
 | `rand_entry_*` | TEST | seeded log entries appended during randomized mutation passes to ensure logging remains deterministic. |
