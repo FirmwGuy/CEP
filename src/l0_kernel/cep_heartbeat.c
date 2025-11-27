@@ -180,6 +180,11 @@ cep_heartbeat_release_runtime(cepHeartbeatRuntime* runtime)
         return;
     }
 
+    if (runtime->registry) {
+        cep_enzyme_registry_destroy(runtime->registry);
+        runtime->registry = NULL;
+    }
+
     cep_heartbeat_impulse_queue_destroy(&runtime->impulses_current);
     cep_heartbeat_impulse_queue_destroy(&runtime->impulses_next);
     cep_heartbeat_dispatch_cache_destroy(&runtime->scratch);

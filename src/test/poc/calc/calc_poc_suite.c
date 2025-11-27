@@ -137,12 +137,8 @@ calc_poc_shutdown_runtime(void)
     if (!runtime) {
         runtime = cep_runtime_default();
     }
-    cepEnzymeRegistry* registry = cep_heartbeat_registry();
     (void)cep_runtime_shutdown(runtime);
     if (runtime == cep_runtime_default()) {
-        if (registry) {
-            cep_enzyme_registry_destroy(registry);
-        }
         cep_heartbeat_shutdown();
         cep_l0_bootstrap_reset();
     }

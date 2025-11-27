@@ -73,7 +73,8 @@ static void cps_storage_async_commit_on_complete(bool success,
                                                  int error_code,
                                                  void* context);
 static cpsStorageAsyncCommitCtx* cps_storage_async_commit_ctx_create(const cepDT* request_name);
-static void cps_storage_async_commit_ctx_destroy(cpsStorageAsyncCommitCtx* ctx);
+static void cps_storage_async_commit_ctx_addref(cpsStorageAsyncCommitCtx* ctx);
+static void cps_storage_async_commit_ctx_release(cpsStorageAsyncCommitCtx* ctx);
 static void cps_storage_async_finalize_success(cpsStorageAsyncCommitCtx* ctx);
 static void cps_storage_async_mark_failed(cpsStorageAsyncCommitCtx* ctx,
                                           uint64_t bytes,
@@ -1527,6 +1528,7 @@ static atomic_uint_fast64_t g_cps_async_req_counter = 0;
 static cepOID g_cps_async_channel_oid = {0};
 
 struct cpsStorageAsyncCommitCtx {
+  uint32_t refcount;
   bool     registered;
   bool     pending;
   bool     completed;
@@ -1628,8 +1630,14 @@ static void cps_storage_async_commit_on_complete(bool success,
   if (!commit) {
     return;
   }
+  if (commit->completed) {
+    commit->pending = false;
+    cps_storage_async_commit_ctx_release(commit);
+    return;
+  }
   if (!success) {
     cps_storage_async_mark_failed(commit, bytes, error_code, "serializer async completion failed");
+    cps_storage_async_commit_ctx_release(commit);
     return;
   }
   commit->pending = false;
@@ -1637,6 +1645,7 @@ static void cps_storage_async_commit_on_complete(bool success,
   commit->success = true;
   commit->error_code = error_code;
   commit->bytes_done = bytes;
+  cps_storage_async_commit_ctx_release(commit);
 }
 
 static cpsStorageAsyncCommitCtx*
@@ -1648,6 +1657,7 @@ cps_storage_async_commit_ctx_create(const cepDT* request_name) {
   if (!ctx) {
     return NULL;
   }
+  ctx->refcount = 1u;
   ctx->registered = true;
   ctx->pending = true;
   ctx->completed = false;
@@ -1658,11 +1668,24 @@ cps_storage_async_commit_ctx_create(const cepDT* request_name) {
   return ctx;
 }
 
-static void cps_storage_async_commit_ctx_destroy(cpsStorageAsyncCommitCtx* ctx) {
+static void cps_storage_async_commit_ctx_addref(cpsStorageAsyncCommitCtx* ctx) {
   if (!ctx) {
     return;
   }
-  cep_free(ctx);
+  ++ctx->refcount;
+}
+
+static void cps_storage_async_commit_ctx_release(cpsStorageAsyncCommitCtx* ctx) {
+  if (!ctx) {
+    return;
+  }
+  if (ctx->refcount == 0u) {
+    return;
+  }
+  --ctx->refcount;
+  if (ctx->refcount == 0u) {
+    cep_free(ctx);
+  }
 }
 
 static void cps_storage_async_finalize_success(cpsStorageAsyncCommitCtx* ctx) {
@@ -1945,6 +1968,7 @@ cps_storage_emit_branch_frame(cepCell* target,
   cepDT async_commit_req = {0};
   cpsStorageAsyncCommitCtx* async_commit_ctx = NULL;
   bool ok = false;
+  bool callback_ref_taken = false;
 
   if (!cps_storage_async_register_request(dt_cps_async_op_commit(),
                                           0u,
@@ -1970,6 +1994,9 @@ cps_storage_emit_branch_frame(cepCell* target,
     .completion_ctx = async_commit_ctx,
   };
 
+  cps_storage_async_commit_ctx_addref(async_commit_ctx);
+  callback_ref_taken = true;
+
   bool emitted = cep_flat_stream_emit_branch_async(resolved,
                                                    branch_info,
                                                    NULL,
@@ -1983,6 +2010,10 @@ cps_storage_emit_branch_frame(cepCell* target,
                                   sink.bytes_written,
                                   -EIO,
                                   "serializer async emission failed");
+    if (callback_ref_taken) {
+      cps_storage_async_commit_ctx_release(async_commit_ctx);
+      callback_ref_taken = false;
+    }
     goto out;
   }
 
@@ -2042,7 +2073,7 @@ out:
                                        async_commit_ctx->error_code ? async_commit_ctx->error_code : -EIO);
       async_commit_ctx->registered = false;
     }
-    cps_storage_async_commit_ctx_destroy(async_commit_ctx);
+    cps_storage_async_commit_ctx_release(async_commit_ctx);
   }
   cep_flat_reader_destroy(reader);
   return ok;

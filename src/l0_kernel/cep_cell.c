@@ -5741,7 +5741,8 @@ static void cep_cell_release_contents(cepCell* cell) {
     assert(cell);
 
     switch (cell->metacell.type) {
-      case CEP_TYPE_NORMAL: {
+  case CEP_TYPE_NORMAL: {
+        bool shutting_down = cep_cell_system_shutting_down();
         cepStore* store = cell->store;
         if (store) {
             // ToDo: clean shadow.
@@ -5749,7 +5750,7 @@ static void cep_cell_release_contents(cepCell* cell) {
             const cepDT* owner_name = owner_cell ? cep_cell_get_name(owner_cell) : NULL;
             cepShadow* storeShadow = NULL;
 
-            if (cep_cell_is_shadowed(cell)) {
+            if (!shutting_down && cep_cell_is_shadowed(cell)) {
                 switch (cell->metacell.shadowing) {
                   case CEP_SHADOW_SINGLE: {
                     cepCell* link = store->linked;
@@ -5778,6 +5779,10 @@ static void cep_cell_release_contents(cepCell* cell) {
                   case CEP_SHADOW_NONE:
                     break;
                 }
+            } else if (shutting_down) {
+                cell->linked = NULL;
+                cell->shadow = NULL;
+                cell->metacell.shadowing = CEP_SHADOW_NONE;
             }
 
             store->linked = NULL;
@@ -5823,7 +5828,7 @@ static void cep_cell_release_contents(cepCell* cell) {
             cepStore* store_ref = cell->store;
             cell->store = NULL;
 
-            if (cep_cell_is_shadowed(cell))
+            if (!shutting_down && cep_cell_is_shadowed(cell))
                 cep_shadow_break_all(cell);
 
             cell->store = store_ref;

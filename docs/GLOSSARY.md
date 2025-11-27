@@ -6,6 +6,7 @@ This glossary collects common acronyms and phrases used across the docs so newco
 - **AEAD (Authenticated Encryption with Associated Data):** Chacha20/XChacha20 modes used by the serializer and secmeta payloads.
 - **AES/GCM (Advanced Encryption Standard, Galois/Counter Mode):** Authenticated encryption mode; CEP’s serializer rejects AES-GCM and uses Chacha/XChacha instead.
 - **API (Application Programming Interface):** Public function/struct surface.
+- **ASAN (AddressSanitizer):** Compiler sanitizer used in dedicated `build-asan` runs to catch memory bugs.
 - **ASYNC (Async I/O fabric):** Reactor/channels/completion-queue layer handling non-blocking I/O.
 - **CAS (Content-Addressable Storage):** Hash-addressed blob store for large payloads; referenced by hash from cells.
 - **CEH (Common Error Health):** CEI health mirror under `/net/peers/<peer>/ceh/**`.
@@ -25,6 +26,7 @@ This glossary collects common acronyms and phrases used across the docs so newco
 - **IPC (Inter-Process Communication):** Pipes/sockets used by some transport providers; CEP treats them as byte movers.
 - **KV (Key-Value):** Shorthand for key-value stores.
 - **MPL (Mozilla Public License):** Repo license.
+- **OID (Object Identifier):** Kernel-level identifier for OPS dossiers and async requests.
 - **OPS:** Operation dossiers under `/rt/ops/**` that track multi-phase work (boot/shutdown, episodes, async jobs, control verbs).
 - **PL/SQL (Procedural Language/SQL):** Referenced in onboarding guide for SQL-centric readers.
 - **PRR (Pause/Rollback/Resume):** Control verbs that gate the heartbeat, rewind visibility, and then resume deterministically.
@@ -36,6 +38,8 @@ This glossary collects common acronyms and phrases used across the docs so newco
 - **TEST:** Test harness fixtures/tags.
 - **TLS (Transport Layer Security):** Generic secure transport layer; CEP treats TLS as a transport concern (not built into the kernel) when discussing encrypted providers.
 - **TTL (Time To Live):** Beat-based expiry used for watchers and mailboxes.
+- **UAF (Use-After-Free):** Memory safety bug where code writes/reads a freed allocation; recent CPS async fixes guard against this.
+- **UBSan (UndefinedBehaviorSanitizer):** Compiler sanitizer for UB; runs are split from ASAN/Valgrind.
 - **URL (Uniform Resource Locator):** External references treated as opaque strings/payloads by CEP.
 - **UTF (UTF-8):** Encoding mentioned in native-type handling.
 - **VM (Virtual Machine):** Host/guest environment term; also used for upper-layer Flow VM concepts (planned).
@@ -73,5 +77,6 @@ This glossary collects common acronyms and phrases used across the docs so newco
 ## Miscellaneous
 - **Crown jewel:** Informal term for sensitive branches (e.g., `/sys/security/**`) guarded by enclave/SVO policy and extra CEI/ledger evidence.
 - **Glob bit:** Marker on tags/IDs that act as patterns (`*`), persisted so replay keeps intent.
+- **Valgrind:** Memcheck tool used for leak/UAF detection on non-asan builds.
 - **Lexicon:** Tag catalog in `docs/CEP-TAG-LEXICON.md`; extend it before minting new tags.
 - **Namepool:** Intern table for domains/tags/strings, keeping IDs stable across runs.
