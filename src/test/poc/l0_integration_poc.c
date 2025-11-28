@@ -39,6 +39,46 @@
 #include <unistd.h>
 #include <limits.h>
 
+#if defined(_WIN32)
+#include <direct.h>
+#include <io.h>
+static int poc_mkdir(const char* path, mode_t mode) {
+    (void)mode;
+    return _mkdir(path);
+}
+static char* poc_mkdtemp(char* tmpl) {
+    if (_mktemp_s(tmpl, strlen(tmpl) + 1) != 0) {
+        return NULL;
+    }
+    return (_mkdir(tmpl) == 0) ? tmpl : NULL;
+}
+static bool poc_setenv(const char* name, const char* value) {
+    return _putenv_s(name, value ? value : "") == 0;
+}
+static bool poc_unsetenv(const char* name) {
+    return _putenv_s(name, "") == 0;
+}
+#define lstat(path, buf) stat(path, buf)
+#else
+static int poc_mkdir(const char* path, mode_t mode) {
+    return mkdir(path, mode);
+}
+static char* poc_mkdtemp(char* tmpl) {
+    return mkdtemp(tmpl);
+}
+static bool poc_setenv(const char* name, const char* value) {
+    return setenv(name, value, 1) == 0;
+}
+static bool poc_unsetenv(const char* name) {
+    return unsetenv(name) == 0;
+}
+#endif
+
+#define mkdir(path, mode) poc_mkdir(path, mode)
+#define mkdtemp(tmpl) poc_mkdtemp(tmpl)
+#define setenv(name, value, overwrite) poc_setenv(name, value)
+#define unsetenv(name) poc_unsetenv(name)
+
 CEP_DEFINE_STATIC_DT(dt_stream_payload_outcome, CEP_ACRO("CEP"), CEP_WORD("outcome"));
 CEP_DEFINE_STATIC_DT(dt_stream_payload_log, CEP_ACRO("CEP"), CEP_WORD("stream-log"));
 CEP_DEFINE_STATIC_DT(dt_stream_payload_library, CEP_ACRO("CEP"), CEP_WORD("library"));

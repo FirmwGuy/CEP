@@ -23,6 +23,8 @@ CC ?= gcc
 CFLAGS ?= -g -Wall -std=gnu11 -D_GNU_SOURCE -fplan9-extensions \
           -I$(SRCDIR)/l0_kernel -I$(SRCDIR)/l0_kernel/storage \
           -I$(SRCDIR)/l0_kernel/secdata \
+          -I$(SRCDIR)/l1_coherence \
+          -I$(SRCDIR)/l2_ecology \
           -I$(SRCDIR)/cps \
           -I$(SRCDIR)/enzymes \
           -I$(THIRD_PARTY_DIR)/blake3 \
@@ -33,7 +35,6 @@ CFLAGS ?= -g -Wall -std=gnu11 -D_GNU_SOURCE -fplan9-extensions \
 # Keep the fallback deterministic and portable.
 CFLAGS += -DCEP_RV_DISABLED=1 \
           -DCEP_EXECUTOR_BACKEND_STUB=1 \
-          -DCEP_IO_REACTOR_BACKEND_DEFAULT_PORTABLE=1 \
           -DCEP_LIBSODIUM_BUNDLED=1 \
           -DCONFIGURED=1 \
           -DDEV_MODE=0 \
@@ -48,7 +49,10 @@ CFLAGS += -DCEP_RV_DISABLED=1 \
 # Allow epoll hints when building on Linux so the portable backend can still
 # advertise support for switching later.
 ifeq ($(UNAME_S),Linux)
-  CFLAGS += -DCEP_IO_REACTOR_HAS_EPOLL=1
+  CFLAGS += -DCEP_IO_REACTOR_HAS_EPOLL=1 \
+            -DCEP_IO_REACTOR_BACKEND_DEFAULT_EPOLL=1
+else
+  CFLAGS += -DCEP_IO_REACTOR_BACKEND_DEFAULT_PORTABLE=1
 endif
 
 ifeq ($(OS),Windows_NT)
@@ -83,7 +87,9 @@ CORE_SRC := $(wildcard $(SRCDIR)/l0_kernel/*.c) \
             $(wildcard $(SRCDIR)/l0_kernel/secdata/*.c) \
             $(wildcard $(SRCDIR)/l0_kernel/stream/*.c) \
             $(wildcard $(SRCDIR)/enzymes/*.c) \
-            $(wildcard $(SRCDIR)/cps/*.c)
+            $(wildcard $(SRCDIR)/cps/*.c) \
+            $(wildcard $(SRCDIR)/l1_coherence/*.c) \
+            $(wildcard $(SRCDIR)/l2_ecology/*.c)
 
 ifeq ($(USE_LIBZIP),0)
   CORE_SRC := $(filter-out $(SRCDIR)/l0_kernel/stream/cep_stream_zip.c,$(CORE_SRC))

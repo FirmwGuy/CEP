@@ -26,6 +26,44 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#if defined(_WIN32)
+#include <direct.h>
+#include <io.h>
+static int test_replay_mkdir(const char* path, mode_t mode) {
+    (void)mode;
+    return _mkdir(path);
+}
+static char* test_replay_mkdtemp(char* tmpl) {
+    if (_mktemp_s(tmpl, strlen(tmpl) + 1) != 0) {
+        return NULL;
+    }
+    return (_mkdir(tmpl) == 0) ? tmpl : NULL;
+}
+static bool test_replay_setenv(const char* name, const char* value) {
+    return _putenv_s(name, value ? value : "") == 0;
+}
+static bool test_replay_unsetenv(const char* name) {
+    return _putenv_s(name, "") == 0;
+}
+#define lstat(path, buf) stat(path, buf)
+#else
+static int test_replay_mkdir(const char* path, mode_t mode) {
+    return mkdir(path, mode);
+}
+static char* test_replay_mkdtemp(char* tmpl) {
+    return mkdtemp(tmpl);
+}
+static bool test_replay_setenv(const char* name, const char* value) {
+    return setenv(name, value, 1) == 0;
+}
+static bool test_replay_unsetenv(const char* name) {
+    return unsetenv(name) == 0;
+}
+#endif
+
+#define setenv(name, value, overwrite) test_replay_setenv(name, value)
+#define unsetenv(name) test_replay_unsetenv(name)
+
 #define CPS_CAS_MANIFEST_MAGIC   0x4341534Du
 #define CPS_CAS_MANIFEST_VERSION 1u
 
@@ -54,6 +92,8 @@ typedef struct {
     cepRuntime* previous_runtime;
 } CpsRuntimeScope;
 
+static bool fixture_make_temp_root(char* buffer, size_t cap);
+
 static CpsRuntimeScope cps_runtime_start(void) {
     CpsRuntimeScope scope = {
         .runtime = cep_runtime_create(),
@@ -61,6 +101,7 @@ static CpsRuntimeScope cps_runtime_start(void) {
     };
     munit_assert_not_null(scope.runtime);
     scope.previous_runtime = cep_runtime_set_active(scope.runtime);
+
     cep_cell_system_initiate();
     munit_assert_true(cep_l0_bootstrap());
     munit_assert_true(cep_namepool_bootstrap());
@@ -192,7 +233,7 @@ static bool fixture_ensure_dirs(char* path) {
         if (path[i] == '/') {
             char saved = path[i];
             path[i] = '\0';
-            if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+            if (test_replay_mkdir(path, 0755) != 0 && errno != EEXIST) {
                 path[i] = saved;
                 return false;
             }
@@ -229,7 +270,7 @@ static bool fixture_make_temp_root(char* buffer, size_t cap) {
     if (!fixture_ensure_dirs(tmpl)) {
         return false;
     }
-    char* dir = mkdtemp(tmpl);
+    char* dir = test_replay_mkdtemp(tmpl);
     if (!dir) {
         return false;
     }
@@ -474,6 +515,10 @@ static bool fixture_request_record(cps_engine* engine,
     cps_buf value = {0};
     int rc = engine->ops->get_record(engine, key, &value);
     if (rc != CPS_OK) {
+        fprintf(stderr,
+                "[fixture_request_record] get_record failed rc=%d key_len=%zu\n",
+                rc,
+                key_len);
         return false;
     }
     out_value->data = value.data;
@@ -531,8 +576,8 @@ MunitResult test_cps_replay_inline(const MunitParameter params[], void* user_dat
     fixture_blob_reset(&chunk);
 
     engine->ops->close(engine);
-    unsetenv("CEP_SERIALIZATION_FLAT_AEAD_MODE");
-    unsetenv("CEP_SERIALIZATION_FLAT_AEAD_KEY");
+    test_replay_unsetenv("CEP_SERIALIZATION_FLAT_AEAD_MODE");
+    test_replay_unsetenv("CEP_SERIALIZATION_FLAT_AEAD_KEY");
     cps_runtime_cleanup(&runtime);
     return MUNIT_OK;
 }
@@ -573,8 +618,8 @@ MunitResult test_cps_replay_cas_cache(const MunitParameter params[], void* user_
     munit_assert_true(fixture_ingest_frame(engine, &frame, 1));
     fixture_blob_reset(&frame);
 
-    setenv("CEP_SERIALIZATION_FLAT_AEAD_MODE", CPS_FIXTURE_AEAD_MODE, 1);
-    setenv("CEP_SERIALIZATION_FLAT_AEAD_KEY", CPS_FIXTURE_AEAD_KEY_HEX, 1);
+    test_replay_setenv("CEP_SERIALIZATION_FLAT_AEAD_MODE", CPS_FIXTURE_AEAD_MODE);
+    test_replay_setenv("CEP_SERIALIZATION_FLAT_AEAD_KEY", CPS_FIXTURE_AEAD_KEY_HEX);
 
     fixture_blob chunk = {0};
     munit_assert_true(fixture_request_record(engine,

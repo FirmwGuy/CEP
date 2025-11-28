@@ -13,6 +13,7 @@ fs = import('fs')
 python_mod = import('python')
 buildtype = get_option('buildtype')
 host_cpu = host_machine.cpu_family()
+host_system = host_machine.system()
 
 inc_paths = [
   'src/l0_kernel',
@@ -354,6 +355,7 @@ if get_option('tests').enabled()
     test_srcs += files('src/test/l0_kernel/test_stream_zip.c')
     test_dependencies += [zip_dep]
   endif
+  no_fork_flag = host_system == 'windows' ? [] : ['--no-fork']
   exe = executable('cep_tests', test_srcs,
     c_args: exe_cargs,
     include_directories: inc,
@@ -362,19 +364,19 @@ if get_option('tests').enabled()
     install: false,
   )
   test('cep_unit_tests', exe,
-    args: ['--no-fork', '--param', 'timeout', '120'],
+    args: no_fork_flag + ['--param', 'timeout', '120'],
     timeout: 180,
   )
 
   test('integration_poc', exe,
-    args: ['--no-fork', '--single', '/CEP/integration_poc/l0/integration'],
+    args: no_fork_flag + ['--single', '/CEP/integration_poc/l0/integration'],
     timeout: 240,
     suite: ['integration_poc'],
     is_parallel: false,
   )
 
   test('runtime_dual_default', exe,
-    args: ['--no-fork', '--single', '/CEP/runtime/dual_isolation'],
+    args: no_fork_flag + ['--single', '/CEP/runtime/dual_isolation'],
     timeout: 180,
     suite: ['runtime'],
   )
@@ -391,7 +393,7 @@ if get_option('tests').enabled()
     install: false,
   )
   test('calc_poc', calc_poc_exe,
-    args: ['--no-fork'],
+    args: no_fork_flag,
     timeout: 120,
     suite: ['calc_poc'],
     is_parallel: false,

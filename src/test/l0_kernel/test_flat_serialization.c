@@ -15,6 +15,24 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+#if defined(_WIN32)
+#include <direct.h>
+static bool flat_setenv(const char* name, const char* value) {
+    return _putenv_s(name, value ? value : "") == 0;
+}
+static bool flat_unsetenv(const char* name) {
+    return _putenv_s(name, "") == 0;
+}
+#else
+static bool flat_setenv(const char* name, const char* value) {
+    return setenv(name, value, 1) == 0;
+}
+static bool flat_unsetenv(const char* name) {
+    return unsetenv(name) == 0;
+}
+#endif
 
 static const char kFlatAeadKeyHex[] =
     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
@@ -423,10 +441,10 @@ static bool flat_reader_expect_failure(uint8_t* frame, size_t frame_size) {
 
 static void flat_restore_env(const char* key, char* snapshot) {
     if (snapshot) {
-        setenv(key, snapshot, 1);
+        flat_setenv(key, snapshot);
         free(snapshot);
     } else {
-        unsetenv(key);
+        flat_unsetenv(key);
     }
 }
 
@@ -507,8 +525,8 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
     char* prev_aead_mode_copy = prev_aead_mode ? strdup(prev_aead_mode) : NULL;
     const char* prev_aead_key = getenv("CEP_SERIALIZATION_FLAT_AEAD_KEY");
     char* prev_aead_key_copy = prev_aead_key ? strdup(prev_aead_key) : NULL;
-    munit_assert_int(unsetenv("CEP_SERIALIZATION_FLAT_AEAD_MODE"), ==, 0);
-    munit_assert_int(unsetenv("CEP_SERIALIZATION_FLAT_AEAD_KEY"), ==, 0);
+    munit_assert_true(flat_unsetenv("CEP_SERIALIZATION_FLAT_AEAD_MODE"));
+    munit_assert_true(flat_unsetenv("CEP_SERIALIZATION_FLAT_AEAD_KEY"));
     munit_assert_int(sodium_init(), >=, 0);
 
     uint8_t payload[96];
@@ -548,8 +566,8 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
 
     uint8_t aead_key_bytes[crypto_aead_xchacha20poly1305_ietf_KEYBYTES];
     munit_assert_true(flat_hex_decode(kFlatAeadKeyHex, aead_key_bytes, sizeof aead_key_bytes));
-    munit_assert_int(setenv("CEP_SERIALIZATION_FLAT_AEAD_MODE", "xchacha20", 1), ==, 0);
-    munit_assert_int(setenv("CEP_SERIALIZATION_FLAT_AEAD_KEY", kFlatAeadKeyHex, 1), ==, 0);
+    munit_assert_true(flat_setenv("CEP_SERIALIZATION_FLAT_AEAD_MODE", "xchacha20"));
+    munit_assert_true(flat_setenv("CEP_SERIALIZATION_FLAT_AEAD_KEY", kFlatAeadKeyHex));
     munit_assert_true(cep_flat_stream_emit_cell(&cell,
                                                 NULL,
                                                 (cepFlatStreamWriteFn)flat_capture_sink,
@@ -564,7 +582,7 @@ MunitResult test_serialization_flat_multi_chunk(const MunitParameter params[], v
                               sizeof aead_key_bytes);
     flat_capture_clear(&capture);
 
-    munit_assert_int(setenv("CEP_SERIALIZATION_FLAT_COMPRESSION", "deflate", 1), ==, 0);
+    munit_assert_true(flat_setenv("CEP_SERIALIZATION_FLAT_COMPRESSION", "deflate"));
     munit_assert_true(cep_flat_stream_emit_cell(&cell,
                                                 NULL,
                                                 (cepFlatStreamWriteFn)flat_capture_sink,
@@ -675,16 +693,16 @@ MunitResult test_serialization_flat_randomized_corruption(const MunitParameter p
         bool use_compression = (munit_rand_uint32() & 1u) != 0u;
         bool use_aead = (munit_rand_uint32() & 1u) != 0u;
         if (use_compression)
-            munit_assert_int(setenv("CEP_SERIALIZATION_FLAT_COMPRESSION", "deflate", 1), ==, 0);
+            munit_assert_true(flat_setenv("CEP_SERIALIZATION_FLAT_COMPRESSION", "deflate"));
         else
-            munit_assert_int(unsetenv("CEP_SERIALIZATION_FLAT_COMPRESSION"), ==, 0);
+            munit_assert_true(flat_unsetenv("CEP_SERIALIZATION_FLAT_COMPRESSION"));
 
         if (use_aead) {
-            munit_assert_int(setenv("CEP_SERIALIZATION_FLAT_AEAD_MODE", "xchacha20", 1), ==, 0);
-            munit_assert_int(setenv("CEP_SERIALIZATION_FLAT_AEAD_KEY", kFlatAeadKeyHex, 1), ==, 0);
+            munit_assert_true(flat_setenv("CEP_SERIALIZATION_FLAT_AEAD_MODE", "xchacha20"));
+            munit_assert_true(flat_setenv("CEP_SERIALIZATION_FLAT_AEAD_KEY", kFlatAeadKeyHex));
         } else {
-            munit_assert_int(unsetenv("CEP_SERIALIZATION_FLAT_AEAD_MODE"), ==, 0);
-            munit_assert_int(unsetenv("CEP_SERIALIZATION_FLAT_AEAD_KEY"), ==, 0);
+            munit_assert_true(flat_unsetenv("CEP_SERIALIZATION_FLAT_AEAD_MODE"));
+            munit_assert_true(flat_unsetenv("CEP_SERIALIZATION_FLAT_AEAD_KEY"));
         }
 
         size_t payload_size = (size_t)munit_rand_int_range(64, 2049);

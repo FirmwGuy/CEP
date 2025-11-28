@@ -22,6 +22,18 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#if defined(_WIN32)
+#include <direct.h>
+static int fixture_mkdir_portable(const char* path, mode_t mode) {
+    (void)mode;
+    return _mkdir(path);
+}
+#else
+static int fixture_mkdir_portable(const char* path, mode_t mode) {
+    return mkdir(path, mode);
+}
+#endif
+
 typedef struct {
     uint8_t* data;
     size_t   len;
@@ -298,7 +310,7 @@ static bool fixture_ensure_parent_dirs(char* path) {
         if (path[i] == '/') {
             char saved = path[i];
             path[i] = '\0';
-            if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+            if (fixture_mkdir_portable(path, 0755) != 0 && errno != EEXIST) {
                 path[i] = saved;
                 return false;
             }

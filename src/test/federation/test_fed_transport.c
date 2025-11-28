@@ -34,6 +34,31 @@
 #include <limits.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <unistd.h>
+
+#if defined(_WIN32)
+#include <direct.h>
+static bool fed_setenv(const char* name, const char* value) {
+    return _putenv_s(name, value ? value : "") == 0;
+}
+static bool fed_unsetenv(const char* name) {
+    return _putenv_s(name, "") == 0;
+}
+static int fed_mkdir_portable(const char* path, mode_t mode) {
+    (void)mode;
+    return _mkdir(path);
+}
+#else
+static bool fed_setenv(const char* name, const char* value) {
+    return setenv(name, value, 1) == 0;
+}
+static bool fed_unsetenv(const char* name) {
+    return unsetenv(name) == 0;
+}
+static int fed_mkdir_portable(const char* path, mode_t mode) {
+    return mkdir(path, mode);
+}
+#endif
 
 #ifdef CEP_ENABLE_DEBUG
 #include <errno.h>
@@ -225,7 +250,7 @@ static void fed_link_inline_swap_reset(void) {
 }
 
 static void fed_policy_trace_reset(void) {
-    if (mkdir(FED_INLINE_SWAP_TRACE_DIR, 0777) != 0 && errno != EEXIST) {
+    if (fed_mkdir_portable(FED_INLINE_SWAP_TRACE_DIR, 0777) != 0 && errno != EEXIST) {
         return;
     }
     unlink(FED_POLICY_TRACE_FILE);
@@ -253,19 +278,19 @@ static char* fed_test_env_push(const char* name, const char* value) {
     const char* current = getenv(name);
     char* snapshot = current ? strdup(current) : NULL;
     if (value) {
-        setenv(name, value, 1);
+        fed_setenv(name, value);
     } else {
-        unsetenv(name);
+        fed_unsetenv(name);
     }
     return snapshot;
 }
 
 static void fed_test_env_pop(const char* name, char* snapshot) {
     if (snapshot) {
-        setenv(name, snapshot, 1);
+        fed_setenv(name, snapshot);
         free(snapshot);
     } else {
-        unsetenv(name);
+        fed_unsetenv(name);
     }
 }
 static const char* const FED_TEST_SEVERITY_WARN = "sev:warn";

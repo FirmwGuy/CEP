@@ -27,11 +27,20 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#if defined(_WIN32)
+#include <io.h>
+#include <direct.h>
+#endif
 #include <zlib.h>
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
+
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+#define CPS_OPEN_FLAGS(flags) ((flags) | O_BINARY)
 
 static const char k_cps_topic_frame_io[] = "persist.frame.io";
 static const char k_cps_topic_checkpoint[] = "persist.checkpoint";
@@ -67,6 +76,32 @@ CEP_DEFINE_STATIC_DT(dt_persist_cas_latency_field, CEP_ACRO("CEP"), CEP_WORD("ca
 #define CPS_FLATFILE_PAYLOAD_FLAG_KIND_MASK  0x000000FFu
 #define CPS_FLATFILE_PAYLOAD_FLAG_AEAD_SHIFT 8u
 #define CPS_FLATFILE_PAYLOAD_FLAG_AEAD_MASK  (0x000000FFu << CPS_FLATFILE_PAYLOAD_FLAG_AEAD_SHIFT)
+
+#if defined(_WIN32)
+/* Provide POSIX-like helpers on Windows toolchains. */
+#define fsync _commit
+static ssize_t
+cep_pread_win(int fd, void* buf, size_t count, off_t offset)
+{
+    if (_lseeki64(fd, offset, SEEK_SET) < 0) {
+        return -1;
+    }
+    return _read(fd, buf, (unsigned int)count);
+}
+#define pread(fd, buf, count, offset) cep_pread_win(fd, buf, count, offset)
+static int
+cep_mkdir_portable(const char* path, mode_t mode)
+{
+    (void)mode;
+    return _mkdir(path);
+}
+#else
+static int
+cep_mkdir_portable(const char* path, mode_t mode)
+{
+    return mkdir(path, mode);
+}
+#endif
 
 typedef struct __attribute__((packed)) {
   uint32_t magic;
@@ -574,7 +609,7 @@ static int cps_flatfile_cas_manifest_store(cps_flatfile_state *state) {
   if (!state || !state->cas_manifest_path) {
     return CPS_ERR_INVALID_ARGUMENT;
   }
-  int fd = open(state->cas_manifest_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  int fd = open(state->cas_manifest_path, CPS_OPEN_FLAGS(O_CREAT | O_TRUNC | O_WRONLY), 0644);
   if (fd < 0) {
     return CPS_ERR_IO;
   }
@@ -614,7 +649,7 @@ static int cps_flatfile_cas_manifest_load(cps_flatfile_state *state) {
   if (!state || !state->cas_manifest_path) {
     return CPS_ERR_INVALID_ARGUMENT;
   }
-  int fd = open(state->cas_manifest_path, O_RDONLY);
+  int fd = open(state->cas_manifest_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (fd < 0) {
     if (errno == ENOENT) {
       return CPS_OK;
@@ -707,7 +742,7 @@ static int cps_flatfile_store_cas_blob(cps_flatfile_state *state,
   if (rc != CPS_OK) {
     return rc;
   }
-  int fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  int fd = open(path, CPS_OPEN_FLAGS(O_CREAT | O_TRUNC | O_WRONLY), 0644);
   if (fd < 0) {
     return CPS_ERR_IO;
   }
@@ -732,7 +767,7 @@ static int cps_flatfile_load_cas_blob_from_cache(cps_flatfile_state *state,
   if (rc != CPS_OK) {
     return rc;
   }
-  int fd = open(path, O_RDONLY);
+  int fd = open(path, CPS_OPEN_FLAGS(O_RDONLY));
   if (fd < 0) {
     return (errno == ENOENT) ? CPS_ERR_NOT_FOUND : CPS_ERR_IO;
   }
@@ -1146,6 +1181,16 @@ static int cps_flatfile_commit_beat(cps_txn *txn_handle, cps_frame_meta *out_met
       error_topic = k_cps_topic_frame_io;
       error_detail = "write mini-TOC/trailer failed";
     }
+    if (rc == CPS_OK) {
+      struct stat st = {0};
+      if (cps_flatfile_stat_path(txn->owner->idx_path, &st) != 0 || (uint64_t)st.st_size < idx_ofs) {
+        rc = CPS_ERR_IO;
+        error_topic = k_cps_topic_frame_io;
+        error_detail = "stat branch.idx failed after trailer";
+      } else {
+        idx_len = (uint64_t)st.st_size - idx_ofs;
+      }
+    }
   }
   if (rc == CPS_OK) {
     rc = cps_flatfile_meta_commit(txn->owner, txn, dat_ofs, dat_len, idx_ofs, idx_len, merkle);
@@ -1244,8 +1289,8 @@ static int cps_flatfile_get_record(cps_engine *engine, cps_slice key, cps_buf *o
     cps_flatfile_frame_dir_snapshot snapshot = {0};
     int snap_rc = cps_flatfile_frame_dir_snapshot_load(state, &snapshot);
     if (snap_rc == CPS_OK && snapshot.count > 0u) {
-      int idx_fd = open(state->idx_path, O_RDONLY);
-      int dat_fd = open(state->dat_path, O_RDONLY);
+      int idx_fd = open(state->idx_path, CPS_OPEN_FLAGS(O_RDONLY));
+      int dat_fd = open(state->dat_path, CPS_OPEN_FLAGS(O_RDONLY));
       if (idx_fd < 0 || dat_fd < 0) {
         if (idx_fd >= 0) close(idx_fd);
         if (dat_fd >= 0) close(dat_fd);
@@ -1294,8 +1339,8 @@ static int cps_flatfile_scan_prefix(cps_engine *engine, cps_slice prefix, cps_sc
     return CPS_ERR_INVALID_ARGUMENT;
   }
 
-  int idx_fd = open(state->idx_path, O_RDONLY);
-  int dat_fd = open(state->dat_path, O_RDONLY);
+  int idx_fd = open(state->idx_path, CPS_OPEN_FLAGS(O_RDONLY));
+  int dat_fd = open(state->dat_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (idx_fd < 0 || dat_fd < 0) {
     if (idx_fd >= 0) close(idx_fd);
     if (dat_fd >= 0) close(dat_fd);
@@ -1484,13 +1529,13 @@ static int cps_flatfile_checkpoint(cps_engine *engine, const cps_ckpt_opts *opts
   bool checkpoint_written = false;
   uint64_t min_interval = (opts && opts->every_beats) ? opts->every_beats : 0u;
 
-  idx_fd = open(state->idx_path, O_RDONLY);
+  idx_fd = open(state->idx_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (idx_fd < 0) {
     rc = CPS_ERR_IO;
     error_detail = "open branch.idx failed";
     goto done;
   }
-  dat_fd = open(state->dat_path, O_RDONLY);
+  dat_fd = open(state->dat_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (dat_fd < 0) {
     rc = CPS_ERR_IO;
     error_detail = "open branch.dat failed";
@@ -1780,12 +1825,12 @@ static int cps_flatfile_prepare_txn_files(cps_flatfile_txn_state *txn) {
     return CPS_ERR_NOMEM;
   }
 
-  txn->dat_fd = open(txn->dat_tmp_path, O_CREAT | O_TRUNC | O_RDWR, 0644);
+  txn->dat_fd = open(txn->dat_tmp_path, CPS_OPEN_FLAGS(O_CREAT | O_TRUNC | O_RDWR), 0644);
   if (txn->dat_fd < 0) {
     return CPS_ERR_IO;
   }
 
-  txn->idx_fd = open(txn->idx_tmp_path, O_CREAT | O_TRUNC | O_RDWR, 0644);
+  txn->idx_fd = open(txn->idx_tmp_path, CPS_OPEN_FLAGS(O_CREAT | O_TRUNC | O_RDWR), 0644);
   if (txn->idx_fd < 0) {
     close(txn->dat_fd);
     txn->dat_fd = -1;
@@ -1852,19 +1897,19 @@ static int cps_flatfile_ensure_directories(cps_flatfile_state *state) {
   }
 
   int fd;
-  fd = open(state->idx_path, O_CREAT | O_APPEND, 0644);
+  fd = open(state->idx_path, CPS_OPEN_FLAGS(O_CREAT | O_APPEND), 0644);
   if (fd < 0) {
     return CPS_ERR_IO;
   }
   close(fd);
 
-  fd = open(state->dat_path, O_CREAT | O_APPEND, 0644);
+  fd = open(state->dat_path, CPS_OPEN_FLAGS(O_CREAT | O_APPEND), 0644);
   if (fd < 0) {
     return CPS_ERR_IO;
   }
   close(fd);
 
-  fd = open(state->meta_path, O_CREAT, 0644);
+  fd = open(state->meta_path, CPS_OPEN_FLAGS(O_CREAT), 0644);
   if (fd < 0 && errno != EEXIST) {
     return CPS_ERR_IO;
   }
@@ -1872,14 +1917,14 @@ static int cps_flatfile_ensure_directories(cps_flatfile_state *state) {
     close(fd);
   }
 
-  fd = open(state->ckp_path, O_CREAT | O_APPEND, 0644);
+  fd = open(state->ckp_path, CPS_OPEN_FLAGS(O_CREAT | O_APPEND), 0644);
   if (fd < 0) {
     return CPS_ERR_IO;
   }
   close(fd);
 
   if (state->dir_path) {
-    fd = open(state->dir_path, O_CREAT | O_APPEND, 0644);
+    fd = open(state->dir_path, CPS_OPEN_FLAGS(O_CREAT | O_APPEND), 0644);
     if (fd < 0) {
       return CPS_ERR_IO;
     }
@@ -2270,7 +2315,7 @@ static int cps_flatfile_iterate_checkpoints(cps_flatfile_state *state,
     return CPS_ERR_INVALID_ARGUMENT;
   }
 
-  int fd = open(state->ckp_path, O_RDONLY);
+  int fd = open(state->ckp_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (fd < 0) {
     if (errno == ENOENT) {
       return CPS_ERR_NOT_FOUND;
@@ -2504,7 +2549,7 @@ static int cps_flatfile_reset_branch(cps_flatfile_state *state, int idx_fd, int 
   state->next_frame_id = 0u;
   state->last_checkpoint_beat = 0u;
   if (state->dir_path) {
-    int dir_fd = open(state->dir_path, O_RDWR | O_CREAT, 0644);
+    int dir_fd = open(state->dir_path, CPS_OPEN_FLAGS(O_RDWR | O_CREAT), 0644);
     if (dir_fd >= 0) {
       (void)ftruncate(dir_fd, 0);
       close(dir_fd);
@@ -2517,8 +2562,8 @@ static int cps_flatfile_recover_branch(cps_flatfile_state *state) {
   if (!state) {
     return CPS_ERR_INVALID_ARGUMENT;
   }
-  int idx_fd = open(state->idx_path, O_RDWR);
-  int dat_fd = open(state->dat_path, O_RDWR);
+  int idx_fd = open(state->idx_path, CPS_OPEN_FLAGS(O_RDWR));
+  int dat_fd = open(state->dat_path, CPS_OPEN_FLAGS(O_RDWR));
   if (idx_fd < 0 || dat_fd < 0) {
     if (idx_fd >= 0) close(idx_fd);
     if (dat_fd >= 0) close(dat_fd);
@@ -2891,7 +2936,7 @@ static int cps_flatfile_write_mini_toc_and_trailer(cps_flatfile_txn_state *txn,
   if (!txn || !merkle || !txn->owner || !txn->owner->idx_path) {
     return CPS_ERR_INVALID_ARGUMENT;
   }
-  int fd = open(txn->owner->idx_path, O_WRONLY | O_APPEND);
+  int fd = open(txn->owner->idx_path, CPS_OPEN_FLAGS(O_WRONLY | O_APPEND));
   if (fd < 0) {
     return CPS_ERR_IO;
   }
@@ -2954,7 +2999,7 @@ static int cps_flatfile_write_checkpoint_snapshot(cps_flatfile_state *state,
   if (!state || !state->ckp_path) {
     return CPS_ERR_INVALID_ARGUMENT;
   }
-  int fd = open(state->ckp_path, O_WRONLY | O_APPEND | O_CREAT, 0644);
+  int fd = open(state->ckp_path, CPS_OPEN_FLAGS(O_WRONLY | O_APPEND | O_CREAT), 0644);
   if (fd < 0) {
     return CPS_ERR_IO;
   }
@@ -3021,12 +3066,12 @@ static int cps_flatfile_append_file(const char *dst_path, const char *src_path, 
     return CPS_ERR_INVALID_ARGUMENT;
   }
 
-  int src_fd = open(src_path, O_RDONLY);
+  int src_fd = open(src_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (src_fd < 0) {
     return CPS_ERR_IO;
   }
 
-  int dst_fd = open(dst_path, O_WRONLY | O_CREAT, 0644);
+  int dst_fd = open(dst_path, CPS_OPEN_FLAGS(O_WRONLY | O_CREAT), 0644);
   if (dst_fd < 0) {
     close(src_fd);
     return CPS_ERR_IO;
@@ -3093,7 +3138,7 @@ static int cps_flatfile_frame_dir_snapshot_load(const cps_flatfile_state *state,
   }
   memset(snapshot, 0, sizeof *snapshot);
 
-  int fd = open(state->dir_path, O_RDONLY);
+  int fd = open(state->dir_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (fd < 0) {
     return CPS_ERR_IO;
   }
@@ -3142,7 +3187,7 @@ static int cps_flatfile_frame_dir_append(const cps_flatfile_state *state,
     return CPS_ERR_INVALID_ARGUMENT;
   }
 
-  int fd = open(state->dir_path, O_WRONLY | O_APPEND | O_CREAT, 0644);
+  int fd = open(state->dir_path, CPS_OPEN_FLAGS(O_WRONLY | O_APPEND | O_CREAT), 0644);
   if (fd < 0) {
     return CPS_ERR_IO;
   }
@@ -3181,7 +3226,7 @@ static int cps_flatfile_frame_dir_tail(const cps_flatfile_state *state,
   if (!state || !state->dir_path || !entry) {
     return CPS_ERR_INVALID_ARGUMENT;
   }
-  int fd = open(state->dir_path, O_RDONLY);
+  int fd = open(state->dir_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (fd < 0) {
     return CPS_ERR_IO;
   }
@@ -3214,7 +3259,7 @@ static int cps_flatfile_frame_dir_trim_to_fit(cps_flatfile_state *state,
   if (!state || !state->dir_path) {
     return CPS_ERR_INVALID_ARGUMENT;
   }
-  int fd = open(state->dir_path, O_RDWR | O_CREAT, 0644);
+  int fd = open(state->dir_path, CPS_OPEN_FLAGS(O_RDWR | O_CREAT), 0644);
   if (fd < 0) {
     return CPS_ERR_IO;
   }
@@ -3230,8 +3275,13 @@ static int cps_flatfile_frame_dir_trim_to_fit(cps_flatfile_state *state,
     off_t ofs = size - entry_size;
     cps_flatfile_frame_dir_entry_disk entry = {0};
     if (pread(fd, &entry, sizeof entry, ofs) != sizeof entry) {
-      close(fd);
-      return CPS_ERR_IO;
+      /* Partial tail entry; truncate the damaged tail and retry. */
+      if (ftruncate(fd, ofs) != 0) {
+        close(fd);
+        return CPS_ERR_IO;
+      }
+      size = ofs;
+      continue;
     }
 
     bool overflow = (entry.idx_len > 0u && entry.idx_ofs > UINT64_MAX - entry.idx_len) ||
@@ -3407,11 +3457,11 @@ static int cps_flatfile_lookup_head_record(cps_flatfile_state *state, cps_slice 
     return CPS_ERR_NOT_FOUND;
   }
 
-  int idx_fd = open(state->idx_path, O_RDONLY);
+  int idx_fd = open(state->idx_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (idx_fd < 0) {
     return CPS_ERR_IO;
   }
-  int dat_fd = open(state->dat_path, O_RDONLY);
+  int dat_fd = open(state->dat_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (dat_fd < 0) {
     close(idx_fd);
     return CPS_ERR_IO;
@@ -3500,11 +3550,11 @@ static int cps_flatfile_lookup_checkpoint_record(cps_flatfile_state *state, cps_
     return CPS_ERR_INVALID_ARGUMENT;
   }
 
-  int idx_fd = open(state->idx_path, O_RDONLY);
+  int idx_fd = open(state->idx_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (idx_fd < 0) {
     return CPS_ERR_IO;
   }
-  int dat_fd = open(state->dat_path, O_RDONLY);
+  int dat_fd = open(state->dat_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (dat_fd < 0) {
     close(idx_fd);
     return CPS_ERR_IO;
@@ -3661,8 +3711,8 @@ static int cps_flatfile_build_cas_record(cps_flatfile_state *state, cps_slice ke
     cps_flatfile_frame_dir_snapshot snapshot = {0};
     int snap_rc = cps_flatfile_frame_dir_snapshot_load(state, &snapshot);
     if (snap_rc == CPS_OK && snapshot.count > 0u) {
-      int idx_fd = open(state->idx_path, O_RDONLY);
-      int dat_fd = open(state->dat_path, O_RDONLY);
+      int idx_fd = open(state->idx_path, CPS_OPEN_FLAGS(O_RDONLY));
+      int dat_fd = open(state->dat_path, CPS_OPEN_FLAGS(O_RDONLY));
       if (idx_fd < 0 || dat_fd < 0) {
         if (idx_fd >= 0) close(idx_fd);
         if (dat_fd >= 0) close(dat_fd);
@@ -3805,7 +3855,7 @@ static int cps_flatfile_meta_store(cps_flatfile_state *state) {
   meta.engine_id = 1u;
   meta.crc32c = cps_flatfile_meta_crc(&meta);
 
-  int fd = open(state->meta_tmp_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  int fd = open(state->meta_tmp_path, CPS_OPEN_FLAGS(O_CREAT | O_TRUNC | O_WRONLY), 0644);
   if (fd < 0) {
     return CPS_ERR_IO;
   }
@@ -3817,7 +3867,15 @@ static int cps_flatfile_meta_store(cps_flatfile_state *state) {
   close(fd);
 
   if (rc == CPS_OK && rename(state->meta_tmp_path, state->meta_path) != 0) {
-    rc = CPS_ERR_IO;
+    /* Windows refuses to overwrite existing targets; drop the stale meta and retry. */
+    if (errno == EEXIST || errno == EACCES) {
+      (void)unlink(state->meta_path);
+      if (rename(state->meta_tmp_path, state->meta_path) != 0) {
+        rc = CPS_ERR_IO;
+      }
+    } else {
+      rc = CPS_ERR_IO;
+    }
   }
   if (rc != CPS_OK) {
     unlink(state->meta_tmp_path);
@@ -3847,7 +3905,7 @@ static int cps_flatfile_meta_load(cps_flatfile_state *state) {
     return cps_flatfile_meta_store(state);
   }
 
-  int fd = open(state->meta_path, O_RDONLY);
+  int fd = open(state->meta_path, CPS_OPEN_FLAGS(O_RDONLY));
   if (fd < 0) {
     return CPS_ERR_IO;
   }
@@ -3943,7 +4001,7 @@ static int cps_flatfile_mkdir_p(const char *path, mode_t mode) {
     if (*cursor == '/') {
       *cursor = '\0';
       if (strlen(dup) > 0u) {
-        if (mkdir(dup, mode) != 0 && errno != EEXIST) {
+        if (cep_mkdir_portable(dup, mode) != 0 && errno != EEXIST) {
           *cursor = '/';
           free(dup);
           return -1;
@@ -3952,7 +4010,7 @@ static int cps_flatfile_mkdir_p(const char *path, mode_t mode) {
       *cursor = '/';
     }
   }
-  if (mkdir(dup, mode) != 0 && errno != EEXIST) {
+  if (cep_mkdir_portable(dup, mode) != 0 && errno != EEXIST) {
     free(dup);
     return -1;
   }

@@ -889,7 +889,11 @@ cep_io_reactor_submit(const cepIoReactorWork* work)
     pthread_mutex_lock(&state->lock);
     bool queued = false;
     if (is_native) {
+#if defined(CEP_IO_REACTOR_HAS_EPOLL)
         queued = cep_io_reactor_register_native_locked(state, job);
+#else
+        queued = false;
+#endif
     } else {
         cep_io_reactor_start_workers(state);
         queued = cep_io_reactor_schedule_job(state, job);

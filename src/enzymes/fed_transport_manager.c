@@ -26,6 +26,7 @@
 #include <limits.h>
 #include <inttypes.h>
 #include <errno.h>
+#include <unistd.h>
 
 struct cepFedTransportManagerMount {
     cepFedTransportManager*        manager;
@@ -2629,6 +2630,34 @@ cep_fed_transport_manager_mount_set_pipeline_metadata(cepFedTransportManagerMoun
     }
     mount->pipeline_metadata_known = has_metadata;
 }
+
+static bool
+cep_fed_env_set_portable(const char* name, const char* value)
+{
+    if (!name || !value) {
+        return false;
+    }
+#if defined(_WIN32)
+    return _putenv_s(name, value) == 0;
+#else
+    return setenv(name, value, 1) == 0;
+#endif
+}
+
+static void
+cep_fed_env_unset_portable(const char* name)
+{
+    if (!name) {
+        return;
+    }
+#if defined(_WIN32)
+    /* Empty assignment removes the variable from the environment. */
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
 static bool cep_fed_env_push_override(const char* name,
                                       uint32_t value,
                                       char** previous_copy) {
@@ -2646,7 +2675,7 @@ static bool cep_fed_env_push_override(const char* name,
     if (written < 0 || (size_t)written >= sizeof buf) {
         return false;
     }
-    return setenv(name, buf, 1) == 0;
+    return cep_fed_env_set_portable(name, buf);
 }
 
 static bool cep_fed_env_push_text_override(const char* name,
@@ -2662,17 +2691,17 @@ static bool cep_fed_env_push_text_override(const char* name,
     if (previous_copy) {
         *previous_copy = current ? strdup(current) : NULL;
     }
-    return setenv(name, value, 1) == 0;
+    return cep_fed_env_set_portable(name, value);
 }
 
 static void cep_fed_env_pop_override(const char* name, char* previous_copy) {
     if (!name)
         return;
     if (previous_copy) {
-        setenv(name, previous_copy, 1);
+        cep_fed_env_set_portable(name, previous_copy);
         free(previous_copy);
     } else {
-        unsetenv(name);
+        cep_fed_env_unset_portable(name);
     }
 }
 

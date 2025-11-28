@@ -37,6 +37,29 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(_WIN32)
+#include <io.h>
+#include <direct.h>
+#define fsync _commit
+static char*
+cep_realpath_portable(const char* path, char* resolved)
+{
+    return _fullpath(resolved, path, PATH_MAX);
+}
+#define realpath(path, resolved) cep_realpath_portable(path, resolved)
+static int
+cep_mkdir_portable(const char* path, mode_t mode)
+{
+    (void)mode;
+    return _mkdir(path);
+}
+#else
+static int
+cep_mkdir_portable(const char* path, mode_t mode)
+{
+    return mkdir(path, mode);
+}
+#endif
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -560,13 +583,13 @@ static bool cps_storage_mkdirs(const char *path) {
     if (temp[i] == '/' || temp[i] == '\\') {
       char saved = temp[i];
       temp[i] = '\0';
-      if (temp[0] != '\0' && mkdir(temp, 0755) != 0 && errno != EEXIST) {
+      if (temp[0] != '\0' && cep_mkdir_portable(temp, 0755) != 0 && errno != EEXIST) {
         return false;
       }
       temp[i] = saved;
     }
   }
-  if (mkdir(temp, 0755) != 0 && errno != EEXIST) {
+  if (cep_mkdir_portable(temp, 0755) != 0 && errno != EEXIST) {
     return false;
   }
   return true;
@@ -577,6 +600,13 @@ static bool cps_storage_normalize_path(const char *path, char *buffer, size_t ca
     return false;
   }
   if (realpath(path, buffer)) {
+#if defined(_WIN32)
+    for (size_t i = 0u; buffer[i]; ++i) {
+      if (buffer[i] == '\\') {
+        buffer[i] = '/';
+      }
+    }
+#endif
     return true;
   }
   if (path[0] != '/') {
@@ -588,6 +618,18 @@ static bool cps_storage_normalize_path(const char *path, char *buffer, size_t ca
   }
   memcpy(buffer, path, need + 1u);
   return true;
+}
+
+static bool cps_storage_is_absolute_path(const char *path) {
+  if (!path || !*path) {
+    return false;
+  }
+#if defined(_WIN32)
+  if ((isalpha((unsigned char)path[0]) && path[1] == ':') || (path[0] == '\\' && path[1] == '\\')) {
+    return true;
+  }
+#endif
+  return path[0] == '/';
 }
 
 static bool cps_storage_path_has_prefix(const char *path, const char *prefix) {
@@ -604,6 +646,9 @@ static bool cps_storage_path_has_prefix(const char *path, const char *prefix) {
 
 static bool cps_storage_is_external_path(const char *path) {
   if (!path || !*path) {
+    return false;
+  }
+  if (!cps_storage_is_absolute_path(path)) {
     return false;
   }
   char normalized[PATH_MAX];
@@ -1331,7 +1376,18 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
                                             uint64_t *copied_bytes,
                                             uint64_t *cas_bytes,
                                             uint64_t *cas_blobs) {
+#ifdef CEP_ENABLE_DEBUG
+  const bool env_debug = getenv("EXPORT_DEBUG") != NULL;
+#else
+  const bool env_debug = false;
+#endif
   if (!branch_dir || !branch_name || !bundle_path || bundle_path_len == 0u) {
+    CEP_DEBUG_PRINTF_IF(env_debug,
+                        "[export_bundle] missing args branch_dir=%p branch_name=%p bundle_path=%p len=%zu\n",
+                        (void *)branch_dir,
+                        (void *)branch_name,
+                        (void *)bundle_path,
+                        bundle_path_len);
     return CPS_ERR_INVALID_ARGUMENT;
   }
   if (copied_bytes) {
@@ -1347,9 +1403,14 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
   if (target_path && *target_path) {
     int need = snprintf(bundle_dir, sizeof bundle_dir, "%s", target_path);
     if (need < 0 || (size_t)need >= sizeof bundle_dir) {
+      CEP_DEBUG_PRINTF_IF(env_debug,
+                          "[export_bundle] target path overflow need=%d cap=%zu\n",
+                          need,
+                          sizeof bundle_dir);
       return CPS_ERR_INVALID_ARGUMENT;
     }
-    if (external_target && bundle_dir[0] != '/') {
+    if (external_target && !cps_storage_is_absolute_path(bundle_dir)) {
+      CEP_DEBUG_PRINTF_IF(env_debug, "[export_bundle] external target not absolute\n");
       return CPS_ERR_INVALID_ARGUMENT;
     }
     if (cps_storage_path_exists(bundle_dir)) {
@@ -1362,6 +1423,10 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
     char exports_dir[PATH_MAX];
     int need = snprintf(exports_dir, sizeof exports_dir, "%s/exports", branch_dir);
     if (need < 0 || (size_t)need >= sizeof exports_dir) {
+      CEP_DEBUG_PRINTF_IF(env_debug,
+                          "[export_bundle] exports dir overflow need=%d cap=%zu\n",
+                          need,
+                          sizeof exports_dir);
       return CPS_ERR_INVALID_ARGUMENT;
     }
     if (!cps_storage_mkdirs(exports_dir)) {
@@ -1378,6 +1443,10 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
     }
     int need_dir = snprintf(bundle_dir, sizeof bundle_dir, "%s/%s-%s", exports_dir, branch_slug, timestamp);
     if (need_dir < 0 || (size_t)need_dir >= sizeof bundle_dir) {
+      CEP_DEBUG_PRINTF_IF(env_debug,
+                          "[export_bundle] bundle dir overflow need=%d cap=%zu\n",
+                          need_dir,
+                          sizeof bundle_dir);
       return CPS_ERR_INVALID_ARGUMENT;
     }
     if (!cps_storage_mkdirs(bundle_dir)) {
@@ -1397,6 +1466,10 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
     char src_path[PATH_MAX];
     need = snprintf(src_path, sizeof src_path, "%s/%s", branch_dir, artifact->name);
     if (need < 0 || (size_t)need >= sizeof src_path) {
+      CEP_DEBUG_PRINTF_IF(env_debug,
+                          "[export_bundle] src path overflow need=%d cap=%zu\n",
+                          need,
+                          sizeof src_path);
       return CPS_ERR_INVALID_ARGUMENT;
     }
     if (!cps_storage_path_exists(src_path)) {
@@ -1411,6 +1484,10 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
     char dst_path[PATH_MAX];
     need = snprintf(dst_path, sizeof dst_path, "%s/%s", bundle_dir, artifact->name);
     if (need < 0 || (size_t)need >= sizeof dst_path) {
+      CEP_DEBUG_PRINTF_IF(env_debug,
+                          "[export_bundle] dst path overflow need=%d cap=%zu\n",
+                          need,
+                          sizeof dst_path);
       return CPS_ERR_INVALID_ARGUMENT;
     }
     if (!cps_storage_copy_file(src_path, dst_path, copied_bytes, artifact->hash)) {
@@ -1483,6 +1560,10 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
   }
   int path_need = snprintf(bundle_path, bundle_path_len, "%s", bundle_dir);
   if (path_need < 0 || (size_t)path_need >= bundle_path_len) {
+    CEP_DEBUG_PRINTF_IF(env_debug,
+                        "[export_bundle] bundle path overflow need=%d cap=%zu\n",
+                        path_need,
+                        bundle_path_len);
     return CPS_ERR_INVALID_ARGUMENT;
   }
   return CPS_OK;
@@ -2480,20 +2561,45 @@ int cps_storage_export_active_branch(const cpsStorageSaveOptions* opts,
                                      uint64_t* cas_bytes,
                                      uint64_t* cas_blobs)
 {
+#ifdef CEP_ENABLE_DEBUG
+  const bool env_debug = getenv("EXPORT_DEBUG") != NULL;
+#else
+  const bool env_debug = false;
+#endif
+  const char* branch_name = cps_storage_active_branch();
   const char* branch_dir = cps_runtime_branch_dir();
-  if (!branch_dir) {
+  char branch_dir_buf[PATH_MAX];
+  if (!branch_dir || branch_dir[0] == '\0') {
+    const char* root_dir = cps_runtime_root_dir();
+    int need = snprintf(branch_dir_buf, sizeof branch_dir_buf, "%s/%s", root_dir, branch_name);
+    if (need < 0 || (size_t)need >= sizeof branch_dir_buf) {
+      CEP_DEBUG_PRINTF_IF(env_debug,
+                          "[export_active] branch dir overflow root=\"%s\" branch=\"%s\"\n",
+                          root_dir,
+                          branch_name);
+      return CPS_ERR_INVALID_ARGUMENT;
+    }
+    branch_dir = branch_dir_buf;
+  }
+  if (!cps_storage_path_exists(branch_dir)) {
+    CEP_DEBUG_PRINTF_IF(env_debug, "[export_active] branch dir missing \"%s\"\n", branch_dir);
     return CPS_ERR_INVALID_ARGUMENT;
   }
-  const char* branch_name = cps_storage_active_branch();
   const char* target_path = (opts && opts->target_path && opts->target_path[0]) ? opts->target_path : NULL;
   uint64_t history_window = opts ? opts->history_window_beats : 0u;
   bool external_target = cps_storage_is_external_path(target_path);
   char scratch_path[PATH_MAX];
   char* path_out = bundle_path ? bundle_path : scratch_path;
   size_t path_out_len = bundle_path ? bundle_path_len : sizeof scratch_path;
+  char normalized_target[PATH_MAX];
   int rc = cps_storage_export_branch_bundle(branch_dir,
                                             branch_name,
-                                            target_path,
+                                            (external_target && target_path &&
+                                             cps_storage_normalize_path(target_path,
+                                                                        normalized_target,
+                                                                        sizeof normalized_target))
+                                                ? normalized_target
+                                                : target_path,
                                             history_window,
                                             external_target,
                                             path_out,

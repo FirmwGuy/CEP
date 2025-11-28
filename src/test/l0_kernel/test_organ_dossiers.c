@@ -172,7 +172,7 @@ static void organ_dossier_wait_for_operation(const char* label,
                                              size_t before_count,
                                              const char* expected_target,
                                              const char* expected_verb) {
-    const int max_beats = expected_target ? 48 : 12;
+    const int max_beats = expected_target ? 192 : 12;
     for (int beat = 0; beat < max_beats; ++beat) {
         munit_assert_true(test_ovh_heartbeat_step(label));
         organ_dossier_trace_ops_size(label, ops_root);

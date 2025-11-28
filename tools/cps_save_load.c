@@ -26,6 +26,39 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#if defined(_WIN32)
+#include <direct.h>
+#include <io.h>
+#define fsync _commit
+static char* tool_realpath(const char* path, char* resolved) {
+  return _fullpath(resolved, path, PATH_MAX);
+}
+#define realpath(path, resolved) tool_realpath(path, resolved)
+static int tool_mkdir(const char* path, mode_t mode) {
+  (void)mode;
+  return _mkdir(path);
+}
+static bool tool_setenv(const char* name, const char* value) {
+  return _putenv_s(name, value ? value : "") == 0;
+}
+static bool tool_unsetenv(const char* name) {
+  return _putenv_s(name, "") == 0;
+}
+#else
+static int tool_mkdir(const char* path, mode_t mode) {
+  return mkdir(path, mode);
+}
+static bool tool_setenv(const char* name, const char* value) {
+  return setenv(name, value, 1) == 0;
+}
+static bool tool_unsetenv(const char* name) {
+  return unsetenv(name) == 0;
+}
+#endif
+
+#define setenv(name, value, overwrite) tool_setenv(name, value)
+#define unsetenv(name) tool_unsetenv(name)
+
 typedef struct {
   cepRuntime *runtime;
   cepRuntime *previous;
@@ -169,7 +202,7 @@ static bool tool_copy_tree(const char *src_dir, const char *dst_dir) {
     return false;
   }
   if (stat(dst_dir, &st) != 0) {
-    if (mkdir(dst_dir, 0755) != 0) {
+    if (tool_mkdir(dst_dir, 0755) != 0) {
       return false;
     }
   }
