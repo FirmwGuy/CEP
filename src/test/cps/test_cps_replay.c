@@ -9,6 +9,7 @@
 
 #include "blake3.h"
 #include "cps_flatfile.h"
+#include "cps_storage_service.h"
 #include "cep_flat_serializer.h"
 #include "cep_cell.h"
 #include "cep_heartbeat.h"
@@ -650,5 +651,85 @@ MunitResult test_cps_replay_cas_runtime(const MunitParameter params[], void* use
     unsetenv("CEP_SERIALIZATION_FLAT_AEAD_MODE");
     unsetenv("CEP_SERIALIZATION_FLAT_AEAD_KEY");
     cps_runtime_cleanup(&runtime);
+    return MUNIT_OK;
+}
+
+MunitResult test_cps_export_windowed_external(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+    (void)user_data_or_fixture;
+
+    char root_dir[PATH_MAX];
+    munit_assert_true(fixture_make_temp_root(root_dir, sizeof root_dir));
+    setenv("CEP_CPS_ROOT", root_dir, 1);
+    setenv("CEP_CPS_BRANCH", "bundle_test", 1);
+
+    CpsRuntimeScope runtime = cps_runtime_start();
+
+    char target_dir[PATH_MAX];
+    int need = snprintf(target_dir, sizeof target_dir, "%s/external_bundle", root_dir);
+    munit_assert_true(need > 0 && (size_t)need < sizeof target_dir);
+
+    cpsStorageSaveOptions opts = {
+        .target_path = target_dir,
+        .history_window_beats = 1u,
+    };
+    char bundle_path[PATH_MAX];
+    uint64_t copied_bytes = 0u;
+    uint64_t cas_bytes = 0u;
+    uint64_t cas_blobs = 0u;
+    int rc = cps_storage_export_active_branch(&opts,
+                                              bundle_path,
+                                              sizeof bundle_path,
+                                              &copied_bytes,
+                                              &cas_bytes,
+                                              &cas_blobs);
+    munit_assert_int(rc, ==, CPS_OK);
+    munit_assert_string_equal(bundle_path, target_dir);
+
+    char manifest_path[PATH_MAX];
+    need = snprintf(manifest_path, sizeof manifest_path, "%s/manifest.txt", bundle_path);
+    munit_assert_true(need > 0 && (size_t)need < sizeof manifest_path);
+    struct stat st = {0};
+    munit_assert_int(stat(manifest_path, &st), ==, 0);
+    munit_assert_true(cps_storage_verify_bundle_dir(bundle_path));
+
+    cps_runtime_cleanup(&runtime);
+    unsetenv("CEP_CPS_ROOT");
+    unsetenv("CEP_CPS_BRANCH");
+    return MUNIT_OK;
+}
+
+MunitResult test_cps_stage_external_bundle(const MunitParameter params[], void* user_data_or_fixture) {
+    (void)params;
+    (void)user_data_or_fixture;
+
+    char root_dir[PATH_MAX];
+    munit_assert_true(fixture_make_temp_root(root_dir, sizeof root_dir));
+    setenv("CEP_CPS_ROOT", root_dir, 1);
+    setenv("CEP_CPS_BRANCH", "bundle_stage", 1);
+
+    CpsRuntimeScope runtime = cps_runtime_start();
+
+    char target_dir[PATH_MAX];
+    int need = snprintf(target_dir, sizeof target_dir, "%s/external_stage_bundle", root_dir);
+    munit_assert_true(need > 0 && (size_t)need < sizeof target_dir);
+
+    cpsStorageSaveOptions opts = {
+        .target_path = target_dir,
+        .history_window_beats = 0u,
+    };
+    char bundle_path[PATH_MAX];
+    int rc = cps_storage_export_active_branch(&opts, bundle_path, sizeof bundle_path, NULL, NULL, NULL);
+    munit_assert_int(rc, ==, CPS_OK);
+
+    char staged_path[PATH_MAX];
+    munit_assert_true(cps_storage_stage_bundle_dir(bundle_path, staged_path, sizeof staged_path));
+    struct stat st = {0};
+    munit_assert_int(stat(staged_path, &st), ==, 0);
+    munit_assert_true(S_ISDIR(st.st_mode));
+
+    cps_runtime_cleanup(&runtime);
+    unsetenv("CEP_CPS_ROOT");
+    unsetenv("CEP_CPS_BRANCH");
     return MUNIT_OK;
 }

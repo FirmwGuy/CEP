@@ -356,6 +356,22 @@ MunitTest tests[] = {
         NULL
     },
     {
+        "/cps/export/windowed_external",
+        test_cps_export_windowed_external,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/cps/stage/external_bundle",
+        test_cps_stage_external_bundle,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/ops",
         test_ops,
         NULL,

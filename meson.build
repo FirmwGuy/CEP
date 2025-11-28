@@ -399,6 +399,13 @@ if get_option('tests').enabled()
 
 endif
 
+executable('cps_save_load', files('tools/cps_save_load.c'),
+  c_args: exe_cargs,
+  include_directories: inc,
+  link_with: cep_lib,
+  install: false,
+)
+
 # CEP server executable (optional; build only if enabled and sources exist)
 if get_option('server').enabled()
   server_main = 'src/server/main.c'

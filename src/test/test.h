@@ -93,6 +93,8 @@ MunitResult test_prr_soft_delete_lookup(const MunitParameter params[], void* use
 MunitResult test_cps_replay_inline(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_cps_replay_cas_cache(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_cps_replay_cas_runtime(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_cps_export_windowed_external(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_cps_stage_external_bundle(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_view_horizon_snapshot(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_soft_deleted_dictionary_revives(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_prr_history_autoid_monotonic(const MunitParameter params[], void* user_data_or_fixture);

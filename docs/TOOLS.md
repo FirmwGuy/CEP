@@ -5,6 +5,8 @@ CEP bundles a handful of helper scripts in `tools/` so you can keep the build ar
 ## Technical Details
 - **`tools/capture-fixtures.sh`**  
   Runs `build/cep_tests.exe` with a fixed seed, archives the full log to `build/fixtures/cep_tests_full.log`, and extracts focussed heartbeat snippets. Use it before risky refactors to grab a baseline, or after a change to compare the new agenda routing with the saved logs.
+- **`tools/cps_save_load.c`**  
+  Builds the `cps_save_load` CLI (`meson compile -C build cps_save_load`) so you can export/import CPS bundles with explicit `--bundle`, `--branch`, and optional `--hist-beats` arguments. The helper normalises external paths to absolute values and uses the CPS staging/promote flow to keep ops handling sandbox-safe.
 - **`tools/check_unused_tags.py`**  
   Scans `docs/CEP-TAG-LEXICON.md` for tag identifiers and reports which ones do not appear anywhere else in the repository. Handy when extending the lexicon or pruning obsolete entries. Invoke with `python tools/check_unused_tags.py` from the project root.
 - **`tools/fix_doxygen_toc.py`**  

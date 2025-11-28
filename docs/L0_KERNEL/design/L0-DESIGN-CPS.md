@@ -51,7 +51,7 @@ CPS (Content Persistence Service) is the Layer 0 service that mirrors the in-m
 ## Operations & Observability
 
 - **Metrics.** `/data/persist/<branch>` exposes `kv_eng`, `metrics/{frames,beats,bytes_idx,bytes_dat,cas_hits,cas_miss,cas_lat_ns}`. CPS publishes immediately during commits and CAS lookups so dashboards always see fresh counters.
-- **OPS verbs.** `op/checkpt`, `op/compact`, and `op/sync` entries under `/rt/ops/*` let operators trigger checkpoints, log compaction, or export/import bundles. CEI topics (`persist.commit`, `persist.frame.io`, `persist.checkpoint`, `persist.recover`, `persist.bootstrap`) capture severity-tagged evidence.
+- **OPS verbs.** `op/checkpt`, `op/compact`, and `op/sync` entries under `/rt/ops/*` let operators trigger checkpoints, log compaction, or export/import bundles. CEI topics (`persist.commit`, `persist.frame.io`, `persist.checkpoint`, `persist.recover`, `persist.bootstrap`) capture severity-tagged evidence. `op/sync` accepts optional `bundle` (envelope/payload) to pick a destination and `hist_beats` to window history on the exported bundle; when the destination lives outside `/data`, the path is normalized/absolute-only and treated as a cold sink (no cache hints).
 - **CEI integration.** CPS emits diagnostic notes for frame verification failures, fsync errors, checkpoint rollbacks, import/export verification mismatches, and CAS runtime failures, tying each fact to the branch path.
 - **Boot readiness.** Once CPS publishes metrics and marks `ist:store`, Layer 0’s boot operation (`op/boot`) can advance, ensuring storage readiness stays part of the deterministic startup timeline.
 
@@ -61,7 +61,7 @@ A concrete wiring helps spot whether CPS and the branch controller (CPCL) are co
 - **Durable branch with periodic flush:** `/data/persist/app/config/` holds `policy_mode="scheduled_save"`, `flush_every=10`, `flush_shdn=true`, `history_ram_beats=8`, `history_ram_versions=2`, `allow_vol=false`, and `ram_quota_bytes=134217728`. The controller flushes every 10 beats and on shutdown while keeping two versions and eight beats of history warm within a 128 MiB cap.
 - **Volatile scratch branch:** `/data/persist/scratch/config/` uses `policy_mode="volatile"`, `allow_vol=true`, `flush_every=0`, `ram_quota_bytes=33554432`. Nothing hits disk; cross-branch reads require consumers to set `allow_volatile_reads` and will emit `cell.cross_read` decisions.
 - **Engine selection:** `/data/persist/<branch>/kv_eng="flatfile"` reflects the active engine. Switching engines (e.g., to RocksDB) happens at bootstrap/meson configuration; metrics and CEI stay in the same schema for dashboards.
-- **Ops triggers in practice:** `op/br_flush { branch=app }` forces an immediate flush; `op/checkpt { branch=app }` checkpoints; `op/sync { branch=app, dest=/tmp/app_export }` exports a bundle with CEI (`persist.checkpoint`/`persist.bootstrap`) capturing success/failure.
+- **Ops triggers in practice:** `op/br_flush { branch=app }` forces an immediate flush; `op/checkpt { branch=app }` checkpoints; `op/sync { branch=app, bundle=/tmp/app_export, hist_beats=8 }` exports a bundle with optional windowed history and CEI (`persist.checkpoint`/`persist.bootstrap`) capturing success/failure.
 
 ## Secured Payload Integration
 

@@ -8,6 +8,7 @@
 
 #include "cps_engine.h"
 #include "cps_runtime.h"
+#include "cps_flatfile.h"
 
 #include "blake3.h"
 #include "cep_cell.h"
@@ -100,6 +101,8 @@ CEP_DEFINE_STATIC_DT(dt_verb_field_cps, CEP_ACRO("CEP"), CEP_WORD("verb"));
 CEP_DEFINE_STATIC_DT(dt_target_field_cps, CEP_ACRO("CEP"), CEP_WORD("target"));
 CEP_DEFINE_STATIC_DT(dt_branch_beats_field, CEP_ACRO("CEP"), CEP_WORD("beats"));
 CEP_DEFINE_STATIC_DT(dt_bundle_field_cps, CEP_ACRO("CEP"), CEP_WORD("bundle"));
+CEP_DEFINE_STATIC_DT(dt_hist_beats_field_cps, CEP_ACRO("CEP"), CEP_WORD("hist_beats"));
+CEP_DEFINE_STATIC_DT(dt_payload_field_cps, CEP_ACRO("CEP"), CEP_WORD("payload_id"));
 CEP_DEFINE_STATIC_DT(dt_op_checkpt_dt, CEP_ACRO("CEP"), CEP_WORD("op/checkpt"));
 CEP_DEFINE_STATIC_DT(dt_op_compact_dt, CEP_ACRO("CEP"), CEP_WORD("op/compact"));
 CEP_DEFINE_STATIC_DT(dt_op_sync_dt, CEP_ACRO("CEP"), CEP_WORD("op/sync"));
@@ -162,7 +165,6 @@ typedef struct {
   uint64_t bytes;
   bool present;
 } cps_storage_bundle_artifact;
-
 
 typedef struct {
   char name[128];
@@ -570,6 +572,50 @@ static bool cps_storage_mkdirs(const char *path) {
   return true;
 }
 
+static bool cps_storage_normalize_path(const char *path, char *buffer, size_t cap) {
+  if (!path || !buffer || cap == 0u) {
+    return false;
+  }
+  if (realpath(path, buffer)) {
+    return true;
+  }
+  if (path[0] != '/') {
+    return false;
+  }
+  size_t need = strlen(path);
+  if (need >= cap) {
+    return false;
+  }
+  memcpy(buffer, path, need + 1u);
+  return true;
+}
+
+static bool cps_storage_path_has_prefix(const char *path, const char *prefix) {
+  if (!path || !prefix || !*prefix) {
+    return false;
+  }
+  size_t prefix_len = strlen(prefix);
+  if (strncmp(path, prefix, prefix_len) != 0) {
+    return false;
+  }
+  char next = path[prefix_len];
+  return next == '\0' || next == '/';
+}
+
+static bool cps_storage_is_external_path(const char *path) {
+  if (!path || !*path) {
+    return false;
+  }
+  char normalized[PATH_MAX];
+  if (!cps_storage_normalize_path(path, normalized, sizeof normalized)) {
+    return false;
+  }
+  if (!cps_storage_path_has_prefix(normalized, "/data")) {
+    return true;
+  }
+  return false;
+}
+
 static bool cps_storage_hash_file(const char *path, uint8_t hash_out[32], uint64_t *bytes_out) {
   if (!path || !hash_out) {
     return false;
@@ -780,6 +826,103 @@ static bool cps_storage_merge_cas_directory(const char *src_dir,
   return ok;
 }
 
+static int cps_storage_compact_bundle(const char *bundle_dir, uint64_t history_window_beats) {
+  if (!bundle_dir || history_window_beats == 0u) {
+    return CPS_OK;
+  }
+  size_t len = strlen(bundle_dir);
+  while (len > 0u && bundle_dir[len - 1u] == '/') {
+    --len;
+  }
+  if (len == 0u) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  size_t leaf_start = 0u;
+  for (size_t i = 0u; i < len; ++i) {
+    if (bundle_dir[i] == '/') {
+      leaf_start = i + 1u;
+    }
+  }
+  if (leaf_start >= len) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+
+  char parent[PATH_MAX];
+  if (leaf_start == 0u) {
+    snprintf(parent, sizeof parent, ".");
+  } else {
+    size_t parent_len = (leaf_start > sizeof parent - 1u) ? (sizeof parent - 1u) : leaf_start;
+    memcpy(parent, bundle_dir, parent_len);
+    parent[parent_len] = '\0';
+    if (parent_len > 0u && parent[parent_len - 1u] == '/') {
+      parent[parent_len - 1u] = '\0';
+    }
+  }
+  const char *leaf = bundle_dir + leaf_start;
+
+  cps_flatfile_opts opts = {
+    .root_dir = parent,
+    .branch_name = leaf,
+    .checkpoint_interval = 128u,
+    .mini_toc_hint = 64u,
+    .create_branch = false,
+  };
+
+  cps_engine *engine = NULL;
+  int rc = cps_flatfile_engine_open(&opts, &engine);
+  if (rc != CPS_OK || !engine) {
+    return rc ? rc : CPS_ERR_IO;
+  }
+  cps_caps_t caps = engine->caps;
+  if (!engine->ops || !engine->ops->compact || !(caps & CPS_CAP_COMPACTION)) {
+    engine->ops->close(engine);
+    return CPS_OK;
+  }
+  cps_compact_opts compact_opts = {
+    .history_window_beats = history_window_beats,
+  };
+  cps_compact_stat compact_stat = {0};
+  rc = engine->ops->compact(engine, &compact_opts, &compact_stat);
+  engine->ops->close(engine);
+  if (rc == CPS_ERR_NOT_IMPLEMENTED) {
+    return CPS_OK;
+  }
+  return rc;
+}
+
+static bool cps_storage_refresh_artifacts(const char *bundle_dir,
+                                          cps_storage_bundle_artifact *artifacts,
+                                          size_t artifact_count,
+                                          uint64_t *total_bytes_out) {
+  if (!bundle_dir || !artifacts) {
+    return false;
+  }
+  uint64_t total_bytes = 0u;
+  for (size_t i = 0; i < artifact_count; ++i) {
+    cps_storage_bundle_artifact *artifact = &artifacts[i];
+    char path[PATH_MAX];
+    int need = snprintf(path, sizeof path, "%s/%s", bundle_dir, artifact->name);
+    if (need < 0 || (size_t)need >= sizeof path) {
+      return false;
+    }
+    if (!cps_storage_path_exists(path)) {
+      artifact->present = false;
+      artifact->bytes = 0u;
+      memset(artifact->hash, 0, sizeof artifact->hash);
+      continue;
+    }
+    artifact->present = true;
+    if (!cps_storage_hash_file(path, artifact->hash, &artifact->bytes)) {
+      return false;
+    }
+    total_bytes += artifact->bytes;
+  }
+  if (total_bytes_out) {
+    *total_bytes_out = total_bytes;
+  }
+  return true;
+}
+
 static void cps_storage_sanitize_component(const char *input, char *output, size_t capacity) {
   if (!output || capacity == 0u) {
     return;
@@ -900,14 +1043,16 @@ static bool cps_storage_write_manifest(const char *bundle_dir,
           cas_blobs,
           cas_bytes);
   if (artifact_count > 0u && artifacts) {
-    fprintf(fp, "artifacts=%zu\n", artifact_count);
+    size_t present_count = 0u;
+    for (size_t i = 0; i < artifact_count; ++i) {
+      if (artifacts[i].present) {
+        ++present_count;
+      }
+    }
+    fprintf(fp, "artifacts=%zu\n", present_count);
     for (size_t i = 0; i < artifact_count; ++i) {
       const cps_storage_bundle_artifact *artifact = &artifacts[i];
-      if (!artifact->name) {
-        continue;
-      }
-      if (!artifact->present) {
-        fprintf(fp, "artifact %s missing\n", artifact->name);
+      if (!artifact->name || !artifact->present) {
         continue;
       }
       char hex[65];
@@ -1178,6 +1323,9 @@ static int cps_storage_export_cas_blobs(const char *bundle_dir,
 
 static int cps_storage_export_branch_bundle(const char *branch_dir,
                                             const char *branch_name,
+                                            const char *target_path,
+                                            uint64_t history_window_beats,
+                                            bool external_target,
                                             char *bundle_path,
                                             size_t bundle_path_len,
                                             uint64_t *copied_bytes,
@@ -1195,30 +1343,46 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
   if (cas_blobs) {
     *cas_blobs = 0u;
   }
-  char exports_dir[PATH_MAX];
-  int need = snprintf(exports_dir, sizeof exports_dir, "%s/exports", branch_dir);
-  if (need < 0 || (size_t)need >= sizeof exports_dir) {
-    return CPS_ERR_INVALID_ARGUMENT;
-  }
-  if (!cps_storage_mkdirs(exports_dir)) {
-    return CPS_ERR_IO;
-  }
-  char timestamp[32];
-  if (!cps_storage_format_timestamp(timestamp, sizeof timestamp)) {
-    return CPS_ERR_IO;
-  }
-  char branch_slug[96];
-  cps_storage_sanitize_component(branch_name, branch_slug, sizeof branch_slug);
-  if (branch_slug[0] == '\0') {
-    snprintf(branch_slug, sizeof branch_slug, "branch");
-  }
   char bundle_dir[PATH_MAX];
-  need = snprintf(bundle_dir, sizeof bundle_dir, "%s/%s-%s", exports_dir, branch_slug, timestamp);
-  if (need < 0 || (size_t)need >= sizeof bundle_dir) {
-    return CPS_ERR_INVALID_ARGUMENT;
-  }
-  if (!cps_storage_mkdirs(bundle_dir)) {
-    return CPS_ERR_IO;
+  if (target_path && *target_path) {
+    int need = snprintf(bundle_dir, sizeof bundle_dir, "%s", target_path);
+    if (need < 0 || (size_t)need >= sizeof bundle_dir) {
+      return CPS_ERR_INVALID_ARGUMENT;
+    }
+    if (external_target && bundle_dir[0] != '/') {
+      return CPS_ERR_INVALID_ARGUMENT;
+    }
+    if (cps_storage_path_exists(bundle_dir)) {
+      return CPS_ERR_CONFLICT;
+    }
+    if (!cps_storage_mkdirs(bundle_dir)) {
+      return CPS_ERR_IO;
+    }
+  } else {
+    char exports_dir[PATH_MAX];
+    int need = snprintf(exports_dir, sizeof exports_dir, "%s/exports", branch_dir);
+    if (need < 0 || (size_t)need >= sizeof exports_dir) {
+      return CPS_ERR_INVALID_ARGUMENT;
+    }
+    if (!cps_storage_mkdirs(exports_dir)) {
+      return CPS_ERR_IO;
+    }
+    char timestamp[32];
+    if (!cps_storage_format_timestamp(timestamp, sizeof timestamp)) {
+      return CPS_ERR_IO;
+    }
+    char branch_slug[96];
+    cps_storage_sanitize_component(branch_name, branch_slug, sizeof branch_slug);
+    if (branch_slug[0] == '\0') {
+      snprintf(branch_slug, sizeof branch_slug, "branch");
+    }
+    int need_dir = snprintf(bundle_dir, sizeof bundle_dir, "%s/%s-%s", exports_dir, branch_slug, timestamp);
+    if (need_dir < 0 || (size_t)need_dir >= sizeof bundle_dir) {
+      return CPS_ERR_INVALID_ARGUMENT;
+    }
+    if (!cps_storage_mkdirs(bundle_dir)) {
+      return CPS_ERR_IO;
+    }
   }
   cps_storage_bundle_artifact artifacts[] = {
     {.name = "branch.meta"},
@@ -1227,6 +1391,7 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
     {.name = "branch.ckp"},
     {.name = "branch.frames"},
   };
+  int need = 0;
   for (size_t i = 0; i < sizeof artifacts / sizeof artifacts[0]; ++i) {
     cps_storage_bundle_artifact *artifact = &artifacts[i];
     char src_path[PATH_MAX];
@@ -1265,7 +1430,35 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
   if (cas_blobs) {
     *cas_blobs = local_cas_blobs;
   }
-  uint64_t total_branch_bytes = copied_bytes ? *copied_bytes : 0u;
+  uint64_t total_branch_bytes = 0u;
+  bool want_compact = history_window_beats > 0u;
+  bool have_idx = false;
+  bool have_dat = false;
+  for (size_t i = 0; i < sizeof artifacts / sizeof artifacts[0]; ++i) {
+    if (!artifacts[i].present) {
+      continue;
+    }
+    if (strcmp(artifacts[i].name, "branch.idx") == 0) {
+      have_idx = true;
+    } else if (strcmp(artifacts[i].name, "branch.dat") == 0) {
+      have_dat = true;
+    }
+  }
+  if (want_compact && (!have_idx || !have_dat)) {
+    want_compact = false;
+  }
+  if (want_compact) {
+    int compact_rc = cps_storage_compact_bundle(bundle_dir, history_window_beats);
+    if (compact_rc != CPS_OK) {
+      return compact_rc;
+    }
+  }
+  if (!cps_storage_refresh_artifacts(bundle_dir,
+                                     artifacts,
+                                     sizeof artifacts / sizeof artifacts[0],
+                                     &total_branch_bytes)) {
+    return CPS_ERR_IO;
+  }
   if (!cps_storage_write_manifest(bundle_dir,
                                   branch_name,
                                   total_branch_bytes,
@@ -1278,6 +1471,15 @@ static int cps_storage_export_branch_bundle(const char *branch_dir,
   int verify_rc = cps_storage_verify_bundle(bundle_dir);
   if (verify_rc != CPS_OK) {
     return verify_rc;
+  }
+  if (copied_bytes) {
+    *copied_bytes = total_branch_bytes;
+  }
+  if (cas_bytes) {
+    *cas_bytes = local_cas_bytes;
+  }
+  if (cas_blobs) {
+    *cas_blobs = local_cas_blobs;
   }
   int path_need = snprintf(bundle_path, bundle_path_len, "%s", bundle_dir);
   if (path_need < 0 || (size_t)path_need >= bundle_path_len) {
@@ -2224,16 +2426,89 @@ static const char *cps_storage_read_text_field(cepCell *parent, const cepDT *fie
   return (const char *)cep_cell_data(child);
 }
 
+static bool cps_storage_read_u64_field(cepCell *parent, const cepDT *field, uint64_t *out) {
+  if (!parent || !field || !out) {
+    return false;
+  }
+  const char *text = cps_storage_read_text_field(parent, field);
+  if (!text || text[0] == '\0') {
+    return false;
+  }
+  char *end = NULL;
+  uint64_t value = strtoull(text, &end, 10);
+  if (end == text || (end && *end && *end != '\n' && *end != '\r')) {
+    return false;
+  }
+  *out = value;
+  return true;
+}
+
+static bool cps_storage_read_payload_text(cepCell *envelope, char *buffer, size_t buffer_len) {
+  if (!envelope || !buffer || buffer_len == 0u) {
+    return false;
+  }
+  cepCell *payload = cep_cell_find_by_name(envelope, dt_payload_field_cps());
+  if (!payload) {
+    payload = cep_cell_find_by_name_all(envelope, dt_payload_field_cps());
+  }
+  if (!payload) {
+    return false;
+  }
+  payload = cep_cell_resolve(payload);
+  if (!payload || !cep_cell_has_data(payload)) {
+    return false;
+  }
+  const cepData *data = payload->data;
+  if (!data || data->size == 0u) {
+    return false;
+  }
+  size_t copy = (data->size < buffer_len) ? data->size : (buffer_len - 1u);
+  memcpy(buffer, cep_data_payload(data), copy);
+  buffer[copy] = '\0';
+  return true;
+}
+
 static const char *cps_storage_active_branch(void) {
   const char *name = cps_runtime_branch_name();
   return (name && name[0] != '\0') ? name : "default";
+}
+
+int cps_storage_export_active_branch(const cpsStorageSaveOptions* opts,
+                                     char* bundle_path,
+                                     size_t bundle_path_len,
+                                     uint64_t* copied_bytes,
+                                     uint64_t* cas_bytes,
+                                     uint64_t* cas_blobs)
+{
+  const char* branch_dir = cps_runtime_branch_dir();
+  if (!branch_dir) {
+    return CPS_ERR_INVALID_ARGUMENT;
+  }
+  const char* branch_name = cps_storage_active_branch();
+  const char* target_path = (opts && opts->target_path && opts->target_path[0]) ? opts->target_path : NULL;
+  uint64_t history_window = opts ? opts->history_window_beats : 0u;
+  bool external_target = cps_storage_is_external_path(target_path);
+  char scratch_path[PATH_MAX];
+  char* path_out = bundle_path ? bundle_path : scratch_path;
+  size_t path_out_len = bundle_path ? bundle_path_len : sizeof scratch_path;
+  int rc = cps_storage_export_branch_bundle(branch_dir,
+                                            branch_name,
+                                            target_path,
+                                            history_window,
+                                            external_target,
+                                            path_out,
+                                            path_out_len,
+                                            copied_bytes,
+                                            cas_bytes,
+                                            cas_blobs);
+  return rc;
 }
 
 static bool cps_storage_ops_enabled(void) {
   static int cached = -1;
   if (cached == -1) {
     const char *env = getenv("CEP_CPS_OPS_ENABLE");
-    cached = (env && env[0] && strcmp(env, "0") != 0) ? 1 : 0;
+    cached = (!env || strcmp(env, "0") != 0) ? 1 : 0;
   }
   return cached == 1;
 }
@@ -2307,6 +2582,89 @@ cps_storage_read_beats_field(cepCell* envelope, uint64_t* beats_out)
   }
   *beats_out = parsed;
   return true;
+}
+
+typedef struct {
+  char bundle_path[PATH_MAX];
+  bool has_bundle;
+  uint64_t history_window_beats;
+  bool has_history_window;
+} cpsStorageOpParams;
+
+static void
+cps_storage_parse_payload_options(const char* payload,
+                                  cpsStorageOpParams* params)
+{
+  if (!payload || !params) {
+    return;
+  }
+  const char* cursor = payload;
+  while (*cursor) {
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\n' || *cursor == '\r' || *cursor == ';') {
+      ++cursor;
+    }
+    if (*cursor == '\0') {
+      break;
+    }
+    const char* eq = strchr(cursor, '=');
+    if (!eq) {
+      if (!params->has_bundle) {
+        size_t len = strnlen(cursor, sizeof params->bundle_path - 1u);
+        memcpy(params->bundle_path, cursor, len);
+        params->bundle_path[len] = '\0';
+        params->has_bundle = true;
+      }
+      break;
+    }
+    const char* key = cursor;
+    const char* value = eq + 1;
+    const char* end = strpbrk(value, " \t\n\r;");
+    size_t key_len = (size_t)(eq - key);
+    size_t val_len = end ? (size_t)(end - value) : strlen(value);
+    if (key_len == strlen("bundle") && strncmp(key, "bundle", key_len) == 0) {
+      if (!params->has_bundle) {
+        size_t copy = (val_len < sizeof params->bundle_path - 1u) ? val_len : (sizeof params->bundle_path - 1u);
+        memcpy(params->bundle_path, value, copy);
+        params->bundle_path[copy] = '\0';
+        params->has_bundle = true;
+      }
+    } else if (key_len == strlen("hist_beats") && strncmp(key, "hist_beats", key_len) == 0) {
+      char tmp[32];
+      size_t copy = (val_len < sizeof tmp - 1u) ? val_len : (sizeof tmp - 1u);
+      memcpy(tmp, value, copy);
+      tmp[copy] = '\0';
+      char* endptr = NULL;
+      uint64_t parsed = strtoull(tmp, &endptr, 10);
+      if (endptr && endptr != tmp && *endptr == '\0') {
+        params->history_window_beats = parsed;
+        params->has_history_window = true;
+      }
+    }
+    cursor = end ? end : (value + val_len);
+  }
+}
+
+static void
+cps_storage_extract_op_params(cepCell* envelope, cpsStorageOpParams* params)
+{
+  if (!params) {
+    return;
+  }
+  memset(params, 0, sizeof *params);
+  const char* bundle_text = cps_storage_read_text_field(envelope, dt_bundle_field_cps());
+  if (bundle_text && bundle_text[0] != '\0') {
+    snprintf(params->bundle_path, sizeof params->bundle_path, "%s", bundle_text);
+    params->has_bundle = true;
+  }
+  uint64_t hist = 0u;
+  if (cps_storage_read_u64_field(envelope, dt_hist_beats_field_cps(), &hist)) {
+    params->history_window_beats = hist;
+    params->has_history_window = true;
+  }
+  char payload_buf[PATH_MAX];
+  if (cps_storage_read_payload_text(envelope, payload_buf, sizeof payload_buf)) {
+    cps_storage_parse_payload_options(payload_buf, params);
+  }
 }
 
 static bool
@@ -2536,19 +2894,34 @@ static bool cps_storage_run_compact_op(cepOID oid, const char *branch) {
   return true;
 }
 
-static bool cps_storage_run_sync_op(cepOID oid, const char *branch) {
+static bool cps_storage_run_sync_op(cepOID oid,
+                                    const char *branch,
+                                    const char *bundle_override,
+                                    uint64_t history_window_beats,
+                                    bool external_target) {
   const char *effective_branch = (branch && branch[0] != '\0') ? branch : cps_storage_active_branch();
-  const char *branch_dir = cps_runtime_branch_dir();
-  if (!branch_dir) {
-    cps_storage_fail_operation(oid, "sync", effective_branch, CPS_ERR_INVALID_ARGUMENT, "branch directory unavailable");
-    return false;
-  }
   char bundle_path[PATH_MAX];
   uint64_t copied_bytes = 0u;
   uint64_t cas_bytes = 0u;
   uint64_t cas_blobs = 0u;
-  int rc = cps_storage_export_branch_bundle(branch_dir,
+  const char* target_arg = bundle_override;
+  char normalized_target[PATH_MAX];
+  if (external_target && bundle_override && bundle_override[0] != '\0') {
+    if (!cps_storage_normalize_path(bundle_override, normalized_target, sizeof normalized_target)) {
+      cps_storage_fail_operation(oid, "sync", effective_branch, CPS_ERR_INVALID_ARGUMENT, "external target invalid");
+      return false;
+    }
+    target_arg = normalized_target;
+  }
+  cpsStorageSaveOptions opts = {
+    .target_path = target_arg,
+    .history_window_beats = history_window_beats,
+  };
+  int rc = cps_storage_export_branch_bundle(cps_runtime_branch_dir(),
                                             effective_branch,
+                                            opts.target_path,
+                                            opts.history_window_beats,
+                                            external_target,
                                             bundle_path,
                                             sizeof bundle_path,
                                             &copied_bytes,
@@ -2571,24 +2944,37 @@ static bool cps_storage_run_sync_op(cepOID oid, const char *branch) {
   char summary[256];
   snprintf(summary,
            sizeof summary,
-           "branch=%.48s bundle=%.64s files_bytes=%" PRIu64 " cas_blobs=%" PRIu64 " cas_bytes=%" PRIu64 " frames=%" PRIu64,
+           "branch=%.48s bundle=%.64s files_bytes=%" PRIu64 " cas_blobs=%" PRIu64 " cas_bytes=%" PRIu64 " frames=%" PRIu64 " hist_bt=%" PRIu64,
            effective_branch ? effective_branch : "-",
            bundle_label ? bundle_label : "-",
            copied_bytes,
            cas_blobs,
            cas_bytes,
-           stats.stat_frames);
+           stats.stat_frames,
+           history_window_beats);
   cps_storage_complete_success(oid, "sync", summary);
   return true;
 }
 
-static bool cps_storage_run_import_op(cepOID oid, const char *branch, const char *bundle_path) {
+static bool cps_storage_run_import_op(cepOID oid,
+                                      const char *branch,
+                                      const char *bundle_path,
+                                      bool external_source) {
   if (!bundle_path || bundle_path[0] == '\0') {
     cps_storage_fail_operation(oid, "import", branch, CPS_ERR_INVALID_ARGUMENT, "bundle path missing");
     return false;
   }
+  const char* use_path = bundle_path;
+  char normalized[PATH_MAX];
+  if (external_source) {
+    if (!cps_storage_normalize_path(bundle_path, normalized, sizeof normalized)) {
+      cps_storage_fail_operation(oid, "import", branch, CPS_ERR_INVALID_ARGUMENT, "external bundle path invalid");
+      return false;
+    }
+    use_path = normalized;
+  }
   char staged_path[PATH_MAX];
-  if (!cps_storage_stage_bundle_dir(bundle_path, staged_path, sizeof staged_path)) {
+  if (!cps_storage_stage_bundle_dir(use_path, staged_path, sizeof staged_path)) {
     cps_storage_fail_operation(oid, "import", branch, CPS_ERR_VERIFY, "bundle verify/stage failed");
     return false;
   }
@@ -2602,7 +2988,7 @@ static bool cps_storage_run_import_op(cepOID oid, const char *branch, const char
            sizeof summary,
            "branch=%.48s bundle=%.64s staged=%.64s",
            branch ? branch : cps_storage_active_branch(),
-           bundle_path,
+           use_path,
            staged_path);
   cps_storage_complete_success(oid, "import", summary);
   return true;
@@ -2818,6 +3204,12 @@ static void cps_storage_handle_op(cepCell *op) {
     return;
   }
 
+  cpsStorageOpParams op_params;
+  cps_storage_extract_op_params(envelope, &op_params);
+  const char* bundle_override = op_params.has_bundle ? op_params.bundle_path : NULL;
+  uint64_t history_window = op_params.has_history_window ? op_params.history_window_beats : 0u;
+  bool external_target = bundle_override ? cps_storage_is_external_path(bundle_override) : false;
+
   if (cep_dt_compare(&verb, dt_op_checkpt_dt()) == 0) {
     if (cps_storage_mark_state(oid, dt_ist_exec_dt(), "processing", 0)) {
       (void)cps_storage_run_checkpoint_op(oid, branch_buf);
@@ -2828,16 +3220,16 @@ static void cps_storage_handle_op(cepCell *op) {
     }
   } else if (cep_dt_compare(&verb, dt_op_sync_dt()) == 0) {
     if (cps_storage_mark_state(oid, dt_ist_exec_dt(), "processing", 0)) {
-      (void)cps_storage_run_sync_op(oid, branch_buf);
+      (void)cps_storage_run_sync_op(oid, branch_buf, bundle_override, history_window, external_target);
     }
   } else if (cep_dt_compare(&verb, dt_op_import_dt()) == 0) {
-    const char *bundle_path = cps_storage_read_text_field(envelope, dt_bundle_field_cps());
+    const char *bundle_path = bundle_override;
     if (!bundle_path || bundle_path[0] == '\0') {
       cps_storage_fail_operation(oid, "import", branch_buf, CPS_ERR_INVALID_ARGUMENT, "bundle path missing");
       return;
     }
     if (cps_storage_mark_state(oid, dt_ist_exec_dt(), "processing", 0)) {
-      (void)cps_storage_run_import_op(oid, branch_buf, bundle_path);
+      (void)cps_storage_run_import_op(oid, branch_buf, bundle_path, external_target);
     }
   } else if (cep_dt_compare(&verb, dt_op_branch_flush_dt()) == 0) {
     if (cps_storage_mark_state(oid, dt_ist_exec_dt(), "processing", 0)) {

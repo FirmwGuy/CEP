@@ -116,6 +116,7 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `snapshot_ro` | RT | `config` field set to `1` when the branch runs under the read-only snapshot policy. |
 | `schedule_bt` | RT | `config` field recording the beat the next scheduled flush should run (0 when unscheduled). |
 | `bundle` | RT | envelope field used by `op/import` to specify the filesystem path to an exported CPS bundle. |
+| `hist_beats` | OPS | optional history window (in beats) for `op/sync` exports; when set CPS compacts the exported bundle to that window. |
 | `consumer` | RT | dictionary field storing the consumer branch DT inside `/journal/decisions/<entry>`. |
 | `source` | RT | dictionary field storing the source branch DT inside `/journal/decisions/<entry>`. |
 | `risk` | RT | text field recording the branch policy risk (`dirty` or `volatile`) for a recorded decision. |
