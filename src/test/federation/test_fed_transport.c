@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <inttypes.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #if defined(_WIN32)
 #include <direct.h>
