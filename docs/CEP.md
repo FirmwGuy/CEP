@@ -1,665 +1,823 @@
 # Cascade Evolutionary Processing (CEP)
 
-A living, evolving platform for deterministic work, supervised learning, and self‑modifying systems.
+A living, replayable platform for deterministic work, supervised learning, and self‑modifying “minds” built from small cooperating policies.
 
 ---
 
 ## 1) What CEP is
 
-CEP is a **layered, evolving platform** for building applications that:
+CEP is a **layered runtime** for building systems that:
 
-* run deterministically and are fully replayable,
-* learn over time under **supervision**,
-* and can **modify their own behavior and structure** safely—up to and including orchestrating upgrades of the CEP kernel itself.
+* run under a strict **heartbeat** (Capture → Compute → Commit),
+* keep **perfect, replayable history** of what they did and why,
+* **learn** by adjusting tiny policy tables instead of opaque models,
+* and can **change their own behavior and structure** under explicit governance.
 
-At the base, CEP is a kernel that keeps small truths steady: facts are immutable, every change is linked to its causes, and every run can be replayed. On top of that, CEP hosts an **ecosystem of modules**—enzymes, organs, flows, and policies—that:
+At the bottom, CEP is a C kernel that acts like physics: it stores immutable facts (“cells”), moves bytes to and from the world deterministically, and enforces security and federation rules. 
 
-* operate within **finite action sets** (e.g., “pick variant A vs B vs C,” “apply one of these control moves”),
-* expose **parameters/settings** that can be tuned,
-* and are updated in response to **context and feedback** (labels, rewards, human input).
+On top of that, optional packs add:
 
-These modules behave like species in an ecosystem:
+* **Coherence** – beings, bonds, and pipeline graphs that say *what exists* and *how stages connect*. 
+* **Ecology & Flows** – a **Flow VM** with species/variants/niches, where each module is a finite‑action policy that logs every choice as a Decision Cell.  
+* A **learning vocabulary**:
 
-* **Variants** explore different tactics,
-* **Species** group related variants,
-* **Niches** route contexts to suitable variants,
-* **Organisms** are running instances of tactics in specific situations,
-* **Guardians** enforce invariants and safety margins,
-* and **selection** promotes or retires variants based on supervised signals and observed performance. 
+  * **Grounders** – modules that ground CEP in the external world (I/O, UI, devices).
+  * A shared **Signal Field** – compact global signals derived from metrics and CEI.
+  * **Focus Frames** – small *peepholes* over that field + local context, used by each learner.
+  * **Playbooks** – per‑context tables that map Focus Frames to finite action sets and stats.
+  * **Mode Clusters** – recurrent patterns in the Signal Field + flow activity; attractor‑like “system moods.”
+  * **Imaginate** – controlled sampling from Playbooks for exploration, guided by past outcomes. 
 
-Humans stay in the loop at multiple levels:
+Above that, CEP treats its own behavior as data:
 
-* In **Layer 3**, they **curate datasets, inspect perspectives, add labels, override decisions, and annotate what the system is learning**. Think dashboards, labeling tools, experiment browsers.
-* In **Layer 4**, they **propose and approve changes, define safety policies, decide which variants may dominate, and supervise CEP’s own upgrades**—including pipelines that roll out new kernel binaries or pack versions.
+* **Awareness** – perspectives, datasets, dashboards, and “operator panels” that show humans a curated slice of what CEP is doing.
+* **Governance** – laws, reforms, councils, and provinces that decide how CEP and its packs are allowed to change, including **upgrade pipelines** that roll out new kernels and packs safely.  
 
-Because the kernel is implemented in portable C and intended for use with a permissive license, CEP can treat its own source, configurations, and binaries as first‑class artifacts: it can **orchestrate its own upgrade pipelines**, while governance and human supervisors ensure changes are safe, reversible, and well‑explained.
-
-Everyday analogy: CEP is like a city whose infrastructure (roads, power, zoning) is stable and replayable, but where shops, services, and even the city charter itself evolve. Some agents try new tactics; the community observes, rewards, or shuts them down; and the city can even renovate its own infrastructure when enough evidence and trust has accumulated.
+Every decision (including “random” exploration) produces a **Decision Cell**. On replay, CEP consumes those cells instead of re‑deciding, so the system’s past is not just observable—it is repeatable.  
 
 ---
 
 ## 2) Technical Details
 
-This section maps the story above onto concrete layers and subsystems, highlighting where ecosystem roles and human supervision live, and what currently ships versus what is planned.  
+This section describes the current design: Grounders, Signal Field, Focus Frames, Playbooks, Mode Clusters, and Imaginate, all layered on top of the shipping kernel.  
 
 ### 2.0 Layer Overview and Adoption
 
 CEP is organized into five conceptual layers:
 
-* **Layer 0 – Kernel & Pipeline Substrate**
-  Deterministic heartbeats, cells, stores, enzymes, OPS, async I/O, persistence (CPS), CAS, federation, and security/enclave policy.
-  L0 also carries lightweight **pipeline metadata** (pipeline/stage IDs) but does not interpret pipeline graphs or learning logic itself. This is the **only layer that currently ships**. 
+1. **Layer 0 – Kernel & Pipeline Substrate**
+   Truth substrate (cells/stores/CAS/CPS), heartbeat, async I/O, security, and federation. This is the **only shipping layer** in the kernel repository.  
 
-* **Layer 1 – Coherence & Pipeline Graphs**
-  Beings, bonds, contexts, and facets for durable identity and structure, plus **pipelines as graphs**: which stages exist, how they connect, what data they route, and where supervised signals and configuration live.
+2. **Layer 1 – Coherence & Pipeline Graphs**
+   Beings, bonds, contexts, facets, and pipeline DAGs over them, with runtime records of pipeline runs. Implemented as an optional pack. 
 
-* **Layer 2 – Ecology & Flows (Modules and Evolution)**
-  A deterministic Flow VM and ecological layer. Here, modules are treated as **species** with **variants** operating in **niches** (contexts). Flows implement tactics (Guard/Transform/Wait/Decide/Clamp) that add and update L1 pipeline graphs and L0 operations, under supervision. This is where evolutionary roles—organisms, species, variants, niches, guardians—live. 
+3. **Layer 2 – Ecology & Flows (Modules, Minds & Evolution)**
+   Flow VM, species/variants/niches/guardians, scheduler, and the learning vocabulary:
+   **Grounders → Signal Field → Focus Frames → Playbooks → Mode Clusters → Imaginate**.  
 
-* **Layer 3 – Awareness, Datasets & Human Interaction**
-  Perspectives, interpretations, conventions, and summaries built over cells, pipelines, and flows. This is the layer that presents **human‑facing views and tools**: analytics dashboards, dataset browsers, labeling and review UIs, override controls, and annotation channels.
+4. **Layer 3 – Awareness, Datasets & Human Interaction**
+   Perspectives, datasets, dashboards, labeling/review tools, and operator panels (human Focus Frames over CEP’s Signal Field).
 
-* **Layer 4 – Governance, Safety & Self‑Evolution**
-  Laws, reforms, councils, provinces, and stories. This governs how CEP and its modules—and even the CEP kernel and packs—are allowed to change. Humans act as supervisors, reviewers, signers, and storytellers over the system’s evolution.
+5. **Layer 4 – Governance, Safety & Self‑Evolution**
+   Laws, reforms, councils, provinces, and upgrade pipelines that let CEP evolve its own modules and kernel under supervision. 
 
 **Adoption path**
 
-1. Start with **L0** only: use CEP as a deterministic kernel with storage, basic pipeline tagging, and security/federation.
-2. Add **L1** when you need durable identities, relationships, and explicit multi‑stage pipelines.
-3. Add **L2** to turn those pipelines into a **learning ecosystem**: modules as finite‑action policies, variants, niches, and supervised updates.
-4. Add **L3** to give humans rich views, datasets, and interactive controls for monitoring and supervision.
-5. Add **L4** to govern changes, including **self‑modification and upgrade pipelines** that can recompile and roll out new CEP components under human oversight.
+1. Start with **L0** only as a deterministic kernel and persistence + security substrate.
+2. Add **L1** when you need durable identities, relationships, and explicit pipelines.
+3. Add **L2** to treat modules as finite‑action learning policies with Playbooks, Focus Frames, and Imaginate.
+4. Add **L3** to expose perspectives and datasets to humans.
+5. Add **L4** when you want CEP to coordinate its own reforms and upgrades as data.
 
-Layer 0 must always bootstrap and shut down with **no packs present**; L1–L4 are optional packs that use public L0 APIs and must fail gracefully if absent. 
+Layer stacking is one‑way: each layer only depends on lower layers; packs must fail gracefully if their prerequisites are missing.  
 
 ---
 
 ### 2.1 Core Rhythm: Heartbeats (Capture → Compute → Commit)
 
-CEP advances in **beats**, each following a strict three‑phase contract:  
+The heartbeat is CEP’s metronome:
 
-1. **Capture** – Ingest new cells and impulses; freeze the input set for beat *N*.
-2. **Compute** – Enzymes and episodes read ≤ *N* and stage outputs:
+1. **Capture**
 
-   * new application state,
-   * logged decisions,
-   * training examples and loss metrics,
-   * candidate parameter updates.
-3. **Commit** – Publish staged outputs atomically as beat *N + 1*.
+   * Accept new cells and impulses.
+   * Freeze the input set for beat *N*.
 
-Properties:
+2. **Compute**
 
-* No mid‑beat visibility: observers only see fully committed beats, never partial state.
-* **Determinism with exploration and learning**:
+   * Enzymes and episodes read ≤ *N* and stage:
 
-  * Any non‑deterministic choice (policy pick, RNG draw, variant selection, model sampling) must emit a **Decision Cell**.
-  * Any learning‑driven parameter update must be recorded as new cells, with links to the data and decisions that produced it.
-  * On replay, CEP consumes recorded decisions and parameter versions instead of re‑sampling or re‑training, so results match.
+     * branch mutations,
+     * policy decisions (Decision Cells),
+     * training examples and metrics,
+     * parameter updates.
 
-All heartbeat plumbing—agenda logs, impulse journals, stage notes, beat timestamps—lives in Layer 0 under `/rt/**` and `/journal/**`.  
+3. **Commit**
+
+   * Atomically promote staged changes to beat *N + 1*.
+   * Persist dirty branches via CPS frames.
+
+**Determinism & learning**
+
+* Any non‑deterministic choice (policy pick, RNG draw, variant selection) **must emit a Decision Cell**. 
+* Parameter changes are written as new cells that point back to the data and decisions that produced them.
+* On replay, CEP **reuses recorded decisions and parameter versions** instead of re‑sampling or re‑training, so past behavior is reproducible even when learning or Imaginate were active. 
+
+Beat evidence lives under `/rt/**` and `/journal/**` when enabled. 
 
 ---
 
 ### 2.2 Layer 0 – Kernel & Pipeline Substrate
 
-Layer 0 is the shipping kernel. It provides the deterministic substrate, state management, security, and federation that all higher‑level logic and learning rely on.
+Layer 0 is the shipping kernel. It knows nothing about learning or minds; it only knows **cells, stores, operations, and beats**. 
 
 #### 2.2.1 Truth Substrate: Cells, Stores, History
 
 * **Cells**
 
   * Immutable facts with metadata, optional payloads (`cepData`), and optional child stores.
-  * Append‑only timelines: corrections create new cells; history is retained or pruned explicitly. 
-  * Provenance‑by‑construction: derived cells link to their parents, code identities (enzymes/organs), and Decision Cells when relevant.
+  * Updates are **append‑only**: you create new cells, you do not mutate old ones.
+  * Provenance links in `meta/parents` tie each derived cell to its sources and the code that created it. 
 
-* **Stores and Branches**
+* **Stores & branches**
 
-  * Stores: dictionary, list, packed queue, tree, hash, octree, etc., chosen per workload. 
-  * Branches: durable subtrees under `/data/<branch>`, with independent persistence policies and metrics. 
+  * Stores: dictionary, list, tree, hash, packed queue, octree, etc.
+  * Branches: rooted under `/data/<branch>` with their own CPS policies and metrics.  
 
-* **Persistence and CAS**
+* **Persistence & CAS**
 
-  * CPS emits per‑beat flat frames (CRC32C, Merkle root, optional AEAD/compression) to branch storage engines. 
-  * Large payloads land in CAS (`/cas/**`), referenced by hash so cells can stay compact.
+  * CPS writes beat‑scoped flat frames to storage using a flat serializer with CRC32C + Merkle root; large payloads go to `/cas/**`. 
+  * Branch metrics and policies live under `/data/persist/<branch>/**`. 
 
-Parameters, models, and configuration knobs for learning live in branches as just more cells, with full history and provenance.
+Cells are the only way to represent truth. Focus Frames, Signal Fields, Playbooks, and mode statistics later in L2/L3 are all just structured arrangements of cells.
 
-#### 2.2.2 Enzymes, Episodes, and Modules at the Kernel Level
+#### 2.2.2 Enzymes, Episodes, and Kernel Organs
 
 * **Enzymes**
 
-  * Descriptors registered in `/enzymes/**` define callbacks, match policies (exact/prefix), dependency lists, and idempotency hints. 
-  * Bindings attach descriptors to subtrees; tombstones mask inherited bindings to keep resolution deterministic.
+  * Registered descriptors under `/enzymes/**` specify callbacks, match policies, dependencies, and idempotency hints.
+  * Cell bindings attach enzymes to subtrees; tombstones mask inheritance to keep dispatch deterministic. 
 
-* **Episodic Enzyme Engine (E3)**
+* **Episodes (E3)**
 
-  * Long‑running work is tracked as episodes (`op/ep`) under `/rt/ops/**`. 
-  * Episodes run slices with budgets and cancellation; they can span many beats (for example, background training jobs or multi‑stage pipeline runs).
+  * Long‑running work (training jobs, upgrade pipelines) appears as `op/ep` dossiers under `/rt/ops/**`.
+  * Episodes run slices with CPU/IO budgets and can yield/await across many beats. 
 
-At L0, CEP is agnostic to “modules” in the learning sense—it just provides enzymes, cells, branches, locks, episodes, and provenance. L2 will interpret combinations of these as **modules with finite actions** and tunable parameters.
+* **Kernel organs (structural)**
 
-#### 2.2.3 Async I/O, Persistence, and Replay
+  * “Organs” in L0 are **typed subtrees with validator/ctor/dtor(/etc) enzymes**, registered under `/sys/organs/<kind>/spec`. 
+  * They define the structure of branches like `/data/coh`, `/data/flow`, `/data/eco`, etc.
 
-* **Async I/O fabric**
+#### 2.2.3 Async I/O, Persistence, Replay
 
-  * Requests and completions are recorded under `/rt/ops/<op/io>`, with deterministic fields: state, deadlines, byte counts, errno, telemetry links. 
-  * A reactor backend (portable or native) drives completions; results become visible during Compute to keep ordering deterministic.
+* **Async fabric**
 
-* **CPS persistence**
+  * I/O requests are tracked under `/rt/ops/op/io/**` and completed via a reactor.
+  * Completions only become visible in Compute, keeping order deterministic. 
 
-  * `cps_storage_commit_current_beat()` streams dirty branches into flat frames and hands them to an engine (e.g. flatfile) that guarantees beat‑atomic commits. 
-  * Metrics and readiness live under `/data/persist/<branch>/**`. 
+* **CPS**
+
+  * `cps_storage_commit_current_beat()` serializes dirty branches to flat frames, hands them to a storage engine, and records metrics + CEI (`persist.*`) events. 
 
 * **Replay**
 
-  * Any beat range can be re‑run with side effects disabled. Decision Cells and persistence logs ensure equality with the original run, even when learning was active.
+  * Any beat range can be re‑run with side effects disabled; Decision Cells and CPS logs ensure the re‑run is byte‑for‑byte identical to the original. 
 
-#### 2.2.4 Federation, Security, and Pipeline Substrate
+#### 2.2.4 Federation, Security, Pipeline Substrate
 
-* **Federation transports and organs**
+* **Federation**
 
-  * Transports register capability bitmaps; mounts choose providers and options.
-  * Link/mirror/invoke organs manage cross‑peer relationships and data flows under `/net/**`. 
+  * Transport providers register capabilities under `/net/transports/**`; mounts and peers live under `/net/mounts/**` and `/net/peers/**`.  
 
-* **Enclave security and pipeline preflight**
+* **Security / enclaves**
 
-  * Security policy under `/sys/security/**` defines enclaves, allowed edges, gateway enzymes, and budget/rate ceilings. 
-  * A preflight enzyme validates **pipeline graphs** written by packs under `/data/<pack>/policy/security/pipelines/**` and stamps approvals; cross‑enclave pipeline invocations are refused if unapproved or over budget.
+  * `/sys/security/**` defines enclaves, edges, gateways, and branch policies; a resolver enforces budgets and emits CEI (`sec.edge.deny`, `sec.limit.hit`, `sec.pipeline.reject`). 
 
-* **Pipeline metadata plumbing**
+* **Pipeline substrate**
 
-  * L0 allows OPS envelopes, CEI facts, async I/O requests, and CPS commits to carry:
-
-    * **`pipeline_id`** – logical pipeline identifier (e.g. `coh/user_save_doc`, `learn/feed_ranking`).
-    * **`stage_id`** – logical stage identifier within the pipeline (e.g. `PrepareFeatures`).
-  * The kernel does not interpret these IDs; it:
-
-    * propagates them end‑to‑end,
-    * enforces enclave and pipeline policies,
-    * and records them for diagnostics and replay.
-
-Higher layers own **pipeline graphs** and **learning semantics**; L0 ensures that when a pipeline runs—local or federated—it does so deterministically and within policy.
+  * L0 threads pipeline metadata (`pipeline_id`, `stage_id`, optional `dag_run_id`, `hop_index`) through envelopes, CEI origin, OPS dossiers, and federation requests, without interpreting the graph. 
+  * Higher layers use this to tie decisions and metrics back to logical pipelines.
 
 ---
 
-### 2.3 Layer 1 – Coherence & Pipeline Graphs (Planned Pack)
+### 2.3 Layer 1 – Coherence & Pipeline Graphs
 
-Layer 1 adds **structure, identity, and routing** on top of the kernel.
+Layer 1 turns the kernel’s raw branches into **structured entities and pipelines**. It is implemented today as an optional pack that builds on L0 organs and APIs. 
 
 #### 2.3.1 Beings, Bonds, Contexts, Facets
 
-* **Beings** – long‑lived identities: users, documents, accounts, services, models, datasets, pipelines.
-* **Bonds** – typed relations between beings: “owns,” “uses,” “depends_on.”
-* **Contexts** – N‑ary relations, e.g. `(user, model, dataset, environment)`.
-* **Facets** – smaller truths implied by contexts (permissions, roles, cohort membership).
+* **Beings** – durable identities: users, documents, services, models, datasets, pipelines, provinces.
+* **Bonds** – typed relationships between beings: “owns”, “depends_on”, “in_province”, etc.
+* **Contexts** – N‑ary relations that tie multiple beings into a situation (e.g. `(user, model, dataset, environment)`).
+* **Facets** – smaller truths implied by contexts; L1 enforces closure or records “debts” if required facets are missing.  
 
-Layer 1 maintains a **coherence ledger** (e.g. `/data/coh/**`) that enforces closure: required facets are created or recorded as deterministic debts, and adjacency mirrors speed up neighborhood queries. 
+These live under `/data/coh/**` with adjacency mirrors for fast neighborhood queries.
 
 #### 2.3.2 Pipelines as Graphs
 
-Layer 1 also owns the **pipeline graph**:
+Pipelines become first‑class objects:
 
-* **Pipelines as beings**
+* Pipeline beings and stage beings with owners and province membership.
+* Pipeline definitions under `/data/flow/pipelines/**` with stages, edges, revisions, and metadata.  
+* Edges encoded as contexts (`pipeline_edge`) with roles (`from_stage`, `to_stage`).
 
-  * Each pipeline is a Being with identity, owner(s), lifecycle, and province membership (for example, which deployment environment it lives in).
-* **Stages as beings or bonds**
-
-  * A stage can be modeled as a Being linked to its pipeline by a Bond or as a typed Bond (`pipeline ↔ stage`), depending on schema preferences.
-  * Stage metadata includes:
-
-    * referenced L0 enzyme or gateway enzyme,
-    * input and output branches,
-    * roles (e.g. “example,” “prediction,” “label,” “update”),
-    * references to parameter cells or config branches.
-* **Edges as contexts**
-
-  * Contexts connect stages: “stage A feeds stage B under conditions C.”
-  * Facets on these contexts encode routing conditions, filters, and triggers.
-
-Both **application pipelines** (e.g. request handling) and **learning pipelines** (e.g. training/evaluation) are first‑class graph objects here.
+L1 also maintains **runtime runs** under `/data/flow/runtime/runs/**`, echoing pipeline and stage structure plus per‑stage metrics and annotations.
 
 #### 2.3.3 From Structure to Execution
 
-Given current cells and coherence:
+Given coherence and pipeline definitions:
 
-* L1 decides which pipeline stages are “ready”:
+* L1 decides when pipeline stages are **ready** (events, labels, or schedules).
+* It emits L0 operations and OPS dossiers tagged with `pipeline_id` and `stage_id`, which drive enzymes, episodes, and (later) L2 flows. 
 
-  * for example, a new event, a complete example+label pair, or a scheduled batch window.
-* L1 emits L0 operations/signals tagged with `pipeline_id` and `stage_id`:
-
-  * enzyme dispatch locally,
-  * federation invokes for remote stages,
-  * episodes for multi‑beat work.
-
-L1 does not define how tactics (learning strategies, explorations) work; that’s L2’s job. It simply says **what exists**, **how it is connected**, and **when it should run**.
+L1 does **not** define learning or imagination; it simply defines **who and where** work will run.
 
 ---
 
-### 2.4 Layer 2 – Ecology & Flows (Modules and Evolution) (Planned Pack)
+### 2.4 Layer 2 – Ecology & Flows (Modules, Minds & Evolution)
 
-Layer 2 provides the **ecological and algorithmic layer**: it defines how modules behave, learn, and evolve within the structures of L1 and the substrate of L0.
+Layer 2 is where CEP’s **learning and cognition metaphor** lives: flows, Grounders, Signal Field, Focus Frames, Playbooks, Mode Clusters, and Imaginate. It is scaffolded today as an optional pack on top of L1.  
 
-#### 2.4.1 Flow VM
+#### 2.4.1 Flow VM and Ecology
 
-A **Flow** is a deterministic state machine built from five primitives: 
+The Flow VM is unchanged in spirit:
 
-* **Guard** – pure preconditions on contexts and cells.
-* **Transform** – emit new cells (facts, predictions, losses, updates).
-* **Wait** – suspend until a pattern/impulse appears (e.g. “wait for labels”).
-* **Decide** – choose a branch via a policy; always emit a Decision Cell.
-* **Clamp** – enforce budgets, timeouts, and parallelism limits.
+* Nodes: **Guard / Transform / Wait / Decide / Clamp**.
+* Flows: graphs of nodes under `/data/eco/flows/<flow>/graph`.
+* Scheduler: `cep_l2_runtime_scheduler_pump()` steps “organisms” (flow instances) each beat with budgets. 
 
-Flows compile to:
+Ecology concepts:
 
-* updates to L1 pipeline graphs (creating/removing stages, changing bindings),
-* and L0 operations (enzyme invocations, episodes, federation invokes).
+* **Species** – families of flows tackling the same task.
+* **Variants** – concrete implementations or parameterizations of a species.
+* **Niches** – contextual regions where certain variants are preferred.
+* **Organisms** – runtime instances of flows bound to pipeline contexts.
+* **Guardians** – constraints that veto unsafe moves or clamp budgets.  
 
-#### 2.4.2 Ecosystem: Species, Variants, Niches, Organisms
+Metrics and history live under `/data/eco/metrics/**`, `/data/eco/runtime/{organisms,history,decisions}/**`. 
 
-Layer 2 reintroduces CEP’s ecological concepts explicitly: 
+#### 2.4.2 Grounders and the Signal Field
 
-* **Species** – Families of flows or modules that solve the same task (e.g. different ranking algorithms).
-* **Variants** – Concrete implementations or parameterizations within a species (e.g. `Ranker_v1`, `Ranker_v2`).
-* **Niches** – Contextual regions where certain variants are preferred (e.g. new users, heavy users, specific geos).
-* **Organisms** – Individual flow/module instances executing in specific contexts (e.g. “Ranker_v2 handling this user+session”).
-* **Guardians** – Invariants and safety constraints that veto unsafe actions or configurations.
-* **Predators** – Watchers that actively hunt misbehaving or underperforming variants/species, culling or isolating them when evidence or policy says they are unsafe.
+To connect CEP’s minds to the external world, L2 introduces **Grounders**:
 
-Selection pressures come from:
+* A **Grounder** is a module that *grounds CEP in reality*:
 
-* supervised labels and rewards,
-* metrics from L3 (performance, fairness, cost),
-* and policies defined in L4.
+  * It attaches to `/env/**` handles (UI, network, devices, files, streams). 
+  * It can be a **sensing grounder** (input), **acting grounder** (output), or both.
+  * It is implemented as a Flow + L0 organs, but conceptually we treat it as a single I/O agent.
 
-Layer 2 uses Decision Cells, parameter cells, and pipeline metadata to make this ecosystem deterministic and replayable.
+Grounders emit **metrics** (latency, error rate, user confusion, load, etc.) and CEI facts. 
 
-#### 2.4.3 Modules as Finite‑Action Policies with Supervision
+A dedicated L2 flow aggregates these into the **Signal Field**:
 
-In CEP, a **module** is typically:
+```text
+/data/eco/runtime/signal_field/current = {
+    fast:          0.2,
+    precise:       0.8,
+    low_noise:     0.9,
+    teach:         0.0,
+    visual_strain: 0.4,
+    ...
+}
+```
 
-* given a **context** (i.e. a set of beings and facets from L1),
-* allowed to pick an action from a **finite action set** (e.g. [A, B, C]),
-* evaluated later via **supervision** (labels, rewards, human feedback),
-* and updated under **learning rules** encoded in flows.
+* Keys – active broadcast cues (finite vocabulary; e.g. `fast`, `precise`, `round_up`, `teach`, `low_noise`).
+* Values – continuous intensities per signal for richer decisions (typically 0–1; `0` or absence can be treated as “off”).
+* Provenance (which Grounder contributed to which signal) is tracked via cell metadata or a sibling branch such as `/data/eco/runtime/signal_field/sources/**`.
 
-Layer 2 flows ensure that:
+This **Signal Field** is the shared “how things feel right now” state that all learners can read.
 
-* each action choice is recorded as a Decision Cell, with context and variant identity,
-* each label/feedback is linked back to the decisions and parameters that produced it,
-* each parameter update is recorded as new cells with full provenance.
+#### 2.4.3 Focus Frames, Playbooks, Mode Clusters
 
-This creates a **supervised evolutionary ecosystem** in which:
+On top of the Signal Field, L2 defines how individual learners think:
 
-* variants compete within niches,
-* guardians enforce invariants,
-* and selection is driven by explicit evidence.
+* **Focus Frame**
+
+  * A small, explicit **peephole** over system state:
+
+    * a slice of the Signal Field,
+    * plus local hints (e.g. token features in calc, layout stats in UI, cohort flags in ranking),
+    * and optional mode labels.
+  * Each learner constructs its own Focus Frame for each decision.
+
+* **Playbook**
+
+  * For each Focus Frame signature (a hashed/bucketed form), a Playbook row tracks:
+
+    ```text
+    actions: [
+      { id: A, attempts, successes, avg_cost },
+      { id: B, attempts, successes, avg_cost },
+      ...
+    ],
+    imaginate_state: { ... }
+    ```
+  * The **Decide** node:
+
+    * looks up the row for the current Focus Frame,
+    * picks an action from a finite set,
+    * emits a Decision Cell with the Focus Frame signature and action ID. 
+
+* **Mode Clusters**
+
+  * CEP clusters time‑series of `{Signal Field, active flows/guardians, CEI topics}` into recurrent **Mode Clusters** – stable patterns of behavior (e.g. “Overprotective Guardian”, “Aggressive Explorer”).
+  * A light L2 analytics flow labels beats with their closest Mode Cluster and records that in the Signal Field.
+  * Learners can include `mode_id` in their Focus Frame, making their behavior aware of these attractors.
+
+Together, these define a **Mind Loop**:
+
+> Grounders → Signal Field → Focus Frame → Playbook → Decision → Feedback → Playbook update.
+
+The **peephole constraint** is deliberate: no learner sees the entire state; each sees only what’s encoded in its Focus Frame, which is itself derived from the Signal Field (grounder consensus) and local context.
+
+#### 2.4.4 Imaginate: Structured Imagination & Exploration
+
+To support **imagination**, L2 adds a structured exploration mode: **Imaginate**.
+
+* **Imaginate mode**
+
+  * For a given Focus Frame, instead of always taking the top‑ranked action, a learner can **sample** from its Playbook row:
+
+    ```text
+    p(action) ∝ f(success_rate, 1/avg_cost, exploration_bias)
+    ```
+  * The sampling is deterministic w.r.t. Decision Cells:
+
+    * the sampled rank or RNG seed is stored in the Decision Cell,
+    * replay uses the recorded choice; no re‑sampling.  
+
+* **When Imaginate is allowed**
+
+  * L2 reads the Signal Field’s signals (e.g. `teach`, `low_noise`, a dedicated `imagine` cue).
+  * L4 laws and guardians decide where and when imaginate is permitted (e.g. shadow provinces, low‑risk users, non‑critical pipelines). 
+
+* **Learning from imagination**
+
+  * After the system observes the outcome (success/failure, cost, or human feedback):
+
+    * the learner updates `attempts`, `successes`, `avg_cost`, and `imaginate_state` for that action in its Playbook row;
+    * guardians feed strong negative signals back into the Signal Field if imaginate caused violations (`eco.guardian.violation`, `eco.limit.hit`). 
+
+* **Cooperative imagination**
+
+  * Because Playbooks are conditioned on the shared Signal Field, multiple learners can enter imaginate mode **coherently**:
+
+    * a calc learner trying a new parse path,
+    * a layout learner trying a new template,
+    * a ranking learner trying a different diversity strategy,
+    * all under the same “system mood” encoded in signals like `teach + low_noise`. 
+
+Imagination is always:
+
+* bounded to **finite action sets**,
+* recorded as Decision Cells,
+* wrapped in **Clamp** nodes and guardians,
+* and governed by L4 laws about where it may run.
+
+#### 2.4.5 Modules as Finite‑Action Policies with Supervision
+
+From a learning perspective, a module in L2 is:
+
+* a **Flow** that:
+
+  * builds a Focus Frame from the Signal Field + context,
+  * looks up a Playbook row,
+  * picks an action (deterministic or imaginate),
+  * logs a Decision Cell,
+  * runs the chosen path, and logs feedback. 
+
+Supervision comes from:
+
+* labels, rewards, and metrics,
+* teach‑me requests when local history is insufficient,
+* and human feedback captured at L3.
+
+Directors and trainers are themselves flows with their own Playbooks; their decisions are subject to the same determinism and governance.
 
 ---
 
-### 2.5 Layer 3 – Awareness, Datasets & Human Interaction (Planned Pack)
+### 2.5 Layer 3 – Awareness, Datasets & Human Interaction
 
-Layer 3 makes CEP **aware of its own behavior and data**, and exposes that awareness to humans.
+Layer 3 turns CEP’s internal evidence into **views, tools, and stories** for humans. It builds on the same primitives (Signal Field, Focus Frames, Playbooks), but for operators rather than modules. 
 
-#### 2.5.1 Perspectives, Interpretations, Summaries
+#### 2.5.1 Perspectives, Summaries, Mode‑Aware Views
 
-* **Perspectives** – Materialized views over:
+* **Perspectives**
 
-  * pipeline runs and stage health,
-  * module/variant performance,
-  * decision distributions,
-  * datasets and label coverage.
-* **Interpretations** – Tags and scores (e.g. “high risk,” “drifting,” “under‑sampled cohort”).
-* **Conventions** – Stable patterns promoted to default behavior (e.g. “variant B is now canonical for cohort C”).
-* **Summaries** – Aggregated metrics over time frames (beats → minutes → hours → days), with links back to raw evidence. 
+  * Materialized views over:
 
-These artifacts live as derived cells in branches (e.g. `/data/awareness/**`), built incrementally from heartbeat outputs.
+    * decisions and Playbook distributions,
+    * performance and fairness metrics,
+    * Signal Field history,
+    * Mode Cluster occupancy (“how often we’re in which mode”).
 
-#### 2.5.2 Human‑Facing Interaction Surfaces
+* **Summaries**
 
-Layer 3 is the primary **human interaction zone**:
+  * Aggregations over time (beats → minutes → hours → days) with links back to Decision Cells and raw evidence.
 
-* **Dashboards & analytics**
+* **Operator Panels (human Focus Frames)**
 
-  * Visualize perspectives and summaries: model performance, data drift, error breakdowns, pipeline bottlenecks.
-* **Dataset browsers**
+  * L3 defines **operator panels**: curated Focus Frames for humans:
 
-  * Let humans inspect examples, labels, and outcomes, with full provenance.
-* **Labeling & feedback tools**
+    * a small subset of signals,
+    * selected metrics and modes,
+    * relevant pipelines and species.
+  * Panels deliberately **do not show everything**; they enforce the same “peephole” discipline humans use to stay sane while supervising a complex system.
 
-  * Support human‑in‑the‑loop supervision: adding labels, re‑labeling, attaching explanations, or marking outliers.
-* **Override and triage controls**
+All of these live as cells under `/data/awareness/**` or pack‑specific branches.
 
-  * Allow humans to:
+#### 2.5.2 Human‑Facing Tools
 
-    * override decisions,
-    * disable or down‑weight variants,
-    * pause pipelines or flows,
-    * schedule re‑training or backfills.
-* **Annotation and storytelling hooks**
+Typical tools in L3:
 
-  * Let humans attach narratives, notes, or hypotheses to runs, datasets, or incidents (feeding into Layer 4 stories).
+* **Dashboards & analytics** – show health, mode usage, Signal Field trends, and Playbook coverage.
+* **Dataset & decision browsers** – let humans inspect examples, decisions, and feedback with full provenance.
+* **Labeling & feedback UIs** – support human‑in‑the‑loop labels and corrections.
+* **Override & triage controls** – let humans:
 
-Technically, these tools talk to CEP via APIs and mailboxes, but conceptually:
+  * disable or down‑weight variants,
+  * change Imaginate policies,
+  * or move pipelines between provinces.
 
-> Layer 3 is where humans **see**, **judge**, and **shape** the system’s behavior, day‑to‑day.
+Humans thus act as high‑level directors and guardians, using evidence produced by the Mind Layer instead of magic.
 
 ---
 
-### 2.6 Layer 4 – Governance, Safety & Self‑Evolution (Planned Pack)
+### 2.6 Layer 4 – Governance, Safety & Self‑Evolution
 
-Layer 4 governs how CEP, its modules, and even its kernel are allowed to change.
+Layer 4 encodes how CEP, its modules, and even its kernel are allowed to **change**. It uses the same evidence (cells, CEI, perspectives) to drive **laws and reforms**.  
 
 #### 2.6.1 Laws, Reforms, Councils, Provinces
 
-* **Laws** – Signed, versioned bundles that can encode:
+* **Laws**
 
-  * schemas and policies,
-  * allowable pipeline structures,
-  * constraints on learning (e.g. max update frequency, fairness criteria),
-  * rules for kernel/pack upgrades and rollbacks.
-* **Reforms** – Structured change plans:
+  * Signed bundles describing:
 
-  * migrating from one law set or pipeline to another,
-  * with pre‑checks, post‑checks, and compensating actions.
-* **Councils** – Governance workflows that mix human and automated roles:
+    * allowed pipelines and flows,
+    * safety constraints and budgets,
+    * where Imaginate is allowed,
+    * privacy and fairness boundaries,
+    * upgrade constraints.
 
-  * proposing changes,
-  * reviewing evidence (L3 perspectives),
-  * voting, and enacting.
-* **Provinces** – Namespaced sandboxes:
+* **Reforms**
 
-  * `prod`, `staging`, `shadow`, `experimental`,
-  * each with its own subset of laws, pipelines, and species. 
+  * Structured change plans:
 
-Humans at Layer 4 are:
+    * “promote variant X”,
+    * “tighten clamps on species Y in province Z”,
+    * “enable a new pack, grounder, or flow.”
+  * Include pre‑checks, monitoring conditions, and rollback rules.
 
-* authors of laws and reforms,
-* members of councils,
-* approvers and signers of critical changes,
-* and narrators of how the system evolved.
+* **Councils**
+
+  * Human + automated members who:
+
+    * propose laws and reforms,
+    * review L3 evidence,
+    * approve or reject changes.
+
+* **Provinces**
+
+  * Named deployment sandboxes (`prod`, `staging`, `shadow`, `experimental`) with their own law sets and ecosystems. 
+
+Laws can also constrain **how wide** operator panels and internal Focus Frames may be (maximum number of panic zones, CEI topics per beat, etc.), treating “how much you can see at once” as a governed resource.
 
 #### 2.6.2 Self‑Evolution and Kernel Upgrades
 
-CEP is implemented as a C kernel with a permissive license in mind, which means:
+CEP treats its own source, builds, and binaries as artifacts:
 
-* Its **source code, builds, and binaries** can be treated as ordinary artifacts.
-* CEP itself can host **upgrade pipelines** that:
+* L4 can define **upgrade pipelines** that:
 
-  * build new kernel or pack versions,
-  * run them through tests and shadow runs,
-  * gather metrics and human feedback via L3 perspectives,
-  * and, if approved by a council, roll them out gradually across provinces.
+  * build new kernels or packs,
+  * test them in separate provinces,
+  * collect L3 metrics and human review,
+  * roll them out gradually if councils approve. 
 
-A typical self‑evolution workflow:
+These pipelines themselves are:
 
-1. A council proposes a new kernel or pack version (e.g. enabling a new store type or learning primitive).
-2. L2/L3 assemble **evidence**: performance data, test results, safety analyses.
-3. L4 encodes a **reform**:
+* flows with **Decision Cells**,
+* subject to laws and guardians,
+* and fully replayable for audits.
 
-   * how to deploy the new binaries,
-   * which provinces to try first,
-   * rollback conditions.
-4. CEP runs an **upgrade pipeline**:
-
-   * episodes in L0 coordinate I/O, rollouts, and monitoring,
-   * old and new kernels may run side‑by‑side in different provinces.
-5. If KPIs and safety checks pass, councils approve broader rollout; if not, the reform rolls back.
-
-Crucially:
-
-* CEP **does not randomly mutate its own C code**. Changes to the kernel and packs are governed by explicit laws, reforms, and human approvals.
-* All upgrade steps are encoded as cells, operations, and decisions, so the system’s own evolution is replayable and auditable.
+CEP never mutates its own C code spontaneously; all self‑evolution goes through explicit artifacts, laws, and human oversight.
 
 ---
 
 ### 2.7 Observability, Privacy, and Replay
 
-**Observability**
+Observability is not an add‑on; it is built into the cell model. 
 
-* Every derived fact links back to:
+* Every derived cell links to:
 
-  * sources,
-  * guards and policies,
-  * code identities (enzymes/flows/species),
-  * and Decision Cells. 
-* OPS dossiers under `/rt/ops/**` track operations, including:
+  * its parent facts,
+  * the enzyme/flow/species that wrote it,
+  * the Decision Cells it depends on.
 
-  * kernel boot/shutdown, persistence, async I/O,
-  * episodes and pack‑defined ops (training jobs, upgrades).
-* CEI facts capture:
+* OPS dossiers under `/rt/ops/**` record:
 
-  * severity (`fatal`, `crit`, `usage`, `warn`, `debug`),
-  * topic, note, origin, subject links,
-  * and optional attachments. 
+  * boot/shutdown,
+  * persistence and async I/O,
+  * pack‑defined operations and episodes. 
+
+* CEI (Common Error Interface) facts:
+
+  * carry severity (`sev:*`), topic, note, origin, and attachments,
+  * are used by all layers to report anomalies and limit hits. 
 
 **Privacy**
 
 * Payload‑level cryptography with per‑subject keys:
 
-  * encrypted payloads with secmeta,
-  * erasure by dropping keys while preserving stubs,
+  * encrypted payloads with `secmeta` describing mode, key ID, nonce, and codec,
+  * erasure by dropping keys while keeping structural stubs,
   * optional redaction cells for reversible masking. 
 
 **Replay**
 
-* Any beat range can be re‑run with side effects disabled.
-* Decision Cells remove randomness from replays.
-* Training, evaluation, selection, and even upgrade workflows are represented as cells and decisions, so the system’s evolution is reproducible.
+* Beat‑scoped CPS logs + Decision Cells allow any interval to be replayed deterministically, with side effects disabled.
+* Learning, Imaginate, and even upgrades are just cells and decisions; replay makes them inspectable.  
 
 ---
 
 ### 2.8 Scale and Federation
 
-CEP scales by **partitioning** data and work across branches and runtimes:
+CEP scales by **sharding** work into branches and runtimes, then coordinating them via federation rather than global barriers. 
 
-* Each partition has its own heartbeat and `/data/**` subtree, persisted by CPS. 
-* Cross‑partition and cross‑enclave interactions use:
+* Each runtime:
 
-  * federation transports and mounts,
-  * link/mirror/invoke organs,
-  * and enclave security with pipeline preflight. 
+  * owns its own `/data/**` branches, heartbeat, and CPS engine,
+  * maintains its own Grounders, Signal Field, Playbooks, and Mode Clusters.
 
-The platform avoids global barriers; instead, it relies on:
+* Federation:
 
-* local determinism per partition,
-* eventual alignment of summaries and perspectives,
-* and governance at L4 to coordinate large‑scale changes.
+  * uses transports and mounts under `/net/**` to exchange **flat frames and summaries**, not shared memory,
+  * carries pipeline metadata and respects enclave policies and budgets.  
+
+Across many runtimes, you get:
+
+* local **minds** with their own Focus Frames and Imaginate behavior,
+* a **societal layer** (L3/L4) that aggregates summaries, mode statistics, and upgrade decisions across provinces and peers, without any single node needing to see everything at once.
 
 ---
 
 ### 2.9 Minimal Viable CEP (Revised Stack)
 
-You can adopt CEP gradually:
+You can adopt CEP incrementally:
 
-1. **Layer 0 – Kernel & Pipeline Substrate**
+1. **L0 – Kernel & Pipeline Substrate**
 
-   * Deterministic kernel, heartbeat, cells, stores, CAS, CPS, federation, security.
-   * Optional pipeline tagging via `pipeline_id` / `stage_id`.
+   * Heartbeat, cells/stores, CPS/CAS, security, federation, pipeline metadata.
 
-2. **Layer 1 – Coherence & Pipeline Graphs**
+2. **L1 – Coherence & Pipeline Graphs**
 
-   * Identity, relationships, pipeline definitions and graphs.
+   * Beings, bonds, contexts, facets, pipeline graphs and runtime runs.
 
-3. **Layer 2 – Ecology & Flows**
+3. **L2 – Ecology & Flows (Modules, Minds & Evolution)**
 
-   * Modules as finite‑action policies, flows, species/variants/niches, supervised evolutionary behavior.
+   * Flow VM + scheduler, species/variants/niches/guardians, Grounders, Signal Field, Focus Frames, Playbooks, Mode Clusters, Imaginate.
 
-4. **Layer 3 – Awareness & Human Interaction**
+4. **L3 – Awareness & Human Interaction**
 
-   * Perspectives, datasets, dashboards, labeling/feedback tools, manual overrides.
+   * Perspectives, datasets, operator panels, labeling/feedback tools, override controls.
 
-5. **Layer 4 – Governance & Self‑Evolution**
+5. **L4 – Governance & Self‑Evolution**
 
-   * Laws, reforms, councils, provinces, and narrative artifacts governing both application behavior and CEP’s own upgrades.
+   * Laws, reforms, councils, provinces, upgrade pipelines.
 
-At each step, CEP remains **deterministic, replayable, and explainable**.
+At each step, the kernel guarantees determinism and replay; higher layers add structure, learning, and governance without weakening that guarantee. 
 
 ---
 
-### 2.10 Worked Example: Supervised Learning Pipeline with Evolution and Human Oversight
+### 2.10 Worked Example: Imaginative Feed Ranking with Human Oversight
 
-Consider a feed ranking application with supervised learning, evolution of variants, and human oversight.
+Consider a feed ranking system with supervised learning and imagination.
 
-#### Beat 100 – Capture
+#### Beat 1 – Capture: view event
 
 ```text
-Event#view1 { user=alice, items=[i1,i2,i3], context=home_feed }
+Event#view1 { user=alice, items=[i1, i2, i3], context=home_feed }
 ```
 
-Layer 0 records this event under `/data/app/events/**`.
+* L0 records this under `/data/app/events/**` with `pipeline_id=learn/feed_ranking`. 
 
 #### Layer 1 – Coherence & Pipeline Graph
 
-* Beings: `user:alice`, `model:feed_ranking`, `dataset:home_feed`.
-* Context ties them, with facets capturing roles and cohort.
-* Pipeline `FeedRanking` has stages:
+* Beings: `user:alice`, `model:feed_ranking`, `dataset:home_feed`, `pipeline:FeedRanking`.
+* Context ties them; pipeline `FeedRanking` defines stages:
 
   1. `PrepareFeatures`
   2. `ScoreItems`
   3. `LogExample`
   4. `AwaitLabel`
-  5. `ApplyUpdate`
+  5. `ApplyUpdate` 
 
-L1 routes `Event#view1` into stage `PrepareFeatures` and emits an L0 operation with:
+L1 routes `Event#view1` into stage `PrepareFeatures` and emits an L0 op with metadata.
 
-* `pipeline_id=learn/feed_ranking`,
-* `stage_id=PrepareFeatures`.
+#### Layer 2 – Grounders and Signal Field
 
-#### Layer 2 – Ecology & Flow
+* A **grounder** for user activity reads the event stream under `/env/ui` and `/data/app/events/**`, producing metrics like request latency, click errors, and UI load. 
+* Another grounder tracks storage health and model load latency.
 
-A Flow `RankFeed` belongs to species `feed_ranking` with variants `v1`, `v2`, `v3`.
+The Signal Aggregator flow combines these into:
 
-* Guard ensures data/model availability.
-* Transform builds item features.
-* Decide picks a variant among `v1`, `v2`, `v3`, emitting a Decision Cell and recording the chosen variant and niche (e.g. “home_feed_first_session”).
-* Transform scores items using the chosen variant.
-* Clamp enforces latency and CPU budgets.
+```text
+Signal Field:
+  { precise: 0.8, low_noise: 0.7 }
+```
 
-Layer 2 logs:
+So the system is in a cautious, accurate mode with moderate stability.
 
-* a **prediction** (ranking),
-* a **training example** cell referencing:
+#### Layer 2 – Focus Frame, Playbook, and Decision
 
-  * context,
-  * chosen variant,
-  * parameters used,
-  * Decision Cell.
+For this request, the ranking learner:
 
-#### Layer 0 – Execution and Persistence
+1. Builds a **Focus Frame**:
 
-In Compute for beat 100, L0 executes:
+   ```text
+   signal_slice = { precise, low_noise }
+   local_view   = { cohort: "new_user", list_len: 3 }
+   mode_id      = "NormalOperation"
+   ```
 
-* the enzymes implementing `PrepareFeatures`, `ScoreItems`, `LogExample`,
-* possibly as an episode if you want a multi‑step slice.
+2. Computes a Focus Frame signature key.
 
-In Commit for beat 101:
+3. Looks up its **Playbook row**:
 
-* examples, predictions, and decision logs become visible,
-* CPS persists them.
+   ```text
+   key: (precise+low_noise, new_user, len=3)
 
-#### Beat 102 – Capture: Supervision Arrives
+   actions:
+     - A: { id: "Ranker_v1", attempts: 1200, successes: 0.98, avg_cost: 3.0ms }
+     - B: { id: "Ranker_v2", attempts:  300, successes: 0.97, avg_cost: 2.1ms }
+   imaginate_state:
+     exploration_bias: small
+   ```
+
+4. Since there is no `teach`/`imagine` signal and the province is `prod`, guardians forbid Imaginate; the Decide node picks **A** deterministically.
+
+5. A Decision Cell records:
+
+   * Focus Frame signature,
+   * chosen action A,
+   * pipeline/species/variant/niche identifiers. 
+
+The ranking flow scores items with `Ranker_v1`, emits scores and a training example cell referencing the Decision Cell.
+
+#### Beat 3 – Capture: click label arrives
 
 ```text
 Event#click1 { user=alice, item=i2, label=clicked, context=home_feed }
 ```
 
-L1 joins `click1` to the logged example via coherence (same user/session) and routes it to stage `AwaitLabel`, then `ApplyUpdate`.
+L1 joins this label to the earlier example; L2’s training flow:
 
-Layer 2’s flow `TrainFeed`:
+* computes a loss,
+* emits a parameter update cell under `/data/learn/models/feed_ranking/**`,
+* logs another Decision Cell if any randomness (e.g. learning rate choice) was used.  
 
-* Waits for example+label,
-* Computes loss and gradient,
-* Emits parameter update cells under `/data/learn/models/feed_ranking/params/**`,
-* Logs a Decision Cell if any randomization (e.g. learning rate) occurs.
+#### Later – Imaginate trial in an experimental province
 
-L0 applies the update deterministically in an episode.
+A council approves a **reform**: allow imaginate trials for `Ranker_v2` in `experimental` province for new users when the Signal Field indicates high stability (`low_noise` high, no recent `eco.guardian.violation`). 
 
-#### Layer 3 – Human Interaction
+For a similar context in `experimental`:
 
-Operators see, via perspectives:
+1. Signal Field: `signals = ["teach", "low_noise"]`.
+2. Focus Frame signature matches the same `(new_user, len=3)` bucket, but now with `teach`.
+3. The Playbook’s imaginate policy activates:
 
-* per‑variant performance (CTR, calibration),
-* data skew across cohorts,
-* label quality indicators.
+   * sample between `Ranker_v1` and `Ranker_v2`, biased toward `Ranker_v2`.
+4. Suppose `Ranker_v2` is sampled:
 
-They can:
+   * Decision Cell marks `mode=imaginate`, sample rank, and Focus Frame signature.
+   * The flow serves results and logs feedback after seeing clicks.
 
-* add labels,
-* re‑label misclassified examples,
-* mark cohorts as risky,
-* down‑weight or disable a variant via overrides.
+If performance is good and guardians stay quiet:
 
-These choices are logged as cells and CEI facts, feeding back into L2 flows (e.g. adjusting priors or gating species).
+* `Ranker_v2`’s success stats improve,
+* the imaginate policy gradually promotes it,
+* L4 may later roll out a reform to make `Ranker_v2` the default in more provinces.
 
-#### Layer 4 – Governance & Self‑Evolution
-
-A council notices that `feed_ranking:v3` consistently outperforms `v1` and `v2` in some provinces, with no regressions on safety metrics.
-
-They propose a **reform**:
-
-* promote `v3` as default species in `prod` province,
-* gradually retire `v1` and `v2`,
-* and at the same time roll out a new kernel pack that optimizes the feature store.
-
-The reform encodes:
-
-* rollout steps (shadow → partial → full),
-* rollback triggers,
-* metrics to monitor (from L3).
-
-CEP runs an **upgrade pipeline**:
-
-* episodes in L0 coordinate building new binaries, deploying them to staging, and switching mounts,
-* L3 perspectives feed live data to the council,
-* if conditions are met, the council approves broad rollout.
-
-All of this—decisions, metrics, rollouts, rollbacks—is recorded as cells and OPS/CEI evidence, so the **system’s evolution** is just as traceable and replayable as any individual prediction.
+This entire evolution—grounder metrics, Signal Field shifts, Focus Frames, decisions, and reforms—is just cells and Decision Cells, so it can be replayed and audited.
 
 ---
 
 ### 2.11 Glossary
 
-**Physiology (L0)**
+**Kernel & Substrate**
 
-* **Cell** – Immutable fact with metadata, payload, and child stores.
-* **Store** – Data structure for child sets (dictionary, list, tree, hash, etc.).
-* **Branch** – Durable subtree under `/data/<branch>`.
-* **Enzyme** – Deterministic worker bound to cells.
-* **Episode (op/ep)** – Long‑running operation tracked across beats.
+* **Cell** – Immutable fact with metadata, payload, and optional child stores.
+* **Store** – Data structure for children (dictionary, list, tree, hash, octree, etc.).
+* **Branch** – Rooted subtree under `/data/<name>` with its own persistence policy.
+* **Enzyme** – Deterministic callback bound to trees of cells.
+* **Episode (`op/ep`)** – Long‑running operation tracked across beats.
 * **Heartbeat** – Capture → Compute → Commit rhythm.
-* **Pipeline substrate** – Kernel‑level pipeline/stage metadata and enforcement hooks.
 
-**Coherence & Pipelines (L1)**
+**Coherence & Pipelines**
 
 * **Being** – Long‑lived identity (user, model, dataset, pipeline, province).
 * **Bond** – Typed relation between beings.
-* **Context** – N‑ary relation tying beings with role‑typed positions.
+* **Context** – N‑ary relation tying beings into a situation.
 * **Facet** – Smaller truth implied by a context.
-* **Pipeline (graph)** – Connected set of stages and edges over beings and contexts.
-* **Stage** – A step in a pipeline bound to an L0 enzyme or gateway.
+* **Pipeline** – Graph of stages and edges over beings and contexts.
+* **Stage** – Step in a pipeline bound to an enzyme or flow.
 
-**Ecology & Flows (L2)**
+**Ecology, Minds & Learning**
 
-* **Flow** – Deterministic state machine (Guard/Transform/Wait/Decide/Clamp).
-* **Module** – Flow‑backed component that chooses actions from a finite set.
-* **Species** – Family of flows/modules addressing the same task.
+* **Species** – Family of flows/modules solving the same task.
+
 * **Variant** – Concrete implementation/parameterization of a species.
-* **Niche** – Contextual domain where certain variants are preferred.
-* **Organism** – An instance of a flow/module executing in a specific context.
-* **Guardian** – Safety gate enforcing invariants and vetoing unsafe actions.
-* **Decision Cell** – Recorded choice (for exploration, policy picks, etc.).
 
-**Awareness & Human Interaction (L3)**
+* **Niche** – Context region where certain variants are preferred.
 
-* **Perspective** – Materialized view over data, pipelines, and flows.
-* **Interpretation** – Tag/score capturing risk, quality, or health.
-* **Convention** – Stabilized pattern promoted to default.
-* **Summary** – Aggregated rollup of metrics with pointers to sources.
+* **Organism** – Runtime instance of a flow/module in a specific context.
 
-**Governance & Self‑Evolution (L4)**
+* **Guardian** – Safety gate enforcing invariants and budgets.
 
+* **Flow** – Deterministic state machine built from Guard/Transform/Wait/Decide/Clamp nodes.
+
+* **Decision Cell** – Recorded choice for any non‑deterministic action.
+
+* **Grounder** – L2 module that anchors CEP to external resources (I/O, UI, devices) via `/env/**`, emitting metrics and CEI.
+
+* **Signal Field** – Compact global state of “how the system is doing” derived from grounder metrics and CEI; represented as a small set of signals and numeric intensities.
+
+* **Focus Frame** – Small, explicit peephole over the Signal Field + local hints + optional mode label; the input each learner uses to decide.
+
+* **Playbook** – Per‑Focus‑Frame table that maps to a finite set of actions, tracking attempts, successes, and cost statistics, plus Imaginate state.
+
+* **Mode Cluster** – Recurrent pattern in `{Signal Field, active flows/guardians, CEI topics}`; behaves like an attractor or “system mood” that learners can condition on.
+
+* **Mind Loop** – The end‑to‑end loop: Grounders → Signal Field → Focus Frame → Playbook → Decision → Feedback → Playbook update.
+
+* **Imaginate** – Structured exploration mode where learners sample from Playbook actions guided by statistics; every sampled choice is logged in a Decision Cell and enforced by guardians/clamps.
+
+**Awareness & Governance**
+
+* **Perspective** – Materialized view over runs, metrics, decisions, and data.
+* **Summary** – Aggregated metrics over time frames.
+* **Operator Panel** – Human‑facing Focus Frame: a curated slice of Signal Field, modes, metrics, and pipelines.
 * **Law** – Signed, versioned bundle of schemas and policies.
-* **Reform** – Structured change with checks and compensations.
-* **Council** – Group/process that proposes, reviews, and approves changes.
-* **Province** – Namespaced sandbox/deployment environment.
-* **Story / Legend / Myth** – Narrative artifact tied back to CEP evidence.
+* **Reform** – Structured change plan (rollout/rollback) for laws, pipelines, and modules.
+* **Council** – Group/process that reviews evidence and approves reforms.
+* **Province** – Namespaced environment (prod/staging/shadow/experimental) with its own laws and pipelines.
+
+With these concepts, CEP is not just a kernel with learning bolted on: it is a **deterministic, observable, and governable mind platform**, where every piece of “thinking” is encoded as cells, flows, and small tables that you can inspect, replay, and evolve.
+
+---
+
+### 2.12 Q/A
+
+**Q: Is CEP an ML platform, a database, or an orchestrator?**
+CEP is a **deterministic runtime** with storage and orchestration *built in*, and learning layered on top. Layer 0 behaves like a small database + scheduler (cells, branches, CPS, async I/O, federation).  Layers 1–2 add pipelines, flows, and learning (Playbooks, Focus Frames, Imaginate).  Layers 3–4 add awareness and governance. It is not “just” any one of these; it’s a stack that treats all three as first‑class.
+
+**Q: What actually ships today, and what is still design?**
+Only **Layer 0 – Kernel & Pipeline Substrate** ships in this repo today: heartbeat, cells/stores, CPS/CAS, security, federation, and pipeline metadata plumbing.  Layers 1–2 have partial scaffolding (coherence, flow VM, ecology roots), and Layers 3–4 are design + contracts that shape how Layer 0 behaves and exposes APIs. 
+
+**Q: Do I need all layers to get value?**
+No. Common paths:
+
+* Use **L0 only** as a deterministic kernel and storage substrate. 
+* Add **L1** when you need explicit pipelines and long‑lived identities. 
+* Add **L2** when you want modules that learn via Playbooks and Signal Fields. 
+* Add **L3–L4** only when you care about rich human supervision, laws, and upgrade pipelines. 
+
+Each pack must fail gracefully if absent; Layer 0 boot and replay never depend on them. 
+
+**Q: What is a “mind” in CEP terms?**
+A “mind” is not a special object; it’s a pattern:
+
+> Grounders → Signal Field → Focus Frames → Playbooks → Decisions → Feedback.
+
+Any set of flows that read the same slice of **Signal Field**, build similar **Focus Frames**, and maintain **Playbooks** over those can be treated as a “mind loop.” Mode Clusters describe the stable patterns those loops fall into. 
+
+**Q: How is this different from a normal RL/ML system?**
+CEP’s default pattern is:
+
+* **Tabular, finite actions per context** (Playbooks),
+* **Immediate feedback** (no long credit assignment),
+* **Deterministic replay** via Decision Cells,
+* **Small, composable modules** instead of monolithic models. 
+
+You *can* host model‑backed policies in flows, but the core story is “tiny supervised learners with explicit tables and policies, glued together by CEP,” not “one giant opaque model.”
+
+**Q: How can CEP both learn and stay deterministic?**
+Because every non‑deterministic choice emits a **Decision Cell**, and every parameter update is a new cell tied to those decisions. 
+
+On replay:
+
+* CEP reads the recorded Decision Cells instead of re‑deciding,
+* uses the recorded parameter versions,
+* and can even replay Imaginate samples because the sampled action/seed is stored with the decision. 
+
+So you get learning *plus* byte‑for‑byte replays.
+
+**Q: What is a Grounder, and how is it different from a kernel “organ”?**
+
+* A **kernel organ** (L0) is a typed subtree descriptor with ctor/validator/dtor enzymes, used to shape branches like `/data/coh`, `/data/flow`, `/data/eco`. 
+* A **Grounder** (L2) is a conceptual I/O module that binds to `/env/**` (UI, network, devices) and emits metrics/CEI into the **Signal Field**. 
+
+Internally a Grounder will use one or more organs, but externally we reserve “Grounder” for “thing that touches the world and feeds the Signal Field.”
+
+**Q: Why the “peephole” / Focus Frame instead of just giving learners all the data?**
+Two reasons:
+
+1. **Engineering** – Giving every learner the full state would explode Playbook keys and destroy interpretability. Focus Frames enforce a small, explicit input surface. 
+2. **Stability** – Both automated learners and humans can “panic” on unfiltered complexity. The peephole makes each mind see only the signals and context it’s designed to handle, and governance can limit how wide those peepholes are. 
+
+**Q: What is “Imaginate” exactly? Is it just random exploration?**
+Imaginate is **structured exploration on top of Playbooks**:
+
+* Learners sample from their own action stats instead of always picking the top option.
+* Sampling is constrained to finite action sets, governed by policies, and recorded in Decision Cells. 
+* Guardians and laws gate where imaginate is allowed (e.g., experimental provinces) and clamp it if it causes limit hits (`eco.guardian.violation`, `eco.limit.hit`). 
+
+It’s not free‑form randomness; it’s “try other rows in the small table, under supervision.”
+
+**Q: How does CEP handle privacy and deletion if everything is append‑only?**
+Payloads can be **encrypted per subject**, with metadata (`secmeta`) stored in the cell. Erasure is implemented by dropping keys, leaving structural stubs so history and proofs remain but the sensitive bytes are gone. Optional redaction cells allow reversible masking when appropriate. 
+
+**Q: How does this design relate to the tag lexicon and root layout?**
+
+* The **root layout** (`/sys`, `/rt`, `/journal`, `/env`, `/cas`, `/lib`, `/data`, `/tmp`, `/enzymes`) is fixed by Layer 0 and gives every layer a predictable place to store state and evidence. 
+* The **tag lexicon** defines the vocabulary for all of this (`eco`, `learn`, `species`, `variants`, `decisions`, `eco.guardian.violation`, etc.), keeping code and tools in sync. 
+
+Grounders, Signal Fields, Focus Frames, Playbooks, and Mode Clusters are all expressed using that layout and tag vocabulary; they don’t introduce ad‑hoc paths.
