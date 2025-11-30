@@ -19,6 +19,7 @@ inc_paths = [
   'src/l0_kernel',
   'src/l1_coherence',
   'src/l2_ecology',
+  'src/ratworld',
   'src/test',
   'src/enzymes',
   'src/cps',
@@ -117,6 +118,8 @@ l0_srcs = files(
   'src/l2_ecology/cep_l2_schema.c',
   'src/l2_ecology/cep_l2_runtime.c',
   'src/l2_ecology/cep_l2_flow.c',
+  'src/ratworld/ratworld.c',
+  'src/ratworld/ratworld_text.c',
   'src/cps/cps_flatfile.c',
   'src/cps/cps_storage_service.c',
   'src/cps/cps_runtime.c',
@@ -349,6 +352,7 @@ if get_option('tests').enabled()
     'src/test/cps/test_cps_replay.c',
     'src/test/l1_coherence/test_l1_smoke.c',
     'src/test/l2_ecology/test_l2_scaffold.c',
+    'src/test/ratworld/test_ratworld.c',
     )
   test_dependencies = []
   if zip_dep.found()

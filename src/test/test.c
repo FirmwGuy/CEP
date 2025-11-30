@@ -888,6 +888,38 @@ MunitTest tests[] = {
     },
 #endif /* !CEP_DISABLE_FEDERATION_TESTS */
     {
+        "/ratworld/determinism",
+        test_ratworld_determinism,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/ratworld/solvable",
+        test_ratworld_solvable,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/ratworld/renderer",
+        test_ratworld_renderer,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
+        "/ratworld/tick_mechanics",
+        test_ratworld_tick_mechanics,
+        NULL,
+        NULL,
+        MUNIT_TEST_OPTION_NONE,
+        NULL
+    },
+    {
         "/runtime/dual_isolation",
         test_runtime_dual_isolation,
         NULL,

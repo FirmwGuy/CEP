@@ -147,6 +147,11 @@ MunitResult test_fed_invoke_reject(const MunitParameter params[], void* user_dat
 MunitResult test_fed_security_pipeline_enforcement(const MunitParameter params[], void* user_data_or_fixture);
 MunitResult test_fed_link_dual_runtime_provider_fatal(const MunitParameter params[], void* user_data_or_fixture);
 
+MunitResult test_ratworld_determinism(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_ratworld_solvable(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_ratworld_renderer(const MunitParameter params[], void* user_data_or_fixture);
+MunitResult test_ratworld_tick_mechanics(const MunitParameter params[], void* user_data_or_fixture);
+
 extern MunitSuite lock_suites[];
 extern MunitSuite integration_poc_suite;
 
