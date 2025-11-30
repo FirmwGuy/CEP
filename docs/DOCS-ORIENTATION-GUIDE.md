@@ -27,6 +27,8 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/L0_KERNEL/L0-ALGORITHMS.md` — Cross-cutting invariants (history chains, shadow bookkeeping, traversal) to re-confirm before changing shared helpers.
   - `docs/L0_KERNEL/L0-INTEGRATION-GUIDE.md` — Enzyme dispatch, serialization flows, and proxy wiring that keep integrations deterministic.
   - `docs/L0_KERNEL/L0-TUNING-NOTES.md` — Performance levers, anti-patterns, and store selection guidance for hot-path work.
+- **Environment & POC surfaces**
+  - `docs/RATWORLD.md` — Ratworld API contract (standalone environment services, control/tick stubs, replay hooks) ahead of CEP wiring.
 
 - **Deterministic Data & Storage**
   - `docs/L0_KERNEL/topics/APPEND-ONLY-AND-IDEMPOTENCY.md` — How timelines, timestamps, and immutable seals must behave during mutations.
@@ -112,6 +114,7 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/CEP-Implementation-Reference.md` | Deterministic contract digest across the shipped kernel and planned pack constraints | Layer 0 kernel (live) with upper-layer invariants | Mixed | Crosswalks cells/stores/ops/telemetry rules so agents need not reread every design paper. |
 | `docs/CEP-CONTRACTS.md` | Runtime/ownership/threading contract and bootstrap obligations | Layer 0 lifecycle, executor, optional packs | Live | Documents heartbeat single-owner rule, executor RO threading, cache teardown, and pack bootstrap/shutdown discipline. |
 | `docs/CEP-FOR-PL-SQL-DEVS.md` | Onboarding bridge for SQL-centric engineers | Layer 0 API surface, higher-layer concepts (planned) | Mixed | Keep terminology aligned with `docs/CEP-TAG-LEXICON.md`; note that policy/governance layers remain future work. |
+| `docs/RATWORLD.md` | Standalone Ratworld API contract for world config, control/tick stubs, and replay hooks | Ratworld environment pack | Draft | Tick/action/snapshot/branch helpers stubbed pending environment implementation. |
 | `docs/L1_COHERENCE/README.md` | Layer 1 Coherence — Overview | Layer 1 pack (coherence + pipelines) | Live | Add future L1 docs under this directory; keep the index in sync. |
 | `docs/L1_COHERENCE/USAGE.md` | Practical usage guide for beings/bonds/contexts/facets/debts/pipelines/runtime/federation | Layer 1 pack (coherence + pipelines) | Live | Step-by-step API walkthroughs and CEI expectations. |
 | `docs/L1_COHERENCE/ADJACENCY-CLOSURE.md` | Contract sketch for coherence adjacency closure and debts | Layer 1 pack (coherence closure) | Draft | TODO hooks for enzymes/CEI; use as design reference before implementation. |

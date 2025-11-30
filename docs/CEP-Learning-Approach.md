@@ -828,22 +828,3 @@ Language Grounders and skills can then treat such words as **strong, pattern‑a
   * shared datasets and perspectives observe and refine how words are actually used (L3),
   * and laws/reforms treat lexicons as governed artifacts that can evolve across provinces and runtimes (L4).
 * Even in minimal settings (like a rat‑like mind trained by a human), lexicons are inherently social: they sit between trainer and learner, not only inside one learner’s head.
-
-### H. Minimal L3/L4 surfaces for the rat POCs
-
-**Nontechnical:** The rat POCs now leave simple “what happened?” summaries for humans and a tiny set of province rules. You get per‑rat snapshots of shocks/food/steps plus skill stats, and a couple of province knobs (risk cap, minimum exploration) that light up when the system drifts outside the rules.
-
-**Technical details:**
-
-* L3 awareness aggregates land under `/data/awareness/**`:
-  * `/maze_risk_reward/<rat>` copies per‑variant metrics (shocks/food/steps/blocked/hunger/fatigue) and the latest Signal Field snapshot.
-  * `/skill_performance/<learner>/<focus>` rolls up attempts, successes, imaginate hits/rate, and average cost across that focus key.
-  * `/social_comm/<rat>` mirrors social metrics (trust/teach/noise) from the social grounder.
-* L4 governance keeps province policies under `/data/gov/rat_provinces/<province>` with `risk_cap` and `imaginate_min`. Compliance is recorded under `/data/gov/state/<province>` with flags `risk_cap_hit` and `imaginate_low` plus the observed `imaginate_rate`.
-* All aggregates are computed once per scheduler pump; no enforcement is applied yet—only evidence.
-
-**Q&A:**
-
-* *Why so small?* These surfaces aim to keep the POCs inspectable without a full dashboard; they’re just cells you can browse.
-* *Does governance block anything?* Not yet. It only records when caps are crossed so policy wiring can be added later.
-* *Can I extend the aggregates?* Yes—append more fields under the same branches or add new awareness subtrees; keep them append‑only and deterministic per beat.
