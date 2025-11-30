@@ -525,6 +525,7 @@ calc_poc_seed_l1_pipeline(void)
         .owner = "calc_owner",
         .province = "dev",
         .version = "v1",
+        .kind = "application",
         .revision = 1u,
         .max_hops = calc_layout.stage_count ? calc_layout.stage_count - 1u : 0u,
     };
@@ -543,6 +544,19 @@ calc_poc_seed_l1_pipeline(void)
     if (meta.max_hops > 0u) {
         snprintf(num_buf, sizeof num_buf, "%08" PRIu64, meta.max_hops);
         munit_assert_true(cep_cell_put_text(layout.pipeline, CEP_DTAW("CEP", "max_hops"), num_buf));
+    }
+
+    static const char* stage_roles[] = {
+        "prepare_features",
+        "prepare_features",
+        "call_learner",
+        "prepare_features",
+        "apply_update",
+    };
+    for (size_t i = 0; i < calc_layout.stage_count; ++i) {
+        const char* role = (i < cep_lengthof(stage_roles)) ? stage_roles[i] : "prepare_features";
+        munit_assert_true(cep_l1_pipeline_stage_stub(&layout, calc_layout.stage_ids[i], NULL));
+        munit_assert_true(cep_l1_pipeline_stage_set_role(&layout, calc_layout.stage_ids[i], role));
     }
 
     for (size_t i = 1; i < calc_layout.stage_count; ++i) {
@@ -569,6 +583,14 @@ calc_poc_seed_l1_pipeline(void)
     munit_assert_true(cep_cell_require_data(&field, &data));
     munit_assert_not_null(data);
     munit_assert_string_equal((const char*)cep_data_payload(data), meta.owner);
+
+    field = cep_cell_find_by_name(layout.pipeline, CEP_DTAW("CEP", "kind"));
+    field = field ? cep_cell_resolve(field) : NULL;
+    munit_assert_not_null(field);
+    data = NULL;
+    munit_assert_true(cep_cell_require_data(&field, &data));
+    munit_assert_not_null(data);
+    munit_assert_string_equal((const char*)cep_data_payload(data), meta.kind);
 
     field = cep_cell_find_by_name(layout.pipeline, CEP_DTAW("CEP", "province"));
     field = field ? cep_cell_resolve(field) : NULL;

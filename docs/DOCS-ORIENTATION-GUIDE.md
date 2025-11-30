@@ -8,6 +8,8 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
   - `docs/CEP.md` — Big-picture mission and vocabulary; skim first to align terminology.
   - `docs/CEP-Implementation-Reference.md` — Deterministic contract digest covering cells, stores, transports, episodes, higher-layer invariants, and the shipping Enclave policy loader/enforcement workflow.
   - `docs/CEP-CONTRACTS.md` — Runtime/ownership/threading contract (heartbeat single-owner, executor RO slices, pack bootstrap requirements) collected in one place.
+- **Build toggles**
+  - L3/L4 packs are optional; disable with `-Dl3_awareness=disabled -Dl4_governance=disabled`. L2 uses weak hooks so the scheduler runs even when upper layers are absent.
 - **Layer 1 coherence + pipelines**
 - `docs/L1_COHERENCE/README.md` — Layer 1 Coherence — Overview (scope, structure, doc map).
 - Adjacency and closure rules now live under `/data/coh/adj/**` and `/data/coh/schema/ctx_rules/**`; use `op/coh_sweep` to rebuild mirrors. See the L1 coherence README for the latest layout.
@@ -17,6 +19,8 @@ When you jump back into CEP, this cheat sheet points you straight to the docs th
 - **Layer 2 ecology & flows**
 - `docs/L2_ECOLOGY/L2-OVERVIEW.md` — Optional L2 Ecology pack overview (Flow VM, species/variant/niche/guardian model, data roots, runtime history/metrics/decisions, code/test layout).
 - `docs/L2_ECOLOGY/L2-IMPLEMENTATION.md` — Implementation plan for the L2 pack: bootstrap/shutdown contract, organs, schema, Flow VM runtime, Decision Cells/replay (with runtime decisions mirror), guardians/clamp, persistence/observability, phased delivery.
+- `docs/L3_AWARENESS/L3-OVERVIEW.md` — Minimal L3 awareness aggregates for rat POCs (maze risk/reward, skill performance, social comm).
+- `docs/L4_GOVERNANCE/L4-OVERVIEW.md` — Minimal L4 governance scaffold for rat POCs (province policies/compliance evidence).
 - `docs/L0_KERNEL/design/L0-DESIGN-ENCLAVE.md` — Enclave architecture: policy loader, gateways/edges, pipeline approvals, diagnostics, and invariants behind `cep_enclave_policy`.
 - `docs/L0_KERNEL/topics/ENCLAVE-OPERATIONS.md` — Operator workflow for policy edits, pipeline preflight, diagnostics, and the regression test matrix.
   - `docs/L0_KERNEL/L0-OVERVIEW.md` — Layer‑0 capabilities, storage choices, and lifecycle behaviors that every kernel edit touches.
@@ -114,6 +118,8 @@ The table below groups documents by their owning modules or features. The **Stat
 | `docs/L1_COHERENCE/IMPLEMENTATION.md` | Shipping L1 implementation surface and CEI/topic coverage | Layer 1 pack (coherence + pipelines) | Live | Mirrors current helpers (closure, pipelines, runtime fan-in/out, federation metadata). |
 | `docs/L2_ECOLOGY/L2-OVERVIEW.md` | Optional L2 Ecology pack overview (Flow VM, ecology model, data roots) | Layer 2 pack (ecology + flows) | Draft | Documents pack boundaries, requires L1 coherence/pipelines, and covers code/test/documentation layout (runtime/metrics/decisions/history seeded; Flow VM semantics still in progress). |
 | `docs/L2_ECOLOGY/L2-IMPLEMENTATION.md` | Implementation plan for the L2 pack | Layer 2 pack (ecology + flows) | Draft | Captures bootstrap/shutdown contract (now strictly layered on L1), organs, schemas, Flow VM runtime, Decision Cells/replay, guardians, and phased delivery steps (Flow VM execution still under construction). |
+| `docs/L3_AWARENESS/L3-OVERVIEW.md` | Layer 3 awareness aggregates for rat POCs | Layer 3 pack (awareness) | Draft | Minimal aggregates under `/data/awareness/**` for maze risk/reward, skill performance, and social comm. |
+| `docs/L4_GOVERNANCE/L4-OVERVIEW.md` | Layer 4 governance scaffold for rat POCs | Layer 4 pack (governance) | Draft | Province policies and compliance evidence under `/data/gov/**`; evidence-only, no enforcement yet. |
 | `docs/CEP-TAG-LEXICON.md` | Canonical tag catalogue and naming rules | Domain/tag encoding, namepool tooling | Live | Run `tools/check_unused_tags.py` after expanding the table. |
 | `docs/L0_KERNEL/topics/DEBUG-MACROS.md` | Debug macro behaviour and usage patterns | `src/l0_kernel/cep_molecule.h`, debug flags | Live | No drift detected; ensure new debug wrappers get documented here. |
 | `docs/DOCS-ORIENTATION-GUIDE.md` | Reading map for contributors returning to the repo | Documentation navigation | Live | Updated whenever new doc categories (e.g., Design docs) join the set. |

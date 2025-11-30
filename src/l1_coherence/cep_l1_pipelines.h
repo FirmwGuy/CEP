@@ -20,6 +20,7 @@ typedef struct {
     const char* owner;
     const char* province;
     const char* version;
+    const char* kind;
     uint64_t    revision;
     uint64_t    max_hops;
 } cepL1PipelineMeta;
@@ -44,6 +45,10 @@ bool cep_l1_pipeline_ensure(cepCell* pipelines_root,
 bool cep_l1_pipeline_stage_stub(cepL1PipelineLayout* layout,
                                 const char* stage_id,
                                 cepCell** stage_out);
+
+bool cep_l1_pipeline_stage_set_role(cepL1PipelineLayout* layout,
+                                    const char* stage_id,
+                                    const char* role);
 
 bool cep_l1_pipeline_add_edge(cepL1PipelineLayout* layout,
                               const char* from_stage,

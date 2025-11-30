@@ -15,6 +15,7 @@ extern "C" {
 bool cep_l1_pack_bootstrap(void);
 bool cep_l1_pack_shutdown(void);
 bool cep_l1_pack_coh_sweep(void);
+bool cep_l1_pack_seed_l2r_pipelines(void);
 
 #ifdef __cplusplus
 }

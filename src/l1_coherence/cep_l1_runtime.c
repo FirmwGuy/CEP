@@ -29,6 +29,7 @@ CEP_DEFINE_STATIC_DT(dt_triggers_name_l1,     CEP_ACRO("CEP"), CEP_WORD("trigger
 CEP_DEFINE_STATIC_DT(dt_kind_field_l1,        CEP_ACRO("CEP"), CEP_WORD("kind"));
 CEP_DEFINE_STATIC_DT(dt_beat_field_l1,        CEP_ACRO("CEP"), CEP_WORD("beat"));
 CEP_DEFINE_STATIC_DT(dt_sev_warn_l1,          CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
+CEP_DEFINE_STATIC_DT(dt_stage_role_field_l1,  CEP_ACRO("CEP"), CEP_WORD("role"));
 CEP_DEFINE_STATIC_DT(dt_topic_pipeline_reject, CEP_ACRO("CEP"), cep_namepool_intern_cstr("sec.pipeline.reject"));
 CEP_DEFINE_STATIC_DT(dt_fan_in_expected_l1,   CEP_ACRO("CEP"), CEP_WORD("fan_in"));
 CEP_DEFINE_STATIC_DT(dt_fan_in_seen_l1,       CEP_ACRO("CEP"), CEP_WORD("fan_seen"));
@@ -358,6 +359,12 @@ static bool cep_l1_runtime_seed_pipeline_shape(cepCell* run_root,
         return true;
     }
 
+    char pipeline_kind[64] = {0};
+    if (cep_l1_runtime_copy_text_field(pipeline, dt_kind_field_l1(), pipeline_kind, sizeof pipeline_kind) &&
+        pipeline_kind[0]) {
+        (void)cep_cell_put_text(run_root, dt_kind_field_l1(), pipeline_kind);
+    }
+
     cepCell* stage_defs = cep_cell_find_by_name(pipeline, dt_stages_name_l1());
     stage_defs = stage_defs ? cep_cell_resolve(stage_defs) : NULL;
     if (stage_defs && cep_cell_require_dictionary_store(&stage_defs)) {
@@ -369,7 +376,14 @@ static bool cep_l1_runtime_seed_pipeline_shape(cepCell* run_root,
             char stage_id_buffer[128] = {0};
             if (cep_l1_runtime_copy_text_field(stage, dt_stage_id_field_l1(), stage_id_buffer, sizeof stage_id_buffer) &&
                 stage_id_buffer[0]) {
-                (void)cep_l1_runtime_resolve_stage(run_root, stage_id_buffer, NULL);
+                cepCell* runtime_stage = NULL;
+                if (cep_l1_runtime_resolve_stage(run_root, stage_id_buffer, &runtime_stage) && runtime_stage) {
+                    char role_buffer[128] = {0};
+                    if (cep_l1_runtime_copy_text_field(stage, dt_stage_role_field_l1(), role_buffer, sizeof role_buffer) &&
+                        role_buffer[0]) {
+                        (void)cep_cell_put_text(runtime_stage, dt_stage_role_field_l1(), role_buffer);
+                    }
+                }
             }
         }
     }

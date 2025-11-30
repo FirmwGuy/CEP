@@ -9,3 +9,5 @@ option('executor_backend', type: 'combo', choices: ['stub', 'threaded'], value: 
 option('io_reactor_backend', type: 'combo', choices: ['auto', 'portable', 'epoll'], value: 'auto', description: 'Select default async I/O reactor backend')
 option('zlib_provider', type: 'combo', choices: ['auto', 'system', 'bundled'], value: 'auto', description: 'Prefer system zlib when available; fall back to bundled CRC32 copy')
 option('libsodium_provider', type: 'combo', choices: ['auto', 'system', 'bundled'], value: 'auto', description: 'Prefer system libsodium when available; fall back to a bundled subset')
+option('l3_awareness', type: 'feature', value: 'enabled', description: 'Build optional Layer 3 awareness pack')
+option('l4_governance', type: 'feature', value: 'enabled', description: 'Build optional Layer 4 governance pack')

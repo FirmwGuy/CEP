@@ -70,6 +70,7 @@ CEP is organized into five conceptual layers:
 5. Add **L4** when you want CEP to coordinate its own reforms and upgrades as data.
 
 Layer stacking is one‑way: each layer only depends on lower layers; packs must fail gracefully if their prerequisites are missing.  
+The build mirrors that: L3/L4 awareness/governance are optional Meson packs (`-Dl3_awareness` / `-Dl4_governance`), and L2 only calls into them when the symbols are present.
 
 ---
 

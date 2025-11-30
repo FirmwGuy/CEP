@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define CEP_L1_PIPELINE_KIND_DEFAULT "application"
+
 CEP_DEFINE_STATIC_DT(dt_stages_name, CEP_ACRO("CEP"), CEP_WORD("stages"));
 CEP_DEFINE_STATIC_DT(dt_edges_name,  CEP_ACRO("CEP"), CEP_WORD("edges"));
 CEP_DEFINE_STATIC_DT(dt_stage_id,    CEP_ACRO("CEP"), CEP_WORD("stage_id"));
@@ -25,6 +27,8 @@ CEP_DEFINE_STATIC_DT(dt_version_field, CEP_ACRO("CEP"), CEP_WORD("ver"));
 CEP_DEFINE_STATIC_DT(dt_owner_field_flow, CEP_ACRO("CEP"), CEP_WORD("owner"));
 CEP_DEFINE_STATIC_DT(dt_province_field_flow, CEP_ACRO("CEP"), CEP_WORD("province"));
 CEP_DEFINE_STATIC_DT(dt_max_hops_field_flow, CEP_ACRO("CEP"), CEP_WORD("max_hops"));
+CEP_DEFINE_STATIC_DT(dt_kind_field_flow, CEP_ACRO("CEP"), CEP_WORD("kind"));
+CEP_DEFINE_STATIC_DT(dt_stage_role_field_flow, CEP_ACRO("CEP"), CEP_WORD("role"));
 CEP_DEFINE_STATIC_DT(dt_sev_warn_pipeline, CEP_ACRO("CEP"), CEP_WORD("sev:warn"));
 CEP_DEFINE_STATIC_DT(dt_topic_pipeline_invalid, CEP_ACRO("CEP"), cep_namepool_intern_cstr("flow.pipeline.invalid"));
 
@@ -237,9 +241,23 @@ bool cep_l1_pipeline_ensure(cepCell* pipelines_root,
         return false;
     }
 
+    char existing_kind[64] = {0};
+    bool has_existing_kind = cep_l1_pipeline_copy_text_field(pipeline, dt_kind_field_flow(), existing_kind, sizeof existing_kind);
+
     uint64_t existing_rev_value = 0u;
     bool has_existing_rev = cep_l1_pipeline_copy_uint64_field(pipeline, dt_revision_field(), &existing_rev_value);
     if (meta) {
+        const char* kind_value = NULL;
+        if (meta->kind && *meta->kind) {
+            kind_value = meta->kind;
+        } else if (has_existing_kind && existing_kind[0]) {
+            kind_value = existing_kind;
+        } else {
+            kind_value = CEP_L1_PIPELINE_KIND_DEFAULT;
+        }
+        if (kind_value && *kind_value) {
+            (void)cep_cell_put_text(pipeline, dt_kind_field_flow(), kind_value);
+        }
         if (meta->version && *meta->version) {
             (void)cep_cell_put_text(pipeline, dt_version_field(), meta->version);
         }
@@ -263,6 +281,9 @@ bool cep_l1_pipeline_ensure(cepCell* pipelines_root,
         }
     } else if (!has_existing_rev) {
         (void)cep_cell_put_uint64(pipeline, dt_revision_field(), 1u);
+    }
+    if (!meta && !has_existing_kind) {
+        (void)cep_cell_put_text(pipeline, dt_kind_field_flow(), CEP_L1_PIPELINE_KIND_DEFAULT);
     }
 
     cepCell* stages = NULL;
@@ -320,6 +341,19 @@ bool cep_l1_pipeline_stage_stub(cepL1PipelineLayout* layout,
         *stage_out = stage;
     }
     return true;
+}
+
+bool cep_l1_pipeline_stage_set_role(cepL1PipelineLayout* layout,
+                                    const char* stage_id,
+                                    const char* role) {
+    if (!layout || !layout->stages || !stage_id || !role || !*role) {
+        return false;
+    }
+    cepCell* stage = NULL;
+    if (!cep_l1_pipeline_stage_stub(layout, stage_id, &stage)) {
+        return false;
+    }
+    return cep_cell_put_text(stage, dt_stage_role_field_flow(), role);
 }
 
 /* Register a directed edge between two stage stubs. The helper ensures both
@@ -453,6 +487,13 @@ bool cep_l1_pipeline_validate_layout(cepL1PipelineLayout* layout, const char* pi
         expected_pipeline_id = pipeline_buffer;
     }
 
+    char kind_buffer[128] = {0};
+    if (!cep_l1_pipeline_copy_text_field(pipeline, dt_kind_field_flow(), kind_buffer, sizeof kind_buffer) ||
+        !kind_buffer[0]) {
+        cep_l1_pipeline_emit_invalid("pipeline kind missing", pipeline);
+        ok = false;
+    }
+
     uint64_t revision = 0u;
     if (!cep_l1_pipeline_copy_uint64_field(pipeline, dt_revision_field(), &revision) || revision == 0u) {
         cep_l1_pipeline_emit_invalid("pipeline revision missing or zero", pipeline);
@@ -500,18 +541,24 @@ bool cep_l1_pipeline_validate_layout(cepL1PipelineLayout* layout, const char* pi
     if (stages_ok) {
         for (cepCell* stage = cep_cell_first(stages); stage; stage = cep_cell_next(stages, stage)) {
             stage = stage ? cep_cell_resolve(stage) : NULL;
-            if (!stage || !cep_cell_require_dictionary_store(&stage)) {
-                cep_l1_pipeline_emit_invalid("stage entry missing dictionary store", pipeline);
-                ok = false;
-                continue;
-            }
-            char stage_buffer[128] = {0};
-            if (!cep_l1_pipeline_copy_text_field(stage, dt_stage_id(), stage_buffer, sizeof stage_buffer) ||
-                !stage_buffer[0]) {
-                cep_l1_pipeline_emit_invalid("stage missing stage_id", stage);
-                ok = false;
-            }
+        if (!stage || !cep_cell_require_dictionary_store(&stage)) {
+            cep_l1_pipeline_emit_invalid("stage entry missing dictionary store", pipeline);
+            ok = false;
+            continue;
         }
+        char stage_buffer[128] = {0};
+        if (!cep_l1_pipeline_copy_text_field(stage, dt_stage_id(), stage_buffer, sizeof stage_buffer) ||
+            !stage_buffer[0]) {
+            cep_l1_pipeline_emit_invalid("stage missing stage_id", stage);
+            ok = false;
+        }
+        char role_buffer[128] = {0};
+        if (!cep_l1_pipeline_copy_text_field(stage, dt_stage_role_field_flow(), role_buffer, sizeof role_buffer) ||
+            !role_buffer[0]) {
+            cep_l1_pipeline_emit_invalid("stage missing role", stage);
+            ok = false;
+        }
+    }
     }
 
     if (edges_ok) {

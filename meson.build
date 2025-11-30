@@ -64,6 +64,9 @@ if asan_opt and cc.has_argument('-fsanitize=address')
   add_project_link_arguments(asan_args, language: 'c')
 endif
 
+l3_opt = get_option('l3_awareness')
+l4_opt = get_option('l4_governance')
+
 # Core library sources (heartbeat/enzymes are stubs for now but compiled in)
 zip_opt = get_option('zip')
 zip_dep = dependency('libzip', required: zip_opt.enabled(), method: 'pkg-config', allow_fallback: true)
@@ -115,12 +118,24 @@ l0_srcs = files(
   'src/l1_coherence/cep_l1_coherence.c',
   'src/l2_ecology/cep_l2_pack.c',
   'src/l2_ecology/cep_l2_schema.c',
+  'src/l2_ecology/cep_l2_playbook.c',
+  'src/l2_ecology/cep_l2_focus.c',
   'src/l2_ecology/cep_l2_runtime.c',
   'src/l2_ecology/cep_l2_flow.c',
   'src/cps/cps_flatfile.c',
   'src/cps/cps_storage_service.c',
   'src/cps/cps_runtime.c',
 )
+
+if not l3_opt.disabled()
+  inc_paths += ['src/l3_awareness']
+  l0_srcs += files('src/l3_awareness/cep_l3_runtime.c')
+endif
+
+if not l4_opt.disabled()
+  inc_paths += ['src/l4_governance']
+  l0_srcs += files('src/l4_governance/cep_l4_runtime.c')
+endif
 
 blake3_sources = files(
   'src/third_party/blake3/blake3.c',
@@ -381,23 +396,27 @@ if get_option('tests').enabled()
     suite: ['runtime'],
   )
 
-  calc_poc_srcs = files(
-    'src/third_party/munit/munit.c',
-    'src/test/poc/calc/calc_poc_suite.c',
-    'src/test/poc/calc/calc_poc_main.c',
-  )
-  calc_poc_exe = executable('cep_calc_poc_tests', calc_poc_srcs,
-    c_args: exe_cargs,
-    include_directories: inc,
-    link_with: cep_lib,
-    install: false,
-  )
-  test('calc_poc', calc_poc_exe,
-    args: no_fork_flag,
-    timeout: 120,
-    suite: ['calc_poc'],
-    is_parallel: false,
-  )
+  # Calc POC suite is temporarily disabled; Ratworld POCs supersede it.
+  # Leave the block gated so the executable is not built or scheduled.
+  if false
+    calc_poc_srcs = files(
+      'src/third_party/munit/munit.c',
+      'src/test/poc/calc/calc_poc_suite.c',
+      'src/test/poc/calc/calc_poc_main.c',
+    )
+    calc_poc_exe = executable('cep_calc_poc_tests', calc_poc_srcs,
+      c_args: exe_cargs,
+      include_directories: inc,
+      link_with: cep_lib,
+      install: false,
+    )
+    test('calc_poc', calc_poc_exe,
+      args: no_fork_flag,
+      timeout: 120,
+      suite: ['calc_poc'],
+      is_parallel: false,
+    )
+  endif
 
 endif
 

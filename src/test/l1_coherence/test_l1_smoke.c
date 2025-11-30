@@ -179,12 +179,14 @@ static MunitResult test_l1_pipeline_and_run(const MunitParameter params[], void*
         return MUNIT_SKIP;
     }
 
-    cepL1PipelineMeta meta_info = {.owner = "ops", .province = "prod", .version = "v1", .revision = 2u};
+    cepL1PipelineMeta meta_info = {.owner = "ops", .province = "prod", .version = "v1", .kind = "application", .revision = 2u};
     cepL1PipelineLayout pl = {0};
     munit_assert_true(cep_l1_pipeline_ensure(layout.flow_pipelines, "demo/pipeline", &meta_info, &pl));
     munit_assert_not_null(pl.stages);
     cepCell* stage = NULL;
     munit_assert_true(cep_l1_pipeline_stage_stub(&pl, "stageA", &stage));
+    munit_assert_true(cep_l1_pipeline_stage_set_role(&pl, "stageA", "prepare_features"));
+    munit_assert_true(cep_l1_pipeline_stage_set_role(&pl, "stageB", "call_learner"));
     munit_assert_true(cep_l1_pipeline_add_edge(&pl, "stageA", "stageB", "edge note"));
     munit_assert_true(cep_l1_pipeline_bind_coherence(&layout, &pl));
     munit_assert_not_null(stage);
@@ -443,6 +445,8 @@ static MunitResult test_l1_organs_flow_spec(const MunitParameter params[], void*
     munit_assert_true(cep_l1_pipeline_layout_from_root(pipeline, &pl_layout));
     munit_assert_true(cep_l1_pipeline_stage_stub(&pl_layout, "stageA", NULL));
     munit_assert_true(cep_l1_pipeline_stage_stub(&pl_layout, "stageB", NULL));
+    munit_assert_true(cep_l1_pipeline_stage_set_role(&pl_layout, "stageA", "prepare_features"));
+    munit_assert_true(cep_l1_pipeline_stage_set_role(&pl_layout, "stageB", "call_learner"));
     munit_assert_true(cep_l1_pipeline_add_edge(&pl_layout, "stageA", "stageB", "org test edge"));
 
     munit_assert_int(run_organ_enzyme("org:flow_spec_l1:normalize_edges", pipeline_id), ==, CEP_ENZYME_SUCCESS);
@@ -483,11 +487,13 @@ static MunitResult test_l1_organs_flow_runtime(const MunitParameter params[], vo
     munit_assert_true(cep_l1_schema_ensure(&layout));
 
     const char* pipeline_id = "org/runtime";
-    cepL1PipelineMeta meta = {.owner = "ops", .province = "dev", .version = "v1", .revision = 1u};
+    cepL1PipelineMeta meta = {.owner = "ops", .province = "dev", .version = "v1", .kind = "application", .revision = 1u};
     cepL1PipelineLayout pl = {0};
     munit_assert_true(cep_l1_pipeline_ensure(layout.flow_pipelines, pipeline_id, &meta, &pl));
     munit_assert_true(cep_l1_pipeline_stage_stub(&pl, "stageA", NULL));
     munit_assert_true(cep_l1_pipeline_stage_stub(&pl, "stageB", NULL));
+    munit_assert_true(cep_l1_pipeline_stage_set_role(&pl, "stageA", "prepare_features"));
+    munit_assert_true(cep_l1_pipeline_stage_set_role(&pl, "stageB", "call_learner"));
     munit_assert_true(cep_l1_pipeline_add_edge(&pl, "stageA", "stageB", NULL));
 
     cepPipelineMetadata run_meta = {

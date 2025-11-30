@@ -509,6 +509,15 @@ The tables below group CEP tags by the subsystem that consumes them so you can l
 | `org_failed` | L2 | Scheduler metric counting organisms that failed clamp/guardian checks. |
 | `org_waiting` | L2 | Scheduler metric counting organisms paused on Wait nodes. |
 | *reserved* | L1–L4 | Placeholder row; add upper-layer tag definitions here before minting them in code. |
+| `awareness` | L3 | Root for L3 aggregates under `/data/awareness/**`. |
+| `maze_risk_reward` | L3 | L3 aggregate branch per rat capturing shocks/foods/steps + signal snapshots. |
+| `skill_performance` | L3 | L3 aggregate branch per learner/focus aggregating attempts/success/imaginate. |
+| `social_comm` | L3 | L3 aggregate branch per rat capturing social trust/teach/noise stats. |
+| `gov` | L4 | Governance root under `/data/gov/**`. |
+| `rat_provinces` | L4 | Province definitions for rat POCs (risk/imaginate policies). |
+| `risk_cap` | L4 | Province policy field limiting tolerated risk. |
+| `imaginate_min` | L4 | Province policy field requiring minimum imaginate rate. |
+| `imaginate_rate` | L4 | Governance/awareness field storing observed imaginate ratio. |
 ### Usage Notes
 - Tags marked *ops* should only appear in impulse payloads and descriptor
   declarations. Emitting them outside the heartbeat dispatcher is undefined.

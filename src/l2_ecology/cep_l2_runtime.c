@@ -15,6 +15,8 @@
 #include "../l1_coherence/cep_l1_runtime.h"
 #include "../l1_coherence/cep_l1_coherence.h"
 #include "cep_l2_flow.h"
+#include "cep_l2_focus.h"
+#include "cep_l2_playbook.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -34,6 +36,21 @@ CEP_DEFINE_STATIC_DT(dt_org_eco_runtime_vl, CEP_ACRO("CEP"), cep_namepool_intern
 CEP_DEFINE_STATIC_DT(dt_org_eco_runtime_ct, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_runtime:ct"));
 CEP_DEFINE_STATIC_DT(dt_org_eco_runtime_dt, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_runtime:dt"));
 
+CEP_DEFINE_STATIC_DT(dt_org_signal_field_store, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_signal_field"));
+CEP_DEFINE_STATIC_DT(dt_org_signal_field_vl, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_signal_field:vl"));
+CEP_DEFINE_STATIC_DT(dt_org_signal_field_ct, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_signal_field:ct"));
+CEP_DEFINE_STATIC_DT(dt_org_signal_field_dt, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_signal_field:dt"));
+
+CEP_DEFINE_STATIC_DT(dt_org_playbooks_store, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_playbooks"));
+CEP_DEFINE_STATIC_DT(dt_org_playbooks_vl, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_playbooks:vl"));
+CEP_DEFINE_STATIC_DT(dt_org_playbooks_ct, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_playbooks:ct"));
+CEP_DEFINE_STATIC_DT(dt_org_playbooks_dt, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_playbooks:dt"));
+
+CEP_DEFINE_STATIC_DT(dt_org_modes_store, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_modes"));
+CEP_DEFINE_STATIC_DT(dt_org_modes_vl, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_modes:vl"));
+CEP_DEFINE_STATIC_DT(dt_org_modes_ct, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_modes:ct"));
+CEP_DEFINE_STATIC_DT(dt_org_modes_dt, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:eco_modes:dt"));
+
 CEP_DEFINE_STATIC_DT(dt_org_learn_models_store, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:learn_models"));
 CEP_DEFINE_STATIC_DT(dt_org_learn_models_vl, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:learn_models:vl"));
 CEP_DEFINE_STATIC_DT(dt_org_learn_models_ct, CEP_ACRO("CEP"), cep_namepool_intern_cstr("org:learn_models:ct"));
@@ -45,6 +62,16 @@ CEP_DEFINE_STATIC_DT(dt_runtime_metrics, CEP_ACRO("CEP"), cep_namepool_intern_cs
 CEP_DEFINE_STATIC_DT(dt_runtime_decisions, CEP_ACRO("CEP"), cep_namepool_intern_cstr("decisions"));
 CEP_DEFINE_STATIC_DT(dt_runtime_sched, CEP_ACRO("CEP"), cep_namepool_intern_cstr("sched_queue"));
 CEP_DEFINE_STATIC_DT(dt_runtime_history, CEP_ACRO("CEP"), cep_namepool_intern_cstr("history"));
+CEP_DEFINE_STATIC_DT(dt_runtime_signal_field, CEP_ACRO("CEP"), cep_namepool_intern_cstr("signal_field"));
+CEP_DEFINE_STATIC_DT(dt_runtime_playbooks, CEP_ACRO("CEP"), cep_namepool_intern_cstr("playbooks"));
+CEP_DEFINE_STATIC_DT(dt_runtime_modes, CEP_ACRO("CEP"), cep_namepool_intern_cstr("modes"));
+CEP_DEFINE_STATIC_DT(dt_signal_field_current, CEP_ACRO("CEP"), cep_namepool_intern_cstr("current"));
+CEP_DEFINE_STATIC_DT(dt_signal_field_history, CEP_ACRO("CEP"), cep_namepool_intern_cstr("history"));
+CEP_DEFINE_STATIC_DT(dt_signal_mode_field, CEP_ACRO("CEP"), CEP_WORD("mode"));
+CEP_DEFINE_STATIC_DT(dt_mode_id_field, CEP_ACRO("CEP"), CEP_WORD("mode_id"));
+CEP_DEFINE_STATIC_DT(dt_mode_note_field, CEP_ACRO("CEP"), CEP_WORD("note"));
+CEP_DEFINE_STATIC_DT(dt_modes_definitions, CEP_ACRO("CEP"), cep_namepool_intern_cstr("definitions"));
+CEP_DEFINE_STATIC_DT(dt_modes_evidence, CEP_ACRO("CEP"), cep_namepool_intern_cstr("evidence"));
 
 CEP_DEFINE_STATIC_DT(dt_l1_flow_root, CEP_ACRO("CEP"), cep_namepool_intern_cstr("flow"));
 CEP_DEFINE_STATIC_DT(dt_l1_flow_pipelines, CEP_ACRO("CEP"), cep_namepool_intern_cstr("pipelines"));
@@ -85,6 +112,32 @@ CEP_DEFINE_STATIC_DT(dt_org_state_finished, CEP_ACRO("CEP"), CEP_WORD("finished"
 CEP_DEFINE_STATIC_DT(dt_org_state_failed, CEP_ACRO("CEP"), CEP_WORD("failed"));
 CEP_DEFINE_STATIC_DT(dt_topic_evolution, CEP_ACRO("CEP"), cep_namepool_intern_cstr("eco.evolution.proposed"));
 CEP_DEFINE_STATIC_DT(dt_sev_info, CEP_ACRO("CEP"), CEP_WORD("sev:info"));
+CEP_DEFINE_STATIC_DT(dt_env_root, CEP_ACRO("CEP"), CEP_WORD("env"));
+CEP_DEFINE_STATIC_DT(dt_env_maze, CEP_ACRO("CEP"), CEP_WORD("maze"));
+CEP_DEFINE_STATIC_DT(dt_env_social, CEP_ACRO("CEP"), CEP_WORD("social"));
+CEP_DEFINE_STATIC_DT(dt_env_rats, CEP_ACRO("CEP"), CEP_WORD("rat"));
+CEP_DEFINE_STATIC_DT(dt_env_messages, CEP_ACRO("CEP"), CEP_WORD("messages"));
+CEP_DEFINE_STATIC_DT(dt_env_shock, CEP_ACRO("CEP"), CEP_WORD("shock"));
+CEP_DEFINE_STATIC_DT(dt_env_food, CEP_ACRO("CEP"), CEP_WORD("food"));
+CEP_DEFINE_STATIC_DT(dt_env_steps, CEP_ACRO("CEP"), CEP_WORD("steps"));
+CEP_DEFINE_STATIC_DT(dt_env_blocked, CEP_ACRO("CEP"), CEP_WORD("blocked"));
+CEP_DEFINE_STATIC_DT(dt_env_hunger, CEP_ACRO("CEP"), CEP_WORD("hunger"));
+CEP_DEFINE_STATIC_DT(dt_env_fatigue, CEP_ACRO("CEP"), CEP_WORD("fatigue"));
+CEP_DEFINE_STATIC_DT(dt_env_trust, CEP_ACRO("CEP"), CEP_WORD("trust"));
+CEP_DEFINE_STATIC_DT(dt_env_teach, CEP_ACRO("CEP"), CEP_WORD("teach"));
+CEP_DEFINE_STATIC_DT(dt_env_noise, CEP_ACRO("CEP"), CEP_WORD("noise"));
+CEP_DEFINE_STATIC_DT(dt_env_mode, CEP_ACRO("CEP"), CEP_WORD("mode"));
+CEP_DEFINE_STATIC_DT(dt_env_region, CEP_ACRO("CEP"), CEP_WORD("region"));
+CEP_DEFINE_STATIC_DT(dt_env_province, CEP_ACRO("CEP"), CEP_WORD("province"));
+CEP_DEFINE_STATIC_DT(dt_env_maze_id, CEP_ACRO("CEP"), CEP_WORD("maze_id"));
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((weak)) void cep_l3_awareness_run(cepCell* eco_root, cepCell* data_root);
+__attribute__((weak)) void cep_l4_governance_run(cepCell* eco_root, cepCell* data_root);
+#else
+static void cep_l3_awareness_run(cepCell* eco_root, cepCell* data_root) {(void)eco_root; (void)data_root;}
+static void cep_l4_governance_run(cepCell* eco_root, cepCell* data_root) {(void)eco_root; (void)data_root;}
+#endif
 
 static cepDT cep_l2_runtime_autoid(void) {
     cepDT name = {0};
@@ -238,6 +291,428 @@ static void cep_l2_runtime_bump_all_metrics(cepCell* eco_root,
     }
     if (niche && cep_dt_is_valid(niche)) {
         cep_l2_runtime_bump_metric(eco_root, dt_eco_metrics_per_niche(), niche, metric_tag, delta);
+    }
+}
+
+static double cep_l2_runtime_clamp01(double value) {
+    if (value < 0.0) {
+        return 0.0;
+    }
+    if (value > 1.0) {
+        return 1.0;
+    }
+    return value;
+}
+
+static bool cep_l2_runtime_put_signal(cepCell* current, const char* name, double value) {
+    if (!current || !name || !*name) {
+        return false;
+    }
+    cepID tag = cep_namepool_intern(name, strlen(name));
+    if (!tag) {
+        return false;
+    }
+    cepDT signal_dt = {.domain = CEP_ACRO("CEP"), .tag = tag, .glob = 0u};
+    char buf[32];
+    snprintf(buf, sizeof buf, "%.6f", cep_l2_runtime_clamp01(value));
+    return cep_cell_put_text(current, &signal_dt, buf);
+}
+
+static uint64_t cep_l2_runtime_read_metric(cepCell* bucket, const cepDT* field) {
+    uint64_t value = 0u;
+    if (!bucket || !field) {
+        return 0u;
+    }
+    (void)cep_l2_runtime_read_u64(bucket, field, &value);
+    return value;
+}
+
+static cepCell* cep_l2_runtime_require_branch(cepCell* parent, const cepDT* name) {
+    if (!parent || !name) {
+        return NULL;
+    }
+    cepCell* child = cep_cell_ensure_dictionary_child(parent, name, CEP_STORAGE_RED_BLACK_T);
+    child = child ? cep_cell_resolve(child) : NULL;
+    if (!child || !cep_cell_require_dictionary_store(&child)) {
+        return NULL;
+    }
+    return child;
+}
+
+static bool cep_l2_runtime_seed_env_harness(cepCell* data_root) {
+    if (!data_root) {
+        return false;
+    }
+    cepCell* env_root = cep_l2_runtime_require_branch(data_root, dt_env_root());
+    if (!env_root) {
+        return false;
+    }
+    cepCell* maze_root = cep_l2_runtime_require_branch(env_root, dt_env_maze());
+    cepCell* social_root = cep_l2_runtime_require_branch(env_root, dt_env_social());
+    if (!maze_root || !social_root) {
+        return false;
+    }
+    (void)cep_l2_runtime_require_branch(maze_root, dt_env_rats());
+    (void)cep_l2_runtime_require_branch(social_root, dt_env_messages());
+    return true;
+}
+
+static bool cep_l2_runtime_grounder_maze(cepCell* eco_root, cepCell* data_root) {
+    if (!eco_root || !data_root) {
+        return false;
+    }
+    cepCell* metrics_root = cep_l2_runtime_metrics_root(eco_root);
+    if (!metrics_root) {
+        return false;
+    }
+    cepCell* env_root = cep_cell_find_by_name(data_root, dt_env_root());
+    env_root = env_root ? cep_cell_resolve(env_root) : NULL;
+    cepCell* maze_root = env_root ? cep_cell_find_by_name(env_root, dt_env_maze()) : NULL;
+    maze_root = maze_root ? cep_cell_resolve(maze_root) : NULL;
+    cepCell* rats_root = maze_root ? cep_cell_find_by_name(maze_root, dt_env_rats()) : NULL;
+    rats_root = rats_root ? cep_cell_resolve(rats_root) : NULL;
+    if (!rats_root || !cep_cell_require_dictionary_store(&rats_root)) {
+        return true; /* nothing to do, keep idempotent */
+    }
+
+    for (cepCell* rat = cep_cell_first(rats_root); rat; rat = cep_cell_next(rats_root, rat)) {
+        cepCell* rat_entry = cep_cell_resolve(rat);
+        if (!rat_entry || !cep_cell_require_dictionary_store(&rat_entry)) {
+            continue;
+        }
+        const cepDT* rat_dt = cep_cell_get_name(rat_entry);
+        if (!rat_dt || !cep_dt_is_valid(rat_dt)) {
+            continue;
+        }
+        cepCell* bucket = cep_l2_runtime_metrics_bucket(metrics_root, dt_eco_metrics_per_variant(), rat_dt);
+        if (!bucket) {
+            continue;
+        }
+        uint64_t shocks = cep_l2_runtime_read_metric(rat_entry, dt_env_shock());
+        uint64_t foods = cep_l2_runtime_read_metric(rat_entry, dt_env_food());
+        uint64_t steps = cep_l2_runtime_read_metric(rat_entry, dt_env_steps());
+        uint64_t blocked = cep_l2_runtime_read_metric(rat_entry, dt_env_blocked());
+        uint64_t hunger = cep_l2_runtime_read_metric(rat_entry, dt_env_hunger());
+        uint64_t fatigue = cep_l2_runtime_read_metric(rat_entry, dt_env_fatigue());
+        (void)cep_cell_put_uint64(bucket, dt_env_shock(), shocks);
+        (void)cep_cell_put_uint64(bucket, dt_env_food(), foods);
+        (void)cep_cell_put_uint64(bucket, dt_env_steps(), steps);
+        (void)cep_cell_put_uint64(bucket, dt_env_blocked(), blocked);
+        (void)cep_cell_put_uint64(bucket, dt_env_hunger(), hunger);
+        (void)cep_cell_put_uint64(bucket, dt_env_fatigue(), fatigue);
+    }
+    return true;
+}
+
+static bool cep_l2_runtime_grounder_social(cepCell* eco_root, cepCell* data_root) {
+    if (!eco_root || !data_root) {
+        return false;
+    }
+    cepCell* metrics_root = cep_l2_runtime_metrics_root(eco_root);
+    if (!metrics_root) {
+        return false;
+    }
+    cepCell* env_root = cep_cell_find_by_name(data_root, dt_env_root());
+    env_root = env_root ? cep_cell_resolve(env_root) : NULL;
+    cepCell* social_root = env_root ? cep_cell_find_by_name(env_root, dt_env_social()) : NULL;
+    social_root = social_root ? cep_cell_resolve(social_root) : NULL;
+    cepCell* messages_root = social_root ? cep_cell_find_by_name(social_root, dt_env_messages()) : NULL;
+    messages_root = messages_root ? cep_cell_resolve(messages_root) : NULL;
+    if (!messages_root || !cep_cell_require_dictionary_store(&messages_root)) {
+        return true;
+    }
+
+    /* Aggregate simple trust/teach counters per sender rat. */
+    for (cepCell* msg = cep_cell_first(messages_root); msg; msg = cep_cell_next(messages_root, msg)) {
+        cepCell* entry = cep_cell_resolve(msg);
+        if (!entry || !cep_cell_require_dictionary_store(&entry)) {
+            continue;
+        }
+        const cepDT* sender_dt = cep_cell_get_name(entry);
+        if (!sender_dt || !cep_dt_is_valid(sender_dt)) {
+            continue;
+        }
+        cepCell* bucket = cep_l2_runtime_metrics_bucket(metrics_root, dt_eco_metrics_per_variant(), sender_dt);
+        if (!bucket) {
+            continue;
+        }
+        uint64_t trust = cep_l2_runtime_read_metric(entry, dt_env_trust());
+        uint64_t teach = cep_l2_runtime_read_metric(entry, dt_env_teach());
+        uint64_t noise = cep_l2_runtime_read_metric(entry, dt_env_noise());
+        (void)cep_cell_put_uint64(bucket, dt_env_trust(), trust);
+        (void)cep_cell_put_uint64(bucket, dt_env_teach(), teach);
+        (void)cep_cell_put_uint64(bucket, dt_env_noise(), noise);
+    }
+    return true;
+}
+
+static bool cep_l2_runtime_update_modes(cepCell* modes_root,
+                                        cepCell* signal_current,
+                                        double risk,
+                                        double hunger) {
+    if (!modes_root || !signal_current) {
+        return false;
+    }
+    cepCell* current = cep_l2_runtime_require_branch(modes_root, dt_signal_field_current());
+    cepCell* evidence_root = cep_l2_runtime_require_branch(modes_root, dt_modes_evidence());
+    if (!current || !evidence_root) {
+        return false;
+    }
+
+    const char* mode_id = "steady";
+    if (risk > 0.7) {
+        mode_id = "high_risk";
+    } else if (hunger > 0.6) {
+        mode_id = "hungry";
+    }
+
+    if (!cep_cell_put_text(current, dt_mode_id_field(), mode_id)) {
+        return false;
+    }
+    (void)cep_cell_put_text(signal_current, dt_signal_mode_field(), mode_id);
+
+    cepDT entry_name = cep_l2_runtime_autoid();
+    cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+    cepCell* entry = cep_cell_add_dictionary(evidence_root, &entry_name, 0u, &dict_type, CEP_STORAGE_RED_BLACK_T);
+    entry = entry ? cep_cell_resolve(entry) : NULL;
+    if (!entry || !cep_cell_require_dictionary_store(&entry)) {
+        return false;
+    }
+    (void)cep_cell_put_uint64(entry, dt_decision_beat_field(), (uint64_t)cep_beat_index());
+    (void)cep_cell_put_text(entry, dt_mode_id_field(), mode_id);
+    char note_buf[64];
+    snprintf(note_buf, sizeof note_buf, "risk=%.3f hunger=%.3f", risk, hunger);
+    (void)cep_cell_put_text(entry, dt_mode_note_field(), note_buf);
+    return true;
+}
+
+static bool cep_l2_runtime_update_signal_field(cepCell* eco_root) {
+    if (!eco_root) {
+        return false;
+    }
+    cepCell* runtime_root = cep_l2_runtime_resolve_child(eco_root, dt_runtime_root());
+    cepCell* signal_root = runtime_root ? cep_l2_runtime_resolve_child(runtime_root, dt_runtime_signal_field()) : NULL;
+    cepCell* modes_root = runtime_root ? cep_l2_runtime_resolve_child(runtime_root, dt_runtime_modes()) : NULL;
+    if (!signal_root || !modes_root) {
+        return false;
+    }
+    cepCell* current = cep_l2_runtime_require_branch(signal_root, dt_signal_field_current());
+    if (!current) {
+        return false;
+    }
+
+    /* Prefer per-variant metrics; fall back to global. */
+    cepCell* metrics_root = cep_l2_runtime_metrics_root(eco_root);
+    cepCell* bucket = NULL;
+    if (metrics_root) {
+        cepCell* per_variant = cep_l2_runtime_resolve_child(metrics_root, dt_eco_metrics_per_variant());
+        per_variant = per_variant ? cep_cell_resolve(per_variant) : NULL;
+        if (per_variant && cep_cell_require_dictionary_store(&per_variant)) {
+            cepCell* first = cep_cell_first(per_variant);
+            first = first ? cep_cell_resolve(first) : NULL;
+            if (first && cep_cell_require_dictionary_store(&first)) {
+                bucket = first;
+            }
+        }
+        if (!bucket) {
+            cepCell* global = cep_l2_runtime_resolve_child(metrics_root, dt_eco_metrics_global());
+            bucket = (global && cep_cell_require_dictionary_store(&global)) ? global : NULL;
+        }
+    }
+
+    uint64_t shocks = cep_l2_runtime_read_metric(bucket, dt_env_shock());
+    uint64_t foods = cep_l2_runtime_read_metric(bucket, dt_env_food());
+    uint64_t steps = cep_l2_runtime_read_metric(bucket, dt_env_steps());
+    uint64_t blocked = cep_l2_runtime_read_metric(bucket, dt_env_blocked());
+    uint64_t hunger = cep_l2_runtime_read_metric(bucket, dt_env_hunger());
+    uint64_t fatigue = cep_l2_runtime_read_metric(bucket, dt_env_fatigue());
+    uint64_t trust = cep_l2_runtime_read_metric(bucket, dt_env_trust());
+    uint64_t teach = cep_l2_runtime_read_metric(bucket, dt_env_teach());
+    uint64_t noise = cep_l2_runtime_read_metric(bucket, dt_env_noise());
+
+    double total_events = (double)(shocks + foods + steps + blocked + 1u);
+    double risk = (double)(shocks + blocked) / total_events;
+    double curiosity = (double)(steps + foods) / total_events;
+    double fast = (double)steps / total_events;
+    double fatigue_n = fatigue > 100u ? 1.0 : ((double)fatigue / 100.0);
+    double hunger_n = hunger > 100u ? 1.0 : ((double)hunger / 100.0);
+    double social_trust = trust > 100u ? 1.0 : ((double)trust / 100.0);
+    double teach_n = teach > 100u ? 1.0 : ((double)teach / 100.0);
+    double noise_n = noise > 100u ? 1.0 : ((double)noise / 100.0);
+    double low_noise = 1.0 - noise_n;
+
+    bool ok = true;
+    ok &= cep_l2_runtime_put_signal(current, "risk", risk);
+    ok &= cep_l2_runtime_put_signal(current, "hunger", hunger_n);
+    ok &= cep_l2_runtime_put_signal(current, "curiosity", curiosity);
+    ok &= cep_l2_runtime_put_signal(current, "fast", fast);
+    ok &= cep_l2_runtime_put_signal(current, "fatigue", fatigue_n);
+    ok &= cep_l2_runtime_put_signal(current, "social_trust", social_trust);
+    ok &= cep_l2_runtime_put_signal(current, "teach", teach_n);
+    ok &= cep_l2_runtime_put_signal(current, "low_noise", cep_l2_runtime_clamp01(low_noise));
+
+    if (ok && modes_root) {
+        ok &= cep_l2_runtime_update_modes(modes_root, current, risk, hunger_n);
+    }
+
+    /* Optional beat-stamped history for debugging/awareness. */
+    cepCell* history_root = cep_l2_runtime_require_branch(signal_root, dt_signal_field_history());
+    if (history_root) {
+        cepDT entry_name = cep_l2_runtime_autoid();
+        cepDT dict_type = *CEP_DTAW("CEP", "dictionary");
+        cepCell* entry = cep_cell_add_dictionary(history_root, &entry_name, 0u, &dict_type, CEP_STORAGE_RED_BLACK_T);
+        entry = entry ? cep_cell_resolve(entry) : NULL;
+        if (entry && cep_cell_require_dictionary_store(&entry)) {
+            (void)cep_cell_put_uint64(entry, dt_decision_beat_field(), (uint64_t)cep_beat_index());
+            (void)cep_cell_put_text(entry, CEP_DTAW("CEP", "note"), "signal_field_snapshot");
+            (void)cep_cell_copy_children(current, entry, false);
+        }
+    }
+
+    return ok;
+}
+
+static const char* cep_l2_runtime_read_text_field(cepCell* parent, const cepDT* field, char* buf, size_t buf_sz) {
+    if (!parent || !field || !buf || buf_sz == 0u) {
+        return NULL;
+    }
+    buf[0] = '\0';
+    cepCell* field_cell = cep_cell_find_by_name(parent, field);
+    field_cell = field_cell ? cep_cell_resolve(field_cell) : NULL;
+    if (!field_cell || !cep_cell_has_data(field_cell)) {
+        return NULL;
+    }
+    const char* text = (const char*)cep_cell_data(field_cell);
+    if (!text) {
+        return NULL;
+    }
+    snprintf(buf, buf_sz, "%s", text);
+    return buf;
+}
+
+static cepCell* cep_l2_runtime_signal_current(cepCell* eco_root) {
+    cepCell* runtime_root = cep_l2_runtime_resolve_child(eco_root, dt_runtime_root());
+    cepCell* signal_root = runtime_root ? cep_l2_runtime_resolve_child(runtime_root, dt_runtime_signal_field()) : NULL;
+    cepCell* current = signal_root ? cep_l2_runtime_resolve_child(signal_root, dt_signal_field_current()) : NULL;
+    current = current ? cep_cell_resolve(current) : NULL;
+    return current;
+}
+
+static bool cep_l2_runtime_skill_decide(cepCell* eco_root,
+                                        const cepL2FocusContext* ctx,
+                                        const char* learner_id,
+                                        const char* skill_id,
+                                        const char* const* actions,
+                                        size_t action_count,
+                                        double exploration_bias) {
+    if (!eco_root || !ctx || !learner_id || !skill_id || !actions || action_count == 0u) {
+        return false;
+    }
+
+    char focus_key[96];
+    bool focus_ok = false;
+    if (strcmp(skill_id, "nav") == 0) {
+        focus_ok = cep_l2_focus_build_nav(eco_root, ctx, focus_key, sizeof focus_key);
+    } else if (strcmp(skill_id, "explore") == 0) {
+        focus_ok = cep_l2_focus_build_exploration(eco_root, ctx, focus_key, sizeof focus_key);
+    } else if (strcmp(skill_id, "memory") == 0) {
+        focus_ok = cep_l2_focus_build_memory(eco_root, ctx, focus_key, sizeof focus_key);
+    } else if (strcmp(skill_id, "social") == 0) {
+        focus_ok = cep_l2_focus_build_social(eco_root, ctx, focus_key, sizeof focus_key);
+    } else if (strcmp(skill_id, "warning") == 0) {
+        focus_ok = cep_l2_focus_build_warning(eco_root, ctx, focus_key, sizeof focus_key);
+    }
+    if (!focus_ok) {
+        return false;
+    }
+
+    cepL2DecisionRequest req = {
+        .eco_root = eco_root,
+        .learner_id = learner_id,
+        .skill_id = skill_id,
+        .focus_key = focus_key,
+        .actions = actions,
+        .action_count = action_count,
+        .exploration_bias = exploration_bias,
+        .allow_imaginate = exploration_bias > 0.0,
+        .guardian_allow = NULL,
+        .guardian_user = NULL,
+        .pipeline = NULL,
+        .species_id = NULL,
+        .variant_id = NULL,
+    };
+
+    cepL2DecisionResult res = {0};
+    if (!cep_l2_playbook_select(&req, &res)) {
+        return false;
+    }
+
+    cepCell* signals = cep_l2_runtime_signal_current(eco_root);
+    double risk = 0.0;
+    (void)cep_l2_focus_read_signal(signals, "risk", &risk);
+    bool success = risk < 0.6 || strcmp(res.action_id, "wait") == 0 || strcmp(res.action_id, "warn") == 0;
+    double cost = risk;
+
+    return cep_l2_playbook_update_stats(eco_root,
+                                        learner_id,
+                                        focus_key,
+                                        res.action_id,
+                                        success,
+                                        cost,
+                                        res.imaginate_used,
+                                        res.decision_cell);
+}
+
+static void cep_l2_runtime_run_rat_skills(cepCell* eco_root, cepCell* data_root) {
+    if (!eco_root || !data_root) {
+        return;
+    }
+    cepCell* env_root = cep_cell_find_by_name(data_root, dt_env_root());
+    env_root = env_root ? cep_cell_resolve(env_root) : NULL;
+    cepCell* maze_root = env_root ? cep_cell_find_by_name(env_root, dt_env_maze()) : NULL;
+    maze_root = maze_root ? cep_cell_resolve(maze_root) : NULL;
+    cepCell* rats_root = maze_root ? cep_cell_find_by_name(maze_root, dt_env_rats()) : NULL;
+    rats_root = rats_root ? cep_cell_resolve(rats_root) : NULL;
+    if (!rats_root || !cep_cell_require_dictionary_store(&rats_root)) {
+        return;
+    }
+
+    static const char* nav_actions[] = {"move_north", "move_south", "move_east", "move_west", "wait"};
+    static const char* explore_actions[] = {"explore", "hold"};
+    static const char* memory_actions[] = {"avoid", "retry"};
+    static const char* social_actions[] = {"follow", "lead", "idle"};
+    static const char* warning_actions[] = {"warn", "stay_quiet"};
+
+    cepCell* signals = cep_l2_runtime_signal_current(eco_root);
+    double curiosity = 0.0;
+    double risk = 0.0;
+    (void)cep_l2_focus_read_signal(signals, "curiosity", &curiosity);
+    (void)cep_l2_focus_read_signal(signals, "risk", &risk);
+
+    for (cepCell* rat = cep_cell_first(rats_root); rat; rat = cep_cell_next(rats_root, rat)) {
+        cepCell* entry = cep_cell_resolve(rat);
+        if (!entry || !cep_cell_require_dictionary_store(&entry)) {
+            continue;
+        }
+        const cepDT* rat_dt = cep_cell_get_name(entry);
+        const char* rat_id = (rat_dt && cep_dt_is_valid(rat_dt)) ? cep_namepool_lookup(rat_dt->tag, NULL) : NULL;
+        char buf[64];
+        cepL2FocusContext ctx = {
+            .rat_id = rat_id ? rat_id : cep_l2_runtime_read_text_field(entry, dt_env_trust(), buf, sizeof buf),
+            .maze_id = cep_l2_runtime_read_text_field(entry, dt_env_maze_id(), buf, sizeof buf),
+            .region_id = cep_l2_runtime_read_text_field(entry, dt_env_region(), buf, sizeof buf),
+            .province_id = cep_l2_runtime_read_text_field(entry, dt_env_province(), buf, sizeof buf),
+            .mode_id = cep_l2_runtime_read_text_field(entry, dt_env_mode(), buf, sizeof buf),
+        };
+
+        double explore_bias = curiosity > 0.0 ? curiosity : 0.1;
+        double warning_bias = risk;
+
+        (void)cep_l2_runtime_skill_decide(eco_root, &ctx, "rat_nav", "nav", nav_actions, cep_lengthof(nav_actions), 0.0);
+        (void)cep_l2_runtime_skill_decide(eco_root, &ctx, "rat_explore", "explore", explore_actions, cep_lengthof(explore_actions), explore_bias);
+        (void)cep_l2_runtime_skill_decide(eco_root, &ctx, "rat_memory", "memory", memory_actions, cep_lengthof(memory_actions), 0.0);
+        (void)cep_l2_runtime_skill_decide(eco_root, &ctx, "rat_social", "social", social_actions, cep_lengthof(social_actions), 0.2);
+        (void)cep_l2_runtime_skill_decide(eco_root, &ctx, "rat_warning", "warning", warning_actions, cep_lengthof(warning_actions), warning_bias);
     }
 }
 
@@ -676,6 +1151,30 @@ bool cep_l2_runtime_register_organs(void) {
             .destructor = *dt_org_eco_runtime_dt(),
         },
         {
+            .kind = "eco_signal_field",
+            .label = "L2 signal field organ",
+            .store = *dt_org_signal_field_store(),
+            .validator = *dt_org_signal_field_vl(),
+            .constructor = *dt_org_signal_field_ct(),
+            .destructor = *dt_org_signal_field_dt(),
+        },
+        {
+            .kind = "eco_playbooks",
+            .label = "L2 playbooks organ",
+            .store = *dt_org_playbooks_store(),
+            .validator = *dt_org_playbooks_vl(),
+            .constructor = *dt_org_playbooks_ct(),
+            .destructor = *dt_org_playbooks_dt(),
+        },
+        {
+            .kind = "eco_modes",
+            .label = "L2 modes organ",
+            .store = *dt_org_modes_store(),
+            .validator = *dt_org_modes_vl(),
+            .constructor = *dt_org_modes_ct(),
+            .destructor = *dt_org_modes_dt(),
+        },
+        {
             .kind = "learn_models",
             .label = "L2 learning organ",
             .store = *dt_org_learn_models_store(),
@@ -713,9 +1212,41 @@ bool cep_l2_runtime_seed_runtime(cepCell* eco_root) {
     cepCell* decisions = cep_cell_ensure_dictionary_child(runtime_root, dt_runtime_decisions(), CEP_STORAGE_RED_BLACK_T);
     cepCell* sched = cep_cell_ensure_dictionary_child(runtime_root, dt_runtime_sched(), CEP_STORAGE_RED_BLACK_T);
     cepCell* history = cep_cell_ensure_dictionary_child(runtime_root, dt_runtime_history(), CEP_STORAGE_RED_BLACK_T);
+    cepCell* signal_field = cep_cell_ensure_dictionary_child(runtime_root, dt_runtime_signal_field(), CEP_STORAGE_RED_BLACK_T);
+    cepCell* playbooks = cep_cell_ensure_dictionary_child(runtime_root, dt_runtime_playbooks(), CEP_STORAGE_RED_BLACK_T);
+    cepCell* modes = cep_cell_ensure_dictionary_child(runtime_root, dt_runtime_modes(), CEP_STORAGE_RED_BLACK_T);
+
+    organisms = organisms ? cep_cell_resolve(organisms) : NULL;
+    metrics = metrics ? cep_cell_resolve(metrics) : NULL;
+    decisions = decisions ? cep_cell_resolve(decisions) : NULL;
+    sched = sched ? cep_cell_resolve(sched) : NULL;
+    history = history ? cep_cell_resolve(history) : NULL;
+    signal_field = signal_field ? cep_cell_resolve(signal_field) : NULL;
+    playbooks = playbooks ? cep_cell_resolve(playbooks) : NULL;
+    modes = modes ? cep_cell_resolve(modes) : NULL;
+
+    cepDT signal_field_store = cep_organ_store_dt("eco_signal_field");
+    cepDT playbooks_store = cep_organ_store_dt("eco_playbooks");
+    cepDT modes_store = cep_organ_store_dt("eco_modes");
+    if (signal_field && signal_field->store && cep_dt_is_valid(&signal_field_store)) {
+        cep_store_set_dt(signal_field->store, &signal_field_store);
+    }
+    if (playbooks && playbooks->store && cep_dt_is_valid(&playbooks_store)) {
+        cep_store_set_dt(playbooks->store, &playbooks_store);
+    }
+    if (modes && modes->store && cep_dt_is_valid(&modes_store)) {
+        cep_store_set_dt(modes->store, &modes_store);
+    }
+
+    cepCell* signal_current = signal_field ? cep_cell_ensure_dictionary_child(signal_field, dt_signal_field_current(), CEP_STORAGE_RED_BLACK_T) : NULL;
+    signal_current = signal_current ? cep_cell_resolve(signal_current) : NULL;
+    bool signal_ready = signal_current && cep_cell_require_dictionary_store(&signal_current);
+
+    bool playbooks_ready = playbooks && cep_cell_require_dictionary_store(&playbooks);
+    bool modes_ready = modes && cep_cell_require_dictionary_store(&modes);
     bool metrics_ready = cep_l2_runtime_seed_metrics_branches(metrics);
 
-    return organisms && metrics && decisions && sched && history && metrics_ready;
+    return organisms && metrics && decisions && sched && history && signal_ready && playbooks_ready && modes_ready && metrics_ready;
 }
 
 /* TODO: replace stub with trigger scanning and organism creation once the Flow
@@ -740,6 +1271,11 @@ bool cep_l2_runtime_scheduler_pump(cepCell* eco_root) {
     if (!flows_root || !organisms_root || !flow_root || !pipelines_root || !runs_root || !l1_metrics_root) {
         return false;
     }
+
+    (void)cep_l2_runtime_seed_env_harness(data_root);
+    (void)cep_l2_runtime_grounder_maze(eco_root, data_root);
+    (void)cep_l2_runtime_grounder_social(eco_root, data_root);
+    (void)cep_l2_runtime_update_signal_field(eco_root);
 
     if (!cep_cell_require_dictionary_store(&flows_root) ||
         !cep_cell_require_dictionary_store(&organisms_root) ||
@@ -772,6 +1308,14 @@ bool cep_l2_runtime_scheduler_pump(cepCell* eco_root) {
         if (!cep_l2_runtime_step_flow(eco_root, learn_root, organisms_root, resolved, &flow_id, &pipeline, step_budget)) {
             ok = false;
         }
+    }
+
+    cep_l2_runtime_run_rat_skills(eco_root, data_root);
+    if (cep_l3_awareness_run) {
+        cep_l3_awareness_run(eco_root, data_root);
+    }
+    if (cep_l4_governance_run) {
+        cep_l4_governance_run(eco_root, data_root);
     }
 
     return ok;

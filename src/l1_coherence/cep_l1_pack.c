@@ -19,6 +19,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#define CEP_L1_PIPELINE_KIND_DEFAULT "application"
+
 CEP_DEFINE_STATIC_DT(dt_l1_boot_verb, CEP_ACRO("CEP"), CEP_WORD("op:l1_boot"));
 CEP_DEFINE_STATIC_DT(dt_l1_shdn_verb, CEP_ACRO("CEP"), CEP_WORD("op:l1_shdn"));
 CEP_DEFINE_STATIC_DT(dt_l1_coh_sweep_verb, CEP_ACRO("CEP"), cep_namepool_intern_cstr("op/coh_sweep"));
@@ -35,6 +37,7 @@ CEP_DEFINE_STATIC_DT(dt_l1_province_field, CEP_ACRO("CEP"), CEP_WORD("province")
 CEP_DEFINE_STATIC_DT(dt_l1_version_field, CEP_ACRO("CEP"), CEP_WORD("ver"));
 CEP_DEFINE_STATIC_DT(dt_l1_revision_field, CEP_ACRO("CEP"), CEP_WORD("rev"));
 CEP_DEFINE_STATIC_DT(dt_l1_max_hops_field, CEP_ACRO("CEP"), CEP_WORD("max_hops"));
+CEP_DEFINE_STATIC_DT(dt_l1_kind_field, CEP_ACRO("CEP"), CEP_WORD("kind"));
 CEP_DEFINE_STATIC_DT(dt_l1_required_field, CEP_ACRO("CEP"), CEP_WORD("required"));
 CEP_DEFINE_STATIC_DT(dt_l1_role_field, CEP_ACRO("CEP"), CEP_WORD("role"));
 
@@ -230,6 +233,18 @@ static bool cep_l1_pack_seed_pipeline_ctx_rules(cepCell* ctx_rules_root) {
     return ok;
 }
 
+static bool cep_l1_pack_seed_learning_ctx_rules(cepCell* ctx_rules_root) {
+    if (!ctx_rules_root) {
+        return false;
+    }
+    bool ok = true;
+    ok &= cep_l1_pack_seed_required_rule(ctx_rules_root, "learning_context", "roles", "rat", true);
+    ok &= cep_l1_pack_seed_required_rule(ctx_rules_root, "learning_context", "roles", "maze", true);
+    ok &= cep_l1_pack_seed_required_rule(ctx_rules_root, "learning_context", "roles", "province", true);
+    ok &= cep_l1_pack_seed_required_rule(ctx_rules_root, "learning_context", "roles", "trainer", false);
+    return ok;
+}
+
 static bool cep_l1_pack_seed_ctx_rules(cepL1SchemaLayout* layout) {
     if (!layout || !layout->coh_context_rules) {
         return false;
@@ -240,6 +255,7 @@ static bool cep_l1_pack_seed_ctx_rules(cepL1SchemaLayout* layout) {
     }
     bool ok = true;
     ok &= cep_l1_pack_seed_pipeline_ctx_rules(rules);
+    ok &= cep_l1_pack_seed_learning_ctx_rules(rules);
     layout->coh_context_rules = rules;
     return ok;
 }
@@ -486,6 +502,8 @@ static bool cep_l1_pack_resolve_pipeline(cepL1SchemaLayout* layout,
 
 static void cep_l1_pack_fill_pipeline_meta_from_cell(cepCell* pipeline,
                                                      cepL1PipelineMeta* meta,
+                                                     char* kind_buf,
+                                                     size_t kind_cap,
                                                      char* owner_buf,
                                                      size_t owner_cap,
                                                      char* province_buf,
@@ -494,6 +512,9 @@ static void cep_l1_pack_fill_pipeline_meta_from_cell(cepCell* pipeline,
                                                      size_t version_cap) {
     if (!pipeline || !meta) {
         return;
+    }
+    if (kind_buf && kind_cap > 0u) {
+        kind_buf[0] = '\0';
     }
     if (owner_buf && owner_cap > 0u) {
         owner_buf[0] = '\0';
@@ -506,11 +527,15 @@ static void cep_l1_pack_fill_pipeline_meta_from_cell(cepCell* pipeline,
     }
     uint64_t revision = 0u;
     uint64_t max_hops = 0u;
+    (void)cep_l1_pack_copy_text_field(pipeline, dt_l1_kind_field(), kind_buf, kind_cap);
     (void)cep_l1_pack_copy_text_field(pipeline, dt_l1_owner_field(), owner_buf, owner_cap);
     (void)cep_l1_pack_copy_text_field(pipeline, dt_l1_province_field(), province_buf, province_cap);
     (void)cep_l1_pack_copy_text_field(pipeline, dt_l1_version_field(), version_buf, version_cap);
     (void)cep_l1_pack_copy_uint64_field(pipeline, dt_l1_revision_field(), &revision);
     (void)cep_l1_pack_copy_uint64_field(pipeline, dt_l1_max_hops_field(), &max_hops);
+    if (kind_buf && kind_buf[0]) {
+        meta->kind = kind_buf;
+    }
     if (owner_buf && owner_buf[0]) {
         meta->owner = owner_buf;
     }
@@ -526,6 +551,170 @@ static void cep_l1_pack_fill_pipeline_meta_from_cell(cepCell* pipeline,
     if (max_hops > 0u) {
         meta->max_hops = max_hops;
     }
+    if (!meta->kind) {
+        meta->kind = CEP_L1_PIPELINE_KIND_DEFAULT;
+    }
+}
+
+typedef struct {
+    const char* id;
+    const char* role;
+} cepL1PipelineStageSeed;
+
+typedef struct {
+    const char* pipeline_id;
+    const char* kind;
+    const char* owner;
+    const char* province;
+    const char* version;
+    uint64_t    revision;
+    uint64_t    max_hops;
+    const cepL1PipelineStageSeed* stages;
+    size_t stage_count;
+} cepL1PipelineSeed;
+
+static const char* const l2r_owner_default = "rat_ops";
+static const char* const l2r_version_default = "v1";
+static const char* const l2r_province_train = "lab_train";
+static const char* const l2r_province_social = "lab_coop";
+
+static const cepL1PipelineStageSeed l2r_maze_stage_seeds[] = {
+    {.id = "maze_prep", .role = "prepare_features"},
+    {.id = "maze_call", .role = "call_learner"},
+    {.id = "maze_log", .role = "log_example"},
+};
+
+static const cepL1PipelineStageSeed l2r_training_stage_seeds[] = {
+    {.id = "train_log", .role = "log_example"},
+    {.id = "train_join", .role = "join_label"},
+    {.id = "train_apply", .role = "apply_update"},
+    {.id = "train_signal", .role = "update_signal_field"},
+};
+
+static const cepL1PipelineStageSeed l2r_social_stage_seeds[] = {
+    {.id = "social_prep", .role = "prepare_features"},
+    {.id = "social_call", .role = "call_learner"},
+    {.id = "social_log", .role = "log_example"},
+};
+
+static const cepL1PipelineSeed l2r_pipeline_seeds[] = {
+    {
+        .pipeline_id = "maze_step",
+        .kind = "application",
+        .owner = l2r_owner_default,
+        .province = l2r_province_train,
+        .version = l2r_version_default,
+        .revision = 0u,
+        .max_hops = 4u,
+        .stages = l2r_maze_stage_seeds,
+        .stage_count = sizeof l2r_maze_stage_seeds / sizeof l2r_maze_stage_seeds[0],
+    },
+    {
+        .pipeline_id = "rat_training",
+        .kind = "learning",
+        .owner = l2r_owner_default,
+        .province = l2r_province_train,
+        .version = l2r_version_default,
+        .revision = 0u,
+        .max_hops = 6u,
+        .stages = l2r_training_stage_seeds,
+        .stage_count = sizeof l2r_training_stage_seeds / sizeof l2r_training_stage_seeds[0],
+    },
+    {
+        .pipeline_id = "rat_social",
+        .kind = "application",
+        .owner = l2r_owner_default,
+        .province = l2r_province_social,
+        .version = l2r_version_default,
+        .revision = 0u,
+        .max_hops = 5u,
+        .stages = l2r_social_stage_seeds,
+        .stage_count = sizeof l2r_social_stage_seeds / sizeof l2r_social_stage_seeds[0],
+    },
+};
+
+static bool cep_l1_pack_seed_pipeline_from_def(cepL1SchemaLayout* layout, const cepL1PipelineSeed* seed) {
+    if (!layout || !layout->flow_pipelines || !seed || !seed->pipeline_id || !seed->stages || seed->stage_count == 0u) {
+        return false;
+    }
+
+    uint64_t max_hops = seed->max_hops;
+    if (max_hops == 0u && seed->stage_count > 0u) {
+        max_hops = (uint64_t)(seed->stage_count + 1u);
+    }
+
+    cepL1PipelineMeta meta = {
+        .owner = (seed->owner && *seed->owner) ? seed->owner : l2r_owner_default,
+        .province = (seed->province && *seed->province) ? seed->province : l2r_province_train,
+        .version = (seed->version && *seed->version) ? seed->version : l2r_version_default,
+        .kind = (seed->kind && *seed->kind) ? seed->kind : CEP_L1_PIPELINE_KIND_DEFAULT,
+        .revision = seed->revision,
+        .max_hops = max_hops,
+    };
+
+    cepL1PipelineLayout pipeline_layout = {0};
+    if (!cep_l1_pipeline_ensure(layout->flow_pipelines, seed->pipeline_id, &meta, &pipeline_layout)) {
+        return false;
+    }
+
+    bool ok = true;
+    for (size_t i = 0u; ok && i < seed->stage_count; ++i) {
+        const cepL1PipelineStageSeed* stage = &seed->stages[i];
+        ok = stage->id && stage->role && cep_l1_pipeline_stage_set_role(&pipeline_layout, stage->id, stage->role);
+    }
+
+    for (size_t i = 1u; ok && i < seed->stage_count; ++i) {
+        const char* from = seed->stages[i - 1u].id;
+        const char* to = seed->stages[i].id;
+        ok = from && to && cep_l1_pipeline_add_edge(&pipeline_layout, from, to, "seq");
+    }
+
+    if (ok) {
+        ok = cep_l1_pipeline_validate_layout(&pipeline_layout, seed->pipeline_id);
+    }
+    if (ok) {
+        ok = cep_l1_pipeline_bind_coherence(layout, &pipeline_layout);
+    }
+    return ok;
+}
+
+/* Seed the L2R rat POC pipelines (maze_step, rat_training, rat_social) with
+   stage roles, pipeline kinds, and coherence bindings so L2/L3/L4 flows can
+   tag decisions without bespoke setup. Idempotent: repeated calls refresh
+   metadata and edges without lowering existing revisions. */
+bool cep_l1_pack_seed_l2r_pipelines(void) {
+    cepRuntime* runtime = cep_runtime_default();
+    if (!runtime) {
+        return false;
+    }
+    cepRuntime* previous_scope = cep_runtime_set_active(runtime);
+
+    bool ok = cep_l1_pack_register_organs();
+    if (ok) {
+        ok = cep_l1_pack_org_coh_ct(NULL, NULL) == CEP_ENZYME_SUCCESS;
+    }
+    if (ok) {
+        ok = cep_l1_pack_org_flow_spec_ct(NULL, NULL) == CEP_ENZYME_SUCCESS;
+    }
+
+    cepL1SchemaLayout layout = {0};
+    if (ok) {
+        ok = cep_l1_schema_ensure(&layout);
+    }
+    if (ok) {
+        cep_l1_pack_label_organ_root(layout.coh_root, "coh_root");
+        cep_l1_pack_label_organ_root(layout.flow_pipelines, "flow_spec_l1");
+        ok = cep_l1_pack_seed_ctx_rules(&layout);
+    }
+
+    if (ok) {
+        for (size_t i = 0u; i < sizeof l2r_pipeline_seeds / sizeof l2r_pipeline_seeds[0]; ++i) {
+            ok = ok && cep_l1_pack_seed_pipeline_from_def(&layout, &l2r_pipeline_seeds[i]);
+        }
+    }
+
+    cep_runtime_restore_active(previous_scope);
+    return ok;
 }
 
 /* Bring the Layer 1 pack online by ensuring the coherence/flow layout exists,
@@ -875,12 +1064,22 @@ static int cep_l1_pack_org_flow_spec_ensure(const cepPath* signal, const cepPath
 
     cepCell* existing = NULL;
     cepL1PipelineLayout pipeline_layout = {0};
-    cepL1PipelineMeta meta = {.owner = "unknown", .province = "default", .version = "v0", .revision = 1u, .max_hops = 0u};
+    cepL1PipelineMeta meta = {.owner = "unknown", .province = "default", .version = "v0", .kind = CEP_L1_PIPELINE_KIND_DEFAULT, .revision = 1u, .max_hops = 0u};
+    char kind_buf[128] = {0};
     char owner_buf[128] = {0};
     char prov_buf[128] = {0};
     char ver_buf[128] = {0};
     if (ok && cep_l1_pack_resolve_pipeline(&layout, pipeline_id, &existing, &pipeline_layout)) {
-        cep_l1_pack_fill_pipeline_meta_from_cell(existing, &meta, owner_buf, sizeof owner_buf, prov_buf, sizeof prov_buf, ver_buf, sizeof ver_buf);
+        cep_l1_pack_fill_pipeline_meta_from_cell(existing,
+                                                 &meta,
+                                                 kind_buf,
+                                                 sizeof kind_buf,
+                                                 owner_buf,
+                                                 sizeof owner_buf,
+                                                 prov_buf,
+                                                 sizeof prov_buf,
+                                                 ver_buf,
+                                                 sizeof ver_buf);
     }
 
     if (ok) {
